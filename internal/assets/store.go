@@ -128,10 +128,12 @@ func (s *Store) Get(ctx context.Context, id string) (Asset, error) {
 }
 
 // SetBlob updates blob_key/url/provider/model/status after generation completes
-// (generating → pending_acceptance). Guarded on status='generating'.
+// (generating → pending_acceptance / failed). Guarded on status='generating' so
+// it only ever advances an in-flight asset once; if the asset already left the
+// 'generating' state (e.g. concurrent reclaim), the update is a no-op.
 func (s *Store) SetBlob(ctx context.Context, id, blobKey, url, provider, model, newStatus string) error {
 	_, err := s.pool.Exec(ctx,
-		`UPDATE assets SET blob_key=$2, url=$3, provider=$4, model=$5, status=$6 WHERE id=$1`,
+		`UPDATE assets SET blob_key=$2, url=$3, provider=$4, model=$5, status=$6 WHERE id=$1 AND status='generating'`,
 		id, blobKey, url, provider, model, newStatus)
 	return err
 }
