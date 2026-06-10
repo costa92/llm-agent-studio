@@ -3,6 +3,8 @@ package localfs
 import (
 	"context"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -39,6 +41,24 @@ func TestSignedURLVerifies(t *testing.T) {
 	}
 	if err := s.Verify("k.png", exp, "deadbeef"); err == nil {
 		t.Fatalf("expected bad-sig rejection")
+	}
+}
+
+func TestPutBlocksPathTraversal(t *testing.T) {
+	root := t.TempDir()
+	s := New(root, []byte("secret"), "/api/blob/")
+	ctx := context.Background()
+	// A traversal key must be neutralized (Clean strips leading ../), so the
+	// write stays under root and cannot escape to a sibling/parent directory.
+	if err := s.Put(ctx, "../../escape.png", strings.NewReader("X"), "image/png"); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(root), "escape.png")); err == nil {
+		t.Fatalf("path traversal escaped root: file written to parent dir")
+	}
+	// Round-trips via the same cleaned-key mapping (stays inside root).
+	if data, _, err := s.ReadKey("../../escape.png"); err != nil || string(data) != "X" {
+		t.Fatalf("read back: err=%v data=%q", err, data)
 	}
 }
 
