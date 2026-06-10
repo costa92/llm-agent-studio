@@ -479,6 +479,14 @@ func (w *Worker) fail(ctx context.Context, c claimed, cause error) {
 		if _, err := w.cfg.Projects.RefreshStatus(ctx, c.projectID); err != nil {
 			w.cfg.Logger.Warn("worker: refresh status failed", "project", c.projectID, "err", err)
 		}
+		// A terminal failure can be the LAST todo to reach a terminal state (e.g. a
+		// run where earlier todos succeeded and the final one exhausted attempts).
+		// MarkFailed cancels dependents, so allDone may now be satisfied — emit
+		// run_done so the SSE timeline closes instead of hanging (mirrors the
+		// success path in process()).
+		if w.allDone(ctx, c.projectID) {
+			_, _ = w.cfg.Events.Append(ctx, c.projectID, "run_done", "", nil)
+		}
 		return
 	}
 	backoff := w.cfg.BaseBackoff * (1 << (c.attempts - 1))

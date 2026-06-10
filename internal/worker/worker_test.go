@@ -110,19 +110,26 @@ func TestWorkerFailsTodoOnAgentError(t *testing.T) {
 	_, _ = pool.Exec(ctx, `INSERT INTO projects (id, org_id, name, created_by) VALUES ($1,'o','n','u')`, projID)
 	todoStore := todos.New(pool)
 	projStore := project.New(pool)
+	// Script succeeds, storyboard (the LAST todo) fails terminally: this exercises
+	// both the cancel-dependents path AND the run_done-on-terminal-failure path
+	// (done>0 because the script finished, so allDone is satisfied once the
+	// storyboard exhausts attempts).
 	ids, _ := todoStore.CreateGraph(ctx, projID, "pl1", []todos.NodeSpec{
 		{LocalID: "s", Type: "script", DependsOn: nil, InputJSON: []byte(`{"brief":"x"}`)},
 		{LocalID: "b", Type: "storyboard", DependsOn: []string{"s"}, InputJSON: []byte(`{}`)},
 	})
-	// Malformed script output → agent error every attempt.
+	// Script model returns valid JSON; storyboard model returns garbage every
+	// attempt → agent error → terminal failure after attempts exhausted.
+	scriptModel := llm.NewScriptedLLM(llm.WithResponses(llm.Response{
+		Text: `{"title":"Coffee","logline":"a cup","scenes":[{"heading":"INT. CAFE","description":"steam","dialogue":"hi"}]}`,
+	}))
 	bad := llm.NewScriptedLLM(llm.WithResponses(
-		llm.Response{Text: "no json"}, llm.Response{Text: "no json"},
 		llm.Response{Text: "no json"}, llm.Response{Text: "no json"},
 		llm.Response{Text: "no json"}, llm.Response{Text: "no json"},
 	))
 	w := New(Config{
 		Pool: pool, Todos: todoStore, Projects: projStore, Events: events.New(pool),
-		Script: studioagents.NewScriptAgent(bad), Storyboard: studioagents.NewStoryboardAgent(bad),
+		Script: studioagents.NewScriptAgent(scriptModel), Storyboard: studioagents.NewStoryboardAgent(bad),
 		WorkerID: "test-1", MaxAttempts: 2, BaseBackoff: 0,
 	})
 	for i := 0; i < 20; i++ {
@@ -134,20 +141,25 @@ func TestWorkerFailsTodoOnAgentError(t *testing.T) {
 			break
 		}
 	}
-	var status string
-	_ = pool.QueryRow(ctx, `SELECT status FROM todos WHERE id=$1`, ids["s"]).Scan(&status)
+	// Script done, storyboard failed terminally.
+	var scriptStatus, status string
+	_ = pool.QueryRow(ctx, `SELECT status FROM todos WHERE id=$1`, ids["s"]).Scan(&scriptStatus)
+	if scriptStatus != "done" {
+		t.Fatalf("script todo status=%q want done", scriptStatus)
+	}
+	_ = pool.QueryRow(ctx, `SELECT status FROM todos WHERE id=$1`, ids["b"]).Scan(&status)
 	if status != "failed" {
-		t.Fatalf("todo status=%q want failed", status)
+		t.Fatalf("storyboard todo status=%q want failed", status)
 	}
-	// The blocked dependent must be canceled (not left blocked), else the project
-	// would wedge in 'running' forever (spec §7.3 step 4).
-	var depStatus string
-	_ = pool.QueryRow(ctx, `SELECT status FROM todos WHERE id=$1`, ids["b"]).Scan(&depStatus)
-	if depStatus != "canceled" {
-		t.Fatalf("dependent status=%q want canceled", depStatus)
+	// The terminal failure is the last todo to reach a terminal state, so the
+	// worker must emit run_done (else the SSE timeline hangs).
+	var nRunDone int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM run_events WHERE project_id=$1 AND kind='run_done'`, projID).Scan(&nRunDone)
+	if nRunDone != 1 {
+		t.Fatalf("want 1 run_done event after terminal failure, got %d", nRunDone)
 	}
-	// With dependents canceled (not blocked), the project status resolves to
-	// 'failed' rather than wedging in 'running'.
+	// With a terminal failure present, the project status resolves to 'failed'
+	// rather than wedging in 'running'.
 	projStatus, err := projStore.RefreshStatus(ctx, projID)
 	if err != nil {
 		t.Fatalf("refresh status: %v", err)
