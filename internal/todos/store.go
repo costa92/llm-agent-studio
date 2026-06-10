@@ -75,19 +75,30 @@ func (s *Store) CreateGraph(ctx context.Context, projectID, planID string, specs
 }
 
 // MarkDone marks a todo done with its output ref, then promotes any dependent
-// 'blocked' todo whose dependencies are ALL done to 'ready'. One tx so the
-// unblock is atomic with the done write (worker §7.3 step 3).
-func (s *Store) MarkDone(ctx context.Context, todoID, outputRef string) error {
+// 'blocked' todo whose dependencies are ALL done to 'ready'. The done write is
+// guarded with status='running' so a user-canceled todo isn't resurrected by an
+// in-flight worker; it returns false (no error) when no running row matched
+// (already canceled). One tx so the unblock is atomic with the done write
+// (worker §7.3 step 3).
+func (s *Store) MarkDone(ctx context.Context, todoID, outputRef string) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var projectID string
-	if err := tx.QueryRow(ctx,
+	tag, err := tx.Exec(ctx,
 		`UPDATE todos SET status='done', output_ref=$2, locked_by='', locked_until=NULL, updated_at=now()
-		 WHERE id=$1 RETURNING project_id`, todoID, outputRef).Scan(&projectID); err != nil {
-		return fmt.Errorf("todos: mark done: %w", err)
+		 WHERE id=$1 AND status='running'`, todoID, outputRef)
+	if err != nil {
+		return false, fmt.Errorf("todos: mark done: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		// Todo no longer 'running' (e.g. canceled): commit cleanly, no unblock.
+		return false, tx.Commit(ctx)
+	}
+	if err := tx.QueryRow(ctx, `SELECT project_id FROM todos WHERE id=$1`, todoID).Scan(&projectID); err != nil {
+		return false, fmt.Errorf("todos: load project: %w", err)
 	}
 	// Promote blocked dependents whose deps are now all done.
 	if _, err := tx.Exec(ctx,
@@ -97,9 +108,9 @@ func (s *Store) MarkDone(ctx context.Context, todoID, outputRef string) error {
 		     SELECT 1 FROM todos d
 		     WHERE d.id = ANY(t.depends_on) AND d.status <> 'done'
 		   )`, projectID, todoID); err != nil {
-		return fmt.Errorf("todos: unblock dependents: %w", err)
+		return false, fmt.Errorf("todos: unblock dependents: %w", err)
 	}
-	return tx.Commit(ctx)
+	return true, tx.Commit(ctx)
 }
 
 // MarkFailed marks a todo terminally 'failed' AND transitively cancels every

@@ -77,8 +77,15 @@ func TestMarkDoneUnblocksDependents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create graph: %v", err)
 	}
-	if err := s.MarkDone(ctx, ids["a"], "script:"+ids["a"]); err != nil {
+	// MarkDone guards on status='running' (a claimed todo), so move 'a' there
+	// first to mirror the worker's claim → process flow.
+	if _, err := pool.Exec(ctx, `UPDATE todos SET status='running' WHERE id=$1`, ids["a"]); err != nil {
+		t.Fatalf("set running: %v", err)
+	}
+	if done, err := s.MarkDone(ctx, ids["a"], "script:"+ids["a"]); err != nil {
 		t.Fatalf("mark done: %v", err)
+	} else if !done {
+		t.Fatalf("mark done: expected running todo to be marked done")
 	}
 	var statusB string
 	_ = pool.QueryRow(ctx, `SELECT status FROM todos WHERE id=$1`, ids["b"]).Scan(&statusB)

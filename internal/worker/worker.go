@@ -176,9 +176,15 @@ func (w *Worker) process(ctx context.Context, c claimed) {
 		w.fail(ctx, c, perr)
 		return
 	}
-	if err := w.cfg.Todos.MarkDone(ctx, c.todoID, outputRef); err != nil {
+	done, err := w.cfg.Todos.MarkDone(ctx, c.todoID, outputRef)
+	if err != nil {
 		w.cfg.Logger.Error("worker: mark done failed", "todo", c.todoID, "err", err)
 		w.fail(ctx, c, err)
+		return
+	}
+	if !done {
+		// Todo no longer 'running' (e.g. project canceled): discard the work,
+		// don't emit todo_finished or unblock/refresh. Correct for a cancel.
 		return
 	}
 	_, _ = w.cfg.Events.Append(ctx, c.projectID, "todo_finished", c.todoID, map[string]any{"type": c.typ, "outputRef": outputRef})
@@ -321,7 +327,7 @@ func (w *Worker) fail(ctx context.Context, c claimed, cause error) {
 	backoff := w.cfg.BaseBackoff * (1 << (c.attempts - 1))
 	nextRun := w.cfg.Clock().Add(backoff)
 	if _, err := w.cfg.Pool.Exec(ctx,
-		`UPDATE todos SET status='ready', next_run_at=$2, error=$3, locked_by='', locked_until=NULL, updated_at=now() WHERE id=$1`,
+		`UPDATE todos SET status='ready', next_run_at=$2, error=$3, locked_by='', locked_until=NULL, updated_at=now() WHERE id=$1 AND status='running'`,
 		c.todoID, nextRun, msg); err != nil {
 		w.cfg.Logger.Error("worker: reschedule failed", "todo", c.todoID, "err", err)
 	}
