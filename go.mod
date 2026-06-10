@@ -2,7 +2,11 @@ module github.com/costa92/llm-agent-studio
 
 go 1.26.0
 
-require github.com/jackc/pgx/v5 v5.9.2
+require (
+	github.com/costa92/llm-agent v0.9.0
+	github.com/costa92/llm-agent-contract v0.5.0
+	github.com/jackc/pgx/v5 v5.9.2
+)
 
 require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
