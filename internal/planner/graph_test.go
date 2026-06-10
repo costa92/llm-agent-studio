@@ -70,6 +70,17 @@ func TestParseGraphMalformedErrors(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsAssetType(t *testing.T) {
+	g := Graph{Nodes: []Node{
+		{ID: "s", Type: "script", DependsOn: nil},
+		{ID: "b", Type: "storyboard", DependsOn: []string{"s"}},
+		{ID: "a", Type: "asset", DependsOn: []string{"b"}},
+	}}
+	if err := Validate(g); err != nil {
+		t.Fatalf("asset type should be whitelisted in M2: %v", err)
+	}
+}
+
 func TestDefaultPipelineIsValid(t *testing.T) {
 	g := DefaultPipeline()
 	if err := Validate(g); err != nil {

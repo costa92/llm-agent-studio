@@ -94,6 +94,44 @@ func TestMarkDoneUnblocksDependents(t *testing.T) {
 	}
 }
 
+func TestAddDynamicCreatesReadyAssetTodos(t *testing.T) {
+	st, pool, pid := newStore(t)
+	ctx := context.Background()
+	planID := "pl_" + randHex(t)
+	// Seed a storyboard todo (the fan-out parent), mirroring the worker flow.
+	parentID := newID()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO todos (id, project_id, plan_id, type, status) VALUES ($1,$2,$3,'storyboard','running')`,
+		parentID, pid, planID); err != nil {
+		t.Fatalf("seed parent: %v", err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	ids, err := st.AddDynamic(ctx, tx, pid, planID, parentID, []DynamicSpec{
+		{Type: "asset", InputJSON: []byte(`{"shotId":"s1"}`)},
+		{Type: "asset", InputJSON: []byte(`{"shotId":"s2"}`)},
+	})
+	if err != nil {
+		t.Fatalf("addDynamic: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("want 2 ids, got %d", len(ids))
+	}
+	var n int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM todos WHERE project_id=$1 AND type='asset' AND status='ready'`, pid).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("want 2 ready asset todos, got %d", n)
+	}
+}
+
 func TestMarkFailedCancelsDependents(t *testing.T) {
 	s, pool, projID := newStore(t)
 	ctx := context.Background()

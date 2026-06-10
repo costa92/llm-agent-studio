@@ -138,6 +138,44 @@ func (s *Store) MarkFailed(ctx context.Context, todoID, errMsg string) error {
 	return tx.Commit(ctx)
 }
 
+// DynamicSpec is one dynamically-added todo (fan-out): a type + its input. The
+// dependency on the producing parent is passed once to AddDynamic.
+type DynamicSpec struct {
+	Type      string
+	InputJSON []byte
+}
+
+// AddDynamic inserts fan-out todos within an EXISTING tx (spec M2 fan-out): when
+// a storyboard todo completes, the worker creates one 'asset' todo per shot in
+// the SAME tx that writes the shots rows, so shots + their asset todos become
+// visible atomically. Each new todo starts 'ready' (its sole dependency — the
+// storyboard parent — is about to be marked done by the same worker) with
+// depends_on=[parentTodoID] recorded for lineage/audit. Returns the new todo ids
+// so the caller can emit todo_ready after commit. allDone/DeriveStatus need no
+// change: they tally all todos for the project, so the run won't finish until
+// these asset todos terminate.
+//
+// Schema-default reliance (C2): this INSERT intentionally omits next_run_at and
+// relies on the column's DEFAULT now(), so the todo is immediately claimable by
+// the worker's `next_run_at <= now()` claim. plan_id may be the producing run's
+// plan id; todos.plan_id is NOT NULL but has NO FK. A future schema change that
+// drops the next_run_at default (or adds a plan_id FK) would break fan-out
+// claimability — keep the default.
+func (s *Store) AddDynamic(ctx context.Context, tx pgx.Tx, projectID, planID, parentTodoID string, specs []DynamicSpec) ([]string, error) {
+	ids := make([]string, 0, len(specs))
+	for _, sp := range specs {
+		id := newID()
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO todos (id, project_id, plan_id, type, status, depends_on, input_json)
+			 VALUES ($1,$2,$3,$4,'ready',$5,$6)`,
+			id, projectID, planID, sp.Type, []string{parentTodoID}, sp.InputJSON); err != nil {
+			return nil, fmt.Errorf("todos: add dynamic: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
 // cancelDependents transitively cancels every non-terminal todo reachable via
 // depends_on edges from the failed todo, using a recursive CTE over
 // depends_on @> ARRAY[id]. Already-terminal todos (done/failed/canceled) are

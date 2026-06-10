@@ -10,10 +10,11 @@ import (
 	"strings"
 )
 
-// m1Types is the M1 todo-type whitelist. asset/review are M2/M3 (no worker
-// dispatch in M1) and are deliberately excluded so a planner that emits them is
-// treated as malformed → fallback, rather than enqueuing un-runnable todos.
-var m1Types = map[string]bool{"script": true, "storyboard": true}
+// m2Types is the M2 todo-type whitelist. 'asset' is now runnable (worker has an
+// asset dispatch case + storyboard-completion fan-out). 'review' stays out (HITL
+// is a DB state machine, not a worker todo type). A planner emitting 'review'
+// is still treated as malformed → fallback.
+var m1Types = map[string]bool{"script": true, "storyboard": true, "asset": true}
 
 // Node is one planner-emitted todo node.
 type Node struct {
