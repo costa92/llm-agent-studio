@@ -52,7 +52,17 @@ func newHarness(t *testing.T, dsn string, responses ...llm.Response) (*httptest.
 	providerOverride = func(config.Config) (llm.ChatModel, error) {
 		return llm.NewScriptedLLM(llm.WithResponses(responses...)), nil
 	}
-	t.Cleanup(func() { providerOverride = nil })
+	// M2 fans out an asset todo per shot, so even the text-pipeline e2e now hits
+	// the asset path. Inject a fake generator (same canned bytes as the image
+	// harness) so the fanned-out asset todo succeeds → run_done via the success
+	// path; without it the asset todo would fail with no generator configured.
+	generatorOverride = func(config.Config) (generate.MediaGenerator, error) {
+		return generate.NewFakeLooping(generate.GenResult{
+			Bytes: []byte("FAKEPNG"), MimeType: "image/png", Provider: "fake", Model: "fake-img",
+			Tokens: 5, ImageCount: 1, LatencyMS: 10,
+		}), nil
+	}
+	t.Cleanup(func() { providerOverride = nil; generatorOverride = nil })
 	handler, cleanup, err := build(ctx, loadCfg(t, dsn))
 	if err != nil {
 		t.Fatalf("build: %v", err)
