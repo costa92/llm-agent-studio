@@ -176,6 +176,27 @@ func (s *Store) AddDynamic(ctx context.Context, tx pgx.Tx, projectID, planID, pa
 	return ids, nil
 }
 
+// AddSingleReady inserts one 'ready' todo outside any tx (used by HITL
+// regenerate, spec §7.4). depends_on records lineage; the todo is immediately
+// claimable. The caller supplies the todo id so it can announce todo_ready.
+//
+// Schema-default reliance (C2): like AddDynamic, this INSERT omits next_run_at
+// and relies on DEFAULT now() for immediate claimability, and writes plan_id=''
+// (legal: todos.plan_id is NOT NULL but has no FK). Dropping that default or
+// adding a plan_id FK would break HITL regenerate claimability.
+func (s *Store) AddSingleReady(ctx context.Context, projectID, todoID, typ string, dependsOn []string, inputJSON []byte) (string, error) {
+	if dependsOn == nil {
+		dependsOn = []string{}
+	}
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO todos (id, project_id, plan_id, type, status, depends_on, input_json)
+		 VALUES ($1,$2,'',$3,'ready',$4,$5)`,
+		todoID, projectID, typ, dependsOn, inputJSON); err != nil {
+		return "", fmt.Errorf("todos: add single ready: %w", err)
+	}
+	return todoID, nil
+}
+
 // cancelDependents transitively cancels every non-terminal todo reachable via
 // depends_on edges from the failed todo, using a recursive CTE over
 // depends_on @> ARRAY[id]. Already-terminal todos (done/failed/canceled) are
