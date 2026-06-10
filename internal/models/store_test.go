@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/costa92/llm-agent-studio/internal/storage"
 )
 
 func TestCatalogListsImageProviders(t *testing.T) {
@@ -33,12 +35,16 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	if dsn == "" {
 		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run model store tests")
 	}
-	pool, err := pgxpool.New(context.Background(), dsn)
+	ctx := context.Background()
+	st, err := storage.Open(ctx, storage.Config{PGURL: dsn})
 	if err != nil {
-		t.Fatalf("pool: %v", err)
+		t.Fatalf("open: %v", err)
 	}
-	t.Cleanup(pool.Close)
-	return pool
+	t.Cleanup(st.Close)
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return st.Pool()
 }
 
 func TestCreateAndListByOrg(t *testing.T) {
