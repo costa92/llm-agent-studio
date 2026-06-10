@@ -244,8 +244,9 @@ func shotsHandler(ar ArtifactReader) http.HandlerFunc {
 	}
 }
 
-// roleEditor / roleViewer aliases for readability at mount sites.
+// roleAdmin / roleEditor / roleViewer aliases for readability at mount sites.
 var (
 	roleViewer = authzrole.RoleViewer
 	roleEditor = authzrole.RoleEditor
+	roleAdmin  = authzrole.RoleAdmin
 )

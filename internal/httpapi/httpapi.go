@@ -12,6 +12,7 @@ import (
 	authztoken "github.com/costa92/llm-agent-authz/token"
 
 	"github.com/costa92/llm-agent-studio/internal/limits"
+	"github.com/costa92/llm-agent-studio/internal/prompt"
 )
 
 // EventAppender appends a run event (satisfied by *events.Store).
@@ -31,6 +32,26 @@ type Deps struct {
 	EventReader  EventReader
 	Artifacts    ArtifactReader
 	PerUserLimit int
+
+	Review        ReviewPort
+	AssetLibrary  AssetLibrary
+	BlobSigner    BlobSigner
+	BlobServer    BlobServer // localfs回源 handler; nil for pure-S3 deployments
+	Models        ModelStore
+	Cost          CostStore
+	PromptBuilder *prompt.Builder
+}
+
+// assetScope resolves (orgID,"") for asset-scoped routes ({id}) via the asset's
+// project→org. Missing asset → ("","") → RoleNone → 403 (safe default).
+func assetScope(lib AssetLibrary) authzhttp.ScopeFromRequest {
+	return func(r *http.Request) (string, string) {
+		orgID, err := lib.OrgIDForAsset(r.Context(), r.PathValue("id"))
+		if err != nil {
+			return "", ""
+		}
+		return orgID, ""
+	}
 }
 
 // projectScope resolves (orgID, scopeID="") for project-scoped routes ({id}):
@@ -86,6 +107,32 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("GET /api/projects/{id}/todos", proj(roleViewer, todosHandler(d.Artifacts)))
 	mux.Handle("GET /api/projects/{id}/script", proj(roleViewer, scriptHandler(d.Artifacts)))
 	mux.Handle("GET /api/projects/{id}/shots", proj(roleViewer, shotsHandler(d.Artifacts)))
+
+	asset := func(min authzrole.Role, h http.HandlerFunc) http.Handler {
+		return scoped(min, assetScope(d.AssetLibrary), h)
+	}
+	// Prompt builder (viewer+, org-agnostic preview — auth only).
+	mux.Handle("GET /api/prompt-styles", authOnly(promptStylesHandler()))
+	mux.Handle("POST /api/prompt/build", authOnly(promptBuildHandler(d.PromptBuilder)))
+	// HITL (admin-only) — asset-scoped.
+	mux.Handle("POST /api/assets/{id}/accept", asset(roleAdmin, acceptHandler(d.Review)))
+	mux.Handle("POST /api/assets/{id}/reject", asset(roleAdmin, rejectHandler(d.Review)))
+	mux.Handle("POST /api/assets/{id}/regenerate", asset(roleAdmin, regenerateHandler(d.Review)))
+	// Asset library + single asset (viewer+).
+	mux.Handle("GET /api/orgs/{org}/assets", scoped(roleViewer, orgScope, libraryHandler(d.AssetLibrary)))
+	mux.Handle("GET /api/assets/{id}", asset(roleViewer, getAssetHandler(d.AssetLibrary)))
+	mux.Handle("GET /api/assets/{id}/content", asset(roleViewer, assetContentHandler(d.AssetLibrary, d.BlobSigner)))
+	// Signed blob回源 (NO auth — HMAC sig in query gates access, spec §10).
+	if d.BlobServer != nil {
+		mux.Handle("GET /api/blob/{key...}", blobHandler(d.BlobServer))
+	}
+	// Model management (admin).
+	mux.Handle("GET /api/model-catalog", authOnly(modelCatalogHandler()))
+	mux.Handle("POST /api/orgs/{org}/model-configs", scoped(roleAdmin, orgScope, createModelConfigHandler(d.Models)))
+	mux.Handle("GET /api/orgs/{org}/model-configs", scoped(roleAdmin, orgScope, listModelConfigsHandler(d.Models)))
+	// Cost center (admin).
+	mux.Handle("GET /api/orgs/{org}/cost", scoped(roleAdmin, orgScope, orgCostHandler(d.Cost)))
+	mux.Handle("GET /api/projects/{id}/cost", proj(roleAdmin, projectCostHandler(d.Cost)))
 	return mux
 }
 
