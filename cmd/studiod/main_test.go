@@ -154,47 +154,43 @@ func TestEndToEndTextPipeline(t *testing.T) {
 		t.Fatalf("planner not valid: %v", body)
 	}
 
-	// 5. Poll until script + shots produced (worker drains async).
-	ok := false
+	// 5+6. Poll the events timeline until the terminal run_done arrives (the
+	// worker emits run_done asynchronously AFTER inserting the shots row, so
+	// polling for shots and reading events once would race the run_done append).
+	// run_done implies both todos finished → script + shots are persisted.
+	kinds := map[string]bool{}
+	firstReadySeq, firstStartedSeq := -1.0, -1.0
 	for i := 0; i < 100; i++ {
-		sc, _ := do("GET", "/api/projects/"+projID+"/script", token, "")
-		shCode, shBody := do("GET", "/api/projects/"+projID+"/shots", token, "")
-		if sc == http.StatusOK && shCode == http.StatusOK {
-			if items, _ := shBody["items"].([]any); len(items) == 1 {
-				ok = true
-				break
+		_, evBody := do("GET", "/api/projects/"+projID+"/events", token, "")
+		items, _ := evBody["items"].([]any)
+		kinds = map[string]bool{}
+		firstReadySeq, firstStartedSeq = -1.0, -1.0
+		for _, it := range items {
+			m, ok := it.(map[string]any)
+			if !ok {
+				continue
 			}
+			k, _ := m["kind"].(string)
+			if k == "" {
+				continue
+			}
+			kinds[k] = true
+			seq, _ := m["seq"].(float64)
+			if k == "todo_ready" && firstReadySeq < 0 {
+				firstReadySeq = seq
+			}
+			if k == "todo_started" && firstStartedSeq < 0 {
+				firstStartedSeq = seq
+			}
+		}
+		if kinds["run_done"] {
+			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if !ok {
-		t.Fatalf("script+shots never produced for project %s", projID)
-	}
 
-	// 6. Events timeline includes the expected kinds, and todo_ready precedes
-	// todo_started for the first (script) node (spec §9 per-node transitions).
-	_, evBody := do("GET", "/api/projects/"+projID+"/events", token, "")
-	items, _ := evBody["items"].([]any)
-	kinds := map[string]bool{}
-	firstReadySeq, firstStartedSeq := -1.0, -1.0
-	for _, it := range items {
-		m, ok := it.(map[string]any)
-		if !ok {
-			continue
-		}
-		k, _ := m["kind"].(string)
-		if k == "" {
-			continue
-		}
-		kinds[k] = true
-		seq, _ := m["seq"].(float64)
-		if k == "todo_ready" && firstReadySeq < 0 {
-			firstReadySeq = seq
-		}
-		if k == "todo_started" && firstStartedSeq < 0 {
-			firstStartedSeq = seq
-		}
-	}
+	// Timeline includes the expected kinds, and todo_ready precedes todo_started
+	// for the first (script) node (spec §9 per-node transitions).
 	for _, want := range []string{"planner_started", "todo_ready", "todo_started", "todo_finished", "run_done"} {
 		if !kinds[want] {
 			t.Fatalf("missing timeline event %q; got %v", want, kinds)
@@ -202,6 +198,14 @@ func TestEndToEndTextPipeline(t *testing.T) {
 	}
 	if firstReadySeq < 0 || firstStartedSeq < 0 || firstReadySeq >= firstStartedSeq {
 		t.Fatalf("todo_ready (seq %v) must precede todo_started (seq %v) for the script node", firstReadySeq, firstStartedSeq)
+	}
+
+	// Artifacts persisted (run_done implies the storyboard todo finished).
+	sc, _ := do("GET", "/api/projects/"+projID+"/script", token, "")
+	shCode, shBody := do("GET", "/api/projects/"+projID+"/shots", token, "")
+	shotItems, _ := shBody["items"].([]any)
+	if sc != http.StatusOK || shCode != http.StatusOK || len(shotItems) != 1 {
+		t.Fatalf("script+shots not produced: scriptCode=%d shotsCode=%d shots=%d", sc, shCode, len(shotItems))
 	}
 }
 
