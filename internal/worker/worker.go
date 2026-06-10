@@ -332,22 +332,25 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 		ShotID     string `json:"shotId"`
 		ShotPrompt string `json:"shotPrompt"`
 		Style      string `json:"style"`
-		// regenerate path carries an edited prompt + parent lineage (T11).
-		ParentAssetID string `json:"parentAssetId"`
-		EditedPrompt  string `json:"editedPrompt"`
+		// regenerate path carries the pre-created v2 asset id (review.Regenerate
+		// already CreateVersion'd it) + an edited prompt. The worker FILLS that
+		// asset in place rather than creating a new row (T11).
+		AssetID      string `json:"assetId"`
+		EditedPrompt string `json:"editedPrompt"`
 	}
 	_ = json.Unmarshal(c.input, &in)
 
-	// Insert the asset row in 'generating' (lineage handled below for regenerate).
+	// Determine the target asset row. Regenerate (assetId set) fills the pre-created
+	// v2 asset; fan-out (no assetId) inserts a fresh 'generating' row.
 	var created assetsRow
-	var err error
-	if in.ParentAssetID != "" {
-		created, err = w.createAssetVersion(ctx, c, in.ParentAssetID, in.ShotID, firstNonEmpty(in.EditedPrompt, in.ShotPrompt), in.Style)
+	if in.AssetID != "" {
+		created = assetsRow{id: in.AssetID}
 	} else {
-		created, err = w.createAsset(ctx, c, in.ShotID, in.ShotPrompt, in.Style)
-	}
-	if err != nil {
-		return "", err
+		c2, err := w.createAsset(ctx, c, in.ShotID, in.ShotPrompt, in.Style)
+		if err != nil {
+			return "", err
+		}
+		created = c2
 	}
 
 	out, gerr := w.cfg.Asset.Run(ctx, studioagents.AssetInput{
@@ -397,17 +400,6 @@ func (w *Worker) createAsset(ctx context.Context, c claimed, shotID, shotPrompt,
 	})
 	if err != nil {
 		return assetsRow{}, fmt.Errorf("worker: create asset: %w", err)
-	}
-	return assetsRow{id: a.ID}, nil
-}
-
-func (w *Worker) createAssetVersion(ctx context.Context, c claimed, parentID, shotID, editedPrompt, style string) (assetsRow, error) {
-	a, err := w.cfg.Assets.CreateVersion(ctx, parentID, assets.CreateInput{
-		ProjectID: c.projectID, ShotID: shotID, TodoID: c.todoID, Type: "image",
-		Prompt: editedPrompt, Style: style, Status: "generating",
-	})
-	if err != nil {
-		return assetsRow{}, fmt.Errorf("worker: create asset version: %w", err)
 	}
 	return assetsRow{id: a.ID}, nil
 }

@@ -1,8 +1,9 @@
 // Package review is the HITL service (spec §7.4): admin accept/reject/regenerate
 // on pending_acceptance assets. accept→accepted, reject→rejected; regenerate
 // rejects the current asset, creates a v+1 child (parent lineage) in 'generating'
-// and spawns a 'ready' asset todo carrying the edited prompt + parentAssetId so
-// the worker's runAsset regenerate branch (T10) produces the new bytes. A
+// and spawns a 'ready' asset todo carrying the edited prompt + the child asset
+// id so the worker's runAsset regenerate branch (T10) FILLS that pre-created v2
+// in place (rather than creating a second version). A
 // transition on a non-pending asset returns ErrConflict (HTTP 409). admin-only
 // is enforced at the httpapi mount (RequireScopeRole admin), not here.
 package review
@@ -84,13 +85,19 @@ func (s *Service) Regenerate(ctx context.Context, assetID, editedPrompt string) 
 	if err != nil {
 		return "", "", err
 	}
-	// Spawn a ready asset todo (worker runAsset regenerate branch picks it up).
+	// Spawn a ready asset todo. The worker's runAsset regenerate branch FILLS the
+	// pre-created v2 asset (child) in place, so the todo carries child.ID as the
+	// target asset — not a parentAssetId (which would make the worker create a
+	// SECOND v2 and strand child.ID in 'generating'). depends_on is empty: this
+	// todo holds no upstream TODO dependencies (it's created ready); the previous
+	// []string{assetID} was wrong (assetID is an ASSET id, depends_on holds TODO
+	// ids).
 	input, _ := json.Marshal(map[string]string{
-		"shotId": parent.ShotID, "shotPrompt": parent.Prompt, "style": parent.Style,
-		"parentAssetId": assetID, "editedPrompt": prompt,
+		"assetId": child.ID, "shotId": parent.ShotID, "shotPrompt": parent.Prompt,
+		"style": parent.Style, "editedPrompt": prompt,
 	})
 	todoID := newID()
-	if _, err := s.todos.AddSingleReady(ctx, child.ProjectID, todoID, "asset", []string{assetID}, input); err != nil {
+	if _, err := s.todos.AddSingleReady(ctx, child.ProjectID, todoID, "asset", nil, input); err != nil {
 		return "", "", fmt.Errorf("review: spawn regenerate todo: %w", err)
 	}
 	return child.ID, todoID, nil
