@@ -1,0 +1,158 @@
+package worker
+
+import (
+	"context"
+	"os"
+	"testing"
+
+	"github.com/costa92/llm-agent-contract/llm"
+
+	studioagents "github.com/costa92/llm-agent-studio/internal/agents"
+	"github.com/costa92/llm-agent-studio/internal/events"
+	"github.com/costa92/llm-agent-studio/internal/project"
+	"github.com/costa92/llm-agent-studio/internal/storage"
+	"github.com/costa92/llm-agent-studio/internal/todos"
+)
+
+func TestWorkerRunsScriptThenStoryboard(t *testing.T) {
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker tests")
+	}
+	ctx := context.Background()
+	st, err := storage.Open(ctx, storage.Config{PGURL: dsn})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	pool := st.Pool()
+	projID := "wk_" + randHex3()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO projects (id, org_id, name, created_by) VALUES ($1,'o','n','u')`, projID); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	todoStore := todos.New(pool)
+	ids, err := todoStore.CreateGraph(ctx, projID, "pl1", []todos.NodeSpec{
+		{LocalID: "s", Type: "script", DependsOn: nil, InputJSON: []byte(`{"brief":"coffee ad","style":"realistic"}`)},
+		{LocalID: "b", Type: "storyboard", DependsOn: []string{"s"}, InputJSON: []byte(`{}`)},
+	})
+	if err != nil {
+		t.Fatalf("create graph: %v", err)
+	}
+	// Script model: one JSON script. Storyboard model: one JSON shot list.
+	scriptModel := llm.NewScriptedLLM(llm.WithResponses(llm.Response{
+		Text: `{"title":"Coffee","logline":"a cup","scenes":[{"heading":"INT. CAFE","description":"steam","dialogue":"hi"}]}`,
+	}))
+	storyboardModel := llm.NewScriptedLLM(llm.WithResponses(llm.Response{
+		Text: `{"shots":[{"shotNo":1,"camera":"wide","scene":"cafe","action":"open","prompt":"cafe","duration":3}]}`,
+	}))
+	w := New(Config{
+		Pool:       pool,
+		Todos:      todoStore,
+		Projects:   project.New(pool),
+		Events:     events.New(pool),
+		Script:     studioagents.NewScriptAgent(scriptModel),
+		Storyboard: studioagents.NewStoryboardAgent(storyboardModel),
+		WorkerID:   "test-0",
+	})
+	// Drain the queue deterministically (no sleeps).
+	for i := 0; i < 10; i++ {
+		ran, err := w.RunOnce(ctx)
+		if err != nil {
+			t.Fatalf("run once: %v", err)
+		}
+		if !ran {
+			break
+		}
+	}
+	// Assert artifacts.
+	var nScripts, nShots int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM scripts WHERE project_id=$1`, projID).Scan(&nScripts)
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM shots WHERE project_id=$1`, projID).Scan(&nShots)
+	if nScripts != 1 {
+		t.Fatalf("want 1 script, got %d", nScripts)
+	}
+	if nShots != 1 {
+		t.Fatalf("want 1 shot, got %d", nShots)
+	}
+	// Both todos done.
+	for _, id := range []string{ids["s"], ids["b"]} {
+		var status string
+		_ = pool.QueryRow(ctx, `SELECT status FROM todos WHERE id=$1`, id).Scan(&status)
+		if status != "done" {
+			t.Fatalf("todo %s status=%q want done", id, status)
+		}
+	}
+	// run_events include todo_started + todo_finished for both.
+	var nFinished int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM run_events WHERE project_id=$1 AND kind='todo_finished'`, projID).Scan(&nFinished)
+	if nFinished != 2 {
+		t.Fatalf("want 2 todo_finished events, got %d", nFinished)
+	}
+}
+
+func TestWorkerFailsTodoOnAgentError(t *testing.T) {
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker tests")
+	}
+	ctx := context.Background()
+	st, _ := storage.Open(ctx, storage.Config{PGURL: dsn})
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	pool := st.Pool()
+	projID := "wf_" + randHex3()
+	_, _ = pool.Exec(ctx, `INSERT INTO projects (id, org_id, name, created_by) VALUES ($1,'o','n','u')`, projID)
+	todoStore := todos.New(pool)
+	projStore := project.New(pool)
+	ids, _ := todoStore.CreateGraph(ctx, projID, "pl1", []todos.NodeSpec{
+		{LocalID: "s", Type: "script", DependsOn: nil, InputJSON: []byte(`{"brief":"x"}`)},
+		{LocalID: "b", Type: "storyboard", DependsOn: []string{"s"}, InputJSON: []byte(`{}`)},
+	})
+	// Malformed script output → agent error every attempt.
+	bad := llm.NewScriptedLLM(llm.WithResponses(
+		llm.Response{Text: "no json"}, llm.Response{Text: "no json"},
+		llm.Response{Text: "no json"}, llm.Response{Text: "no json"},
+		llm.Response{Text: "no json"}, llm.Response{Text: "no json"},
+	))
+	w := New(Config{
+		Pool: pool, Todos: todoStore, Projects: projStore, Events: events.New(pool),
+		Script: studioagents.NewScriptAgent(bad), Storyboard: studioagents.NewStoryboardAgent(bad),
+		WorkerID: "test-1", MaxAttempts: 2, BaseBackoff: 0,
+	})
+	for i := 0; i < 20; i++ {
+		ran, err := w.RunOnce(ctx)
+		if err != nil {
+			t.Fatalf("run once: %v", err)
+		}
+		if !ran {
+			break
+		}
+	}
+	var status string
+	_ = pool.QueryRow(ctx, `SELECT status FROM todos WHERE id=$1`, ids["s"]).Scan(&status)
+	if status != "failed" {
+		t.Fatalf("todo status=%q want failed", status)
+	}
+	// The blocked dependent must be canceled (not left blocked), else the project
+	// would wedge in 'running' forever (spec §7.3 step 4).
+	var depStatus string
+	_ = pool.QueryRow(ctx, `SELECT status FROM todos WHERE id=$1`, ids["b"]).Scan(&depStatus)
+	if depStatus != "canceled" {
+		t.Fatalf("dependent status=%q want canceled", depStatus)
+	}
+	// With dependents canceled (not blocked), the project status resolves to
+	// 'failed' rather than wedging in 'running'.
+	projStatus, err := projStore.RefreshStatus(ctx, projID)
+	if err != nil {
+		t.Fatalf("refresh status: %v", err)
+	}
+	if projStatus != "failed" {
+		t.Fatalf("project status=%q want failed", projStatus)
+	}
+}
