@@ -8,8 +8,13 @@ import (
 	"github.com/costa92/llm-agent-contract/llm"
 
 	studioagents "github.com/costa92/llm-agent-studio/internal/agents"
+	"github.com/costa92/llm-agent-studio/internal/assets"
+	"github.com/costa92/llm-agent-studio/internal/blob"
+	"github.com/costa92/llm-agent-studio/internal/cost"
 	"github.com/costa92/llm-agent-studio/internal/events"
+	"github.com/costa92/llm-agent-studio/internal/generate"
 	"github.com/costa92/llm-agent-studio/internal/project"
+	"github.com/costa92/llm-agent-studio/internal/prompt"
 	"github.com/costa92/llm-agent-studio/internal/storage"
 	"github.com/costa92/llm-agent-studio/internal/todos"
 )
@@ -49,6 +54,12 @@ func TestWorkerRunsScriptThenStoryboard(t *testing.T) {
 	storyboardModel := llm.NewScriptedLLM(llm.WithResponses(llm.Response{
 		Text: `{"shots":[{"shotNo":1,"camera":"wide","scene":"cafe","action":"open","prompt":"cafe","duration":3}]}`,
 	}))
+	// M2: runStoryboard fans out one asset todo per shot, so the worker needs
+	// the asset-pipeline deps (fake generator + in-memory blob + stores) or it
+	// nil-panics when it claims the fanned-out asset todo.
+	fakeGen := generate.NewFakeLooping(generate.GenResult{
+		Bytes: []byte("FAKEPNG"), MimeType: "image/png", Provider: "fake", Model: "fake-img", ImageCount: 1,
+	})
 	w := New(Config{
 		Pool:       pool,
 		Todos:      todoStore,
@@ -56,6 +67,10 @@ func TestWorkerRunsScriptThenStoryboard(t *testing.T) {
 		Events:     events.New(pool),
 		Script:     studioagents.NewScriptAgent(scriptModel),
 		Storyboard: studioagents.NewStoryboardAgent(storyboardModel),
+		Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fakeGen),
+		Blob:       blob.NewFake(),
+		Assets:     assets.New(pool),
+		Cost:       cost.New(pool),
 		WorkerID:   "test-0",
 	})
 	// Drain the queue deterministically (no sleeps).
@@ -86,11 +101,18 @@ func TestWorkerRunsScriptThenStoryboard(t *testing.T) {
 			t.Fatalf("todo %s status=%q want done", id, status)
 		}
 	}
-	// run_events include todo_started + todo_finished for both.
+	// run_events include todo_finished for script + storyboard + the fanned-out
+	// asset todo (M2: runStoryboard creates one asset todo per shot).
 	var nFinished int
 	_ = pool.QueryRow(ctx, `SELECT count(*) FROM run_events WHERE project_id=$1 AND kind='todo_finished'`, projID).Scan(&nFinished)
-	if nFinished != 2 {
-		t.Fatalf("want 2 todo_finished events, got %d", nFinished)
+	if nFinished != 3 {
+		t.Fatalf("want 3 todo_finished events (script+storyboard+asset), got %d", nFinished)
+	}
+	// The fanned-out asset reached pending_acceptance via the fake generator.
+	var nPending int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM assets WHERE project_id=$1 AND status='pending_acceptance'`, projID).Scan(&nPending)
+	if nPending != 1 {
+		t.Fatalf("want 1 pending_acceptance asset, got %d", nPending)
 	}
 }
 
