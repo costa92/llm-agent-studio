@@ -7,6 +7,7 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -19,7 +20,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	studioagents "github.com/costa92/llm-agent-studio/internal/agents"
+	"github.com/costa92/llm-agent-studio/internal/assets"
+	"github.com/costa92/llm-agent-studio/internal/blob"
+	"github.com/costa92/llm-agent-studio/internal/cost"
 	"github.com/costa92/llm-agent-studio/internal/events"
+	"github.com/costa92/llm-agent-studio/internal/generate"
+	"github.com/costa92/llm-agent-studio/internal/models"
 	"github.com/costa92/llm-agent-studio/internal/project"
 	"github.com/costa92/llm-agent-studio/internal/todos"
 )
@@ -32,6 +38,12 @@ type Config struct {
 	Events      *events.Store
 	Script      *studioagents.ScriptAgent
 	Storyboard  *studioagents.StoryboardAgent
+	Asset       *studioagents.AssetAgent
+	Blob        blob.BlobStore
+	Assets      *assets.Store
+	Cost        *cost.Store
+	Models      *models.Store      // resolve org default provider+model; nil → registry default
+	Registry    *generate.Registry // nil → use Asset's bound generator directly
 	WorkerID    string
 	Lease       time.Duration    // default 120s
 	MaxAttempts int              // default 3
@@ -168,6 +180,8 @@ func (w *Worker) process(ctx context.Context, c claimed) {
 		outputRef, perr = w.runScript(ctx, c)
 	case "storyboard":
 		outputRef, perr = w.runStoryboard(ctx, c)
+	case "asset":
+		outputRef, perr = w.runAsset(ctx, c)
 	default:
 		perr = fmt.Errorf("worker: unknown todo type %q", c.typ)
 	}
@@ -233,12 +247,18 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 		c.projectID).Scan(&scriptID, &contentJSON); err != nil {
 		return "", fmt.Errorf("worker: load upstream script: %w", err)
 	}
-	var in struct {
-		Style string `json:"style"`
+	// B1: style is sourced from the projects row, NOT the storyboard todo's
+	// input. The M1 planner only writes input to the script node; every other
+	// node (incl. storyboard) has input_json='{}', so reading style off c.input
+	// would silently disable the whole M2 style library. The project style feeds
+	// both the StoryboardAgent call and every fanned-out asset todo.
+	var projectStyle string
+	if err := w.cfg.Pool.QueryRow(ctx,
+		`SELECT style FROM projects WHERE id=$1`, c.projectID).Scan(&projectStyle); err != nil {
+		return "", fmt.Errorf("worker: load project style: %w", err)
 	}
-	_ = json.Unmarshal(c.input, &in)
 	out, err := w.cfg.Storyboard.Run(ctx, studioagents.StoryboardInput{
-		ScriptJSON: string(contentJSON), Style: in.Style,
+		ScriptJSON: string(contentJSON), Style: projectStyle,
 	})
 	if err != nil {
 		return "", err
@@ -248,18 +268,155 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 		return "", err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Idempotency guard (C1): a re-claimed/re-run storyboard todo must not insert
+	// a second batch of shots + asset todos. depends_on is TEXT[]; the prior
+	// fan-out tagged each asset todo with this storyboard todoID. If they already
+	// exist, the prior run committed — just return success so MarkDone proceeds.
+	var existing int
+	if err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM todos WHERE project_id=$1 AND type='asset' AND $2 = ANY(depends_on)`,
+		c.projectID, c.todoID).Scan(&existing); err != nil {
+		return "", fmt.Errorf("worker: fan-out idempotency check: %w", err)
+	}
+	if existing > 0 {
+		_ = tx.Commit(ctx) // nothing written; release the tx
+		return "shots:" + scriptID, nil
+	}
+
+	var assetSpecs []todos.DynamicSpec
 	for i, sh := range out.Shots {
+		shotID := newID()
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO shots (id, project_id, script_id, todo_id, shot_no, camera, scene, action, prompt, duration, ordering)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-			newID(), c.projectID, scriptID, c.todoID, sh.ShotNo, sh.Camera, sh.Scene, sh.Action, sh.Prompt, sh.Duration, i); err != nil {
+			shotID, c.projectID, scriptID, c.todoID, sh.ShotNo, sh.Camera, sh.Scene, sh.Action, sh.Prompt, sh.Duration, i); err != nil {
 			return "", fmt.Errorf("worker: insert shot: %w", err)
 		}
+		// Fan-out: one asset todo per shot (spec §15 M2). The shot's prompt + the
+		// PROJECT style (sourced from the projects row, NOT the storyboard todo's
+		// empty input — see B1) become the asset todo's input.
+		input, _ := json.Marshal(map[string]string{
+			"shotId": shotID, "shotPrompt": sh.Prompt, "style": projectStyle,
+		})
+		assetSpecs = append(assetSpecs, todos.DynamicSpec{Type: "asset", InputJSON: input})
+	}
+	// planID for the dynamic todos: read it off the storyboard todo so the asset
+	// todos share the same plan lineage.
+	var planID string
+	if err := tx.QueryRow(ctx, `SELECT plan_id FROM todos WHERE id=$1`, c.todoID).Scan(&planID); err != nil {
+		return "", fmt.Errorf("worker: load plan id: %w", err)
+	}
+	newTodoIDs, err := w.cfg.Todos.AddDynamic(ctx, tx, c.projectID, planID, c.todoID, assetSpecs)
+	if err != nil {
+		return "", err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return "", err
 	}
+	// Announce the fanned-out asset todos in the timeline (after commit so a
+	// reader following todo_ready can immediately read the rows).
+	for _, id := range newTodoIDs {
+		_, _ = w.cfg.Events.Append(ctx, c.projectID, "todo_ready", id, map[string]any{"type": "asset"})
+	}
 	return "shots:" + scriptID, nil
+}
+
+// runAsset executes one fanned-out asset todo: AssetAgent (PromptBuilder +
+// MediaGenerator) → BlobStore.Put → assets row (generating→pending_acceptance) +
+// generations ledger row. outputRef = "asset:<id>". The asset row is inserted
+// 'generating' first so a crash mid-generate leaves an observable orphan, then
+// flipped to 'pending_acceptance' once bytes land in the blob store.
+func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
+	var in struct {
+		ShotID     string `json:"shotId"`
+		ShotPrompt string `json:"shotPrompt"`
+		Style      string `json:"style"`
+		// regenerate path carries an edited prompt + parent lineage (T11).
+		ParentAssetID string `json:"parentAssetId"`
+		EditedPrompt  string `json:"editedPrompt"`
+	}
+	_ = json.Unmarshal(c.input, &in)
+
+	// Insert the asset row in 'generating' (lineage handled below for regenerate).
+	var created assetsRow
+	var err error
+	if in.ParentAssetID != "" {
+		created, err = w.createAssetVersion(ctx, c, in.ParentAssetID, in.ShotID, firstNonEmpty(in.EditedPrompt, in.ShotPrompt), in.Style)
+	} else {
+		created, err = w.createAsset(ctx, c, in.ShotID, in.ShotPrompt, in.Style)
+	}
+	if err != nil {
+		return "", err
+	}
+
+	out, gerr := w.cfg.Asset.Run(ctx, studioagents.AssetInput{
+		ShotPrompt: firstNonEmpty(in.EditedPrompt, in.ShotPrompt), Style: in.Style,
+	})
+	if gerr != nil {
+		// Mark the asset failed so it isn't stuck 'generating'.
+		_ = w.cfg.Assets.SetBlob(ctx, created.id, "", "", "", "", "failed")
+		return "", gerr
+	}
+
+	// Store bytes (pull-to-blob already done by the image adapter).
+	blobKey := "assets/" + c.projectID + "/" + created.id
+	if len(out.Bytes) > 0 {
+		if err := w.cfg.Blob.Put(ctx, blobKey, bytesReader(out.Bytes), out.MimeType); err != nil {
+			_ = w.cfg.Assets.SetBlob(ctx, created.id, "", "", "", "", "failed")
+			return "", fmt.Errorf("worker: blob put: %w", err)
+		}
+	} else {
+		blobKey = "" // URL-only fallback (config 只存 URL); url recorded below
+	}
+	if err := w.cfg.Assets.SetBlob(ctx, created.id, blobKey, out.URL, out.Provider, out.Model, "pending_acceptance"); err != nil {
+		return "", fmt.Errorf("worker: asset set blob: %w", err)
+	}
+
+	// Ledger row (spec §6 generations). cost_micros is left 0 in M2 (no pricing
+	// table yet; M3 cost-center wires real pricing — the column exists now).
+	if w.cfg.Cost != nil {
+		_ = w.cfg.Cost.Record(ctx, cost.Generation{
+			ProjectID: c.projectID, AssetID: created.id, TodoID: c.todoID, Kind: "image",
+			Provider: out.Provider, Model: out.Model, Prompt: out.Prompt,
+			Tokens: out.Tokens, ImageCount: out.ImageCount, LatencyMS: out.LatencyMS,
+		})
+	}
+	// Timeline: asset_generated (待审) — spec §9 SSE event.
+	_, _ = w.cfg.Events.Append(ctx, c.projectID, "asset_generated", c.todoID, map[string]any{"assetId": created.id, "status": "pending_acceptance"})
+	return "asset:" + created.id, nil
+}
+
+// assetsRow is the minimal handle the worker keeps after inserting the row.
+type assetsRow struct{ id string }
+
+func (w *Worker) createAsset(ctx context.Context, c claimed, shotID, shotPrompt, style string) (assetsRow, error) {
+	a, err := w.cfg.Assets.Create(ctx, assets.CreateInput{
+		ProjectID: c.projectID, ShotID: shotID, TodoID: c.todoID, Type: "image",
+		Prompt: shotPrompt, Style: style, Status: "generating",
+	})
+	if err != nil {
+		return assetsRow{}, fmt.Errorf("worker: create asset: %w", err)
+	}
+	return assetsRow{id: a.ID}, nil
+}
+
+func (w *Worker) createAssetVersion(ctx context.Context, c claimed, parentID, shotID, editedPrompt, style string) (assetsRow, error) {
+	a, err := w.cfg.Assets.CreateVersion(ctx, parentID, assets.CreateInput{
+		ProjectID: c.projectID, ShotID: shotID, TodoID: c.todoID, Type: "image",
+		Prompt: editedPrompt, Style: style, Status: "generating",
+	})
+	if err != nil {
+		return assetsRow{}, fmt.Errorf("worker: create asset version: %w", err)
+	}
+	return assetsRow{id: a.ID}, nil
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
 
 // emitNewlyReady appends a todo_ready event for each todo that is now 'ready'
@@ -332,3 +489,5 @@ func (w *Worker) fail(ctx context.Context, c claimed, cause error) {
 		w.cfg.Logger.Error("worker: reschedule failed", "todo", c.todoID, "err", err)
 	}
 }
+
+func bytesReader(b []byte) *bytes.Reader { return bytes.NewReader(b) }
