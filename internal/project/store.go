@@ -153,6 +153,11 @@ func (s *Store) RefreshStatus(ctx context.Context, projectID string) (string, er
 	if err != nil {
 		return "", fmt.Errorf("project: tally todos: %w", err)
 	}
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM assets WHERE project_id=$1 AND status='pending_acceptance'`,
+		projectID).Scan(&c.PendingAssets); err != nil {
+		return "", fmt.Errorf("project: tally pending assets: %w", err)
+	}
 	status := DeriveStatus(c)
 	if err := s.SetStatus(ctx, projectID, status); err != nil {
 		return "", err
