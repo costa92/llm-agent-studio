@@ -120,9 +120,64 @@ var m1Migrations = []string{
 	`CREATE INDEX IF NOT EXISTS run_events_project_idx ON run_events (project_id, seq)`,
 }
 
-// Migrate applies the M1 migrations. Idempotent.
+// m2Migrations are the studio M2 tables (spec §6: assets/generations/
+// model_configs). All idempotent; do NOT alter M1 tables destructively.
+var m2Migrations = []string{
+	`CREATE TABLE IF NOT EXISTS assets (
+		id              TEXT PRIMARY KEY,
+		project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+		shot_id         TEXT NOT NULL DEFAULT '',
+		todo_id         TEXT NOT NULL DEFAULT '',
+		type            TEXT NOT NULL DEFAULT 'image',
+		blob_key        TEXT NOT NULL DEFAULT '',
+		url             TEXT NOT NULL DEFAULT '',
+		prompt          TEXT NOT NULL DEFAULT '',
+		style           TEXT NOT NULL DEFAULT '',
+		provider        TEXT NOT NULL DEFAULT '',
+		model           TEXT NOT NULL DEFAULT '',
+		status          TEXT NOT NULL DEFAULT 'generating',
+		version         INT  NOT NULL DEFAULT 1,
+		parent_asset_id TEXT NOT NULL DEFAULT '',
+		tags            TEXT[] NOT NULL DEFAULT '{}',
+		created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+	)`,
+	`CREATE INDEX IF NOT EXISTS assets_project_idx ON assets (project_id)`,
+	`CREATE INDEX IF NOT EXISTS assets_status_idx ON assets (status)`,
+	`CREATE INDEX IF NOT EXISTS assets_tags_gin ON assets USING GIN (tags)`,
+	`CREATE TABLE IF NOT EXISTS generations (
+		id            TEXT PRIMARY KEY,
+		project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+		asset_id      TEXT NOT NULL DEFAULT '',
+		todo_id       TEXT NOT NULL DEFAULT '',
+		kind          TEXT NOT NULL DEFAULT 'image',
+		provider      TEXT NOT NULL DEFAULT '',
+		model         TEXT NOT NULL DEFAULT '',
+		prompt        TEXT NOT NULL DEFAULT '',
+		tokens        INT  NOT NULL DEFAULT 0,
+		image_count   INT  NOT NULL DEFAULT 0,
+		video_seconds INT  NOT NULL DEFAULT 0,
+		cost_micros   BIGINT NOT NULL DEFAULT 0,
+		latency_ms    INT  NOT NULL DEFAULT 0,
+		created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+	)`,
+	`CREATE INDEX IF NOT EXISTS generations_project_idx ON generations (project_id, created_at)`,
+	`CREATE TABLE IF NOT EXISTS model_configs (
+		id          TEXT PRIMARY KEY,
+		org_id      TEXT NOT NULL,
+		kind        TEXT NOT NULL DEFAULT 'image',
+		provider    TEXT NOT NULL,
+		model       TEXT NOT NULL,
+		enabled     BOOLEAN NOT NULL DEFAULT true,
+		is_default  BOOLEAN NOT NULL DEFAULT false,
+		params_json JSONB,
+		created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+	)`,
+	`CREATE INDEX IF NOT EXISTS model_configs_org_idx ON model_configs (org_id)`,
+}
+
+// Migrate applies the M1 + M2 migrations. Idempotent.
 func (s *Storage) Migrate(ctx context.Context) error {
-	for _, stmt := range m1Migrations {
+	for _, stmt := range append(append([]string{}, m1Migrations...), m2Migrations...) {
 		if _, err := s.pool.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("storage: migrate: %w", err)
 		}
