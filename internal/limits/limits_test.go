@@ -8,8 +8,11 @@ import (
 func TestGuardCapsPerMinute(t *testing.T) {
 	g := New(2)
 	now := time.Unix(120, 0)
-	if !g.AllowAt("u", now) || !g.AllowAt("u", now) {
-		t.Fatalf("first two should be allowed")
+	if !g.AllowAt("u", now) {
+		t.Fatalf("first call should be allowed")
+	}
+	if !g.AllowAt("u", now) {
+		t.Fatalf("second call should be allowed")
 	}
 	if g.AllowAt("u", now) {
 		t.Fatalf("third in same minute should be denied")
