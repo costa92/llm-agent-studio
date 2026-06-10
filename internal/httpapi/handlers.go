@@ -45,6 +45,7 @@ type ArtifactReader interface {
 	Todos(ctx context.Context, projectID string) ([]map[string]any, error)
 	Script(ctx context.Context, projectID string) (json.RawMessage, bool, error)
 	Shots(ctx context.Context, projectID string) ([]map[string]any, error)
+	Assets(ctx context.Context, projectID, status string) ([]map[string]any, error)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -236,6 +237,18 @@ func scriptHandler(ar ArtifactReader) http.HandlerFunc {
 func shotsHandler(ar ArtifactReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		items, err := ar.Shots(r.Context(), r.PathValue("id"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
+// projectAssetsHandler (GET /api/projects/{id}/assets?status=): viewer+.
+func projectAssetsHandler(ar ArtifactReader) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		items, err := ar.Assets(r.Context(), r.PathValue("id"), r.URL.Query().Get("status"))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

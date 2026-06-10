@@ -40,3 +40,35 @@ func TestArtifactsReadTodosScriptShots(t *testing.T) {
 		t.Fatalf("shots: %v len=%d", err, len(shots))
 	}
 }
+
+func TestArtifactsAssets(t *testing.T) {
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run studiosvc tests")
+	}
+	ctx := context.Background()
+	st, _ := storage.Open(ctx, storage.Config{PGURL: dsn})
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	pool := st.Pool()
+	pid := "art_" + randHexSvc()
+	_, _ = pool.Exec(ctx, `INSERT INTO projects (id,org_id,name,created_by) VALUES ($1,'org','p','u')`, pid)
+	_, _ = pool.Exec(ctx,
+		`INSERT INTO assets (id,project_id,shot_id,type,blob_key,prompt,style,provider,model,status,version)
+		 VALUES (md5(random()::text),$1,'s1','image','k','p','国风','fake','m','pending_acceptance',1)`, pid)
+	ar := NewArtifacts(pool)
+	items, err := ar.Assets(ctx, pid, "")
+	if err != nil || len(items) != 1 {
+		t.Fatalf("assets: %v len=%d", err, len(items))
+	}
+	if items[0]["status"] != "pending_acceptance" {
+		t.Fatalf("status: %v", items[0]["status"])
+	}
+	// status filter narrows.
+	none, _ := ar.Assets(ctx, pid, "accepted")
+	if len(none) != 0 {
+		t.Fatalf("filter leaked: %d", len(none))
+	}
+}

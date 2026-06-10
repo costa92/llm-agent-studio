@@ -17,15 +17,26 @@ import (
 	authztoken "github.com/costa92/llm-agent-authz/token"
 	"github.com/costa92/llm-agent-contract/llm"
 	deepseekprovider "github.com/costa92/llm-agent-providers/deepseek"
+	minimaxprovider "github.com/costa92/llm-agent-providers/minimax"
 	openaiprovider "github.com/costa92/llm-agent-providers/openai"
 
 	studioagents "github.com/costa92/llm-agent-studio/internal/agents"
+	"github.com/costa92/llm-agent-studio/internal/assets"
+	"github.com/costa92/llm-agent-studio/internal/blob"
+	"github.com/costa92/llm-agent-studio/internal/blob/localfs"
+	blobs3 "github.com/costa92/llm-agent-studio/internal/blob/s3"
 	"github.com/costa92/llm-agent-studio/internal/config"
+	"github.com/costa92/llm-agent-studio/internal/cost"
 	"github.com/costa92/llm-agent-studio/internal/events"
+	"github.com/costa92/llm-agent-studio/internal/generate"
+	genimage "github.com/costa92/llm-agent-studio/internal/generate/image"
 	"github.com/costa92/llm-agent-studio/internal/httpapi"
+	"github.com/costa92/llm-agent-studio/internal/models"
 	"github.com/costa92/llm-agent-studio/internal/obs"
 	"github.com/costa92/llm-agent-studio/internal/planner"
 	"github.com/costa92/llm-agent-studio/internal/project"
+	"github.com/costa92/llm-agent-studio/internal/prompt"
+	"github.com/costa92/llm-agent-studio/internal/review"
 	"github.com/costa92/llm-agent-studio/internal/storage"
 	"github.com/costa92/llm-agent-studio/internal/studiosvc"
 	"github.com/costa92/llm-agent-studio/internal/todos"
@@ -100,6 +111,49 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	scriptAgent := studioagents.NewScriptAgent(model)
 	storyboardAgent := studioagents.NewStoryboardAgent(model)
 
+	// BlobStore (spec §10): localfs (dev) or S3 (minio-go presigned).
+	var blobStore blob.BlobStore
+	var blobServer *localfs.Store // non-nil only in localfs mode (回源 handler)
+	switch cfg.BlobMode {
+	case "s3":
+		s3s, err := blobs3.New(blobs3.Config{
+			Endpoint: cfg.S3Endpoint, Bucket: cfg.S3Bucket, Region: cfg.S3Region,
+			AccessKey: cfg.S3AccessKey, SecretKey: cfg.S3SecretKey, UseSSL: cfg.S3UseSSL,
+		})
+		if err != nil {
+			st.Close()
+			return nil, nil, err
+		}
+		blobStore = s3s
+	default:
+		lfs := localfs.New(cfg.BlobDir, []byte(cfg.BlobSecret), cfg.BlobPublic)
+		blobStore = lfs
+		blobServer = lfs
+	}
+
+	// Generator registry: build the org-agnostic default image generator from
+	// the configured provider (real) or a fake (e2e via generatorOverride).
+	registry := generate.NewRegistry()
+	gen, err := buildGenerator(cfg)
+	if err != nil {
+		st.Close()
+		return nil, nil, err
+	}
+	registry.SetDefault(gen)
+	// Register catalog entries to the same default generator's provider/model so
+	// model_configs resolving to a catalog entry finds a generator (M2: one shared
+	// image generator; per-provider routing is M3).
+	for _, e := range models.Catalog() {
+		registry.Register(e.Provider, e.Model, gen)
+	}
+
+	promptBuilder := prompt.NewBuilder()
+	assetStore := assets.New(st.Pool())
+	costStore := cost.New(st.Pool())
+	modelStore := models.New(st.Pool())
+	assetAgent := studioagents.NewAssetAgent(promptBuilder, gen)
+	reviewSvc := review.New(assetStore, todoStore)
+
 	// Worker pool — bounded concurrency (agents call LLMs; slow).
 	workerCtx, stopWorkers := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
@@ -107,6 +161,8 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		w := worker.New(worker.Config{
 			Pool: st.Pool(), Todos: todoStore, Projects: projectStore, Events: eventStore,
 			Script: scriptAgent, Storyboard: storyboardAgent,
+			Asset: assetAgent, Blob: blobStore, Assets: assetStore, Cost: costStore,
+			Models: modelStore, Registry: registry,
 			WorkerID:    fmt.Sprintf("studiod-%d", i),
 			Lease:       cfg.WorkerLease,
 			MaxAttempts: cfg.WorkerMaxAttempt,
@@ -131,6 +187,14 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		EventReader:  eventStore,
 		Artifacts:    studiosvc.NewArtifacts(st.Pool()),
 		PerUserLimit: cfg.PerUserLimit,
+
+		Review:        reviewSvc,
+		AssetLibrary:  assetStore,
+		BlobSigner:    blobStore,
+		BlobServer:    blobServerOrNil(blobServer),
+		Models:        modelStore,
+		Cost:          costStore,
+		PromptBuilder: promptBuilder,
 	})
 
 	cleanup := func() {
@@ -166,4 +230,45 @@ func buildModel(cfg config.Config) (llm.ChatModel, error) {
 		}
 		return deepseekprovider.New(opts...)
 	}
+}
+
+// generatorOverride lets e2e inject a fake MediaGenerator instead of a real
+// image provider (the image analog of providerOverride).
+var generatorOverride func(config.Config) (generate.MediaGenerator, error)
+
+func buildGenerator(cfg config.Config) (generate.MediaGenerator, error) {
+	if generatorOverride != nil {
+		return generatorOverride(cfg)
+	}
+	switch cfg.Provider {
+	case "minimax":
+		mm, err := minimaxprovider.New(
+			minimaxprovider.WithModel(cfg.Model),
+			minimaxprovider.WithAPIKey(cfg.APIKey),
+		)
+		if err != nil {
+			return nil, err
+		}
+		return genimage.New(mm, nil), nil
+	default: // openai image
+		oa, err := openaiprovider.New(
+			openaiprovider.WithModel(cfg.Model),
+			openaiprovider.WithAPIKey(cfg.APIKey),
+			openaiprovider.WithBaseURL(cfg.BaseURL),
+		)
+		if err != nil {
+			return nil, err
+		}
+		return genimage.New(oa, nil), nil
+	}
+}
+
+// blobServerOrNil avoids handing NewMux a typed-nil *localfs.Store wrapped in the
+// BlobServer interface (which would be non-nil and crash the blob route in S3
+// mode). Returns a nil interface when there's no localfs回源 server.
+func blobServerOrNil(s *localfs.Store) httpapi.BlobServer {
+	if s == nil {
+		return nil
+	}
+	return s
 }

@@ -80,3 +80,36 @@ func (a *Artifacts) Shots(ctx context.Context, projectID string) ([]map[string]a
 	}
 	return out, rows.Err()
 }
+
+// Assets lists a project's assets, newest first, optionally filtered by status
+// (spec §9 GET /api/projects/{id}/assets — status/type/shot filter; M2 wires the
+// status filter; type/shot are library concerns served by /api/orgs/{org}/assets).
+func (a *Artifacts) Assets(ctx context.Context, projectID, status string) ([]map[string]any, error) {
+	q := `SELECT id, shot_id, type, blob_key, url, prompt, style, provider, model, status, version, parent_asset_id
+	      FROM assets WHERE project_id=$1`
+	args := []any{projectID}
+	if status != "" {
+		q += ` AND status=$2`
+		args = append(args, status)
+	}
+	q += ` ORDER BY created_at DESC`
+	rows, err := a.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]map[string]any, 0)
+	for rows.Next() {
+		var id, shotID, typ, blobKey, url, prompt, style, provider, model, st, parent string
+		var version int
+		if err := rows.Scan(&id, &shotID, &typ, &blobKey, &url, &prompt, &style, &provider, &model, &st, &version, &parent); err != nil {
+			return nil, err
+		}
+		out = append(out, map[string]any{
+			"id": id, "shotId": shotID, "type": typ, "blobKey": blobKey, "url": url,
+			"prompt": prompt, "style": style, "provider": provider, "model": model,
+			"status": st, "version": version, "parentAssetId": parent,
+		})
+	}
+	return out, rows.Err()
+}
