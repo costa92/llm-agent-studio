@@ -20,7 +20,7 @@ type EventReader interface {
 // event (kind = event name) until a run_done event is seen or the client
 // disconnects. Event names match the UI prototype:
 // planner_started/todo_ready/todo_started/todo_finished/todo_failed/run_done.
-func streamEventsHandler(reader EventReader, lookup orgLookup) http.HandlerFunc {
+func streamEventsHandler(reader EventReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		projectID := r.PathValue("id")
 		flusher, ok := w.(http.Flusher)
