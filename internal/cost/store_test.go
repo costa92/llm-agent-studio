@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -72,5 +73,89 @@ func TestAggregateByOrg(t *testing.T) {
 	}
 	if agg.CostMicros != 1500 || agg.Generations != 1 {
 		t.Fatalf("org aggregate mismatch: %+v", agg)
+	}
+}
+
+func TestPriceForAndRecordPriced(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	s := New(pool)
+	// Seed a price for a test provider/model (idempotent for re-runs).
+	if _, err := pool.Exec(ctx, `INSERT INTO pricing (provider, model, kind, micros_per_image, micros_per_1k_tokens)
+		VALUES ('testprov','testmodel','image',5000,1000) ON CONFLICT (provider, model) DO NOTHING`); err != nil {
+		t.Fatalf("seed pricing: %v", err)
+	}
+	p, ok, err := s.PriceFor(ctx, "testprov", "testmodel")
+	if err != nil || !ok {
+		t.Fatalf("PriceFor: ok=%v err=%v", ok, err)
+	}
+	if p.MicrosPerImage != 5000 || p.MicrosPer1kTokens != 1000 {
+		t.Fatalf("price mismatch: %+v", p)
+	}
+	if _, ok, _ := s.PriceFor(ctx, "nope", "nope"); ok {
+		t.Fatalf("unknown model should not be priced")
+	}
+	// RecordPriced fills cost_micros: 2 images * 5000 + 2000 tokens * 1000/1k.
+	pid := seedProject(t, pool, "org_priced")
+	if err := s.RecordPriced(ctx, Generation{
+		ProjectID: pid, Kind: "image", Provider: "testprov", Model: "testmodel",
+		Tokens: 2000, ImageCount: 2,
+	}); err != nil {
+		t.Fatalf("RecordPriced: %v", err)
+	}
+	var micros int64
+	if err := pool.QueryRow(ctx, `SELECT cost_micros FROM generations WHERE project_id=$1`, pid).Scan(&micros); err != nil {
+		t.Fatalf("load generation: %v", err)
+	}
+	if micros != 2*5000+2000*1000/1000 {
+		t.Fatalf("cost_micros = %d, want 12000", micros)
+	}
+}
+
+func TestAggregatesByRangePerProjectAndRecent(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	s := New(pool)
+	orgID := "org_range_" + time.Now().Format("150405.000000000")
+	pid := seedProject(t, pool, orgID)
+	// One row inside the window, one well in the past (created_at backdated).
+	if err := s.Record(ctx, Generation{ProjectID: pid, Provider: "p", Model: "m", ImageCount: 1, CostMicros: 100}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO generations
+		(id, project_id, kind, provider, model, image_count, cost_micros, created_at)
+		VALUES (md5(random()::text), $1, 'image', 'p', 'm', 1, 100, now() - interval '48 hours')`, pid); err != nil {
+		t.Fatalf("seed old generation: %v", err)
+	}
+	// Range covering only the last 24h sees 1 generation.
+	agg, err := s.ByOrgBetween(ctx, orgID, time.Now().Add(-24*time.Hour), time.Time{})
+	if err != nil {
+		t.Fatalf("ByOrgBetween: %v", err)
+	}
+	if agg.Generations != 1 || agg.CostMicros != 100 {
+		t.Fatalf("ranged org agg = %+v, want 1 generation / 100 micros", agg)
+	}
+	// Zero bounds = unbounded: sees both.
+	all, err := s.ByProjectBetween(ctx, pid, time.Time{}, time.Time{})
+	if err != nil || all.Generations != 2 {
+		t.Fatalf("unbounded project agg = %+v err=%v, want 2", all, err)
+	}
+	// Per-project rollup carries the project id + name.
+	per, err := s.PerProjectByOrg(ctx, orgID, time.Time{}, time.Time{})
+	if err != nil || len(per) != 1 || per[0].ProjectID != pid || per[0].Generations != 2 {
+		t.Fatalf("per-project rollup = %+v err=%v", per, err)
+	}
+	// Recent ledger entries, newest first.
+	recent, err := s.RecentByOrg(ctx, orgID, 10)
+	if err != nil || len(recent) != 2 {
+		t.Fatalf("recent = %d err=%v, want 2", len(recent), err)
+	}
+	if recent[0].CreatedAt.Before(recent[1].CreatedAt) {
+		t.Fatalf("recent must be newest-first")
+	}
+	// Rolling count for the quota check.
+	n, err := s.CountByOrgSince(ctx, orgID, time.Now().Add(-24*time.Hour))
+	if err != nil || n != 1 {
+		t.Fatalf("CountByOrgSince = %d err=%v, want 1", n, err)
 	}
 }

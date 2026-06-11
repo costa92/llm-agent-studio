@@ -7,8 +7,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -92,4 +95,168 @@ func (s *Store) ByOrg(ctx context.Context, orgID string) (Aggregate, error) {
 		return Aggregate{}, fmt.Errorf("cost: by org: %w", err)
 	}
 	return a, nil
+}
+
+// Price is one pricing row: unit prices for a provider+model (spec §15 M3
+// 成本中心; seeded by the m3 migration, ops-tunable via SQL).
+type Price struct {
+	MicrosPerImage    int64
+	MicrosPer1kTokens int64
+}
+
+// PriceFor looks up the unit price. ok=false (no error) when the provider+model
+// has no pricing row — the caller records cost_micros=0 (unpriced).
+func (s *Store) PriceFor(ctx context.Context, provider, model string) (Price, bool, error) {
+	var p Price
+	err := s.pool.QueryRow(ctx,
+		`SELECT micros_per_image, micros_per_1k_tokens FROM pricing WHERE provider=$1 AND model=$2`,
+		provider, model).Scan(&p.MicrosPerImage, &p.MicrosPer1kTokens)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Price{}, false, nil
+		}
+		return Price{}, false, fmt.Errorf("cost: price for %s/%s: %w", provider, model, err)
+	}
+	return p, true, nil
+}
+
+// ComputeCostMicros prices one generation: per-image plus per-1k-token cost.
+func ComputeCostMicros(p Price, imageCount, tokens int) int64 {
+	return int64(imageCount)*p.MicrosPerImage + int64(tokens)*p.MicrosPer1kTokens/1000
+}
+
+// RecordPriced is Record with the pricing table applied: it fills CostMicros
+// from the provider+model unit price (0 when unpriced). The single costing
+// chokepoint — the worker calls this after every generation (M2 carry: M2
+// recorded cost_micros=0 always).
+func (s *Store) RecordPriced(ctx context.Context, g Generation) error {
+	if g.CostMicros == 0 {
+		if p, ok, err := s.PriceFor(ctx, g.Provider, g.Model); err != nil {
+			return err
+		} else if ok {
+			g.CostMicros = ComputeCostMicros(p, g.ImageCount, g.Tokens)
+		}
+	}
+	return s.Record(ctx, g)
+}
+
+// rangeBounds normalizes optional time bounds: zero from = epoch, zero to =
+// far future (now + 24h covers clock skew; rows can't be in the future).
+func rangeBounds(from, to time.Time) (time.Time, time.Time) {
+	if from.IsZero() {
+		from = time.Unix(0, 0)
+	}
+	if to.IsZero() {
+		to = time.Now().Add(24 * time.Hour)
+	}
+	return from, to
+}
+
+// ByOrgBetween aggregates the org ledger within [from, to). Zero bounds are
+// open (spec §9 成本中心: 按时间聚合).
+func (s *Store) ByOrgBetween(ctx context.Context, orgID string, from, to time.Time) (Aggregate, error) {
+	from, to = rangeBounds(from, to)
+	a, err := scanAgg(s.pool.QueryRow(ctx, `
+		SELECT count(*), COALESCE(sum(g.tokens),0), COALESCE(sum(g.image_count),0), COALESCE(sum(g.cost_micros),0)
+		FROM generations g JOIN projects p ON g.project_id=p.id
+		WHERE p.org_id=$1 AND g.created_at >= $2 AND g.created_at < $3`, orgID, from, to))
+	if err != nil {
+		return Aggregate{}, fmt.Errorf("cost: by org between: %w", err)
+	}
+	return a, nil
+}
+
+// ByProjectBetween aggregates one project's ledger within [from, to).
+func (s *Store) ByProjectBetween(ctx context.Context, projectID string, from, to time.Time) (Aggregate, error) {
+	from, to = rangeBounds(from, to)
+	a, err := scanAgg(s.pool.QueryRow(ctx, `
+		SELECT count(*), COALESCE(sum(tokens),0), COALESCE(sum(image_count),0), COALESCE(sum(cost_micros),0)
+		FROM generations WHERE project_id=$1 AND created_at >= $2 AND created_at < $3`, projectID, from, to))
+	if err != nil {
+		return Aggregate{}, fmt.Errorf("cost: by project between: %w", err)
+	}
+	return a, nil
+}
+
+// ProjectAggregate is a per-project rollup row (UI 按项目成本条).
+type ProjectAggregate struct {
+	ProjectID   string `json:"projectId"`
+	ProjectName string `json:"projectName"`
+	Aggregate
+}
+
+// PerProjectByOrg rolls the org ledger up per project, most expensive first.
+func (s *Store) PerProjectByOrg(ctx context.Context, orgID string, from, to time.Time) ([]ProjectAggregate, error) {
+	from, to = rangeBounds(from, to)
+	rows, err := s.pool.Query(ctx, `
+		SELECT p.id, p.name, count(*), COALESCE(sum(g.tokens),0), COALESCE(sum(g.image_count),0), COALESCE(sum(g.cost_micros),0)
+		FROM generations g JOIN projects p ON g.project_id=p.id
+		WHERE p.org_id=$1 AND g.created_at >= $2 AND g.created_at < $3
+		GROUP BY p.id, p.name
+		ORDER BY COALESCE(sum(g.cost_micros),0) DESC`, orgID, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("cost: per project: %w", err)
+	}
+	defer rows.Close()
+	out := make([]ProjectAggregate, 0)
+	for rows.Next() {
+		var pa ProjectAggregate
+		if err := rows.Scan(&pa.ProjectID, &pa.ProjectName, &pa.Generations, &pa.Tokens, &pa.ImageCount, &pa.CostMicros); err != nil {
+			return nil, err
+		}
+		out = append(out, pa)
+	}
+	return out, rows.Err()
+}
+
+// LedgerEntry is one generations row for the usage-detail table (UI 用量明细表).
+type LedgerEntry struct {
+	ID          string    `json:"id"`
+	ProjectID   string    `json:"projectId"`
+	ProjectName string    `json:"projectName"`
+	Kind        string    `json:"kind"`
+	Provider    string    `json:"provider"`
+	Model       string    `json:"model"`
+	Tokens      int       `json:"tokens"`
+	ImageCount  int       `json:"imageCount"`
+	CostMicros  int64     `json:"costMicros"`
+	LatencyMS   int       `json:"latencyMs"`
+	CreatedAt   time.Time `json:"createdAt"`
+}
+
+// RecentByOrg returns the org's most recent ledger entries, newest first.
+func (s *Store) RecentByOrg(ctx context.Context, orgID string, limit int) ([]LedgerEntry, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT g.id, g.project_id, p.name, g.kind, g.provider, g.model, g.tokens, g.image_count, g.cost_micros, g.latency_ms, g.created_at
+		FROM generations g JOIN projects p ON g.project_id=p.id
+		WHERE p.org_id=$1 ORDER BY g.created_at DESC, g.id DESC LIMIT $2`, orgID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("cost: recent: %w", err)
+	}
+	defer rows.Close()
+	out := make([]LedgerEntry, 0)
+	for rows.Next() {
+		var e LedgerEntry
+		if err := rows.Scan(&e.ID, &e.ProjectID, &e.ProjectName, &e.Kind, &e.Provider, &e.Model,
+			&e.Tokens, &e.ImageCount, &e.CostMicros, &e.LatencyMS, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// CountByOrgSince counts the org's generations since a timestamp (rolling-24h
+// quota check, spec §12 配额).
+func (s *Store) CountByOrgSince(ctx context.Context, orgID string, since time.Time) (int, error) {
+	var n int
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FROM generations g JOIN projects p ON g.project_id=p.id
+		WHERE p.org_id=$1 AND g.created_at >= $2`, orgID, since).Scan(&n); err != nil {
+		return 0, fmt.Errorf("cost: count since: %w", err)
+	}
+	return n, nil
 }

@@ -376,10 +376,10 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 		return "", fmt.Errorf("worker: asset set blob: %w", err)
 	}
 
-	// Ledger row (spec §6 generations). cost_micros is left 0 in M2 (no pricing
-	// table yet; M3 cost-center wires real pricing — the column exists now).
+	// Ledger row (spec §6 generations).
 	if w.cfg.Cost != nil {
-		_ = w.cfg.Cost.Record(ctx, cost.Generation{
+		// M3: RecordPriced fills cost_micros from the pricing table (M2 carry #2).
+		_ = w.cfg.Cost.RecordPriced(ctx, cost.Generation{
 			ProjectID: c.projectID, AssetID: created.id, TodoID: c.todoID, Kind: "image",
 			Provider: out.Provider, Model: out.Model, Prompt: out.Prompt,
 			Tokens: out.Tokens, ImageCount: out.ImageCount, LatencyMS: out.LatencyMS,

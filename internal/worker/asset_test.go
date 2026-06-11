@@ -48,6 +48,10 @@ func TestRunAssetWritesAssetAndGeneration(t *testing.T) {
 	_, _ = pool.Exec(ctx,
 		`INSERT INTO todos (id,project_id,plan_id,type,status,input_json) VALUES ($1,$2,'plan','asset','running',$3)`,
 		todoID, pid, `{"shotId":"s1","shotPrompt":"a teahouse","style":"国风"}`)
+	if _, err := pool.Exec(ctx, `INSERT INTO pricing (provider, model, kind, micros_per_image, micros_per_1k_tokens)
+		VALUES ('fake','m','image',7000,0) ON CONFLICT (provider, model) DO NOTHING`); err != nil {
+		t.Fatalf("seed pricing: %v", err)
+	}
 
 	fake := generate.NewFakeLooping(generate.GenResult{Bytes: []byte("PNG"), MimeType: "image/png", Provider: "fake", Model: "m", Tokens: 7, ImageCount: 1, LatencyMS: 50})
 	w := New(Config{
@@ -77,6 +81,11 @@ func TestRunAssetWritesAssetAndGeneration(t *testing.T) {
 	_ = pool.QueryRow(ctx, `SELECT count(*) FROM generations WHERE project_id=$1`, pid).Scan(&genCount)
 	if genCount != 1 {
 		t.Fatalf("want 1 generations row, got %d", genCount)
+	}
+	var micros int64
+	_ = pool.QueryRow(ctx, `SELECT cost_micros FROM generations WHERE project_id=$1`, pid).Scan(&micros)
+	if micros != 7000 {
+		t.Fatalf("cost_micros = %d, want 7000 (1 image * 7000, M3 pricing)", micros)
 	}
 }
 
