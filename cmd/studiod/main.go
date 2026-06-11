@@ -29,6 +29,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/assets"
 	"github.com/costa92/llm-agent-studio/internal/blob"
 	"github.com/costa92/llm-agent-studio/internal/blob/localfs"
+	bloboss "github.com/costa92/llm-agent-studio/internal/blob/oss"
 	blobs3 "github.com/costa92/llm-agent-studio/internal/blob/s3"
 	"github.com/costa92/llm-agent-studio/internal/config"
 	"github.com/costa92/llm-agent-studio/internal/cost"
@@ -120,7 +121,8 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	scriptAgent := studioagents.NewScriptAgent(model)
 	storyboardAgent := studioagents.NewStoryboardAgent(model)
 
-	// BlobStore (spec §10): localfs (dev) or S3 (minio-go presigned).
+	// BlobStore (spec §10): localfs (dev), S3/minio (presigned), Alibaba OSS
+	// (official SDK), or Tencent COS (S3-compatible → reuses the s3 adapter).
 	var blobStore blob.BlobStore
 	var blobServer *localfs.Store // non-nil only in localfs mode (回源 handler)
 	switch cfg.BlobMode {
@@ -134,6 +136,28 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 			return nil, nil, err
 		}
 		blobStore = s3s
+	case "oss":
+		o, err := bloboss.New(bloboss.Config{
+			Endpoint: cfg.OSSEndpoint, Bucket: cfg.OSSBucket,
+			AccessKeyID: cfg.OSSAccessKeyID, AccessKeySecret: cfg.OSSAccessKeySecret,
+		})
+		if err != nil {
+			st.Close()
+			return nil, nil, err
+		}
+		blobStore = o
+	case "cos":
+		// COS is S3-compatible; reuse the minio-go adapter with COS's
+		// virtual-hosted endpoint (always TLS). SecretID → AccessKey.
+		c, err := blobs3.New(blobs3.Config{
+			Endpoint: cfg.COSEndpointHost(), Bucket: cfg.COSBucket, Region: cfg.COSRegion,
+			AccessKey: cfg.COSSecretID, SecretKey: cfg.COSSecretKey, UseSSL: true,
+		})
+		if err != nil {
+			st.Close()
+			return nil, nil, err
+		}
+		blobStore = c
 	default:
 		lfs := localfs.New(cfg.BlobDir, []byte(cfg.BlobSecret), cfg.BlobPublic)
 		blobStore = lfs

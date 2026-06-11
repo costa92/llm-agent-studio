@@ -62,7 +62,7 @@ type Config struct {
 	TTSAPIKey    string
 	// Veo reuses GoogleAPIKey (already present, spec §8.2).
 
-	BlobMode    string // "localfs" | "s3"
+	BlobMode    string // "localfs" | "s3" | "oss" | "cos"
 	BlobDir     string // localfs root
 	BlobSecret  string // HMAC secret for localfs signed URLs (falls back to JWTSecret)
 	BlobPublic  string // public URL prefix for blob回源, default "/api/blob/"
@@ -72,6 +72,19 @@ type Config struct {
 	S3AccessKey string
 	S3SecretKey string
 	S3UseSSL    bool
+
+	// OSS (Alibaba Cloud, official SDK — OSS signature ≠ SigV4, so NOT via s3).
+	OSSEndpoint        string // e.g. oss-cn-hangzhou.aliyuncs.com
+	OSSBucket          string
+	OSSAccessKeyID     string
+	OSSAccessKeySecret string
+
+	// COS (Tencent Cloud, S3-compatible → reuses the s3/minio-go adapter).
+	COSRegion    string // e.g. ap-guangzhou; endpoint derived unless COSEndpoint set
+	COSEndpoint  string // optional explicit host override (private/finance cloud)
+	COSBucket    string // name-appid
+	COSSecretID  string
+	COSSecretKey string
 
 	OTLPEndpoint string
 	OTLPProtocol string
@@ -130,16 +143,28 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		KlingAPIKey:        get("KLING_API_KEY", ""),
 		TTSAPIKey:          get("TTS_API_KEY", ""),
 
-		BlobMode:     get("BLOB_MODE", "localfs"),
-		BlobDir:      get("BLOB_DIR", "./blobdata"),
-		BlobSecret:   get("BLOB_SECRET", ""),
-		BlobPublic:   get("BLOB_PUBLIC_PREFIX", "/api/blob/"),
-		S3Endpoint:   get("S3_ENDPOINT", ""),
-		S3Bucket:     get("S3_BUCKET", ""),
-		S3Region:     get("S3_REGION", ""),
-		S3AccessKey:  get("S3_ACCESS_KEY", ""),
-		S3SecretKey:  get("S3_SECRET_KEY", ""),
-		S3UseSSL:     get("S3_USE_SSL", "true") == "true",
+		BlobMode:    get("BLOB_MODE", "localfs"),
+		BlobDir:     get("BLOB_DIR", "./blobdata"),
+		BlobSecret:  get("BLOB_SECRET", ""),
+		BlobPublic:  get("BLOB_PUBLIC_PREFIX", "/api/blob/"),
+		S3Endpoint:  get("S3_ENDPOINT", ""),
+		S3Bucket:    get("S3_BUCKET", ""),
+		S3Region:    get("S3_REGION", ""),
+		S3AccessKey: get("S3_ACCESS_KEY", ""),
+		S3SecretKey: get("S3_SECRET_KEY", ""),
+		S3UseSSL:    get("S3_USE_SSL", "true") == "true",
+
+		OSSEndpoint:        get("OSS_ENDPOINT", ""),
+		OSSBucket:          get("OSS_BUCKET", ""),
+		OSSAccessKeyID:     get("OSS_ACCESS_KEY_ID", ""),
+		OSSAccessKeySecret: get("OSS_ACCESS_KEY_SECRET", ""),
+
+		COSRegion:    get("COS_REGION", ""),
+		COSEndpoint:  get("COS_ENDPOINT", ""),
+		COSBucket:    get("COS_BUCKET", ""),
+		COSSecretID:  get("COS_SECRET_ID", ""),
+		COSSecretKey: get("COS_SECRET_KEY", ""),
+
 		OTLPEndpoint: get("OTLP_ENDPOINT", ""),
 		OTLPProtocol: get("OTLP_PROTOCOL", ""),
 		OTLPInsecure: get("OTLP_INSECURE", "true") == "true",
@@ -166,6 +191,19 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		cfg.BlobSecret = cfg.JWTSecret
 	}
 	return cfg, nil
+}
+
+// COSEndpointHost returns the COS S3-compatible endpoint host (no scheme) for
+// the minio-go adapter: an explicit COS_ENDPOINT wins, else it is derived from
+// COS_REGION as cos.<region>.myqcloud.com. Empty if neither is set.
+func (c Config) COSEndpointHost() string {
+	if c.COSEndpoint != "" {
+		return c.COSEndpoint
+	}
+	if c.COSRegion == "" {
+		return ""
+	}
+	return "cos." + c.COSRegion + ".myqcloud.com"
 }
 
 // durOf parses a duration, recording a load error naming the env key on
