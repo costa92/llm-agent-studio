@@ -19,6 +19,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	studioagents "github.com/costa92/llm-agent-studio/internal/agents"
 	"github.com/costa92/llm-agent-studio/internal/assets"
@@ -55,6 +59,7 @@ type Config struct {
 	CallTimeout      time.Duration    // per-dispatch ctx timeout; MUST be < Lease (0 = no bound)
 	Clock            func() time.Time // nil → time.Now
 	Logger           *slog.Logger     // nil → slog.Default()
+	Tracer           trace.Tracer     // nil → noop
 }
 
 // Worker drains the todos queue.
@@ -75,6 +80,9 @@ func New(cfg Config) *Worker {
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
+	}
+	if cfg.Tracer == nil {
+		cfg.Tracer = noop.NewTracerProvider().Tracer("studio.worker")
 	}
 	return &Worker{cfg: cfg}
 }
@@ -189,6 +197,12 @@ func (w *Worker) claim(ctx context.Context) (claimed, bool, error) {
 // bounded by CallTimeout (< lease) so a hung LLM/generator call cannot outlive
 // the lease and get double-claimed (M1 carry: no lease renewal).
 func (w *Worker) process(ctx context.Context, c claimed) {
+	ctx, span := w.cfg.Tracer.Start(ctx, "studio.todo."+c.typ, trace.WithAttributes(
+		attribute.String("studio.project_id", c.projectID),
+		attribute.String("studio.todo_id", c.todoID),
+		attribute.Int("studio.attempts", c.attempts),
+	))
+	defer span.End()
 	_, _ = w.cfg.Events.Append(ctx, c.projectID, "todo_started", c.todoID, map[string]any{"type": c.typ})
 
 	dctx := ctx
@@ -211,6 +225,8 @@ func (w *Worker) process(ctx context.Context, c claimed) {
 	}
 
 	if perr != nil {
+		span.RecordError(perr)
+		span.SetStatus(codes.Error, perr.Error())
 		w.fail(ctx, c, perr)
 		return
 	}

@@ -43,6 +43,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/studiosvc"
 	"github.com/costa92/llm-agent-studio/internal/todos"
 	"github.com/costa92/llm-agent-studio/internal/worker"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func main() {
@@ -141,10 +142,11 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		st.Close()
 		return nil, nil, err
 	}
+	gen = obs.WrapGenerator(gen, tp) // otel decorator (spec §12)
 	registry.SetDefault(gen)
 	// M3 模型路由: register a REAL adapter per catalog entry whose provider has a
 	// key configured; un-keyed providers resolve to the env default generator.
-	if err := registerImageGenerators(registry, cfg); err != nil {
+	if err := registerImageGenerators(registry, cfg, tp); err != nil {
 		st.Close()
 		return nil, nil, err
 	}
@@ -179,6 +181,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 			MaxAttempts:      cfg.WorkerMaxAttempt,
 			BaseBackoff:      cfg.WorkerBackoff,
 			CallTimeout:      cfg.WorkerCallTimeout,
+			Tracer:           tp.Tracer("studio.worker"),
 		})
 		wg.Add(1)
 		go func() { defer wg.Done(); w.Run(workerCtx, cfg.WorkerPoll) }()
@@ -283,7 +286,7 @@ var registryHook func(*generate.Registry)
 // registerImageGenerators registers one image adapter per catalog entry whose
 // provider has an API key configured (M3 模型管理面接线). The contract types are
 // verified: all four providers implement llm.ImageGenerator (providers v0.7.0).
-func registerImageGenerators(reg *generate.Registry, cfg config.Config) error {
+func registerImageGenerators(reg *generate.Registry, cfg config.Config, tp trace.TracerProvider) error {
 	for _, e := range models.Catalog() {
 		var ig llm.ImageGenerator
 		var err error
@@ -314,7 +317,7 @@ func registerImageGenerators(reg *generate.Registry, cfg config.Config) error {
 		if err != nil {
 			return fmt.Errorf("studiod: build %s/%s image generator: %w", e.Provider, e.Model, err)
 		}
-		reg.Register(e.Provider, e.Model, genimage.New(ig, nil))
+		reg.Register(e.Provider, e.Model, obs.WrapGenerator(genimage.New(ig, nil), tp))
 	}
 	return nil
 }
