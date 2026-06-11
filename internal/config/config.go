@@ -76,6 +76,8 @@ type Config struct {
 	OTLPEndpoint string
 	OTLPProtocol string
 	OTLPInsecure bool
+
+	WebDir string // built SPA dir to serve (e.g. "web/dist"); "" = backend-only
 }
 
 // Load reads from the process environment.
@@ -128,19 +130,20 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		KlingAPIKey:        get("KLING_API_KEY", ""),
 		TTSAPIKey:          get("TTS_API_KEY", ""),
 
-		BlobMode:         get("BLOB_MODE", "localfs"),
-		BlobDir:          get("BLOB_DIR", "./blobdata"),
-		BlobSecret:       get("BLOB_SECRET", ""),
-		BlobPublic:       get("BLOB_PUBLIC_PREFIX", "/api/blob/"),
-		S3Endpoint:       get("S3_ENDPOINT", ""),
-		S3Bucket:         get("S3_BUCKET", ""),
-		S3Region:         get("S3_REGION", ""),
-		S3AccessKey:      get("S3_ACCESS_KEY", ""),
-		S3SecretKey:      get("S3_SECRET_KEY", ""),
-		S3UseSSL:         get("S3_USE_SSL", "true") == "true",
-		OTLPEndpoint:     get("OTLP_ENDPOINT", ""),
-		OTLPProtocol:     get("OTLP_PROTOCOL", ""),
-		OTLPInsecure:     get("OTLP_INSECURE", "true") == "true",
+		BlobMode:     get("BLOB_MODE", "localfs"),
+		BlobDir:      get("BLOB_DIR", "./blobdata"),
+		BlobSecret:   get("BLOB_SECRET", ""),
+		BlobPublic:   get("BLOB_PUBLIC_PREFIX", "/api/blob/"),
+		S3Endpoint:   get("S3_ENDPOINT", ""),
+		S3Bucket:     get("S3_BUCKET", ""),
+		S3Region:     get("S3_REGION", ""),
+		S3AccessKey:  get("S3_ACCESS_KEY", ""),
+		S3SecretKey:  get("S3_SECRET_KEY", ""),
+		S3UseSSL:     get("S3_USE_SSL", "true") == "true",
+		OTLPEndpoint: get("OTLP_ENDPOINT", ""),
+		OTLPProtocol: get("OTLP_PROTOCOL", ""),
+		OTLPInsecure: get("OTLP_INSECURE", "true") == "true",
+		WebDir:       get("WEB_DIR", ""),
 	}
 	if len(errs) > 0 {
 		return Config{}, fmt.Errorf("config: invalid values: %s", strings.Join(errs, "; "))

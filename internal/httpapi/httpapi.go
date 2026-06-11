@@ -5,6 +5,7 @@ package httpapi
 
 import (
 	"context"
+	"io/fs"
 	"net/http"
 
 	authzhttp "github.com/costa92/llm-agent-authz/httpapi"
@@ -41,6 +42,10 @@ type Deps struct {
 	Cost          CostStore
 	PromptBuilder *prompt.Builder
 	GenQuota      int // rolling-24h per-org generation quota; 0 = unlimited
+
+	// WebFS, when non-nil, mounts a built SPA under "GET /" (catch-all, ranked
+	// below every /api/* route). nil = backend-only (no UI served).
+	WebFS fs.FS
 }
 
 // assetScope resolves (orgID,"") for asset-scoped routes ({id}) via the asset's
@@ -137,6 +142,12 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("GET /api/projects/{id}/cost", proj(roleAdmin, projectCostHandler(d.Cost)))
 	mux.Handle("GET /api/orgs/{org}/cost/projects", scoped(roleAdmin, orgScope, orgCostProjectsHandler(d.Cost)))
 	mux.Handle("GET /api/orgs/{org}/generations", scoped(roleAdmin, orgScope, orgGenerationsHandler(d.Cost)))
+
+	// SPA catch-all (ranked below every /api/* pattern). Optional: only when a
+	// built web bundle is supplied; backend-only deployments leave it unmounted.
+	if d.WebFS != nil {
+		mux.Handle("GET /", spaHandler(d.WebFS))
+	}
 	return mux
 }
 
