@@ -573,7 +573,7 @@ func TestFanOutWritesKindAndDuration(t *testing.T) {
 
 // asyncWorkerSetup builds a worker wired with a FakeAsync video generator routed
 // via an org default model_config. pollsToDone controls the poll lifecycle length.
-func asyncWorkerSetup(t *testing.T, pool *pgxpool.Pool, pollsToDone int) (*Worker, string, string) {
+func asyncWorkerSetup(t *testing.T, pool *pgxpool.Pool, pollsToDone int) (*Worker, string, string, *generate.FakeAsync) {
 	t.Helper()
 	ctx := context.Background()
 	orgID := "org_async_" + randHex3()
@@ -600,7 +600,7 @@ func asyncWorkerSetup(t *testing.T, pool *pgxpool.Pool, pollsToDone int) (*Worke
 		WorkerID: "async", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
 		PollBackoff: time.Millisecond, MaxPollBackoff: time.Millisecond, MaxPollAttempts: 60,
 	})
-	return w, pid, orgID
+	return w, pid, orgID, fakeAsync
 }
 
 func seedVideoAssetTodo(t *testing.T, pool *pgxpool.Pool, pid string) string {
@@ -619,7 +619,7 @@ func seedVideoAssetTodo(t *testing.T, pool *pgxpool.Pool, pid string) string {
 func TestRunAssetSubmitReschedulesThenPollsToDone(t *testing.T) {
 	pool := assetTestPool(t)
 	ctx := context.Background()
-	w, pid, _ := asyncWorkerSetup(t, pool, 2)
+	w, pid, _, _ := asyncWorkerSetup(t, pool, 2)
 	todoID := seedVideoAssetTodo(t, pool, pid)
 
 	// Dispatch 1 = submit → self-reschedules (errRescheduled), asset submitted.
@@ -676,7 +676,7 @@ func TestProcessReschedulePreservesHealthyAsset(t *testing.T) {
 	// runAsset self-reschedules (MarkDone would see done=false).
 	pool := assetTestPool(t)
 	ctx := context.Background()
-	w, pid, _ := asyncWorkerSetup(t, pool, 3)
+	w, pid, _, _ := asyncWorkerSetup(t, pool, 3)
 	todoID := seedVideoAssetTodo(t, pool, pid)
 	w.process(ctx, claimed{todoID: todoID, projectID: pid, typ: "asset", attempts: 1,
 		input: []byte(`{"shotId":"s1","shotPrompt":"a city","style":"","kind":"video","duration":6}`)})
@@ -703,7 +703,7 @@ func TestSubmitAdmissionCapBlocksNewSubmitButNotPoll(t *testing.T) {
 	// submitted asset is NOT blocked (else drain deadlocks).
 	pool := assetTestPool(t)
 	ctx := context.Background()
-	w, pid, _ := asyncWorkerSetup(t, pool, 5)
+	w, pid, _, _ := asyncWorkerSetup(t, pool, 5)
 	w.cfg.MaxConcurrentVideo = 1
 	// Pre-load one in-flight submitted video (occupies the single slot).
 	_, _ = pool.Exec(ctx, `INSERT INTO assets (id,project_id,todo_id,type,status,submitted_at) VALUES (md5(random()::text),$1,'occupy','video','submitted',now())`, pid)
@@ -717,6 +717,106 @@ func TestSubmitAdmissionCapBlocksNewSubmitButNotPoll(t *testing.T) {
 	_ = pool.QueryRow(ctx, `SELECT count(*) FROM assets WHERE todo_id=$1 AND status='submitted'`, todoID).Scan(&n)
 	if n != 0 {
 		t.Fatalf("over-cap todo must not submit, got %d submitted", n)
+	}
+}
+
+// TestDiscardCanceledAssetSweepsSubmitted proves F2: the cancel-race discard
+// from-list must include 'submitted' (async in-flight) — else a submitted asset
+// caught in the MarkDone-no-op race falls through and strands.
+func TestDiscardCanceledAssetSweepsSubmitted(t *testing.T) {
+	pool := assetTestPool(t)
+	ctx := context.Background()
+	w, pid, _, _ := asyncWorkerSetup(t, pool, 2)
+	// An in-flight async asset (submitted) that the cancel-race must terminal-state.
+	var assetID string
+	_ = pool.QueryRow(ctx, `INSERT INTO assets (id,project_id,type,status,submitted_at)
+		VALUES (md5(random()::text),$1,'video','submitted',now()) RETURNING id`, pid).Scan(&assetID)
+	w.discardCanceledAsset(ctx, claimed{projectID: pid, typ: "asset"}, "asset:"+assetID)
+	var status string
+	_ = pool.QueryRow(ctx, `SELECT status FROM assets WHERE id=$1`, assetID).Scan(&status)
+	if status != "canceled" {
+		t.Fatalf("submitted asset must be discarded to canceled, got %q (F2: 'submitted' missing from discard from-list)", status)
+	}
+}
+
+// TestPollDonePricesWhenPollOmitsProviderModel proves F3: when a real provider's
+// Poll returns only status+URL (empty Provider/Model), the poll-done cost
+// backfill must still price from the provider/model stashed on the asset row at
+// submit — not overwrite the pre-registered estimate with cost_micros=0.
+func TestPollDonePricesWhenPollOmitsProviderModel(t *testing.T) {
+	pool := assetTestPool(t)
+	ctx := context.Background()
+	w, pid, _, fakeAsync := asyncWorkerSetup(t, pool, 2)
+	fakeAsync.PollOmitsProviderModel = true // poll Done carries NO provider/model
+	todoID := seedVideoAssetTodo(t, pool, pid)
+	in := []byte(`{"shotId":"s1","shotPrompt":"a city","style":"","kind":"video","duration":6}`)
+
+	// Submit dispatch.
+	if _, err := w.runAsset(ctx, claimed{todoID: todoID, projectID: pid, typ: "asset", attempts: 1, input: in}); !errorsIsRescheduled(err) {
+		t.Fatalf("submit must reschedule, got %v", err)
+	}
+	// Poll #1 (pending).
+	_, _ = pool.Exec(ctx, `UPDATE todos SET status='running', locked_by='async' WHERE id=$1`, todoID)
+	if _, err := w.runAsset(ctx, claimed{todoID: todoID, projectID: pid, typ: "asset", attempts: 1, input: in}); !errorsIsRescheduled(err) {
+		t.Fatalf("poll#1 must reschedule, got %v", err)
+	}
+	// Poll #2 (done) — provider/model omitted by the poll payload.
+	_, _ = pool.Exec(ctx, `UPDATE todos SET status='running', locked_by='async' WHERE id=$1`, todoID)
+	if _, err := w.runAsset(ctx, claimed{todoID: todoID, projectID: pid, typ: "asset", attempts: 1, input: in}); err != nil {
+		t.Fatalf("poll#2 (done) errored: %v", err)
+	}
+	var micros int64
+	var provider string
+	_ = pool.QueryRow(ctx, `SELECT cost_micros, provider FROM generations WHERE project_id=$1`, pid).Scan(&micros, &provider)
+	if micros != 6*500000 {
+		t.Fatalf("poll-done cost = %d, want %d (F3: provider/model fell back to asset row)", micros, 6*500000)
+	}
+	if provider == "" {
+		t.Fatalf("F3: ledger provider must not be zeroed by an omit-provider poll")
+	}
+}
+
+// TestPollReclaimedByOtherWorkerDoesNotCancel proves F4: when this worker's poll
+// guard matches 0 rows because a DIFFERENT worker stuck-reclaimed the (healthy,
+// externally-running, PAID) todo, the asset must NOT be canceled — the new owner
+// keeps driving it. The stale worker stops benignly (no fail, no discard).
+func TestPollReclaimedByOtherWorkerDoesNotCancel(t *testing.T) {
+	pool := assetTestPool(t)
+	ctx := context.Background()
+	w, pid, _, _ := asyncWorkerSetup(t, pool, 5) // WorkerID="async"
+	in := []byte(`{"shotId":"s1","shotPrompt":"a city","style":"","kind":"video","duration":6}`)
+
+	// Seed a submitted asset + a todo whose lease is held by a DIFFERENT worker
+	// ("other"), simulating a stuck-reclaim after our lease expired. The asset is
+	// healthy and submitted (external job running for real money).
+	todoID := newID()
+	_, _ = pool.Exec(ctx,
+		`INSERT INTO todos (id,project_id,plan_id,type,status,locked_by,locked_until,poll_attempts,input_json)
+		 VALUES ($1,$2,'plan','asset','running','other',now()+interval '1 minute',1,$3)`,
+		todoID, pid, string(in))
+	var assetID string
+	_ = pool.QueryRow(ctx,
+		`INSERT INTO assets (id,project_id,todo_id,type,status,external_job_id,provider,model,submitted_at)
+		 VALUES (md5(random()::text),$1,$2,'video','submitted','job1','fake','fake-video-async',now()) RETURNING id`,
+		pid, todoID).Scan(&assetID)
+
+	// Drive a poll dispatch as the stale "async" worker. FakeAsync(pollsToDone=5)
+	// returns Pending, so rescheduleOrCancel runs — its guard (locked_by='async')
+	// matches 0 rows because the row is locked_by='other'. F4: this must be a
+	// benign lost-lease stop, NOT a cancel/discard of the healthy paid asset.
+	c := claimed{todoID: todoID, projectID: pid, typ: "asset", attempts: 1, input: in}
+	w.process(ctx, c)
+
+	var assetStatus, todoStatus, lockedBy string
+	_ = pool.QueryRow(ctx, `SELECT status FROM assets WHERE id=$1`, assetID).Scan(&assetStatus)
+	_ = pool.QueryRow(ctx, `SELECT status, locked_by FROM todos WHERE id=$1`, todoID).Scan(&todoStatus, &lockedBy)
+	if assetStatus != "submitted" {
+		t.Fatalf("reclaimed healthy asset must stay submitted, got %q (F4: stale worker mis-canceled a paid asset)", assetStatus)
+	}
+	// The other worker's lease must be untouched — our 0-row guarded reschedule
+	// must not have stolen/cleared it.
+	if todoStatus != "running" || lockedBy != "other" {
+		t.Fatalf("other worker's lease must survive: todo status=%q locked_by=%q, want running/other", todoStatus, lockedBy)
 	}
 }
 

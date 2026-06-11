@@ -85,6 +85,16 @@ type Worker struct {
 // (I1) — it is neither completion nor failure.
 var errRescheduled = errors.New("worker: todo rescheduled")
 
+// errLostLease signals that this worker's poll dispatch found its guarded
+// reschedule matching 0 rows because the todo is no longer claimable by THIS
+// worker, yet is NOT canceled — it was stuck-reclaimed by a DIFFERENT worker
+// whose lease now owns the (healthy, externally-running, PAID) async job (F4,
+// spec §5.4/§5.5). The new owner continues polling; this stale worker must just
+// stop. process treats it exactly like errRescheduled: NO MarkDone, NO fail, NO
+// discardCanceledAsset — discarding here would terminal-state a healthy paid
+// asset that another worker is still driving to completion.
+var errLostLease = errors.New("worker: poll lease lost to another worker")
+
 // New builds a Worker with defaults applied.
 func New(cfg Config) *Worker {
 	if cfg.Clock == nil {
@@ -282,6 +292,16 @@ func (w *Worker) process(ctx context.Context, c claimed) {
 		// MarkDone / discard / emitNewlyReady / RefreshStatus / AppendRunDone and
 		// release the worker (spec §5.2 a-bis I1).
 		span.AddEvent("async.rescheduled")
+		return
+	}
+	if errors.Is(perr, errLostLease) {
+		// This worker's poll dispatch found 0 rows under its guard — the todo was
+		// canceled or stuck-reclaimed by another worker (F4). Either way this stale
+		// worker just stops: NO MarkDone (would no-op), NO fail (the job is healthy
+		// elsewhere), NO discardCanceledAsset (would terminal-state a live PAID
+		// asset another worker is still driving). The cancel sweep / the new owner
+		// owns the asset's fate.
+		span.AddEvent("async.lease_lost")
 		return
 	}
 	if perr != nil {
@@ -740,7 +760,7 @@ func (w *Worker) discardCanceledAsset(ctx context.Context, c claimed, outputRef 
 		return
 	}
 	id := strings.TrimPrefix(outputRef, "asset:")
-	for _, from := range []string{"pending_acceptance", "generating"} {
+	for _, from := range []string{"pending_acceptance", "submitted", "generating"} {
 		ok, err := w.cfg.Assets.TransitionStatus(ctx, id, from, "canceled")
 		if err != nil {
 			w.cfg.Logger.Warn("worker: discard canceled asset failed", "asset", id, "from", from, "err", err)
@@ -916,9 +936,14 @@ func (w *Worker) submitTx(ctx context.Context, c claimed, asset assets.Asset, ki
 			return fmt.Errorf("worker: org %s generation quota exceeded (%d/%d in 24h)", orgID, n, w.cfg.GenQuota)
 		}
 	}
+	// Persist provider/model onto the asset row at submit (F3): real async
+	// providers often return only status+URL on Poll, so the poll-done cost
+	// backfill in completeAsync cannot rely on the PollResult carrying them.
+	// Stashing them here lets completeAsync price correctly from the (re-fetched
+	// submitted) asset row even when the poll payload omits provider/model.
 	if _, err := tx.Exec(ctx,
-		`UPDATE assets SET status='submitted', external_job_id=$2, submitted_at=now() WHERE id=$1 AND status='generating'`,
-		asset.ID, sub.ExternalJobID); err != nil {
+		`UPDATE assets SET status='submitted', external_job_id=$2, provider=$3, model=$4, submitted_at=now() WHERE id=$1 AND status='generating'`,
+		asset.ID, sub.ExternalJobID, sub.Provider, sub.Model); err != nil {
 		return fmt.Errorf("worker: submit set submitted: %w", err)
 	}
 	cost := int64(estSeconds) * w.perSecondMicros(ctx, sub.Provider, sub.Model)
@@ -1008,10 +1033,25 @@ func (w *Worker) pollAsync(ctx, cctx context.Context, c claimed, asset assets.As
 	}
 }
 
-// rescheduleOrCancel reschedules a still-pending poll, OR — when the reschedule
-// guard finds 0 rows (the todo was canceled mid-flight, spec §5.4 local cancel)
-// — stops polling by returning a cancel signal (the project Cancel sweep
-// terminal-states the submitted asset).
+// rescheduleOrCancel reschedules a still-pending poll, OR — when the guarded
+// reschedule finds 0 rows — disambiguates WHY before deciding (F4, spec
+// §5.4/§5.5). The guard `locked_by=$worker AND status='running'` yields 0 rows
+// in TWO distinct races:
+//
+//  1. Local cancel: the project Cancel sweep flipped the todo to 'canceled'
+//     (and terminal-stated the submitted asset). This worker stops; the asset is
+//     already canceled, so a benign errLostLease (no discard) is correct.
+//  2. Cross-worker reclaim: this worker's lease expired and a DIFFERENT worker
+//     stuck-reclaimed the todo (now status='running' locked_by=other), driving a
+//     HEALTHY, externally-running, PAID job. This stale worker must NOT treat
+//     that as a cancel — discarding would terminal-state a live paid asset. It
+//     returns errLostLease so process just stops and lets the new owner finish.
+//
+// Re-reading the todo distinguishes them. Only a genuinely terminal todo
+// (status NOT 'running') is a cancel — and even then the cancel sweep owns the
+// asset, so we still return the benign errLostLease (process must NOT discard a
+// row a different worker may own). A 'running' row (reclaimed) is unambiguously
+// case 2: stop quietly.
 func (w *Worker) rescheduleOrCancel(ctx context.Context, c claimed, pollAttempts int) (string, error) {
 	// I4: bumpPoll=true → the increment is atomic inside reschedulePoll's guarded
 	// UPDATE (poll_attempts = poll_attempts + 1), NOT written from pollAttempts.
@@ -1022,9 +1062,20 @@ func (w *Worker) rescheduleOrCancel(ctx context.Context, c claimed, pollAttempts
 		return "", err
 	}
 	if !ok {
-		// Todo no longer running (canceled): stop polling. Not errRescheduled —
-		// process's normal path will MarkDone-no-op + discard handles the asset.
-		return "", fmt.Errorf("worker: async todo no longer running (canceled)")
+		// 0 rows: either local-cancel (terminal todo) or cross-worker reclaim
+		// (running todo owned by another lease). Both are benign for THIS worker:
+		// stop polling without MarkDone/fail/discard. Re-read only to log which.
+		var status, lockedBy string
+		_ = w.cfg.Pool.QueryRow(ctx, `SELECT status, locked_by FROM todos WHERE id=$1`, c.todoID).
+			Scan(&status, &lockedBy)
+		if status == "running" && lockedBy != w.cfg.WorkerID {
+			w.cfg.Logger.Info("worker: poll lease reclaimed by another worker; stopping",
+				"todo", c.todoID, "owner", lockedBy)
+		} else {
+			w.cfg.Logger.Info("worker: poll todo no longer claimable (canceled); stopping",
+				"todo", c.todoID, "status", status)
+		}
+		return "", errLostLease
 	}
 	return "", errRescheduled
 }
@@ -1056,11 +1107,17 @@ func (w *Worker) completeAsync(cctx context.Context, c claimed, asset assets.Ass
 	} else {
 		blobKey = ""
 	}
-	if err := w.cfg.Assets.SetBlob(cctx, asset.ID, blobKey, res.URL, res.Provider, res.Model, "pending_acceptance"); err != nil {
+	// F3: real providers often return only status+URL on Poll (no provider/model).
+	// Fall back to the provider/model stashed on the asset row at submit so the
+	// poll-done cost backfill prices correctly instead of overwriting the
+	// pre-registered submit estimate with cost_micros=0.
+	provider := firstNonEmpty(res.Provider, asset.Provider)
+	model := firstNonEmpty(res.Model, asset.Model)
+	if err := w.cfg.Assets.SetBlob(cctx, asset.ID, blobKey, res.URL, provider, model, "pending_acceptance"); err != nil {
 		return "", fmt.Errorf("worker: async set blob: %w", err)
 	}
 	seconds := duration
-	cost := int64(seconds) * w.perSecondMicros(cctx, res.Provider, res.Model)
+	cost := int64(seconds) * w.perSecondMicros(cctx, provider, model)
 	if w.cfg.Cost != nil {
 		_ = w.cfg.Cost.UpdateGenerationByAssetTodo(cctx, asset.ID, c.todoID, seconds, cost)
 	}

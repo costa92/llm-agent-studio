@@ -20,6 +20,10 @@ type FakeAsync struct {
 	pollsToDone int            // Poll calls returning Pending before Done (>=1)
 	jobs        map[string]int // jobID → polls seen so far
 	result      GenResult
+	// PollOmitsProviderModel models real providers whose Poll returns only
+	// status+URL/bytes (no provider/model echo). When true the Done PollResult
+	// strips Provider/Model so callers must source pricing from elsewhere (F3).
+	PollOmitsProviderModel bool
 }
 
 // NewFakeAsync builds a FakeAsync. pollsToDone<1 is clamped to 1.
@@ -60,7 +64,11 @@ func (f *FakeAsync) Poll(_ context.Context, jobID string) (PollResult, error) {
 	if f.jobs[jobID] < f.pollsToDone {
 		return PollResult{Status: PollPending}, nil
 	}
-	return PollResult{Status: PollDone, Result: f.result}, nil
+	res := f.result
+	if f.PollOmitsProviderModel {
+		res.Provider, res.Model = "", "" // real provider: status+URL only on poll
+	}
+	return PollResult{Status: PollDone, Result: res}, nil
 }
 
 // Generate is the convenience "submit then block-poll to done" form (single
