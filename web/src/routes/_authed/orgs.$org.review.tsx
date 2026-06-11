@@ -1,16 +1,117 @@
-import { createFileRoute } from "@tanstack/react-router"
+import { createFileRoute, useNavigate } from "@tanstack/react-router"
+import { z } from "zod"
+import { toast } from "sonner"
+import { useRole } from "@/app/rbac"
+import { ReviewBoardView } from "@/features/review/ReviewBoardPage"
+import {
+  useAccept,
+  useAsset,
+  useRegenerate,
+  useReject,
+  useReviewQueue,
+} from "@/features/review/api"
+import { hitlErrorMessage } from "@/features/review/hitlError"
 
-// T4 占位 —— T11 实现 HITL 审核看板（admin 门禁）。
+// T11：HITL 审核看板（admin 门禁，accept/reject/regenerate，版本血缘）。
+// ?asset= typed search param 控制 Drawer 开合（UI-spec §7.6 / 5.1）。
+const reviewSearchSchema = z.object({
+  asset: z.string().optional(),
+})
+
 export const Route = createFileRoute("/_authed/orgs/$org/review")({
+  validateSearch: reviewSearchSchema,
   component: ReviewPage,
 })
 
 function ReviewPage() {
   const { org } = Route.useParams()
+  const { asset: selectedId } = Route.useSearch()
+  const navigate = useNavigate()
+  const { isAdmin } = useRole(org)
+
+  const queue = useReviewQueue(org)
+  const detail = useAsset(selectedId ?? "")
+  const accept = useAccept(org)
+  const reject = useReject(org)
+  const regenerate = useRegenerate(org)
+
+  // 更新 ?asset=（null = 关闭 Drawer）。
+  function selectAsset(id: string | null): void {
+    void navigate({
+      to: "/orgs/$org/review",
+      params: { org },
+      search: id ? { asset: id } : {},
+    })
+  }
+
+  function handleAccept(id: string): void {
+    accept.mutate(id, {
+      onSuccess: () => {
+        toast.success("已采纳")
+        selectAsset(null)
+      },
+      // 非 pending → 409 防重 toast。
+      onError: (err) => toast.error(hitlErrorMessage(err)),
+    })
+  }
+
+  // 退回走可撤销 toast（UI-spec §11 默认决策 1，不弹模态）。
+  // 注：撤销仅是 UX 取消意图——后端无 un-reject 端点，故在确认窗口内才真正提交 reject。
+  function handleReject(id: string): void {
+    let undone = false
+    toast("已退回该资产", {
+      duration: 5000,
+      action: {
+        label: "撤销",
+        onClick: () => {
+          undone = true
+        },
+      },
+      onAutoClose: () => {
+        if (undone) return
+        reject.mutate(id, {
+          onSuccess: () => selectAsset(null),
+          onError: (err) => toast.error(hitlErrorMessage(err)),
+        })
+      },
+      onDismiss: () => {
+        if (undone) return
+        reject.mutate(id, {
+          onSuccess: () => selectAsset(null),
+          onError: (err) => toast.error(hitlErrorMessage(err)),
+        })
+      },
+    })
+  }
+
+  function handleRegenerate(id: string, prompt: string): void {
+    regenerate.mutate(
+      { id, prompt },
+      {
+        onSuccess: () => {
+          toast.success("已提交重生成")
+          selectAsset(null)
+        },
+        // 非 pending → 409；配额超限 → 429。
+        onError: (err) => toast.error(hitlErrorMessage(err)),
+      },
+    )
+  }
+
   return (
-    <div className="p-6 text-text-2">
-      <h1 className="text-text-1">审核</h1>
-      <p className="text-text-3">org: {org}</p>
-    </div>
+    <ReviewBoardView
+      queue={queue.data}
+      isLoading={queue.isLoading}
+      isError={queue.isError}
+      onRetry={() => void queue.refetch()}
+      isAdmin={isAdmin}
+      selectedId={selectedId ?? null}
+      onSelect={selectAsset}
+      detail={detail.data}
+      detailLoading={selectedId != null && detail.isLoading}
+      onAccept={handleAccept}
+      onReject={handleReject}
+      onRegenerate={handleRegenerate}
+    />
   )
 }
