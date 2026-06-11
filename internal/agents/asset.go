@@ -41,12 +41,12 @@ func NewAssetAgent(builder *prompt.Builder, gen generate.MediaGenerator) *AssetA
 	return &AssetAgent{builder: builder, gen: gen}
 }
 
-// Run builds the prompt then calls the generator. The generator error (e.g. a
-// provider failure or fake exhaustion) propagates so the worker can retry/fail
-// the todo (spec §7.3 step 4).
-func (a *AssetAgent) Run(ctx context.Context, in AssetInput) (AssetOutput, error) {
+// RunWith is Run with an explicit generator (M3 模型路由): the worker resolves
+// the org's default model_config through the registry and passes the resolved
+// generator here. Run keeps the bound default for un-routed callers.
+func (a *AssetAgent) RunWith(ctx context.Context, gen generate.MediaGenerator, in AssetInput) (AssetOutput, error) {
 	built := a.builder.Build(in.ShotPrompt, in.Style)
-	res, err := a.gen.Generate(ctx, generate.GenRequest{Prompt: built, N: 1, Size: in.Size})
+	res, err := gen.Generate(ctx, generate.GenRequest{Prompt: built, N: 1, Size: in.Size})
 	if err != nil {
 		return AssetOutput{}, fmt.Errorf("asset: generate: %w", err)
 	}
@@ -55,4 +55,10 @@ func (a *AssetAgent) Run(ctx context.Context, in AssetInput) (AssetOutput, error
 		Provider: res.Provider, Model: res.Model, Tokens: res.Tokens,
 		ImageCount: res.ImageCount, LatencyMS: res.LatencyMS,
 	}, nil
+}
+
+// Run builds the prompt then calls the bound generator. The generator error
+// propagates so the worker can retry/fail the todo (spec §7.3 step 4).
+func (a *AssetAgent) Run(ctx context.Context, in AssetInput) (AssetOutput, error) {
+	return a.RunWith(ctx, a.gen, in)
 }

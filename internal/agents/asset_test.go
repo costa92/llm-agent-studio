@@ -37,3 +37,21 @@ func TestAssetAgentPropagatesGenError(t *testing.T) {
 		t.Fatalf("expected error from exhausted generator")
 	}
 }
+
+func TestAssetAgentRunWithOverridesGenerator(t *testing.T) {
+	bound := generate.NewFakeLooping(generate.GenResult{Provider: "bound", Model: "b", Bytes: []byte("X"), ImageCount: 1})
+	routed := generate.NewFakeLooping(generate.GenResult{Provider: "routed", Model: "r", Bytes: []byte("Y"), ImageCount: 1})
+	a := NewAssetAgent(prompt.NewBuilder(), bound)
+	out, err := a.RunWith(context.Background(), routed, AssetInput{ShotPrompt: "a cafe"})
+	if err != nil {
+		t.Fatalf("RunWith: %v", err)
+	}
+	if out.Provider != "routed" {
+		t.Fatalf("RunWith must use the explicit generator, got provider %q", out.Provider)
+	}
+	// Run still uses the bound default.
+	out2, err := a.Run(context.Background(), AssetInput{ShotPrompt: "a cafe"})
+	if err != nil || out2.Provider != "bound" {
+		t.Fatalf("Run must keep the bound generator: %+v err=%v", out2, err)
+	}
+}

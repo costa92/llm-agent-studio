@@ -14,6 +14,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/cost"
 	"github.com/costa92/llm-agent-studio/internal/events"
 	"github.com/costa92/llm-agent-studio/internal/generate"
+	"github.com/costa92/llm-agent-studio/internal/models"
 	"github.com/costa92/llm-agent-studio/internal/project"
 	"github.com/costa92/llm-agent-studio/internal/prompt"
 	"github.com/costa92/llm-agent-studio/internal/storage"
@@ -167,5 +168,54 @@ func TestRunStoryboardFanOutIsIdempotent(t *testing.T) {
 	_ = pool.QueryRow(ctx, `SELECT count(*) FROM todos WHERE project_id=$1 AND type='asset'`, pid).Scan(&assetTodos)
 	if shots != 3 || assetTodos != 3 {
 		t.Fatalf("idempotency broken: after 2 runs shots=%d assetTodos=%d (want 3/3)", shots, assetTodos)
+	}
+}
+
+func TestRunAssetRoutesViaOrgDefaultModelConfig(t *testing.T) {
+	pool := assetTestPool(t)
+	ctx := context.Background()
+	orgID := "org_route_" + randHex3()
+	var pid string
+	_ = pool.QueryRow(ctx,
+		`INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),$1,'p','u') RETURNING id`,
+		orgID).Scan(&pid)
+	todoID := newID()
+	_, _ = pool.Exec(ctx,
+		`INSERT INTO todos (id,project_id,plan_id,type,status,input_json) VALUES ($1,$2,'plan','asset','running',$3)`,
+		todoID, pid, `{"shotId":"s1","shotPrompt":"a teahouse","style":""}`)
+
+	defGen := generate.NewFakeLooping(generate.GenResult{Provider: "default", Model: "d", Bytes: []byte("D"), ImageCount: 1})
+	orgGen := generate.NewFakeLooping(generate.GenResult{Provider: "fakeB", Model: "mB", Bytes: []byte("B"), ImageCount: 1})
+	reg := generate.NewRegistry()
+	reg.SetDefault(defGen)
+	reg.Register("fakeB", "mB", orgGen)
+
+	ms := models.New(pool)
+	if _, err := ms.Create(ctx, models.CreateInput{
+		OrgID: orgID, Kind: "image", Provider: "fakeB", Model: "mB", Enabled: true, IsDefault: true,
+	}); err != nil {
+		t.Fatalf("create model config: %v", err)
+	}
+
+	w := New(Config{
+		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
+		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), defGen),
+		Blob:     blob.NewFake(),
+		Assets:   assets.New(pool),
+		Cost:     cost.New(pool),
+		Models:   ms,
+		Registry: reg,
+		WorkerID: "router", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
+	})
+	if _, err := w.runAsset(ctx, claimed{todoID: todoID, projectID: pid, typ: "asset", attempts: 1,
+		input: []byte(`{"shotId":"s1","shotPrompt":"a teahouse","style":""}`)}); err != nil {
+		t.Fatalf("runAsset: %v", err)
+	}
+	var provider string
+	if err := pool.QueryRow(ctx, `SELECT provider FROM assets WHERE project_id=$1`, pid).Scan(&provider); err != nil {
+		t.Fatalf("load asset: %v", err)
+	}
+	if provider != "fakeB" {
+		t.Fatalf("org default model config did not take effect: asset provider = %q, want fakeB", provider)
 	}
 }

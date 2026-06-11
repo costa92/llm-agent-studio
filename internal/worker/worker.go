@@ -353,9 +353,30 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 		created = c2
 	}
 
-	out, gerr := w.cfg.Asset.Run(ctx, studioagents.AssetInput{
+	// M3 模型路由 (M2 carry #1): the org's default model_config resolves through
+	// the registry to a concrete generator; no default / lookup failure falls
+	// back to the agent's bound env-default generator. Resolution errors are
+	// deliberately non-fatal (routing must never break generation).
+	agentIn := studioagents.AssetInput{
 		ShotPrompt: firstNonEmpty(in.EditedPrompt, in.ShotPrompt), Style: in.Style,
-	})
+	}
+	var routed generate.MediaGenerator
+	if w.cfg.Models != nil && w.cfg.Registry != nil {
+		if orgID, oerr := w.cfg.Projects.OrgIDForProject(ctx, c.projectID); oerr == nil {
+			if provider, model, ok, derr := w.cfg.Models.DefaultForOrg(ctx, orgID, "image"); derr == nil && ok {
+				if g, rerr := w.cfg.Registry.Resolve(provider, model); rerr == nil {
+					routed = g
+				}
+			}
+		}
+	}
+	var out studioagents.AssetOutput
+	var gerr error
+	if routed != nil {
+		out, gerr = w.cfg.Asset.RunWith(ctx, routed, agentIn)
+	} else {
+		out, gerr = w.cfg.Asset.Run(ctx, agentIn)
+	}
 	if gerr != nil {
 		// Mark the asset failed so it isn't stuck 'generating'.
 		_ = w.cfg.Assets.SetBlob(ctx, created.id, "", "", "", "", "failed")

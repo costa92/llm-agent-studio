@@ -17,8 +17,10 @@ import (
 	authztoken "github.com/costa92/llm-agent-authz/token"
 	"github.com/costa92/llm-agent-contract/llm"
 	deepseekprovider "github.com/costa92/llm-agent-providers/deepseek"
+	googleprovider "github.com/costa92/llm-agent-providers/google"
 	minimaxprovider "github.com/costa92/llm-agent-providers/minimax"
 	openaiprovider "github.com/costa92/llm-agent-providers/openai"
+	volcengineprovider "github.com/costa92/llm-agent-providers/volcengine"
 
 	studioagents "github.com/costa92/llm-agent-studio/internal/agents"
 	"github.com/costa92/llm-agent-studio/internal/assets"
@@ -140,11 +142,14 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		return nil, nil, err
 	}
 	registry.SetDefault(gen)
-	// Register catalog entries to the same default generator's provider/model so
-	// model_configs resolving to a catalog entry finds a generator (M2: one shared
-	// image generator; per-provider routing is M3).
-	for _, e := range models.Catalog() {
-		registry.Register(e.Provider, e.Model, gen)
+	// M3 模型路由: register a REAL adapter per catalog entry whose provider has a
+	// key configured; un-keyed providers resolve to the env default generator.
+	if err := registerImageGenerators(registry, cfg); err != nil {
+		st.Close()
+		return nil, nil, err
+	}
+	if registryHook != nil {
+		registryHook(registry) // e2e seam: inject distinguishable fakes
 	}
 
 	promptBuilder := prompt.NewBuilder()
@@ -261,6 +266,49 @@ func buildGenerator(cfg config.Config) (generate.MediaGenerator, error) {
 		}
 		return genimage.New(oa, nil), nil
 	}
+}
+
+// registryHook lets e2e mutate the generator registry after assembly (register
+// extra fakes for the routing e2e). nil in production.
+var registryHook func(*generate.Registry)
+
+// registerImageGenerators registers one image adapter per catalog entry whose
+// provider has an API key configured (M3 模型管理面接线). The contract types are
+// verified: all four providers implement llm.ImageGenerator (providers v0.7.0).
+func registerImageGenerators(reg *generate.Registry, cfg config.Config) error {
+	for _, e := range models.Catalog() {
+		var ig llm.ImageGenerator
+		var err error
+		switch e.Provider {
+		case "openai":
+			if cfg.OpenAIAPIKey == "" {
+				continue
+			}
+			ig, err = openaiprovider.New(openaiprovider.WithModel(e.Model), openaiprovider.WithAPIKey(cfg.OpenAIAPIKey))
+		case "google":
+			if cfg.GoogleAPIKey == "" {
+				continue
+			}
+			ig, err = googleprovider.New(googleprovider.WithModel(e.Model), googleprovider.WithAPIKey(cfg.GoogleAPIKey))
+		case "minimax":
+			if cfg.MinimaxAPIKey == "" {
+				continue
+			}
+			ig, err = minimaxprovider.New(minimaxprovider.WithModel(e.Model), minimaxprovider.WithAPIKey(cfg.MinimaxAPIKey))
+		case "volcengine":
+			if cfg.VolcengineAPIKey == "" {
+				continue
+			}
+			ig, err = volcengineprovider.New(volcengineprovider.WithModel(e.Model), volcengineprovider.WithAPIKey(cfg.VolcengineAPIKey))
+		default:
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("studiod: build %s/%s image generator: %w", e.Provider, e.Model, err)
+		}
+		reg.Register(e.Provider, e.Model, genimage.New(ig, nil))
+	}
+	return nil
 }
 
 // blobServerOrNil avoids handing NewMux a typed-nil *localfs.Store wrapped in the
