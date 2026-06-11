@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -198,7 +199,15 @@ func (w *Worker) process(ctx context.Context, c claimed) {
 	}
 	if !done {
 		// Todo no longer 'running' (e.g. project canceled): discard the work,
-		// don't emit todo_finished or unblock/refresh. Correct for a cancel.
+		// don't emit todo_finished or unblock/refresh. For an asset todo the
+		// runAsset above may have JUST flipped the row to pending_acceptance
+		// (cancel raced between SetBlob and MarkDone) — push it to a terminal
+		// 'canceled' so it doesn't strand in review (M3 取消语义). Known window
+		// (documented in T16): in that race runAsset already ran to COMPLETION —
+		// the generation cost is booked (intentional: real money was spent) and
+		// the asset_generated SSE event (status pending_acceptance) may have
+		// gone out before the canceled flip.
+		w.discardCanceledAsset(ctx, c, outputRef)
 		return
 	}
 	_, _ = w.cfg.Events.Append(ctx, c.projectID, "todo_finished", c.todoID, map[string]any{"type": c.typ, "outputRef": outputRef})
@@ -512,3 +521,18 @@ func (w *Worker) fail(ctx context.Context, c claimed, cause error) {
 }
 
 func bytesReader(b []byte) *bytes.Reader { return bytes.NewReader(b) }
+
+// discardCanceledAsset terminal-states the asset produced by a discarded
+// (canceled mid-flight) asset todo. Best-effort: transition failures only mean
+// the cancel sweep already terminal-stated the row.
+func (w *Worker) discardCanceledAsset(ctx context.Context, c claimed, outputRef string) {
+	if c.typ != "asset" || !strings.HasPrefix(outputRef, "asset:") || w.cfg.Assets == nil {
+		return
+	}
+	id := strings.TrimPrefix(outputRef, "asset:")
+	for _, from := range []string{"pending_acceptance", "generating"} {
+		if ok, err := w.cfg.Assets.TransitionStatus(ctx, id, from, "canceled"); err == nil && ok {
+			return
+		}
+	}
+}

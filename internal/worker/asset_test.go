@@ -219,3 +219,48 @@ func TestRunAssetRoutesViaOrgDefaultModelConfig(t *testing.T) {
 		t.Fatalf("org default model config did not take effect: asset provider = %q, want fakeB", provider)
 	}
 }
+
+func TestProcessDiscardsAssetWhenTodoCanceledMidFlight(t *testing.T) {
+	// Race window: cancel lands AFTER SetBlob flipped the asset to
+	// pending_acceptance but BEFORE MarkDone. MarkDone returns false (todo no
+	// longer 'running'); the M3 discard path must push the orphan asset to a
+	// terminal 'canceled' instead of stranding it in review.
+	pool := assetTestPool(t)
+	ctx := context.Background()
+	var pid string
+	_ = pool.QueryRow(ctx, `INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),'org_dc','p','u') RETURNING id`).Scan(&pid)
+	todoID := newID()
+	_, _ = pool.Exec(ctx,
+		`INSERT INTO todos (id,project_id,plan_id,type,status,input_json) VALUES ($1,$2,'plan','asset','running',$3)`,
+		todoID, pid, `{"shotId":"s1","shotPrompt":"x","style":""}`)
+	// Cancel the project FIRST: the todo leaves 'running', generating assets are
+	// swept; the worker then completes its in-flight processing of the claim.
+	if err := project.New(pool).Cancel(ctx, pid); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	fake := generate.NewFakeLooping(generate.GenResult{Bytes: []byte("PNG"), MimeType: "image/png", Provider: "fake", Model: "m", ImageCount: 1})
+	w := New(Config{
+		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
+		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
+		Blob:     blob.NewFake(),
+		Assets:   assets.New(pool),
+		Cost:     cost.New(pool),
+		WorkerID: "discarder", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
+	})
+	w.process(ctx, claimed{todoID: todoID, projectID: pid, typ: "asset", attempts: 1,
+		input: []byte(`{"shotId":"s1","shotPrompt":"x","style":""}`)})
+	// The asset row created during processing must NOT be left pending_acceptance.
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM assets WHERE project_id=$1`, pid).Scan(&status); err != nil {
+		t.Fatalf("load asset: %v", err)
+	}
+	if status != "canceled" {
+		t.Fatalf("orphan asset status = %q, want canceled", status)
+	}
+	// And no todo_finished event was emitted for the discarded work.
+	var nFinished int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM run_events WHERE project_id=$1 AND kind='todo_finished'`, pid).Scan(&nFinished)
+	if nFinished != 0 {
+		t.Fatalf("discarded work must not emit todo_finished, got %d", nFinished)
+	}
+}
