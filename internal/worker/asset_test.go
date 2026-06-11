@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -262,5 +263,106 @@ func TestProcessDiscardsAssetWhenTodoCanceledMidFlight(t *testing.T) {
 	_ = pool.QueryRow(ctx, `SELECT count(*) FROM run_events WHERE project_id=$1 AND kind='todo_finished'`, pid).Scan(&nFinished)
 	if nFinished != 0 {
 		t.Fatalf("discarded work must not emit todo_finished, got %d", nFinished)
+	}
+}
+
+// slowGen blocks until the ctx is canceled — proves the per-call timeout
+// (WORKER_CALL_TIMEOUT < lease) bounds a single agent/generator call.
+type slowGen struct{}
+
+func (slowGen) Kind() string { return "image" }
+func (slowGen) Generate(ctx context.Context, _ generate.GenRequest) (generate.GenResult, error) {
+	<-ctx.Done()
+	return generate.GenResult{}, ctx.Err()
+}
+
+func TestProcessAppliesCallTimeout(t *testing.T) {
+	pool := assetTestPool(t)
+	ctx := context.Background()
+	var pid string
+	_ = pool.QueryRow(ctx, `INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),'org_to','p','u') RETURNING id`).Scan(&pid)
+	todoID := newID()
+	_, _ = pool.Exec(ctx,
+		`INSERT INTO todos (id,project_id,plan_id,type,status,input_json) VALUES ($1,$2,'plan','asset','running',$3)`,
+		todoID, pid, `{"shotId":"s1","shotPrompt":"x","style":""}`)
+	w := New(Config{
+		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
+		Asset:       studioagents.NewAssetAgent(prompt.NewBuilder(), slowGen{}),
+		Blob:        blob.NewFake(),
+		Assets:      assets.New(pool),
+		Cost:        cost.New(pool),
+		WorkerID:    "timeouter",
+		Lease:       time.Minute,
+		MaxAttempts: 1, // exhaust on first failure → terminal failed
+		BaseBackoff: time.Millisecond,
+		CallTimeout: 50 * time.Millisecond,
+	})
+	done := make(chan struct{})
+	go func() {
+		w.process(ctx, claimed{todoID: todoID, projectID: pid, typ: "asset", attempts: 1,
+			input: []byte(`{"shotId":"s1","shotPrompt":"x","style":""}`)})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("process did not return — call timeout not applied")
+	}
+	var status, errMsg string
+	_ = pool.QueryRow(ctx, `SELECT status, error FROM todos WHERE id=$1`, todoID).Scan(&status, &errMsg)
+	if status != "failed" || !strings.Contains(errMsg, "deadline") {
+		t.Fatalf("todo = %q err=%q, want failed with deadline error", status, errMsg)
+	}
+	// 评审修复 I1: the failure cleanup must outlive the expired dispatch ctx —
+	// the asset row terminal-states to 'failed'; it must NOT strand in
+	// 'generating' (cleanup SetBlob on the timed-out ctx would silently no-op).
+	var assetStatus string
+	if err := pool.QueryRow(ctx, `SELECT status FROM assets WHERE project_id=$1`, pid).Scan(&assetStatus); err != nil {
+		t.Fatalf("load asset: %v", err)
+	}
+	if assetStatus != "failed" {
+		t.Fatalf("asset status = %q, want failed (cleanup ran on an expired ctx?)", assetStatus)
+	}
+}
+
+func TestRunStoryboardUsesParentScriptTodo(t *testing.T) {
+	// M1 carry: "latest script ORDER BY created_at DESC" picks the WRONG script
+	// when a newer one exists (e.g. a re-run). The storyboard todo's depends_on
+	// parent carries output_ref='script:<id>' — resolve through it.
+	pool := assetTestPool(t)
+	ctx := context.Background()
+	var pid string
+	_ = pool.QueryRow(ctx, `INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),'org_par','p','u') RETURNING id`).Scan(&pid)
+	// The REAL upstream script + its done script todo.
+	scriptID := newID()
+	_, _ = pool.Exec(ctx, `INSERT INTO scripts (id, project_id, todo_id, content_json) VALUES ($1,$2,'t0','{}')`, scriptID, pid)
+	parentTodo := newID()
+	_, _ = pool.Exec(ctx,
+		`INSERT INTO todos (id,project_id,plan_id,type,status,output_ref) VALUES ($1,$2,'plan','script','done',$3)`,
+		parentTodo, pid, "script:"+scriptID)
+	// A DECOY script created later — the old heuristic would pick this one.
+	decoyID := newID()
+	_, _ = pool.Exec(ctx,
+		`INSERT INTO scripts (id, project_id, todo_id, content_json, created_at) VALUES ($1,$2,'t9','{}', now() + interval '1 hour')`,
+		decoyID, pid)
+	// The storyboard todo depends on the real script todo.
+	sbTodo := newID()
+	_, _ = pool.Exec(ctx,
+		`INSERT INTO todos (id,project_id,plan_id,type,status,depends_on,input_json) VALUES ($1,$2,'plan','storyboard','running',$3,'{}')`,
+		sbTodo, pid, []string{parentTodo})
+	fake := generate.NewFakeLooping(generate.GenResult{Bytes: []byte("P"), MimeType: "image/png", Provider: "fake", Model: "m", ImageCount: 1})
+	w := New(Config{
+		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
+		Storyboard: newStoryboardAgentWithShots(t, 1),
+		Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
+		Blob:       blob.NewFake(), Assets: assets.New(pool), Cost: cost.New(pool),
+		WorkerID: "parent", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
+	})
+	ref, err := w.runStoryboard(ctx, claimed{todoID: sbTodo, projectID: pid, typ: "storyboard", attempts: 1, input: []byte(`{}`)})
+	if err != nil {
+		t.Fatalf("runStoryboard: %v", err)
+	}
+	if ref != "shots:"+scriptID {
+		t.Fatalf("storyboard resolved %q, want shots:%s (the depends_on parent, not the newer decoy)", ref, scriptID)
 	}
 }

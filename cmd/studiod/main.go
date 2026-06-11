@@ -172,6 +172,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 			Lease:       cfg.WorkerLease,
 			MaxAttempts: cfg.WorkerMaxAttempt,
 			BaseBackoff: cfg.WorkerBackoff,
+			CallTimeout: cfg.WorkerCallTimeout,
 		})
 		wg.Add(1)
 		go func() { defer wg.Done(); w.Run(workerCtx, cfg.WorkerPoll) }()

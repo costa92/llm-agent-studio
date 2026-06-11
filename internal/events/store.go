@@ -5,8 +5,10 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -43,6 +45,46 @@ func (s *Store) Append(ctx context.Context, projectID, kind, todoID string, payl
 		return 0, fmt.Errorf("events: append: %w", err)
 	}
 	return seq, nil
+}
+
+// AppendRunDone appends run_done at most once per run (M1 carry: two workers
+// can both observe allDone and double-emit). The run boundary is the latest
+// planner_started seq — a re-run (重跑=重规划) emits planner_started again,
+// opening a fresh dedup window. Returns ok=false when this run already has a
+// run_done. The NOT-EXISTS check alone is NOT atomic under READ COMMITTED
+// (two workers can both pass it before either insert commits — 评审修复 I2),
+// so the insert runs in a transaction that first takes a per-project advisory
+// xact lock: the second worker blocks until the first commits, then its
+// NOT EXISTS sees the fresh run_done and skips.
+func (s *Store) AppendRunDone(ctx context.Context, projectID string) (int64, bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, false, fmt.Errorf("events: append run_done: begin: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, projectID); err != nil {
+		return 0, false, fmt.Errorf("events: append run_done: lock: %w", err)
+	}
+	var seq int64
+	err = tx.QueryRow(ctx, `
+		INSERT INTO run_events (project_id, kind, todo_id, payload)
+		SELECT $1, 'run_done', '', NULL
+		WHERE NOT EXISTS (
+			SELECT 1 FROM run_events
+			WHERE project_id=$1 AND kind='run_done'
+			  AND seq > COALESCE((SELECT max(seq) FROM run_events WHERE project_id=$1 AND kind='planner_started'), 0)
+		)
+		RETURNING seq`, projectID).Scan(&seq)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil // deferred rollback releases the lock
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("events: append run_done: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, false, fmt.Errorf("events: append run_done: commit: %w", err)
+	}
+	return seq, true, nil
 }
 
 // List returns events for a project with seq > afterSeq, oldest first, up to

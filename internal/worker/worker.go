@@ -49,6 +49,7 @@ type Config struct {
 	Lease       time.Duration    // default 120s
 	MaxAttempts int              // default 3
 	BaseBackoff time.Duration    // default 2s
+	CallTimeout time.Duration    // per-dispatch ctx timeout; MUST be < Lease (0 = no bound)
 	Clock       func() time.Time // nil → time.Now
 	Logger      *slog.Logger     // nil → slog.Default()
 }
@@ -170,19 +171,27 @@ func (w *Worker) claim(ctx context.Context) (claimed, bool, error) {
 }
 
 // process dispatches by type, writes artifacts, marks done + emits events, or
-// fails with backoff. Emits todo_started before dispatch.
+// fails with backoff. Emits todo_started before dispatch. The dispatch ctx is
+// bounded by CallTimeout (< lease) so a hung LLM/generator call cannot outlive
+// the lease and get double-claimed (M1 carry: no lease renewal).
 func (w *Worker) process(ctx context.Context, c claimed) {
 	_, _ = w.cfg.Events.Append(ctx, c.projectID, "todo_started", c.todoID, map[string]any{"type": c.typ})
 
+	dctx := ctx
+	if w.cfg.CallTimeout > 0 {
+		var cancel context.CancelFunc
+		dctx, cancel = context.WithTimeout(ctx, w.cfg.CallTimeout)
+		defer cancel()
+	}
 	var outputRef string
 	var perr error
 	switch c.typ {
 	case "script":
-		outputRef, perr = w.runScript(ctx, c)
+		outputRef, perr = w.runScript(dctx, c)
 	case "storyboard":
-		outputRef, perr = w.runStoryboard(ctx, c)
+		outputRef, perr = w.runStoryboard(dctx, c)
 	case "asset":
-		outputRef, perr = w.runAsset(ctx, c)
+		outputRef, perr = w.runAsset(dctx, c)
 	default:
 		perr = fmt.Errorf("worker: unknown todo type %q", c.typ)
 	}
@@ -217,7 +226,7 @@ func (w *Worker) process(ctx context.Context, c claimed) {
 		w.cfg.Logger.Warn("worker: refresh status failed", "project", c.projectID, "err", err)
 	}
 	if w.allDone(ctx, c.projectID) {
-		_, _ = w.cfg.Events.Append(ctx, c.projectID, "run_done", "", nil)
+		_, _, _ = w.cfg.Events.AppendRunDone(ctx, c.projectID)
 	}
 }
 
@@ -249,12 +258,31 @@ func (w *Worker) runScript(ctx context.Context, c claimed) (string, error) {
 // runStoryboard reads the latest script for the project, runs the
 // StoryboardAgent, and persists shots rows. outputRef = "shots:<scriptID>".
 func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
+	// Resolve the upstream script through the storyboard todo's depends_on
+	// parent (its output_ref is 'script:<id>') — correct across re-runs where
+	// multiple scripts exist (M1 carry: the created_at DESC heuristic picked
+	// the newest project-wide script). Fallback to the heuristic for graphs
+	// whose storyboard has no script parent edge.
 	var scriptID string
 	var contentJSON []byte
-	if err := w.cfg.Pool.QueryRow(ctx,
-		`SELECT id, content_json FROM scripts WHERE project_id=$1 ORDER BY created_at DESC LIMIT 1`,
-		c.projectID).Scan(&scriptID, &contentJSON); err != nil {
-		return "", fmt.Errorf("worker: load upstream script: %w", err)
+	var parentRef string
+	perr := w.cfg.Pool.QueryRow(ctx, `
+		SELECT t.output_ref FROM todos t
+		JOIN todos sb ON t.id = ANY(sb.depends_on)
+		WHERE sb.id=$1 AND t.type='script' AND t.output_ref LIKE 'script:%'
+		ORDER BY t.updated_at DESC LIMIT 1`, c.todoID).Scan(&parentRef)
+	if perr == nil {
+		scriptID = strings.TrimPrefix(parentRef, "script:")
+		if err := w.cfg.Pool.QueryRow(ctx,
+			`SELECT content_json FROM scripts WHERE id=$1`, scriptID).Scan(&contentJSON); err != nil {
+			return "", fmt.Errorf("worker: load parent script %s: %w", scriptID, err)
+		}
+	} else {
+		if err := w.cfg.Pool.QueryRow(ctx,
+			`SELECT id, content_json FROM scripts WHERE project_id=$1 ORDER BY created_at DESC LIMIT 1`,
+			c.projectID).Scan(&scriptID, &contentJSON); err != nil {
+			return "", fmt.Errorf("worker: load upstream script: %w", err)
+		}
 	}
 	// B1: style is sourced from the projects row, NOT the storyboard todo's
 	// input. The M1 planner only writes input to the script node; every other
@@ -362,6 +390,13 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 		created = c2
 	}
 
+	// Failure cleanup must survive CallTimeout expiry: when the per-call
+	// timeout fires, the dispatch ctx is already done — terminal-stating the
+	// asset on it would silently no-op and strand the row in 'generating'
+	// forever (评审修复 I1). WithoutCancel (Go 1.21+) detaches cancellation
+	// but keeps ctx values.
+	cctx := context.WithoutCancel(ctx)
+
 	// M3 模型路由 (M2 carry #1): the org's default model_config resolves through
 	// the registry to a concrete generator; no default / lookup failure falls
 	// back to the agent's bound env-default generator. Resolution errors are
@@ -388,7 +423,7 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 	}
 	if gerr != nil {
 		// Mark the asset failed so it isn't stuck 'generating'.
-		_ = w.cfg.Assets.SetBlob(ctx, created.id, "", "", "", "", "failed")
+		_ = w.cfg.Assets.SetBlob(cctx, created.id, "", "", "", "", "failed")
 		return "", gerr
 	}
 
@@ -396,7 +431,7 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 	blobKey := "assets/" + c.projectID + "/" + created.id
 	if len(out.Bytes) > 0 {
 		if err := w.cfg.Blob.Put(ctx, blobKey, bytesReader(out.Bytes), out.MimeType); err != nil {
-			_ = w.cfg.Assets.SetBlob(ctx, created.id, "", "", "", "", "failed")
+			_ = w.cfg.Assets.SetBlob(cctx, created.id, "", "", "", "", "failed")
 			return "", fmt.Errorf("worker: blob put: %w", err)
 		}
 	} else {
@@ -507,7 +542,7 @@ func (w *Worker) fail(ctx context.Context, c claimed, cause error) {
 		// run_done so the SSE timeline closes instead of hanging (mirrors the
 		// success path in process()).
 		if w.allDone(ctx, c.projectID) {
-			_, _ = w.cfg.Events.Append(ctx, c.projectID, "run_done", "", nil)
+			_, _, _ = w.cfg.Events.AppendRunDone(ctx, c.projectID)
 		}
 		return
 	}
