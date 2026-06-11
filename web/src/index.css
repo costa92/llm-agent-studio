@@ -147,6 +147,18 @@
   }
 }
 
+/* 制片轨道动画 keyframes（原型 :root 用法）：slate-bar 斜条纹滚动 + running 节点虚线环旋转。 */
+@keyframes slide {
+  to {
+    background-position: 28px 0;
+  }
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* prefers-reduced-motion：停 slide/pulse/spin/条纹动画（UI-spec §9） */
 @media (prefers-reduced-motion: reduce) {
   *,

@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router"
+import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import {
   useCreateProject,
   useProjects,
@@ -13,6 +13,7 @@ export const Route = createFileRoute("/_authed/orgs/$org/projects")({
 
 function ProjectsPage() {
   const { org } = Route.useParams()
+  const navigate = useNavigate()
   const projectsQuery = useProjects(org)
   const stylesQuery = usePromptStyles()
   const createProject = useCreateProject(org)
@@ -28,9 +29,10 @@ function ProjectsPage() {
       canCreate
       styles={stylesQuery.data ?? []}
       onCreate={(input) => createProject.mutateAsync(input)}
-      onOpenProject={() => {
-        // 工作台路由在 T10 接入（projects/$id）；T9 暂为占位。
-      }}
+      onOpenProject={(project) =>
+        // T10：进项目工作台（制片轨道）。
+        navigate({ to: "/projects/$id", params: { id: project.id } })
+      }
     />
   )
 }
