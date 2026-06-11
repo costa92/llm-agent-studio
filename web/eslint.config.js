@@ -26,4 +26,11 @@ export default defineConfig([
       'react-refresh/only-export-components': 'off',
     },
   },
+  {
+    // Context providers colocate the Provider component with its hook (auth.tsx → AuthProvider + useAuth).
+    files: ['src/app/auth.tsx'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
+  },
 ])
