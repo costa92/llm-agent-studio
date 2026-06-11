@@ -288,18 +288,30 @@ export function reduceTimeline(state: TimelineState, frame: SseFrame): TimelineS
     }
 
     case "todo_failed": {
-      if (t === "asset") {
-        // pip → failed（danger）；worker 重试时该 pip 由后续 todo_started 回 running。
+      // ⚠ 真实后端 todo_failed 的 payload 只含 {error:msg}，不带 type 键——
+      //   与同族 todo_ready/started/finished（都带 {type:c.typ}）不一致。
+      //   见 internal/worker/worker.go fail()（:713）与 pollAsync.terminalFail（:1012），
+      //   两处都发 map[string]any{"error": msg}。故此处**必须按 frame.todoId 定位目标**，
+      //   不能复用 payload.type（生产环境恒为 undefined，会漏掉失败态、让 stage 永久卡 running
+      //   而 run_done 又把 runStatus 翻成 done，UI 自相矛盾）。
+      //   注：后端 todo_failed 缺 type 是已知不一致，列为后端跟进项（本里程碑前端独立修复）。
+      //   todoId 已由先行的 todo_ready/started 落在 pip.todoId / stage.todoId 上，足以定位。
+      if (next.pips.some((p) => p.todoId === frame.todoId)) {
+        // asset pip 失败 → pip failed（danger）；worker 重试时该 pip 由后续 todo_started 回 running。
         next = {
           ...next,
           pips: patchPip(next.pips, frame.todoId, { status: "failed" }),
         }
-      } else if (t && TYPE_TO_STAGE[t]) {
-        // 阶段级失败（重试耗尽）→ 该 stage failed；后继 stage 维持 blocked。
-        next = {
-          ...next,
-          stages: patchStage(next.stages, TYPE_TO_STAGE[t], { status: "failed" }),
+      } else {
+        const failedStage = next.stages.find((s) => s.todoId === frame.todoId)
+        if (failedStage) {
+          // 阶段级失败（重试耗尽）→ 该 stage failed；后继 stage 维持 blocked。
+          next = {
+            ...next,
+            stages: patchStage(next.stages, failedStage.id, { status: "failed" }),
+          }
         }
+        // 既非已知 pip 亦非已知 stage → 仅日志（上面已加），不改节点态。
       }
       break
     }

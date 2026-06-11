@@ -3,7 +3,10 @@ import { initialTimeline, reduceTimeline, foldEvents } from "./timeline"
 import type { TimelineState } from "./timeline"
 import type { SseFrame } from "./types"
 
-// 一帧工厂。type 走 payload.type（worker 的 todo_* 事件 payload 形如 {type:"script"}）。
+// 一帧工厂。注意真实后端 payload 形态因事件而异：
+//   todo_ready/started/finished → {type:"script"|"storyboard"|"asset", ...}（带 type）
+//   todo_failed → {error:msg}（**只含 error，不带 type**，见 worker.go fail/terminalFail）。
+// 故失败态的目标定位靠 frame.todoId（pip/stage 上先行落库的 todoId），不靠 payload.type。
 function f(
   seq: number,
   kind: string,
@@ -160,28 +163,64 @@ describe("timeline reducer — S4 asset PipGroup (N from per-shot asset todos)",
 })
 
 describe("timeline reducer — failure + retry (原型第6个 pip 重试范式)", () => {
-  it("todo_failed(type=asset) → pip failed; same todoId todo_started → pip back to running", () => {
+  // ⚠ 真实后端 todo_failed payload 只含 {error}，不带 type——按 frame.todoId 定位目标。
+  it("todo_failed{error}(asset pip, NO type) → pip failed; same todoId todo_started → pip back to running", () => {
     let s = run([
       f(1, "planner_started"),
       f(2, "todo_ready", "a1", { type: "asset" }),
       f(3, "todo_started", "a1", { type: "asset" }),
     ])
-    s = reduceTimeline(s, f(4, "todo_failed", "a1", { type: "asset", error: "boom" }))
+    // 真实线缆：payload 无 type，仅 {error}。靠 todoId=a1 命中已落库的 pip。
+    s = reduceTimeline(s, f(4, "todo_failed", "a1", { error: "boom" }))
     expect(s.pips.find((p) => p.todoId === "a1")?.status).toBe("failed")
     // 重试：同 todoId 再来 todo_started → pip 回 running。
     s = reduceTimeline(s, f(5, "todo_started", "a1", { type: "asset" }))
     expect(s.pips.find((p) => p.todoId === "a1")?.status).toBe("running")
   })
 
-  it("todo_failed(stage-level, type=script) → S2 failed, downstream stays blocked", () => {
+  it("todo_failed{error}(script stage, NO type) → S2 failed, downstream stays blocked", () => {
     const s = run([
       f(1, "planner_started"),
       f(2, "todo_started", "t-s", { type: "script" }),
-      f(3, "todo_failed", "t-s", { type: "script", error: "retries exhausted" }),
+      // 真实线缆：payload 无 type，仅 {error}。靠 todoId=t-s 命中 S2（todo_started 已落 todoId）。
+      f(3, "todo_failed", "t-s", { error: "retries exhausted" }),
     ])
     expect(stage(s, "S2").status).toBe("failed")
     expect(stage(s, "S3").status).toBe("blocked")
     expect(stage(s, "S4").status).toBe("blocked")
+  })
+
+  // 回归（生产真实场景）：storyboard stage 经 todo_ready/started 落 todoId，
+  // 随后 todo_failed{error}（**无 type**）按同 todoId 命中 → S3 failed，绝不卡 running。
+  // 这正是核心 review 暴露的 bug：旧 reducer 按 payload.type 分支，生产环境 type=undefined →
+  // 两个分支都被跳过 → stage 永久 running，而 run_done 又把 runStatus 翻成 done（UI 自相矛盾）。
+  it("regression: storyboard stage failed by todoId (todo_failed{error}, NO type) → S3 failed, NOT stuck running", () => {
+    const s = run([
+      f(1, "planner_started"),
+      f(2, "todo_ready", "t-b", { type: "storyboard" }),
+      f(3, "todo_started", "t-b", { type: "storyboard" }),
+      // 与真实 worker 完全一致的失败帧：仅 {error}，无 type。
+      f(4, "todo_failed", "t-b", { error: "image backend exhausted retries" }),
+      // 终止帧照常到达——若 stage 卡 running 则与此处的 done 自相矛盾。
+      f(5, "run_done"),
+    ])
+    expect(stage(s, "S3").status).toBe("failed")
+    expect(stage(s, "S3").status).not.toBe("running")
+    expect(s.runStatus).toBe("done")
+  })
+
+  // 回归（asset pip 真实场景）：pip 经 todo_ready/started 落 todoId，
+  // 随后 todo_failed{error}（无 type）按同 todoId 命中 → pip failed，绝不卡 running。
+  it("regression: asset pip failed by todoId (todo_failed{error}, NO type) → pip failed, NOT stuck running", () => {
+    const s = run([
+      f(1, "planner_started"),
+      f(2, "todo_ready", "a1", { type: "asset" }),
+      f(3, "todo_started", "a1", { type: "asset" }),
+      f(4, "todo_failed", "a1", { error: "image gen failed" }),
+    ])
+    const pip = s.pips.find((p) => p.todoId === "a1")
+    expect(pip?.status).toBe("failed")
+    expect(pip?.status).not.toBe("running")
   })
 })
 
