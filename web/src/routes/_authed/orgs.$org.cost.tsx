@@ -8,7 +8,6 @@ import {
   useOrgCost,
   useOrgCostProjects,
 } from "@/features/cost/api"
-import { RANGE_PRESETS, rangeToParams } from "@/features/cost/format"
 import { requireOrgParam } from "@/app/org"
 
 // T13：成本中心（admin-only）。导航入口已按角色隐藏（AppShell）；直访路由 → AdminGate 拦。
@@ -22,11 +21,10 @@ function CostPage() {
   const role = useRole(org)
   const [rangeValue, setRangeValue] = useState("30d")
 
-  const preset = RANGE_PRESETS.find((p) => p.value === rangeValue) ?? RANGE_PRESETS[1]
-  const range = rangeToParams(preset)
-
-  const cost = useOrgCost(org, range)
-  const projects = useOrgCostProjects(org, range)
+  // 钩子接 presetValue（稳定字符串）；range 生成挪进 queryFn 闭包，
+  // 避免每次 render 推新 from/to 时间戳让 queryKey 永变 → refetch loop。
+  const cost = useOrgCost(org, rangeValue)
+  const projects = useOrgCostProjects(org, rangeValue)
   const generations = useGenerations(org)
 
   return (
