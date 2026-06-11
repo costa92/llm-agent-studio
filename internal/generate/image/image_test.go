@@ -5,8 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/costa92/llm-agent-contract/llm"
+	"github.com/costa92/llm-agent-studio/internal/fetch"
 	"github.com/costa92/llm-agent-studio/internal/generate"
 )
 
@@ -44,7 +46,7 @@ func TestAdapterURLPullsToBytes(t *testing.T) {
 	gen := New(stubImageGen{resp: llm.ImageResponse{
 		Images:   []llm.GeneratedImage{{URL: srv.URL + "/img.jpg"}},
 		Provider: "minimax", Model: "image-01",
-	}}, srv.Client())
+	}}, fetch.NewLoopbackForTest(5*time.Second, 1<<20, []string{"image/"}))
 	r, err := gen.Generate(context.Background(), generate.GenRequest{Prompt: "x"})
 	if err != nil {
 		t.Fatalf("generate: %v", err)
