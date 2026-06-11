@@ -29,6 +29,29 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.HTTPAddr == "" || cfg.Workers <= 0 {
 		t.Fatalf("defaults not applied: %+v", cfg)
 	}
+	if cfg.WebDir != "" {
+		t.Fatalf("WebDir default = %q, want empty (backend-only)", cfg.WebDir)
+	}
+}
+
+func TestLoadWebDir(t *testing.T) {
+	cfg, err := LoadFromLookup(func(k string) (string, bool) {
+		switch k {
+		case "PG_URL":
+			return "postgres://x", true
+		case "JWT_SECRET":
+			return "s", true
+		case "WEB_DIR":
+			return "web/dist", true
+		}
+		return "", false
+	})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.WebDir != "web/dist" {
+		t.Fatalf("WebDir = %q, want web/dist", cfg.WebDir)
+	}
 }
 
 func TestLoadRejectsMalformedNumbers(t *testing.T) {

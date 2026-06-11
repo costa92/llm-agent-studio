@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
+	"os"
 	"os/signal"
 	"sync"
 	"syscall"
@@ -206,10 +208,10 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 			MaxPollAttempts:    cfg.MaxPollAttempts,
 			LeaseRenewInterval: cfg.LeaseRenewInterval,
 			Lease:              cfg.WorkerLease,
-			MaxAttempts:      cfg.WorkerMaxAttempt,
-			BaseBackoff:      cfg.WorkerBackoff,
-			CallTimeout:      cfg.WorkerCallTimeout,
-			Tracer:           tp.Tracer("studio.worker"),
+			MaxAttempts:        cfg.WorkerMaxAttempt,
+			BaseBackoff:        cfg.WorkerBackoff,
+			CallTimeout:        cfg.WorkerCallTimeout,
+			Tracer:             tp.Tracer("studio.worker"),
 		})
 		wg.Add(1)
 		go func() { defer wg.Done(); w.Run(workerCtx, cfg.WorkerPoll) }()
@@ -228,6 +230,11 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	issuer := authztoken.NewIssuer([]byte(cfg.JWTSecret), cfg.AccessTTL)
 	authService := authzsvc.New(az, issuer, cfg.RefreshTTL)
 	authHandlers := authzhttp.New(authService)
+
+	var webFS fs.FS
+	if cfg.WebDir != "" {
+		webFS = os.DirFS(cfg.WebDir)
+	}
 
 	mux := httpapi.NewMux(httpapi.Deps{
 		Issuer:       issuer,
@@ -249,6 +256,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		Cost:          costStore,
 		PromptBuilder: promptBuilder,
 		GenQuota:      cfg.OrgDailyGenQuota,
+		WebFS:         webFS,
 	})
 
 	cleanup := func() {
