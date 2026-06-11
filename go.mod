@@ -3,6 +3,7 @@ module github.com/costa92/llm-agent-studio
 go 1.26.0
 
 require (
+	github.com/aliyun/aliyun-oss-go-sdk v3.0.2+incompatible
 	github.com/costa92/llm-agent v0.9.0
 	github.com/costa92/llm-agent-authz v0.1.0
 	github.com/costa92/llm-agent-contract v0.5.0
@@ -72,6 +73,7 @@ require (
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
+	golang.org/x/time v0.6.0 // indirect
 	google.golang.org/genai v1.59.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260401024825-9d38bb4040a9 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260401024825-9d38bb4040a9 // indirect
