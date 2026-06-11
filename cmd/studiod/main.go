@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	authzhttp "github.com/costa92/llm-agent-authz/httpapi"
 	authzsvc "github.com/costa92/llm-agent-authz/service"
@@ -30,6 +31,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/config"
 	"github.com/costa92/llm-agent-studio/internal/cost"
 	"github.com/costa92/llm-agent-studio/internal/events"
+	"github.com/costa92/llm-agent-studio/internal/fetch"
 	"github.com/costa92/llm-agent-studio/internal/generate"
 	genimage "github.com/costa92/llm-agent-studio/internal/generate/image"
 	"github.com/costa92/llm-agent-studio/internal/httpapi"
@@ -165,6 +167,14 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	}
 	reviewSvc := review.New(assetStore, todoStore)
 
+	// SSRF-safe video/audio result puller (spec §9.4): content-type allowlist +
+	// 512MB hard cap (no streaming in M4 — memory ceiling ≈ MaxConcurrent×512MB).
+	videoFetcher := fetch.New(fetch.Config{
+		Timeout:             5 * time.Minute,
+		MaxBytes:            cfg.VideoFetchMaxBytes,
+		AllowedContentTypes: []string{"video/", "audio/", "application/octet-stream"},
+	})
+
 	// Worker pool — bounded concurrency (agents call LLMs; slow).
 	workerCtx, stopWorkers := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
@@ -179,6 +189,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 			MaxConcurrentGen:   cfg.MaxConcurrentGen,
 			MaxConcurrentVideo: cfg.MaxConcurrentVideo,
 			MaxConcurrentAudio: cfg.MaxConcurrentAudio,
+			VideoFetcher:       videoFetcher,
 			PollBackoff:        cfg.PollBackoff,
 			MaxPollBackoff:     cfg.MaxPollBackoff,
 			MaxPollAttempts:    cfg.MaxPollAttempts,
@@ -192,6 +203,16 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		wg.Add(1)
 		go func() { defer wg.Done(); w.Run(workerCtx, cfg.WorkerPoll) }()
 	}
+
+	// Orphan reaper — terminal-states 'submitted' assets whose external job
+	// never returned (spec §5.4 M1). TTL = 2× the full poll budget so it only
+	// fires well past any legitimate poll window.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ttl := 2 * time.Duration(cfg.MaxPollAttempts) * cfg.MaxPollBackoff
+		worker.RunOrphanReaper(workerCtx, assetStore, cfg.MaxPollBackoff, ttl)
+	}()
 
 	issuer := authztoken.NewIssuer([]byte(cfg.JWTSecret), cfg.AccessTTL)
 	authService := authzsvc.New(az, issuer, cfg.RefreshTTL)
