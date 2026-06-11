@@ -1,16 +1,36 @@
 import { createFileRoute } from "@tanstack/react-router"
+import {
+  useCreateProject,
+  useProjects,
+  usePromptStyles,
+} from "@/features/projects/api"
+import { ProjectListView } from "@/features/projects/ProjectListPage"
 
-// T4 占位 —— T9 实现项目列表 + 建项目视图。
+// T9：项目列表 + 建项目视图。
 export const Route = createFileRoute("/_authed/orgs/$org/projects")({
   component: ProjectsPage,
 })
 
 function ProjectsPage() {
   const { org } = Route.useParams()
+  const projectsQuery = useProjects(org)
+  const stylesQuery = usePromptStyles()
+  const createProject = useCreateProject(org)
+
   return (
-    <div className="p-6 text-text-2">
-      <h1 className="text-text-1">项目</h1>
-      <p className="text-text-3">org: {org}</p>
-    </div>
+    <ProjectListView
+      projects={projectsQuery.data}
+      isLoading={projectsQuery.isLoading}
+      isError={projectsQuery.isError}
+      onRetry={() => void projectsQuery.refetch()}
+      // 角色门禁：rbac 仅提供 admin 探针；editor 无可探测的只读端点（后端无 editor-gated GET）。
+      // 故按 rbac 文档的"乐观显示 + 后端强制"策略乐观显示新建入口，editor+ 由后端 createProjectHandler 强制。
+      canCreate
+      styles={stylesQuery.data ?? []}
+      onCreate={(input) => createProject.mutateAsync(input)}
+      onOpenProject={() => {
+        // 工作台路由在 T10 接入（projects/$id）；T9 暂为占位。
+      }}
+    />
   )
 }
