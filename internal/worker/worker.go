@@ -485,25 +485,30 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 	} else {
 		blobKey = "" // URL-only fallback (config 只存 URL); url recorded below
 	}
-	if err := w.cfg.Assets.SetBlob(ctx, created.id, blobKey, out.URL, out.Provider, out.Model, "pending_acceptance"); err != nil {
+	// Generation succeeded — money is already spent. Persist the outcome on the
+	// detached cctx so a fired CallTimeout cannot strand the asset in 'generating'
+	// or drop the cost ledger row (终审 nit: bookkeeping of completed work must
+	// not inherit the per-call deadline).
+	if err := w.cfg.Assets.SetBlob(cctx, created.id, blobKey, out.URL, out.Provider, out.Model, "pending_acceptance"); err != nil {
 		return "", fmt.Errorf("worker: asset set blob: %w", err)
 	}
 
 	// M3 自动预审: advisory, post-generation, NEVER fails the todo. HITL stays
-	// the hard gate (spec §7.1: 人工采纳是硬门禁，自动预审仅辅助).
+	// the hard gate (spec §7.1: 人工采纳是硬门禁，自动预审仅辅助). Stays on the
+	// bounded ctx — it issues a fresh LLM call that must not outlive the lease.
 	w.prescreen(ctx, c, created.id, in.Style, out)
 
 	// Ledger row (spec §6 generations).
 	if w.cfg.Cost != nil {
 		// M3: RecordPriced fills cost_micros from the pricing table (M2 carry #2).
-		_ = w.cfg.Cost.RecordPriced(ctx, cost.Generation{
+		_ = w.cfg.Cost.RecordPriced(cctx, cost.Generation{
 			ProjectID: c.projectID, AssetID: created.id, TodoID: c.todoID, Kind: "image",
 			Provider: out.Provider, Model: out.Model, Prompt: out.Prompt,
 			Tokens: out.Tokens, ImageCount: out.ImageCount, LatencyMS: out.LatencyMS,
 		})
 	}
 	// Timeline: asset_generated (待审) — spec §9 SSE event.
-	_, _ = w.cfg.Events.Append(ctx, c.projectID, "asset_generated", c.todoID, map[string]any{"assetId": created.id, "status": "pending_acceptance"})
+	_, _ = w.cfg.Events.Append(cctx, c.projectID, "asset_generated", c.todoID, map[string]any{"assetId": created.id, "status": "pending_acceptance"})
 	return "asset:" + created.id, nil
 }
 
