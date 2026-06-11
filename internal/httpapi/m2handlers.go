@@ -246,6 +246,11 @@ func blobHandler(srv BlobServer) http.HandlerFunc {
 		if ct != "" {
 			w.Header().Set("Content-Type", ct)
 		}
+		// Blobs are provider-fetched bytes served on the app origin: forbid MIME
+		// sniffing and sandbox active content (e.g. scripted SVG) — <img> rendering
+		// is unaffected.
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Content-Security-Policy", "sandbox")
 		_, _ = w.Write(data)
 	}
 }
