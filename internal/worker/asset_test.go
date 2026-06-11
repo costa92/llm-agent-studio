@@ -822,3 +822,71 @@ func TestPollReclaimedByOtherWorkerDoesNotCancel(t *testing.T) {
 
 // errorsIsRescheduled is a test shim around the worker's internal sentinel.
 func errorsIsRescheduled(err error) bool { return err != nil && err.Error() == "worker: todo rescheduled" }
+
+// errorsIsLostLease is a test shim around the worker's internal lost-lease sentinel.
+func errorsIsLostLease(err error) bool {
+	return err != nil && err.Error() == "worker: poll lease lost to another worker"
+}
+
+// TestPollDoneDoubleCompleteDoesNotCancelOrDoubleEmit proves F-INT-1: under a
+// cross-worker reclaim where BOTH in-flight Polls return Done, the winning
+// completeAsync (submitted→pending_acceptance) emits asset_generated once; the
+// LOSING completeAsync for the SAME asset (already pending_acceptance) must bow
+// out via errLostLease — NO duplicate asset_generated, and process must NOT
+// cancel the completed, PAID asset. The SetBlob transition (rowsAffected) is the
+// won/lost arbiter. (The existing F4 test only covers the poll-Pending path.)
+func TestPollDoneDoubleCompleteDoesNotCancelOrDoubleEmit(t *testing.T) {
+	pool := assetTestPool(t)
+	ctx := context.Background()
+	w, pid, _, _ := asyncWorkerSetup(t, pool, 1)
+	in := []byte(`{"shotId":"s1","shotPrompt":"a city","style":"","kind":"video","duration":6}`)
+
+	// Seed a submitted async asset + its running todo, as both racing workers see it.
+	todoID := newID()
+	_, _ = pool.Exec(ctx,
+		`INSERT INTO todos (id,project_id,plan_id,type,status,locked_by,locked_until,poll_attempts,input_json)
+		 VALUES ($1,$2,'plan','asset','running','async',now()+interval '1 minute',1,$3)`,
+		todoID, pid, string(in))
+	var assetID string
+	_ = pool.QueryRow(ctx,
+		`INSERT INTO assets (id,project_id,todo_id,type,status,external_job_id,provider,model,submitted_at)
+		 VALUES (md5(random()::text),$1,$2,'video','submitted','job1','fake','fake-video-async',now()) RETURNING id`,
+		pid, todoID).Scan(&assetID)
+	asset, err := w.cfg.Assets.Get(ctx, assetID)
+	if err != nil {
+		t.Fatalf("load seeded asset: %v", err)
+	}
+	res := generate.GenResult{Bytes: []byte("VIDEO"), MimeType: "video/mp4", Provider: "fake", Model: "fake-video-async"}
+	c := claimed{todoID: todoID, projectID: pid, typ: "asset", attempts: 1, input: in}
+
+	// Winner: completeAsync flips submitted→pending_acceptance + emits asset_generated.
+	ref, werr := w.completeAsync(ctx, c, asset, 6, res)
+	if werr != nil {
+		t.Fatalf("winner completeAsync errored: %v", werr)
+	}
+	if ref != "asset:"+assetID {
+		t.Fatalf("winner ref = %q, want asset:%s", ref, assetID)
+	}
+
+	// Loser: a lease-lost worker drives completeAsync for the SAME asset, which is
+	// now already pending_acceptance. It must bow out via errLostLease WITHOUT
+	// emitting a second asset_generated.
+	_, lerr := w.completeAsync(ctx, c, asset, 6, res)
+	if !errorsIsLostLease(lerr) {
+		t.Fatalf("loser completeAsync must return errLostLease, got %v", lerr)
+	}
+
+	// (b) The completed PAID asset must stay pending_acceptance, NOT canceled.
+	var status string
+	_ = pool.QueryRow(ctx, `SELECT status FROM assets WHERE id=$1`, assetID).Scan(&status)
+	if status != "pending_acceptance" {
+		t.Fatalf("completed paid asset = %q, want pending_acceptance (F-INT-1: loser canceled a live paid asset)", status)
+	}
+
+	// (c) Exactly ONE asset_generated event was emitted (no duplicate SSE).
+	var nGen int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM run_events WHERE project_id=$1 AND kind='asset_generated'`, pid).Scan(&nGen)
+	if nGen != 1 {
+		t.Fatalf("asset_generated events = %d, want exactly 1 (F-INT-1: loser double-emitted)", nGen)
+	}
+}

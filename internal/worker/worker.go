@@ -85,14 +85,20 @@ type Worker struct {
 // (I1) — it is neither completion nor failure.
 var errRescheduled = errors.New("worker: todo rescheduled")
 
-// errLostLease signals that this worker's poll dispatch found its guarded
-// reschedule matching 0 rows because the todo is no longer claimable by THIS
-// worker, yet is NOT canceled — it was stuck-reclaimed by a DIFFERENT worker
-// whose lease now owns the (healthy, externally-running, PAID) async job (F4,
-// spec §5.4/§5.5). The new owner continues polling; this stale worker must just
-// stop. process treats it exactly like errRescheduled: NO MarkDone, NO fail, NO
-// discardCanceledAsset — discarding here would terminal-state a healthy paid
-// asset that another worker is still driving to completion.
+// errLostLease signals this worker lost the race for an in-flight async job and
+// must bow out benignly. Two call sites raise it:
+//
+//  1. rescheduleOrCancel (poll-Pending path, F4): the guarded reschedule matched
+//     0 rows because a DIFFERENT worker stuck-reclaimed the todo whose lease now
+//     owns the (healthy, externally-running, PAID) job (spec §5.4/§5.5).
+//  2. completeAsync (poll-Done path, F-INT-1): the submitted→pending_acceptance
+//     SetBlob matched 0 rows — another worker already completed (or a cancel
+//     swept) the asset. The loser returns this BEFORE emitting asset_generated /
+//     booking the ledger, so there is no duplicate SSE and no double cost.
+//
+// Either way process treats it exactly like errRescheduled: NO MarkDone, NO
+// fail, NO discardCanceledAsset — discarding here would terminal-state a healthy
+// paid asset that another worker already drove to completion.
 var errLostLease = errors.New("worker: poll lease lost to another worker")
 
 // New builds a Worker with defaults applied.
@@ -554,7 +560,7 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 				// Regenerate todos point at a v2 asset pre-created 'generating'
 				// at HTTP time — terminal-state it or it strands in the library.
 				if in.AssetID != "" {
-					_ = w.cfg.Assets.SetBlob(cctx, in.AssetID, "", "", "", "", "failed")
+					_, _ = w.cfg.Assets.SetBlob(cctx, in.AssetID, "", "", "", "", "failed")
 				}
 				return "", fmt.Errorf("worker: org %s generation quota exceeded (%d/%d in 24h)", orgID, n, w.cfg.GenQuota)
 			}
@@ -586,7 +592,7 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 	}
 	if gerr != nil {
 		// Mark the asset failed so it isn't stuck 'generating'.
-		_ = w.cfg.Assets.SetBlob(cctx, created.id, "", "", "", "", "failed")
+		_, _ = w.cfg.Assets.SetBlob(cctx, created.id, "", "", "", "", "failed")
 		return "", gerr
 	}
 
@@ -594,7 +600,7 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 	blobKey := "assets/" + c.projectID + "/" + created.id
 	if len(out.Bytes) > 0 {
 		if err := w.cfg.Blob.Put(ctx, blobKey, bytesReader(out.Bytes), out.MimeType); err != nil {
-			_ = w.cfg.Assets.SetBlob(cctx, created.id, "", "", "", "", "failed")
+			_, _ = w.cfg.Assets.SetBlob(cctx, created.id, "", "", "", "", "failed")
 			return "", fmt.Errorf("worker: blob put: %w", err)
 		}
 	} else {
@@ -604,7 +610,7 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 	// detached cctx so a fired CallTimeout cannot strand the asset in 'generating'
 	// or drop the cost ledger row (终审 nit: bookkeeping of completed work must
 	// not inherit the per-call deadline).
-	if err := w.cfg.Assets.SetBlob(cctx, created.id, blobKey, out.URL, out.Provider, out.Model, "pending_acceptance"); err != nil {
+	if _, err := w.cfg.Assets.SetBlob(cctx, created.id, blobKey, out.URL, out.Provider, out.Model, "pending_acceptance"); err != nil {
 		return "", fmt.Errorf("worker: asset set blob: %w", err)
 	}
 
@@ -1113,8 +1119,20 @@ func (w *Worker) completeAsync(cctx context.Context, c claimed, asset assets.Ass
 	// pre-registered submit estimate with cost_micros=0.
 	provider := firstNonEmpty(res.Provider, asset.Provider)
 	model := firstNonEmpty(res.Model, asset.Model)
-	if err := w.cfg.Assets.SetBlob(cctx, asset.ID, blobKey, res.URL, provider, model, "pending_acceptance"); err != nil {
+	// F-INT-1: the submitted→pending_acceptance transition is the TOCTOU-free
+	// won/lost arbiter. Under cross-worker reclaim BOTH in-flight Polls can return
+	// Done; only the worker whose SetBlob flips the row (won=true) may emit
+	// asset_generated + book the ledger. A loser (won=false: the row already left
+	// 'submitted' — another worker completed or a cancel swept it) MUST bow out
+	// here via errLostLease BEFORE the emit/ledger, so process treats it like
+	// errRescheduled (NO MarkDone, NO discardCanceledAsset) — no duplicate SSE and
+	// no cancel of the completed, PAID asset.
+	won, err := w.cfg.Assets.SetBlob(cctx, asset.ID, blobKey, res.URL, provider, model, "pending_acceptance")
+	if err != nil {
 		return "", fmt.Errorf("worker: async set blob: %w", err)
+	}
+	if !won {
+		return "", errLostLease
 	}
 	seconds := duration
 	cost := int64(seconds) * w.perSecondMicros(cctx, provider, model)

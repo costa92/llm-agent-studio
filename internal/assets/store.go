@@ -142,12 +142,21 @@ func (s *Store) Get(ctx context.Context, id string) (Asset, error) {
 // image path (generating→pending_acceptance) AND the async poll-done completion
 // (submitted→pending_acceptance, M4 §5.4); a row that already left those states
 // (concurrent reclaim/cancel) is a no-op.
-func (s *Store) SetBlob(ctx context.Context, id, blobKey, url, provider, model, newStatus string) error {
-	_, err := s.pool.Exec(ctx,
+//
+// Returns won=(rowsAffected==1): the caller learns whether THIS transition
+// actually advanced the row. The async poll-done completion (F-INT-1) uses won
+// as the TOCTOU-free won/lost arbiter under cross-worker reclaim — only the
+// worker whose SetBlob flips submitted→pending_acceptance emits asset_generated
+// + books the ledger; a loser (won=false) bows out benignly.
+func (s *Store) SetBlob(ctx context.Context, id, blobKey, url, provider, model, newStatus string) (bool, error) {
+	tag, err := s.pool.Exec(ctx,
 		`UPDATE assets SET blob_key=$2, url=$3, provider=$4, model=$5, status=$6
 		 WHERE id=$1 AND status IN ('generating','submitted')`,
 		id, blobKey, url, provider, model, newStatus)
-	return err
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // TransitionStatus moves an asset from→to atomically, returning ok=false (no

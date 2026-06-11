@@ -206,12 +206,26 @@ func TestSetBlobAdvancesFromSubmitted(t *testing.T) {
 	s := New(pool)
 	a, _ := s.GetOrCreateForTodo(ctx, CreateInput{ProjectID: pid, TodoID: "todo_sb_1", Type: "video", Status: "generating"})
 	_ = s.SetSubmitted(ctx, a.ID, "j")
-	// poll-done completion: SetBlob from-guard must accept 'submitted' now.
-	if err := s.SetBlob(ctx, a.ID, "k", "u", "fake", "fake-video-async", "pending_acceptance"); err != nil {
+	// poll-done completion: SetBlob from-guard must accept 'submitted' now, and
+	// report won=true (it advanced exactly one row).
+	won, err := s.SetBlob(ctx, a.ID, "k", "u", "fake", "fake-video-async", "pending_acceptance")
+	if err != nil {
 		t.Fatalf("set blob: %v", err)
+	}
+	if !won {
+		t.Fatalf("SetBlob must report won=true when it advances submitted→pending_acceptance")
 	}
 	got, _ := s.Get(ctx, a.ID)
 	if got.Status != "pending_acceptance" {
 		t.Fatalf("SetBlob did not advance submitted→pending_acceptance: %q", got.Status)
+	}
+	// A second SetBlob on the now-pending_acceptance row is a no-op: won=false (the
+	// F-INT-1 loser signal).
+	won2, err := s.SetBlob(ctx, a.ID, "k2", "u2", "fake", "fake-video-async", "pending_acceptance")
+	if err != nil {
+		t.Fatalf("set blob #2: %v", err)
+	}
+	if won2 {
+		t.Fatalf("SetBlob on an already-advanced row must report won=false (F-INT-1 loser signal)")
 	}
 }
