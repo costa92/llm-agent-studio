@@ -15,6 +15,21 @@ type EventReader interface {
 	List(ctx context.Context, projectID string, afterSeq int64, limit int) ([]events.Event, error)
 }
 
+// sseEventNames whitelists DB-sourced kinds before they are interpolated into
+// the SSE "event:" line (M1 carry: defend the header against forged kinds).
+// Unknown kinds stream as the generic "message" event; the original kind rides
+// in the payload.
+var sseEventNames = map[string]bool{
+	"planner_started":   true,
+	"todo_ready":        true,
+	"todo_started":      true,
+	"todo_finished":     true,
+	"todo_failed":       true,
+	"asset_generated":   true,
+	"asset_prescreened": true,
+	"run_done":          true,
+}
+
 // streamEventsHandler streams the run timeline as SSE (spec §9). It replays all
 // historical run_events then polls for new ones, emitting each as a named SSE
 // event (kind = event name) until a run_done event is seen or the client
@@ -41,9 +56,13 @@ func streamEventsHandler(reader EventReader) http.HandlerFunc {
 			for _, e := range evs {
 				after = e.Seq
 				payload, _ := json.Marshal(map[string]any{
-					"seq": e.Seq, "todoId": e.TodoID, "payload": e.Payload,
+					"seq": e.Seq, "kind": e.Kind, "todoId": e.TodoID, "payload": e.Payload,
 				})
-				_, _ = io.WriteString(w, "event: "+e.Kind+"\ndata: "+string(payload)+"\n\n")
+				name := e.Kind
+				if !sseEventNames[name] {
+					name = "message"
+				}
+				_, _ = io.WriteString(w, "event: "+name+"\ndata: "+string(payload)+"\n\n")
 				if e.Kind == "run_done" {
 					done = true
 				}
