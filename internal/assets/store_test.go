@@ -148,3 +148,70 @@ func TestSetPrescreenAndReadBack(t *testing.T) {
 		t.Fatalf("prescreen not persisted: %+v", got)
 	}
 }
+
+func TestGetOrCreateForTodoIsIdempotent(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	pid := seedProject(t, pool, "org_goc")
+	s := New(pool)
+	todoID := "todo_goc_1"
+	a1, err := s.GetOrCreateForTodo(ctx, CreateInput{ProjectID: pid, TodoID: todoID, Type: "video", Status: "generating"})
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	a2, err := s.GetOrCreateForTodo(ctx, CreateInput{ProjectID: pid, TodoID: todoID, Type: "video", Status: "generating"})
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if a1.ID != a2.ID {
+		t.Fatalf("GetOrCreateForTodo must reuse the same row: %q vs %q", a1.ID, a2.ID)
+	}
+}
+
+func TestSetSubmittedAndAsyncFailedAndInFlightCount(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	pid := seedProject(t, pool, "org_async")
+	s := New(pool)
+	a, err := s.GetOrCreateForTodo(ctx, CreateInput{ProjectID: pid, TodoID: "todo_async_1", Type: "video", Status: "generating"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := s.SetSubmitted(ctx, a.ID, "extjob-1"); err != nil {
+		t.Fatalf("set submitted: %v", err)
+	}
+	got, _ := s.Get(ctx, a.ID)
+	if got.Status != "submitted" || got.ExternalJobID != "extjob-1" {
+		t.Fatalf("after submit: %+v", got)
+	}
+	// In-flight count by kind sees this submitted video.
+	n, err := s.CountInFlightByKind(ctx, "video")
+	if err != nil || n < 1 {
+		t.Fatalf("CountInFlightByKind(video) = %d err=%v, want >=1", n, err)
+	}
+	// SetAsyncFailed terminal-states from submitted (B2: not just generating).
+	if err := s.SetAsyncFailed(ctx, a.ID); err != nil {
+		t.Fatalf("async failed: %v", err)
+	}
+	got, _ = s.Get(ctx, a.ID)
+	if got.Status != "failed" {
+		t.Fatalf("after async-fail: %q, want failed", got.Status)
+	}
+}
+
+func TestSetBlobAdvancesFromSubmitted(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	pid := seedProject(t, pool, "org_setblob")
+	s := New(pool)
+	a, _ := s.GetOrCreateForTodo(ctx, CreateInput{ProjectID: pid, TodoID: "todo_sb_1", Type: "video", Status: "generating"})
+	_ = s.SetSubmitted(ctx, a.ID, "j")
+	// poll-done completion: SetBlob from-guard must accept 'submitted' now.
+	if err := s.SetBlob(ctx, a.ID, "k", "u", "fake", "fake-video-async", "pending_acceptance"); err != nil {
+		t.Fatalf("set blob: %v", err)
+	}
+	got, _ := s.Get(ctx, a.ID)
+	if got.Status != "pending_acceptance" {
+		t.Fatalf("SetBlob did not advance submitted→pending_acceptance: %q", got.Status)
+	}
+}

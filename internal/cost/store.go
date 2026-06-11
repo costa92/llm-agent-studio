@@ -26,7 +26,7 @@ type Generation struct {
 	Prompt       string
 	Tokens       int
 	ImageCount   int
-	VideoSeconds int
+	VideoSeconds int // MediaSeconds: 媒体时长(秒), video=帧时长 audio=音频时长 (Q3 复用同列)
 	CostMicros   int64
 	LatencyMS    int
 }
@@ -102,6 +102,7 @@ func (s *Store) ByOrg(ctx context.Context, orgID string) (Aggregate, error) {
 type Price struct {
 	MicrosPerImage    int64
 	MicrosPer1kTokens int64
+	MicrosPerSecond   int64 // M4 按秒计费 (video 帧 / audio 时长)
 }
 
 // PriceFor looks up the unit price. ok=false (no error) when the provider+model
@@ -109,8 +110,8 @@ type Price struct {
 func (s *Store) PriceFor(ctx context.Context, provider, model string) (Price, bool, error) {
 	var p Price
 	err := s.pool.QueryRow(ctx,
-		`SELECT micros_per_image, micros_per_1k_tokens FROM pricing WHERE provider=$1 AND model=$2`,
-		provider, model).Scan(&p.MicrosPerImage, &p.MicrosPer1kTokens)
+		`SELECT micros_per_image, micros_per_1k_tokens, micros_per_second FROM pricing WHERE provider=$1 AND model=$2`,
+		provider, model).Scan(&p.MicrosPerImage, &p.MicrosPer1kTokens, &p.MicrosPerSecond)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Price{}, false, nil
@@ -120,9 +121,11 @@ func (s *Store) PriceFor(ctx context.Context, provider, model string) (Price, bo
 	return p, true, nil
 }
 
-// ComputeCostMicros prices one generation: per-image plus per-1k-token cost.
-func ComputeCostMicros(p Price, imageCount, tokens int) int64 {
-	return int64(imageCount)*p.MicrosPerImage + int64(tokens)*p.MicrosPer1kTokens/1000
+// ComputeCostMicros prices one generation: per-image + per-1k-token + per-second.
+func ComputeCostMicros(p Price, imageCount, tokens, seconds int) int64 {
+	return int64(imageCount)*p.MicrosPerImage +
+		int64(tokens)*p.MicrosPer1kTokens/1000 +
+		int64(seconds)*p.MicrosPerSecond
 }
 
 // RecordPriced is Record with the pricing table applied: it fills CostMicros
@@ -134,7 +137,7 @@ func (s *Store) RecordPriced(ctx context.Context, g Generation) error {
 		if p, ok, err := s.PriceFor(ctx, g.Provider, g.Model); err != nil {
 			return err
 		} else if ok {
-			g.CostMicros = ComputeCostMicros(p, g.ImageCount, g.Tokens)
+			g.CostMicros = ComputeCostMicros(p, g.ImageCount, g.Tokens, g.VideoSeconds)
 		}
 	}
 	return s.Record(ctx, g)
@@ -259,4 +262,43 @@ func (s *Store) CountByOrgSince(ctx context.Context, orgID string, since time.Ti
 		return 0, fmt.Errorf("cost: count since: %w", err)
 	}
 	return n, nil
+}
+
+// UpsertSubmittedGeneration pre-registers an async generations row at submit
+// time (estimated cost). On a crash-retry the (asset_id, todo_id) conflict
+// returns the existing row id and does NOT double-insert (B3 DB-enforced dedup
+// via generations_asset_todo_uniq). This is the SAME mechanism as §9.3 — one
+// ledger row per generation, written at submit so CountByOrgSince counts
+// in-flight work (I2 quota) and poll-done updates it in place (I5 idempotent).
+func (s *Store) UpsertSubmittedGeneration(ctx context.Context, g Generation) (string, error) {
+	kind := g.Kind
+	if kind == "" {
+		kind = "video"
+	}
+	var id string
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO generations
+		 (id, project_id, asset_id, todo_id, kind, provider, model, prompt, tokens, image_count, video_seconds, cost_micros, latency_ms)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		ON CONFLICT (asset_id, todo_id) WHERE asset_id <> '' AND todo_id <> ''
+		  DO UPDATE SET id = generations.id
+		RETURNING id`,
+		newID(), g.ProjectID, g.AssetID, g.TodoID, kind, g.Provider, g.Model, g.Prompt,
+		g.Tokens, g.ImageCount, g.VideoSeconds, g.CostMicros, g.LatencyMS).Scan(&id)
+	if err != nil {
+		return "", fmt.Errorf("cost: upsert submitted generation: %w", err)
+	}
+	return id, nil
+}
+
+// UpdateGenerationByAssetTodo backfills the real seconds/cost on the pre-
+// registered async row at poll-done (idempotent: re-running with the same values
+// is a no-op). Locates the row by (asset_id, todo_id) — no in-memory id passing.
+func (s *Store) UpdateGenerationByAssetTodo(ctx context.Context, assetID, todoID string, seconds int, costMicros int64) error {
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE generations SET video_seconds=$3, cost_micros=$4 WHERE asset_id=$1 AND todo_id=$2`,
+		assetID, todoID, seconds, costMicros); err != nil {
+		return fmt.Errorf("cost: update generation by asset/todo: %w", err)
+	}
+	return nil
 }
