@@ -1,6 +1,6 @@
 import type { ReactNode } from "react"
 import { Link } from "@tanstack/react-router"
-import { FolderKanban, CheckSquare, Image, Wallet } from "lucide-react"
+import { FolderKanban, CheckSquare, Image, Wallet, SlidersHorizontal } from "lucide-react"
 
 // 原型 .rail: 64px 宽 / bg-surface / 右描边 line；.nav-btn 44×44 radius10 text-3；
 // .on = amber 12% 底 + amber 字。审核/成本入口 admin-only（角色由 T6 rbac 注入）。
@@ -17,6 +17,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/orgs/$org/review", params: {}, icon: <CheckSquare />, label: "审核", adminOnly: true },
   { to: "/orgs/$org/assets", params: {}, icon: <Image />, label: "资产" },
   { to: "/orgs/$org/cost", params: {}, icon: <Wallet />, label: "成本", adminOnly: true },
+  { to: "/orgs/$org/model-configs", params: {}, icon: <SlidersHorizontal />, label: "模型", adminOnly: true },
 ]
 
 export interface AppShellProps {

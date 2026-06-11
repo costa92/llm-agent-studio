@@ -27,6 +27,7 @@ function renderShell(props: { isAdmin?: boolean }) {
     makeLeaf("/orgs/$org/review"),
     makeLeaf("/orgs/$org/assets"),
     makeLeaf("/orgs/$org/cost"),
+    makeLeaf("/orgs/$org/model-configs"),
   ])
   const router = createRouter({
     routeTree,
@@ -42,6 +43,7 @@ describe("AppShell", () => {
     expect(screen.getByText("审核")).toBeInTheDocument()
     expect(screen.getByText("资产")).toBeInTheDocument()
     expect(screen.getByText("成本")).toBeInTheDocument()
+    expect(screen.getByText("模型")).toBeInTheDocument()
   })
 
   it("hides admin-only entries (审核/成本) for non-admin", async () => {
@@ -50,5 +52,6 @@ describe("AppShell", () => {
     expect(screen.getByText("资产")).toBeInTheDocument()
     expect(screen.queryByText("审核")).not.toBeInTheDocument()
     expect(screen.queryByText("成本")).not.toBeInTheDocument()
+    expect(screen.queryByText("模型")).not.toBeInTheDocument()
   })
 })
