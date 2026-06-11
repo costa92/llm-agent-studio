@@ -61,3 +61,37 @@ func TestWrapGeneratorNilTPIsPassthrough(t *testing.T) {
 		t.Fatalf("nil tracer provider should return the generator unwrapped")
 	}
 }
+
+func TestWrapGeneratorPreservesAsyncSeam(t *testing.T) {
+	// B1 (load-bearing): the otel wrapper must NOT strip the AsyncGenerator
+	// interface, or the worker's routed.(AsyncGenerator) assertion is forever
+	// false and the whole async engine is never reached under production wiring.
+	tp := sdktrace.NewTracerProvider()
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	wrapped := WrapGenerator(generate.NewFakeAsync("video", 1, generate.GenResult{}), tp)
+	if _, ok := wrapped.(generate.AsyncGenerator); !ok {
+		t.Fatalf("WrapGenerator(fakeAsync) lost the AsyncGenerator interface")
+	}
+
+	// An image (sync-only) generator must NOT gain AsyncGenerator.
+	img := WrapGenerator(generate.NewFakeLooping(generate.GenResult{Provider: "img"}), tp)
+	if _, ok := img.(generate.AsyncGenerator); ok {
+		t.Fatalf("WrapGenerator(syncGen) must not synthesize AsyncGenerator")
+	}
+}
+
+func TestWrapGeneratorSubmitPollDelegate(t *testing.T) {
+	tp := sdktrace.NewTracerProvider()
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	wrapped := WrapGenerator(generate.NewFakeAsync("video", 1, generate.GenResult{URL: "u", Provider: "fake"}), tp).(generate.AsyncGenerator)
+	ctx := context.Background()
+	sub, err := wrapped.Submit(ctx, generate.GenRequest{DurationSeconds: 4}, "k1")
+	if err != nil || sub.ExternalJobID == "" {
+		t.Fatalf("delegated Submit failed: %+v err=%v", sub, err)
+	}
+	pr, err := wrapped.Poll(ctx, sub.ExternalJobID)
+	if err != nil || pr.Status != generate.PollDone {
+		t.Fatalf("delegated Poll = %+v err=%v", pr, err)
+	}
+}

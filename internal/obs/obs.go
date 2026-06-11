@@ -48,11 +48,19 @@ func WrapAgent(a coreagents.Agent, tp trace.TracerProvider) coreagents.Agent {
 // WrapGenerator wraps a MediaGenerator with an otel span per Generate call
 // (spec §12: otel 包所有生成调用；成本账本双写 — usage attrs on the span, the
 // generations row via cost.RecordPriced). nil tp returns the generator as-is.
+// When the inner generator is an AsyncGenerator (video/audio), the wrapper ALSO
+// implements AsyncGenerator (spec §4.2b B1) — otherwise the worker's
+// routed.(AsyncGenerator) assertion is stripped by the wrapper and the async
+// engine is never reached.
 func WrapGenerator(g generate.MediaGenerator, tp trace.TracerProvider) generate.MediaGenerator {
 	if tp == nil {
 		return g
 	}
-	return &tracedGenerator{inner: g, tracer: tp.Tracer("llm-agent-studio/generate")}
+	base := &tracedGenerator{inner: g, tracer: tp.Tracer("llm-agent-studio/generate")}
+	if ag, ok := g.(generate.AsyncGenerator); ok {
+		return &tracedAsyncGenerator{tracedGenerator: base, inner: ag}
+	}
+	return base
 }
 
 type tracedGenerator struct {
@@ -72,6 +80,46 @@ func (t *tracedGenerator) Generate(ctx context.Context, req generate.GenRequest)
 		attribute.Int("studio.image_count", res.ImageCount),
 		attribute.Int("studio.tokens", res.Tokens),
 		attribute.Int("studio.latency_ms", res.LatencyMS),
+	)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return res, err
+}
+
+// tracedAsyncGenerator embeds tracedGenerator (inheriting Kind()+Generate()) and
+// adds Submit/Poll, delegating to the inner AsyncGenerator with their own spans
+// (spec §9.2: studio.generate.submit.<kind> / studio.generate.poll.<kind>).
+type tracedAsyncGenerator struct {
+	*tracedGenerator
+	inner generate.AsyncGenerator
+}
+
+func (t *tracedAsyncGenerator) Submit(ctx context.Context, req generate.GenRequest, idempotencyKey string) (generate.SubmitResult, error) {
+	ctx, span := t.tracer.Start(ctx, "studio.generate.submit."+t.inner.Kind())
+	defer span.End()
+	res, err := t.inner.Submit(ctx, req, idempotencyKey) // B1: forward the idem key
+	span.SetAttributes(
+		attribute.String("studio.provider", res.Provider),
+		attribute.String("studio.model", res.Model),
+		attribute.String("studio.external_job_id", res.ExternalJobID),
+		attribute.Int("studio.est_seconds", res.EstSeconds),
+	)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return res, err
+}
+
+func (t *tracedAsyncGenerator) Poll(ctx context.Context, jobID string) (generate.PollResult, error) {
+	ctx, span := t.tracer.Start(ctx, "studio.generate.poll."+t.inner.Kind())
+	defer span.End()
+	res, err := t.inner.Poll(ctx, jobID)
+	span.SetAttributes(
+		attribute.String("studio.external_job_id", jobID),
+		attribute.Int("studio.poll_status", int(res.Status)),
 	)
 	if err != nil {
 		span.RecordError(err)
