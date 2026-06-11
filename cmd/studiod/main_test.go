@@ -37,6 +37,13 @@ func loadCfg(t *testing.T, dsn string) config.Config {
 			return "50ms", true
 		case "WORKER_BACKOFF":
 			return "1ms", true
+		case "REVIEW_PRESCREEN":
+			// 既有 M1/M2 e2e 的 ScriptedLLM 响应序不含 review 响应，而 build()
+			// 因 REVIEW_PRESCREEN 默认 true 会构造 ReviewAgent——不关闭的话旧
+			// e2e 会跑预审、耗尽脚本响应并写下 prescreen_error flag（良性：预审
+			// 从不挂掉 todo，但属噪音）。harness 基线关闭；T15 的 M3 预审 e2e
+			// 按测试经 extra 覆盖显式开启（评审修复 M1）。
+			return "false", true
 		}
 		return "", false
 	})

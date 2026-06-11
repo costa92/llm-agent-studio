@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/costa92/llm-agent-contract/llm"
+
 	studioagents "github.com/costa92/llm-agent-studio/internal/agents"
 	"github.com/costa92/llm-agent-studio/internal/assets"
 	"github.com/costa92/llm-agent-studio/internal/blob"
@@ -364,5 +366,51 @@ func TestRunStoryboardUsesParentScriptTodo(t *testing.T) {
 	}
 	if ref != "shots:"+scriptID {
 		t.Fatalf("storyboard resolved %q, want shots:%s (the depends_on parent, not the newer decoy)", ref, scriptID)
+	}
+}
+
+func TestRunAssetPrescreensViaReviewAgent(t *testing.T) {
+	pool := assetTestPool(t)
+	ctx := context.Background()
+	var pid string
+	_ = pool.QueryRow(ctx, `INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),'org_rev','p','u') RETURNING id`).Scan(&pid)
+	todoID := newID()
+	_, _ = pool.Exec(ctx,
+		`INSERT INTO todos (id,project_id,plan_id,type,status,input_json) VALUES ($1,$2,'plan','asset','running',$3)`,
+		todoID, pid, `{"shotId":"s1","shotPrompt":"a teahouse","style":""}`)
+	fake := generate.NewFakeLooping(generate.GenResult{Bytes: []byte("PNG"), MimeType: "image/png", Provider: "fake", Model: "m", ImageCount: 1})
+	reviewModel := llm.NewScriptedLLM(llm.WithResponses(
+		llm.Response{Text: `{"score":42,"flags":["check_copyright"],"note":"meh"}`},
+	))
+	w := New(Config{
+		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
+		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
+		Review:   studioagents.NewReviewAgent(reviewModel),
+		Blob:     blob.NewFake(),
+		Assets:   assets.New(pool),
+		Cost:     cost.New(pool),
+		WorkerID: "prescreener", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
+	})
+	if _, err := w.runAsset(ctx, claimed{todoID: todoID, projectID: pid, typ: "asset", attempts: 1,
+		input: []byte(`{"shotId":"s1","shotPrompt":"a teahouse","style":""}`)}); err != nil {
+		t.Fatalf("runAsset: %v", err)
+	}
+	var score int
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT prescreen_score, status FROM assets WHERE project_id=$1`, pid).Scan(&score, &status); err != nil {
+		t.Fatalf("load asset: %v", err)
+	}
+	if score != 42 {
+		t.Fatalf("prescreen_score = %d, want 42", score)
+	}
+	// Prescreen is ADVISORY: the asset still rests in pending_acceptance (HITL
+	// is the hard gate; prescreen never auto-accepts/rejects).
+	if status != "pending_acceptance" {
+		t.Fatalf("status = %q, want pending_acceptance", status)
+	}
+	var n int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM run_events WHERE project_id=$1 AND kind='asset_prescreened'`, pid).Scan(&n)
+	if n != 1 {
+		t.Fatalf("want 1 asset_prescreened event, got %d", n)
 	}
 }

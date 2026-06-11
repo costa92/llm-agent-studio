@@ -157,6 +157,10 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	costStore := cost.New(st.Pool())
 	modelStore := models.New(st.Pool())
 	assetAgent := studioagents.NewAssetAgent(promptBuilder, gen)
+	var reviewAgent *studioagents.ReviewAgent
+	if cfg.ReviewPrescreen {
+		reviewAgent = studioagents.NewReviewAgent(model) // same (otel-wrapped) chat model
+	}
 	reviewSvc := review.New(assetStore, todoStore)
 
 	// Worker pool — bounded concurrency (agents call LLMs; slow).
@@ -166,7 +170,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		w := worker.New(worker.Config{
 			Pool: st.Pool(), Todos: todoStore, Projects: projectStore, Events: eventStore,
 			Script: scriptAgent, Storyboard: storyboardAgent,
-			Asset: assetAgent, Blob: blobStore, Assets: assetStore, Cost: costStore,
+			Asset: assetAgent, Review: reviewAgent, Blob: blobStore, Assets: assetStore, Cost: costStore,
 			Models: modelStore, Registry: registry,
 			WorkerID:    fmt.Sprintf("studiod-%d", i),
 			Lease:       cfg.WorkerLease,

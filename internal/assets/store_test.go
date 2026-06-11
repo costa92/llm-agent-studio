@@ -120,3 +120,31 @@ func TestLibrarySearchFiltersAndPaginates(t *testing.T) {
 		}
 	}
 }
+
+func TestSetPrescreenAndReadBack(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	pid := seedProject(t, pool, "org_prescreen")
+	s := New(pool)
+	a, err := s.Create(ctx, CreateInput{ProjectID: pid, Status: "pending_acceptance", Prompt: "x"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := s.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.PrescreenScore != -1 {
+		t.Fatalf("fresh asset PrescreenScore = %d, want -1 (unscreened)", got.PrescreenScore)
+	}
+	if err := s.SetPrescreen(ctx, a.ID, 87, []string{"minor_blur"}, "ok"); err != nil {
+		t.Fatalf("set prescreen: %v", err)
+	}
+	got, err = s.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("get2: %v", err)
+	}
+	if got.PrescreenScore != 87 || len(got.PrescreenFlags) != 1 || got.PrescreenNote != "ok" {
+		t.Fatalf("prescreen not persisted: %+v", got)
+	}
+}

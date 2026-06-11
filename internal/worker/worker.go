@@ -40,6 +40,7 @@ type Config struct {
 	Script      *studioagents.ScriptAgent
 	Storyboard  *studioagents.StoryboardAgent
 	Asset       *studioagents.AssetAgent
+	Review      *studioagents.ReviewAgent // nil → prescreen disabled
 	Blob        blob.BlobStore
 	Assets      *assets.Store
 	Cost        *cost.Store
@@ -441,6 +442,10 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 		return "", fmt.Errorf("worker: asset set blob: %w", err)
 	}
 
+	// M3 自动预审: advisory, post-generation, NEVER fails the todo. HITL stays
+	// the hard gate (spec §7.1: 人工采纳是硬门禁，自动预审仅辅助).
+	w.prescreen(ctx, c, created.id, in.Style, out)
+
 	// Ledger row (spec §6 generations).
 	if w.cfg.Cost != nil {
 		// M3: RecordPriced fills cost_micros from the pricing table (M2 carry #2).
@@ -556,6 +561,29 @@ func (w *Worker) fail(ctx context.Context, c claimed, cause error) {
 }
 
 func bytesReader(b []byte) *bytes.Reader { return bytes.NewReader(b) }
+
+// prescreen runs the ReviewAgent over the generation metadata and records the
+// verdict on the asset + an asset_prescreened timeline event. Errors degrade
+// to a prescreen_error flag with score -1 (unscreened).
+func (w *Worker) prescreen(ctx context.Context, c claimed, assetID, style string, out studioagents.AssetOutput) {
+	if w.cfg.Review == nil {
+		return
+	}
+	res, err := w.cfg.Review.Run(ctx, studioagents.ReviewInput{
+		Prompt: out.Prompt, Style: style, Provider: out.Provider, Model: out.Model, MimeType: out.MimeType,
+	})
+	if err != nil {
+		w.cfg.Logger.Warn("worker: prescreen failed", "asset", assetID, "err", err)
+		_ = w.cfg.Assets.SetPrescreen(ctx, assetID, -1, []string{"prescreen_error"}, err.Error())
+		return
+	}
+	if err := w.cfg.Assets.SetPrescreen(ctx, assetID, res.Score, res.Flags, res.Note); err != nil {
+		w.cfg.Logger.Warn("worker: persist prescreen failed", "asset", assetID, "err", err)
+		return
+	}
+	_, _ = w.cfg.Events.Append(ctx, c.projectID, "asset_prescreened", c.todoID,
+		map[string]any{"assetId": assetID, "score": res.Score, "flags": res.Flags})
+}
 
 // discardCanceledAsset terminal-states the asset produced by a discarded
 // (canceled mid-flight) asset todo. Best-effort: transition failures only mean
