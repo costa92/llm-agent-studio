@@ -33,7 +33,9 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/events"
 	"github.com/costa92/llm-agent-studio/internal/fetch"
 	"github.com/costa92/llm-agent-studio/internal/generate"
+	genaudio "github.com/costa92/llm-agent-studio/internal/generate/audio"
 	genimage "github.com/costa92/llm-agent-studio/internal/generate/image"
+	genvideo "github.com/costa92/llm-agent-studio/internal/generate/video"
 	"github.com/costa92/llm-agent-studio/internal/httpapi"
 	"github.com/costa92/llm-agent-studio/internal/models"
 	"github.com/costa92/llm-agent-studio/internal/obs"
@@ -149,6 +151,15 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	// M3 模型路由: register a REAL adapter per catalog entry whose provider has a
 	// key configured; un-keyed providers resolve to the env default generator.
 	if err := registerImageGenerators(registry, cfg, tp); err != nil {
+		st.Close()
+		return nil, nil, err
+	}
+	// M4: key-gated async video/audio adapters (skeletons; real HTTP is M5).
+	if err := registerVideoGenerators(registry, cfg, tp); err != nil {
+		st.Close()
+		return nil, nil, err
+	}
+	if err := registerAudioGenerators(registry, cfg, tp); err != nil {
 		st.Close()
 		return nil, nil, err
 	}
@@ -315,6 +326,9 @@ var registryHook func(*generate.Registry)
 // verified: all four providers implement llm.ImageGenerator (providers v0.7.0).
 func registerImageGenerators(reg *generate.Registry, cfg config.Config, tp trace.TracerProvider) error {
 	for _, e := range models.Catalog() {
+		if e.Kind != "image" {
+			continue // M3 catalog now carries video/audio entries (M4); skip them here.
+		}
 		var ig llm.ImageGenerator
 		var err error
 		switch e.Provider {
@@ -345,6 +359,60 @@ func registerImageGenerators(reg *generate.Registry, cfg config.Config, tp trace
 			return fmt.Errorf("studiod: build %s/%s image generator: %w", e.Provider, e.Model, err)
 		}
 		reg.Register(e.Provider, e.Model, obs.WrapGenerator(genimage.New(ig, nil), tp))
+	}
+	return nil
+}
+
+// registerVideoGenerators registers a key-gated async video adapter per video
+// catalog entry whose provider has a key (spec §8.1, mirrors registerImage-
+// Generators). Filtered to e.Kind=="video" (M3). Wrapped with obs.WrapGenerator
+// — which preserves the AsyncGenerator seam (B1). Unkeyed providers resolve to
+// the registry default.
+func registerVideoGenerators(reg *generate.Registry, cfg config.Config, tp trace.TracerProvider) error {
+	for _, e := range models.Catalog() {
+		if e.Kind != "video" {
+			continue
+		}
+		var ag generate.MediaGenerator
+		switch e.Provider {
+		case "runway":
+			if cfg.RunwayAPIKey == "" {
+				continue
+			}
+			ag = genvideo.NewRunway(cfg.RunwayAPIKey)
+		case "kling":
+			if cfg.KlingAPIKey == "" {
+				continue
+			}
+			ag = genvideo.NewKling(cfg.KlingAPIKey)
+		case "google":
+			if cfg.GoogleAPIKey == "" {
+				continue
+			}
+			ag = genvideo.NewVeo(cfg.GoogleAPIKey)
+		default:
+			continue
+		}
+		reg.Register(e.Provider, e.Model, obs.WrapGenerator(ag, tp))
+	}
+	return nil
+}
+
+// registerAudioGenerators is the audio analog (key-gated, e.Kind=="audio").
+func registerAudioGenerators(reg *generate.Registry, cfg config.Config, tp trace.TracerProvider) error {
+	for _, e := range models.Catalog() {
+		if e.Kind != "audio" {
+			continue
+		}
+		switch e.Provider {
+		case "openai":
+			if cfg.TTSAPIKey == "" {
+				continue
+			}
+			reg.Register(e.Provider, e.Model, obs.WrapGenerator(genaudio.NewOpenAITTS(cfg.TTSAPIKey), tp))
+		default:
+			continue
+		}
 	}
 	return nil
 }
