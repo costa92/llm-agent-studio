@@ -8,27 +8,36 @@ package image
 import (
 	"context"
 	"fmt"
-	"io"
-	"net/http"
 	"time"
 
 	"github.com/costa92/llm-agent-contract/llm"
+	"github.com/costa92/llm-agent-studio/internal/fetch"
 	"github.com/costa92/llm-agent-studio/internal/generate"
 )
+
+// Puller fetches a provider-returned URL safely (satisfied by *fetch.Fetcher).
+// The seam exists so tests can inject a loopback-permitting fetcher.
+type Puller interface {
+	Get(ctx context.Context, url string) ([]byte, string, error)
+}
 
 // Adapter wraps an llm.ImageGenerator as a generate.MediaGenerator.
 type Adapter struct {
 	gen    llm.ImageGenerator
-	client *http.Client
+	puller Puller
 }
 
-// New builds an Adapter. httpClient is used to pull URL-delivered images
-// (nil → http.DefaultClient with a 30s timeout).
-func New(gen llm.ImageGenerator, httpClient *http.Client) *Adapter {
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
+// New builds an Adapter. puller pulls URL-delivered images (nil → an SSRF-safe
+// fetcher: 30s timeout, 32MB cap, image content types — spec §12 安全加固).
+func New(gen llm.ImageGenerator, puller Puller) *Adapter {
+	if puller == nil {
+		puller = fetch.New(fetch.Config{
+			Timeout:             30 * time.Second,
+			MaxBytes:            32 << 20,
+			AllowedContentTypes: []string{"image/", "application/octet-stream"},
+		})
 	}
-	return &Adapter{gen: gen, client: httpClient}
+	return &Adapter{gen: gen, puller: puller}
 }
 
 // Kind reports "image".
@@ -60,9 +69,9 @@ func (a *Adapter) Generate(ctx context.Context, req generate.GenRequest) (genera
 	if img.URL == "" {
 		return generate.GenResult{}, fmt.Errorf("generate.image: image has neither bytes nor url")
 	}
-	data, ct, err := a.pull(ctx, img.URL)
+	data, ct, err := a.puller.Get(ctx, img.URL)
 	if err != nil {
-		return generate.GenResult{}, err
+		return generate.GenResult{}, fmt.Errorf("generate.image: pull: %w", err)
 	}
 	out.Bytes = data
 	if out.MimeType == "" {
@@ -70,24 +79,4 @@ func (a *Adapter) Generate(ctx context.Context, req generate.GenRequest) (genera
 	}
 	out.URL = img.URL
 	return out, nil
-}
-
-func (a *Adapter) pull(ctx context.Context, url string) ([]byte, string, error) {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, "", fmt.Errorf("generate.image: build pull request: %w", err)
-	}
-	resp, err := a.client.Do(httpReq)
-	if err != nil {
-		return nil, "", fmt.Errorf("generate.image: pull: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("generate.image: pull status %d", resp.StatusCode)
-	}
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, "", fmt.Errorf("generate.image: read pull body: %w", err)
-	}
-	return data, resp.Header.Get("Content-Type"), nil
 }

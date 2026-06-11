@@ -62,3 +62,26 @@ func TestAppendAndList(t *testing.T) {
 		t.Fatalf("afterSeq filter wrong: %+v", tail)
 	}
 }
+
+func TestAppendRunDoneDedupsPerRun(t *testing.T) {
+	s, pid := newStore(t)
+	ctx := context.Background()
+	if _, err := s.Append(ctx, pid, "planner_started", "", nil); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if _, ok, err := s.AppendRunDone(ctx, pid); err != nil || !ok {
+		t.Fatalf("first run_done should insert: ok=%v err=%v", ok, err)
+	}
+	// Second emit within the SAME run is deduped (M1 carry: Workers>1 could
+	// both see allDone and double-emit).
+	if _, ok, err := s.AppendRunDone(ctx, pid); err != nil || ok {
+		t.Fatalf("second run_done should dedup: ok=%v err=%v", ok, err)
+	}
+	// A re-run (new planner_started) opens a new dedup window.
+	if _, err := s.Append(ctx, pid, "planner_started", "", nil); err != nil {
+		t.Fatalf("append rerun: %v", err)
+	}
+	if _, ok, err := s.AppendRunDone(ctx, pid); err != nil || !ok {
+		t.Fatalf("run_done after re-plan should insert again: ok=%v err=%v", ok, err)
+	}
+}

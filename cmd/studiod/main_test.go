@@ -21,11 +21,14 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/generate"
 )
 
-// loadCfg builds a deterministic config for the e2e (Workers=1 so the single
-// injected ScriptedLLM cursor advances in a predictable order).
-func loadCfg(t *testing.T, dsn string) config.Config {
+// loadCfgWith builds a deterministic config (Workers=1 keeps scripted-LLM
+// cursors ordered) with per-test env overrides layered on top.
+func loadCfgWith(t *testing.T, dsn string, extra map[string]string) config.Config {
 	t.Helper()
 	cfg, err := config.LoadFromLookup(func(k string) (string, bool) {
+		if v, ok := extra[k]; ok {
+			return v, true
+		}
 		switch k {
 		case "PG_URL":
 			return dsn, true
@@ -37,6 +40,11 @@ func loadCfg(t *testing.T, dsn string) config.Config {
 			return "50ms", true
 		case "WORKER_BACKOFF":
 			return "1ms", true
+		case "REVIEW_PRESCREEN":
+			// Baseline OFF (T9/评审修复 M1): the M1/M2 e2e scripted sequences
+			// carry no review responses; build() would otherwise construct a
+			// ReviewAgent and burn responses. M3 e2e re-enable via extra.
+			return "false", true
 		}
 		return "", false
 	})
@@ -45,6 +53,10 @@ func loadCfg(t *testing.T, dsn string) config.Config {
 	}
 	return cfg
 }
+
+// loadCfg builds a deterministic config for the e2e (Workers=1 so the single
+// injected ScriptedLLM cursor advances in a predictable order).
+func loadCfg(t *testing.T, dsn string) config.Config { return loadCfgWith(t, dsn, nil) }
 
 func newHarness(t *testing.T, dsn string, responses ...llm.Response) (*httptest.Server, func()) {
 	t.Helper()
@@ -517,4 +529,278 @@ func TestEndToEndRegenerateLineage(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("v2 lineage/regeneration did not converge")
+}
+
+// newDoer returns the standard JSON request helper used by the M3 e2e tests.
+func newDoer(t *testing.T, srv *httptest.Server) func(method, path, bearer, body string) (int, map[string]any) {
+	t.Helper()
+	client := srv.Client()
+	return func(method, path, bearer, body string) (int, map[string]any) {
+		req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		var m map[string]any
+		_ = json.Unmarshal(raw, &m)
+		if m == nil {
+			m = map[string]any{"_raw": string(raw)}
+		}
+		return resp.StatusCode, m
+	}
+}
+
+// newHarnessWith builds a server with an explicit MediaGenerator + extra env.
+func newHarnessWith(t *testing.T, dsn string, gen generate.MediaGenerator, extraEnv map[string]string, responses ...llm.Response) (*httptest.Server, func()) {
+	t.Helper()
+	ctx := context.Background()
+	providerOverride = func(config.Config) (llm.ChatModel, error) {
+		return llm.NewScriptedLLM(llm.WithResponses(responses...)), nil
+	}
+	generatorOverride = func(config.Config) (generate.MediaGenerator, error) { return gen, nil }
+	t.Cleanup(func() { providerOverride = nil; generatorOverride = nil })
+	handler, cleanup, err := build(ctx, loadCfgWith(t, dsn, extraEnv))
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	srv := httptest.NewServer(handler)
+	return srv, func() { srv.Close(); cleanup() }
+}
+
+// setupOrgProject logs in, creates an org + project, and returns (token, orgID, projectID).
+func setupOrgProject(t *testing.T, do func(string, string, string, string) (int, map[string]any), email, style string) (string, string, string) {
+	t.Helper()
+	seedUser(t, os.Getenv("LLM_AGENT_STUDIO_PG_URL"), email)
+	_, lb := do("POST", "/api/auth/login", "", `{"Email":"`+email+`","Password":"pw"}`)
+	token, _ := lb["access_token"].(string)
+	if token == "" {
+		t.Fatalf("no token: %v", lb)
+	}
+	_, ob := do("POST", "/api/orgs", token, `{"name":"M3 Co"}`)
+	orgID, _ := ob["id"].(string)
+	_, pb := do("POST", "/api/orgs/"+orgID+"/projects", token,
+		`{"name":"P","brief":"a tea ad","contentType":"ad","targetPlatform":"web","style":"`+style+`"}`)
+	projID, _ := pb["id"].(string)
+	if orgID == "" || projID == "" {
+		t.Fatalf("org/project bootstrap failed: %v %v", ob, pb)
+	}
+	return token, orgID, projID
+}
+
+// m3PipelineResponses is the canonical 1-shot pipeline script for the M3 e2e:
+// planner(valid) → script → storyboard(1 shot) → review(prescreen, score 87).
+func m3PipelineResponses() []llm.Response {
+	return []llm.Response{
+		{Text: `{"nodes":[{"id":"s","type":"script","dependsOn":[]},{"id":"b","type":"storyboard","dependsOn":["s"]}]}`},
+		{Text: `{"title":"Tea","logline":"x","scenes":[{"heading":"INT","description":"d","dialogue":""}]}`},
+		{Text: `{"shots":[{"shotNo":1,"camera":"wide","scene":"s1","action":"a","prompt":"shot1","duration":2}]}`},
+		{Text: `{"score":87,"flags":["minor_blur"],"note":"prompt-consistent"}`},
+	}
+}
+
+// pollAssetWithStatus polls the project's assets until one reaches the wanted
+// status, returning its id ("" on timeout).
+func pollAssetWithStatus(do func(string, string, string, string) (int, map[string]any), token, projID, status string) string {
+	for i := 0; i < 150; i++ {
+		_, ab := do("GET", "/api/projects/"+projID+"/assets?status="+status, token, "")
+		items, _ := ab["items"].([]any)
+		if len(items) >= 1 {
+			m, _ := items[0].(map[string]any)
+			id, _ := m["id"].(string)
+			return id
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return ""
+}
+
+func TestEndToEndModelRoutingTakesEffect(t *testing.T) {
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run the studio e2e")
+	}
+	// Register a distinguishable generator under fakeB/mB via the e2e seam.
+	registryHook = func(r *generate.Registry) {
+		r.Register("fakeB", "mB", generate.NewFakeLooping(generate.GenResult{
+			Bytes: []byte("B"), MimeType: "image/png", Provider: "fakeB", Model: "mB", ImageCount: 1,
+		}))
+	}
+	defer func() { registryHook = nil }()
+	defGen := generate.NewFakeLooping(generate.GenResult{
+		Bytes: []byte("D"), MimeType: "image/png", Provider: "default", Model: "d", ImageCount: 1,
+	})
+	srv, done := newHarnessWith(t, dsn, defGen, map[string]string{"REVIEW_PRESCREEN": "true"}, m3PipelineResponses()...)
+	defer done()
+	do := newDoer(t, srv)
+	token, orgID, projID := setupOrgProject(t, do, "route@studio.com", "")
+
+	// Admin sets the org default model BEFORE running.
+	code, mc := do("POST", "/api/orgs/"+orgID+"/model-configs", token,
+		`{"kind":"image","provider":"fakeB","model":"mB","enabled":true,"isDefault":true}`)
+	if code != http.StatusOK {
+		t.Fatalf("model-config code=%d body=%v", code, mc)
+	}
+	if code, body := do("POST", "/api/projects/"+projID+"/run", token, ""); code != http.StatusAccepted {
+		t.Fatalf("run code=%d body=%v", code, body)
+	}
+	assetID := pollAssetWithStatus(do, token, projID, "pending_acceptance")
+	if assetID == "" {
+		t.Fatalf("no pending asset produced")
+	}
+	_, av := do("GET", "/api/assets/"+assetID, token, "")
+	asset, _ := av["asset"].(map[string]any)
+	if provider, _ := asset["provider"].(string); provider != "fakeB" {
+		t.Fatalf("org default model did not route: asset provider = %q, want fakeB (asset=%v)", provider, asset)
+	}
+}
+
+// gatedGen blocks Generate until released — lets the e2e freeze an asset in
+// 'generating' to exercise the cancel path.
+type gatedGen struct{ release chan struct{} }
+
+func (g *gatedGen) Kind() string { return "image" }
+func (g *gatedGen) Generate(ctx context.Context, _ generate.GenRequest) (generate.GenResult, error) {
+	select {
+	case <-g.release:
+	case <-ctx.Done():
+		return generate.GenResult{}, ctx.Err()
+	}
+	return generate.GenResult{Bytes: []byte("X"), MimeType: "image/png", Provider: "fake", Model: "m", ImageCount: 1}, nil
+}
+
+func TestEndToEndCancelTerminalStatesAssets(t *testing.T) {
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run the studio e2e")
+	}
+	gen := &gatedGen{release: make(chan struct{})}
+	srv, done := newHarnessWith(t, dsn, gen, map[string]string{"REVIEW_PRESCREEN": "true"}, m3PipelineResponses()...)
+	defer done()
+	do := newDoer(t, srv)
+	token, _, projID := setupOrgProject(t, do, "cancel@studio.com", "")
+	if code, body := do("POST", "/api/projects/"+projID+"/run", token, ""); code != http.StatusAccepted {
+		t.Fatalf("run code=%d body=%v", code, body)
+	}
+	// Wait until the asset is in-flight ('generating', frozen inside gatedGen).
+	if id := pollAssetWithStatus(do, token, projID, "generating"); id == "" {
+		t.Fatalf("asset never entered generating")
+	}
+	if code, body := do("POST", "/api/projects/"+projID+"/cancel", token, ""); code != http.StatusOK {
+		t.Fatalf("cancel code=%d body=%v", code, body)
+	}
+	// Cancel sweeps the in-flight asset to terminal 'canceled' (M2 carry #3)…
+	if id := pollAssetWithStatus(do, token, projID, "canceled"); id == "" {
+		t.Fatalf("generating asset was not terminal-stated on cancel")
+	}
+	_, pj := do("GET", "/api/projects/"+projID, token, "")
+	if status, _ := pj["status"].(string); status != "canceled" {
+		t.Fatalf("project status = %q, want canceled", status)
+	}
+	// …and the in-flight result is DISCARDED on arrival (SetBlob guards on
+	// status='generating'): release the generator and verify the asset never
+	// resurfaces as pending_acceptance.
+	close(gen.release)
+	for i := 0; i < 10; i++ {
+		_, ab := do("GET", "/api/projects/"+projID+"/assets?status=pending_acceptance", token, "")
+		if items, _ := ab["items"].([]any); len(items) != 0 {
+			t.Fatalf("discarded in-flight result resurfaced as pending_acceptance")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func TestEndToEndPrescreenScoreSurfaces(t *testing.T) {
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run the studio e2e")
+	}
+	fakeGen := generate.NewFakeLooping(generate.GenResult{
+		Bytes: []byte("P"), MimeType: "image/png", Provider: "fake", Model: "m", ImageCount: 1,
+	})
+	srv, done := newHarnessWith(t, dsn, fakeGen, map[string]string{"REVIEW_PRESCREEN": "true"}, m3PipelineResponses()...)
+	defer done()
+	do := newDoer(t, srv)
+	token, _, projID := setupOrgProject(t, do, "prescreen@studio.com", "")
+	if code, body := do("POST", "/api/projects/"+projID+"/run", token, ""); code != http.StatusAccepted {
+		t.Fatalf("run code=%d body=%v", code, body)
+	}
+	assetID := pollAssetWithStatus(do, token, projID, "pending_acceptance")
+	if assetID == "" {
+		t.Fatalf("no pending asset produced")
+	}
+	// The prescreen verdict (scripted: score 87) surfaces on the asset.
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		_, av := do("GET", "/api/assets/"+assetID, token, "")
+		asset, _ := av["asset"].(map[string]any)
+		if score, _ := asset["prescreenScore"].(float64); score == 87 {
+			flags, _ := asset["prescreenFlags"].([]any)
+			if len(flags) != 1 {
+				t.Fatalf("prescreenFlags = %v, want 1 flag", flags)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("prescreen score never surfaced: %v", asset)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func TestEndToEndGenerationQuota429(t *testing.T) {
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run the studio e2e")
+	}
+	fakeGen := generate.NewFakeLooping(generate.GenResult{
+		Bytes: []byte("P"), MimeType: "image/png", Provider: "fake", Model: "m", ImageCount: 1,
+	})
+	srv, done := newHarnessWith(t, dsn, fakeGen,
+		map[string]string{"ORG_DAILY_GEN_QUOTA": "1", "REVIEW_PRESCREEN": "true"}, m3PipelineResponses()...)
+	defer done()
+	do := newDoer(t, srv)
+	token, orgID, projID := setupOrgProject(t, do, "quota@studio.com", "")
+	// First run passes (0 generations so far) and records 1 generation.
+	if code, body := do("POST", "/api/projects/"+projID+"/run", token, ""); code != http.StatusAccepted {
+		t.Fatalf("first run code=%d body=%v", code, body)
+	}
+	if id := pollAssetWithStatus(do, token, projID, "pending_acceptance"); id == "" {
+		t.Fatalf("first run produced no asset")
+	}
+	// The asset flips to 'pending_acceptance' (SetBlob) one step BEFORE its
+	// generation row is written to the cost ledger (RecordPriced); the quota
+	// gate counts ledger rows, so wait for the ledger to reflect the generation
+	// before the over-quota run (else we race the worker and see 0/1).
+	for i := 0; i < 150; i++ {
+		_, cb := do("GET", "/api/orgs/"+orgID+"/cost", token, "")
+		if gens, _ := cb["generations"].(float64); gens >= 1 {
+			break
+		}
+		if i == 149 {
+			t.Fatalf("first run's generation never reached the cost ledger")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	// Second run: the org is at quota (1/1 in the rolling window) → 429.
+	code, body := do("POST", "/api/projects/"+projID+"/run", token, "")
+	if code != http.StatusTooManyRequests {
+		t.Fatalf("over-quota run should 429, got %d body=%v", code, body)
+	}
+	// spec §12 E2E ⑥ 成本账本累计 (评审修复 M8): the cost center shows the
+	// first run's generation in the org aggregate.
+	code, costBody := do("GET", "/api/orgs/"+orgID+"/cost", token, "")
+	if code != http.StatusOK {
+		t.Fatalf("org cost code=%d body=%v", code, costBody)
+	}
+	if gens, _ := costBody["generations"].(float64); gens < 1 {
+		t.Fatalf("cost ledger should show >= 1 generation after the first run, got %v", costBody)
+	}
 }

@@ -17,8 +17,10 @@ import (
 	authztoken "github.com/costa92/llm-agent-authz/token"
 	"github.com/costa92/llm-agent-contract/llm"
 	deepseekprovider "github.com/costa92/llm-agent-providers/deepseek"
+	googleprovider "github.com/costa92/llm-agent-providers/google"
 	minimaxprovider "github.com/costa92/llm-agent-providers/minimax"
 	openaiprovider "github.com/costa92/llm-agent-providers/openai"
+	volcengineprovider "github.com/costa92/llm-agent-providers/volcengine"
 
 	studioagents "github.com/costa92/llm-agent-studio/internal/agents"
 	"github.com/costa92/llm-agent-studio/internal/assets"
@@ -41,6 +43,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/studiosvc"
 	"github.com/costa92/llm-agent-studio/internal/todos"
 	"github.com/costa92/llm-agent-studio/internal/worker"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func main() {
@@ -139,12 +142,16 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		st.Close()
 		return nil, nil, err
 	}
+	gen = obs.WrapGenerator(gen, tp) // otel decorator (spec §12)
 	registry.SetDefault(gen)
-	// Register catalog entries to the same default generator's provider/model so
-	// model_configs resolving to a catalog entry finds a generator (M2: one shared
-	// image generator; per-provider routing is M3).
-	for _, e := range models.Catalog() {
-		registry.Register(e.Provider, e.Model, gen)
+	// M3 模型路由: register a REAL adapter per catalog entry whose provider has a
+	// key configured; un-keyed providers resolve to the env default generator.
+	if err := registerImageGenerators(registry, cfg, tp); err != nil {
+		st.Close()
+		return nil, nil, err
+	}
+	if registryHook != nil {
+		registryHook(registry) // e2e seam: inject distinguishable fakes
 	}
 
 	promptBuilder := prompt.NewBuilder()
@@ -152,6 +159,10 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	costStore := cost.New(st.Pool())
 	modelStore := models.New(st.Pool())
 	assetAgent := studioagents.NewAssetAgent(promptBuilder, gen)
+	var reviewAgent *studioagents.ReviewAgent
+	if cfg.ReviewPrescreen {
+		reviewAgent = studioagents.NewReviewAgent(model) // same (otel-wrapped) chat model
+	}
 	reviewSvc := review.New(assetStore, todoStore)
 
 	// Worker pool — bounded concurrency (agents call LLMs; slow).
@@ -161,12 +172,16 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		w := worker.New(worker.Config{
 			Pool: st.Pool(), Todos: todoStore, Projects: projectStore, Events: eventStore,
 			Script: scriptAgent, Storyboard: storyboardAgent,
-			Asset: assetAgent, Blob: blobStore, Assets: assetStore, Cost: costStore,
+			Asset: assetAgent, Review: reviewAgent, Blob: blobStore, Assets: assetStore, Cost: costStore,
 			Models: modelStore, Registry: registry,
-			WorkerID:    fmt.Sprintf("studiod-%d", i),
-			Lease:       cfg.WorkerLease,
-			MaxAttempts: cfg.WorkerMaxAttempt,
-			BaseBackoff: cfg.WorkerBackoff,
+			WorkerID:         fmt.Sprintf("studiod-%d", i),
+			GenQuota:         cfg.OrgDailyGenQuota,
+			MaxConcurrentGen: cfg.MaxConcurrentGen,
+			Lease:            cfg.WorkerLease,
+			MaxAttempts:      cfg.WorkerMaxAttempt,
+			BaseBackoff:      cfg.WorkerBackoff,
+			CallTimeout:      cfg.WorkerCallTimeout,
+			Tracer:           tp.Tracer("studio.worker"),
 		})
 		wg.Add(1)
 		go func() { defer wg.Done(); w.Run(workerCtx, cfg.WorkerPoll) }()
@@ -195,6 +210,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		Models:        modelStore,
 		Cost:          costStore,
 		PromptBuilder: promptBuilder,
+		GenQuota:      cfg.OrgDailyGenQuota,
 	})
 
 	cleanup := func() {
@@ -261,6 +277,49 @@ func buildGenerator(cfg config.Config) (generate.MediaGenerator, error) {
 		}
 		return genimage.New(oa, nil), nil
 	}
+}
+
+// registryHook lets e2e mutate the generator registry after assembly (register
+// extra fakes for the routing e2e). nil in production.
+var registryHook func(*generate.Registry)
+
+// registerImageGenerators registers one image adapter per catalog entry whose
+// provider has an API key configured (M3 模型管理面接线). The contract types are
+// verified: all four providers implement llm.ImageGenerator (providers v0.7.0).
+func registerImageGenerators(reg *generate.Registry, cfg config.Config, tp trace.TracerProvider) error {
+	for _, e := range models.Catalog() {
+		var ig llm.ImageGenerator
+		var err error
+		switch e.Provider {
+		case "openai":
+			if cfg.OpenAIAPIKey == "" {
+				continue
+			}
+			ig, err = openaiprovider.New(openaiprovider.WithModel(e.Model), openaiprovider.WithAPIKey(cfg.OpenAIAPIKey))
+		case "google":
+			if cfg.GoogleAPIKey == "" {
+				continue
+			}
+			ig, err = googleprovider.New(googleprovider.WithModel(e.Model), googleprovider.WithAPIKey(cfg.GoogleAPIKey))
+		case "minimax":
+			if cfg.MinimaxAPIKey == "" {
+				continue
+			}
+			ig, err = minimaxprovider.New(minimaxprovider.WithModel(e.Model), minimaxprovider.WithAPIKey(cfg.MinimaxAPIKey))
+		case "volcengine":
+			if cfg.VolcengineAPIKey == "" {
+				continue
+			}
+			ig, err = volcengineprovider.New(volcengineprovider.WithModel(e.Model), volcengineprovider.WithAPIKey(cfg.VolcengineAPIKey))
+		default:
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("studiod: build %s/%s image generator: %w", e.Provider, e.Model, err)
+		}
+		reg.Register(e.Provider, e.Model, obs.WrapGenerator(genimage.New(ig, nil), tp))
+	}
+	return nil
 }
 
 // blobServerOrNil avoids handing NewMux a typed-nil *localfs.Store wrapped in the

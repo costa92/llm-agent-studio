@@ -57,6 +57,35 @@ func TestCreateGetListProject(t *testing.T) {
 	}
 }
 
+func TestCancelSweepsGeneratingAssets(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	p, err := s.Create(ctx, CreateInput{OrgID: "org_cancel", Name: "P", CreatedBy: "u"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// One in-flight asset, one already awaiting review.
+	if _, err := pool.Exec(ctx, `INSERT INTO assets (id, project_id, status) VALUES
+		(md5(random()::text), $1, 'generating'),
+		(md5(random()::text), $1, 'pending_acceptance')`, p.ID); err != nil {
+		t.Fatalf("seed assets: %v", err)
+	}
+	if err := s.Cancel(ctx, p.ID); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	var canceled, pending int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM assets WHERE project_id=$1 AND status='canceled'`, p.ID).Scan(&canceled)
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM assets WHERE project_id=$1 AND status='pending_acceptance'`, p.ID).Scan(&pending)
+	if canceled != 1 {
+		t.Fatalf("generating asset should be canceled, got %d canceled", canceled)
+	}
+	// Decision: pending_acceptance assets stay reviewable (real money was spent;
+	// HITL accept/reject still applies after a cancel).
+	if pending != 1 {
+		t.Fatalf("pending_acceptance asset must survive cancel, got %d pending", pending)
+	}
+}
+
 func TestOrgIDForProject(t *testing.T) {
 	s, _ := newStore(t)
 	ctx := context.Background()

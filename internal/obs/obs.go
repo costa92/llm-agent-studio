@@ -10,6 +10,9 @@ import (
 	otelexport "github.com/costa92/llm-agent-otel"
 	"github.com/costa92/llm-agent-otel/otelagent"
 	"github.com/costa92/llm-agent-otel/otelmodel"
+	"github.com/costa92/llm-agent-studio/internal/generate"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -40,4 +43,39 @@ func WrapModel(m llm.ChatModel, tp trace.TracerProvider) llm.ChatModel {
 // WrapAgent wraps an Agent with otel tracing.
 func WrapAgent(a coreagents.Agent, tp trace.TracerProvider) coreagents.Agent {
 	return otelagent.Wrap(a, otelagent.Config{TracerProvider: tp})
+}
+
+// WrapGenerator wraps a MediaGenerator with an otel span per Generate call
+// (spec §12: otel 包所有生成调用；成本账本双写 — usage attrs on the span, the
+// generations row via cost.RecordPriced). nil tp returns the generator as-is.
+func WrapGenerator(g generate.MediaGenerator, tp trace.TracerProvider) generate.MediaGenerator {
+	if tp == nil {
+		return g
+	}
+	return &tracedGenerator{inner: g, tracer: tp.Tracer("llm-agent-studio/generate")}
+}
+
+type tracedGenerator struct {
+	inner  generate.MediaGenerator
+	tracer trace.Tracer
+}
+
+func (t *tracedGenerator) Kind() string { return t.inner.Kind() }
+
+func (t *tracedGenerator) Generate(ctx context.Context, req generate.GenRequest) (generate.GenResult, error) {
+	ctx, span := t.tracer.Start(ctx, "studio.generate."+t.inner.Kind())
+	defer span.End()
+	res, err := t.inner.Generate(ctx, req)
+	span.SetAttributes(
+		attribute.String("studio.provider", res.Provider),
+		attribute.String("studio.model", res.Model),
+		attribute.Int("studio.image_count", res.ImageCount),
+		attribute.Int("studio.tokens", res.Tokens),
+		attribute.Int("studio.latency_ms", res.LatencyMS),
+	)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return res, err
 }

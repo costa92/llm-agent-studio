@@ -71,3 +71,37 @@ func TestVerifyRejectsExpired(t *testing.T) {
 		t.Fatalf("expected expiry rejection")
 	}
 }
+
+func TestSignedURLEscapesKeyAndRoundTrips(t *testing.T) {
+	// M2 carry #4: keys were interpolated raw into the URL path (fine for hex
+	// keys, broken for anything with spaces/+/%). The signature is still over
+	// the RAW key — the blob handler reads the DECODED r.URL.Path.
+	s := New(t.TempDir(), []byte("secret"), "/api/blob/")
+	key := "assets/p 1/img+v1 %.png"
+	if err := s.Put(context.Background(), key, strings.NewReader("X"), "image/png"); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	u, err := s.SignedURL(context.Background(), key, time.Minute)
+	if err != nil {
+		t.Fatalf("signed url: %v", err)
+	}
+	if strings.Contains(u, " ") {
+		t.Fatalf("unescaped space leaked into the URL: %q", u)
+	}
+	parsed, err := url.Parse(u)
+	if err != nil {
+		t.Fatalf("minted URL does not parse: %v (%q)", err, u)
+	}
+	// Round-trip exactly like blobHandler: decoded path → key → verify → read.
+	gotKey := s.KeyFromPath(parsed.Path)
+	if gotKey != key {
+		t.Fatalf("key round-trip mismatch: %q != %q", gotKey, key)
+	}
+	q := parsed.Query()
+	if err := s.Verify(gotKey, q.Get("exp"), q.Get("sig")); err != nil {
+		t.Fatalf("verify after escape round-trip: %v", err)
+	}
+	if data, _, err := s.ReadKey(gotKey); err != nil || string(data) != "X" {
+		t.Fatalf("read back: %v %q", err, data)
+	}
+}

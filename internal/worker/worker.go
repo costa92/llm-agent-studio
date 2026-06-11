@@ -14,10 +14,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	studioagents "github.com/costa92/llm-agent-studio/internal/agents"
 	"github.com/costa92/llm-agent-studio/internal/assets"
@@ -32,24 +37,29 @@ import (
 
 // Config configures a Worker.
 type Config struct {
-	Pool        *pgxpool.Pool
-	Todos       *todos.Store
-	Projects    *project.Store
-	Events      *events.Store
-	Script      *studioagents.ScriptAgent
-	Storyboard  *studioagents.StoryboardAgent
-	Asset       *studioagents.AssetAgent
-	Blob        blob.BlobStore
-	Assets      *assets.Store
-	Cost        *cost.Store
-	Models      *models.Store      // resolve org default provider+model; nil → registry default
-	Registry    *generate.Registry // nil → use Asset's bound generator directly
-	WorkerID    string
-	Lease       time.Duration    // default 120s
-	MaxAttempts int              // default 3
-	BaseBackoff time.Duration    // default 2s
-	Clock       func() time.Time // nil → time.Now
-	Logger      *slog.Logger     // nil → slog.Default()
+	Pool             *pgxpool.Pool
+	Todos            *todos.Store
+	Projects         *project.Store
+	Events           *events.Store
+	Script           *studioagents.ScriptAgent
+	Storyboard       *studioagents.StoryboardAgent
+	Asset            *studioagents.AssetAgent
+	Review           *studioagents.ReviewAgent // nil → prescreen disabled
+	Blob             blob.BlobStore
+	Assets           *assets.Store
+	Cost             *cost.Store
+	Models           *models.Store      // resolve org default provider+model; nil → registry default
+	Registry         *generate.Registry // nil → use Asset's bound generator directly
+	WorkerID         string
+	GenQuota         int              // rolling-24h per-org generation quota; 0 = unlimited (backstop for fan-out)
+	MaxConcurrentGen int              // global concurrent asset-todo cap; 0 = unlimited
+	Lease            time.Duration    // default 120s
+	MaxAttempts      int              // default 3
+	BaseBackoff      time.Duration    // default 2s
+	CallTimeout      time.Duration    // per-dispatch ctx timeout; MUST be < Lease (0 = no bound)
+	Clock            func() time.Time // nil → time.Now
+	Logger           *slog.Logger     // nil → slog.Default()
+	Tracer           trace.Tracer     // nil → noop
 }
 
 // Worker drains the todos queue.
@@ -70,6 +80,9 @@ func New(cfg Config) *Worker {
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
+	}
+	if cfg.Tracer == nil {
+		cfg.Tracer = noop.NewTracerProvider().Tracer("studio.worker")
 	}
 	return &Worker{cfg: cfg}
 }
@@ -141,13 +154,24 @@ func (w *Worker) claim(ctx context.Context) (claimed, bool, error) {
 		lease = 120
 	}
 	var c claimed
+	// Global concurrent-generation cap (spec §12): an asset todo is claimable
+	// only while fewer than MaxConcurrentGen asset todos hold a LIVE lease (the
+	// expired-lease exclusion keeps stuck-reclaim from being blocked by its own
+	// stale lease). This is a SOFT/approximate cap (评审修复 M5): FOR UPDATE
+	// SKIP LOCKED locks only the claimed row, not the count, so overlapping
+	// claim transactions under READ COMMITTED each see the old count and can
+	// transiently overshoot the cap by up to Workers-1. Good enough for
+	// generation throttling; do not treat it as hard isolation. 0 = unlimited.
 	row := tx.QueryRow(ctx, `
 		SELECT id, project_id, type, attempts, input_json FROM todos
-		WHERE (status='ready' AND next_run_at <= now())
-		   OR (status='running' AND locked_until IS NOT NULL AND locked_until < now())
+		WHERE ((status='ready' AND next_run_at <= now())
+		   OR (status='running' AND locked_until IS NOT NULL AND locked_until < now()))
+		  AND (type <> 'asset' OR $1 <= 0
+		       OR (SELECT count(*) FROM todos
+		           WHERE type='asset' AND status='running' AND locked_until > now()) < $1)
 		ORDER BY next_run_at ASC
 		FOR UPDATE SKIP LOCKED
-		LIMIT 1`)
+		LIMIT 1`, w.cfg.MaxConcurrentGen)
 	if err := row.Scan(&c.todoID, &c.projectID, &c.typ, &c.attempts, &c.input); err != nil {
 		if err == pgx.ErrNoRows {
 			return claimed{}, false, nil
@@ -169,24 +193,40 @@ func (w *Worker) claim(ctx context.Context) (claimed, bool, error) {
 }
 
 // process dispatches by type, writes artifacts, marks done + emits events, or
-// fails with backoff. Emits todo_started before dispatch.
+// fails with backoff. Emits todo_started before dispatch. The dispatch ctx is
+// bounded by CallTimeout (< lease) so a hung LLM/generator call cannot outlive
+// the lease and get double-claimed (M1 carry: no lease renewal).
 func (w *Worker) process(ctx context.Context, c claimed) {
+	ctx, span := w.cfg.Tracer.Start(ctx, "studio.todo."+c.typ, trace.WithAttributes(
+		attribute.String("studio.project_id", c.projectID),
+		attribute.String("studio.todo_id", c.todoID),
+		attribute.Int("studio.attempts", c.attempts),
+	))
+	defer span.End()
 	_, _ = w.cfg.Events.Append(ctx, c.projectID, "todo_started", c.todoID, map[string]any{"type": c.typ})
 
+	dctx := ctx
+	if w.cfg.CallTimeout > 0 {
+		var cancel context.CancelFunc
+		dctx, cancel = context.WithTimeout(ctx, w.cfg.CallTimeout)
+		defer cancel()
+	}
 	var outputRef string
 	var perr error
 	switch c.typ {
 	case "script":
-		outputRef, perr = w.runScript(ctx, c)
+		outputRef, perr = w.runScript(dctx, c)
 	case "storyboard":
-		outputRef, perr = w.runStoryboard(ctx, c)
+		outputRef, perr = w.runStoryboard(dctx, c)
 	case "asset":
-		outputRef, perr = w.runAsset(ctx, c)
+		outputRef, perr = w.runAsset(dctx, c)
 	default:
 		perr = fmt.Errorf("worker: unknown todo type %q", c.typ)
 	}
 
 	if perr != nil {
+		span.RecordError(perr)
+		span.SetStatus(codes.Error, perr.Error())
 		w.fail(ctx, c, perr)
 		return
 	}
@@ -198,7 +238,15 @@ func (w *Worker) process(ctx context.Context, c claimed) {
 	}
 	if !done {
 		// Todo no longer 'running' (e.g. project canceled): discard the work,
-		// don't emit todo_finished or unblock/refresh. Correct for a cancel.
+		// don't emit todo_finished or unblock/refresh. For an asset todo the
+		// runAsset above may have JUST flipped the row to pending_acceptance
+		// (cancel raced between SetBlob and MarkDone) — push it to a terminal
+		// 'canceled' so it doesn't strand in review (M3 取消语义). Known window
+		// (documented in T16): in that race runAsset already ran to COMPLETION —
+		// the generation cost is booked (intentional: real money was spent) and
+		// the asset_generated SSE event (status pending_acceptance) may have
+		// gone out before the canceled flip.
+		w.discardCanceledAsset(ctx, c, outputRef)
 		return
 	}
 	_, _ = w.cfg.Events.Append(ctx, c.projectID, "todo_finished", c.todoID, map[string]any{"type": c.typ, "outputRef": outputRef})
@@ -208,7 +256,7 @@ func (w *Worker) process(ctx context.Context, c claimed) {
 		w.cfg.Logger.Warn("worker: refresh status failed", "project", c.projectID, "err", err)
 	}
 	if w.allDone(ctx, c.projectID) {
-		_, _ = w.cfg.Events.Append(ctx, c.projectID, "run_done", "", nil)
+		_, _, _ = w.cfg.Events.AppendRunDone(ctx, c.projectID)
 	}
 }
 
@@ -240,12 +288,31 @@ func (w *Worker) runScript(ctx context.Context, c claimed) (string, error) {
 // runStoryboard reads the latest script for the project, runs the
 // StoryboardAgent, and persists shots rows. outputRef = "shots:<scriptID>".
 func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
+	// Resolve the upstream script through the storyboard todo's depends_on
+	// parent (its output_ref is 'script:<id>') — correct across re-runs where
+	// multiple scripts exist (M1 carry: the created_at DESC heuristic picked
+	// the newest project-wide script). Fallback to the heuristic for graphs
+	// whose storyboard has no script parent edge.
 	var scriptID string
 	var contentJSON []byte
-	if err := w.cfg.Pool.QueryRow(ctx,
-		`SELECT id, content_json FROM scripts WHERE project_id=$1 ORDER BY created_at DESC LIMIT 1`,
-		c.projectID).Scan(&scriptID, &contentJSON); err != nil {
-		return "", fmt.Errorf("worker: load upstream script: %w", err)
+	var parentRef string
+	perr := w.cfg.Pool.QueryRow(ctx, `
+		SELECT t.output_ref FROM todos t
+		JOIN todos sb ON t.id = ANY(sb.depends_on)
+		WHERE sb.id=$1 AND t.type='script' AND t.output_ref LIKE 'script:%'
+		ORDER BY t.updated_at DESC LIMIT 1`, c.todoID).Scan(&parentRef)
+	if perr == nil {
+		scriptID = strings.TrimPrefix(parentRef, "script:")
+		if err := w.cfg.Pool.QueryRow(ctx,
+			`SELECT content_json FROM scripts WHERE id=$1`, scriptID).Scan(&contentJSON); err != nil {
+			return "", fmt.Errorf("worker: load parent script %s: %w", scriptID, err)
+		}
+	} else {
+		if err := w.cfg.Pool.QueryRow(ctx,
+			`SELECT id, content_json FROM scripts WHERE project_id=$1 ORDER BY created_at DESC LIMIT 1`,
+			c.projectID).Scan(&scriptID, &contentJSON); err != nil {
+			return "", fmt.Errorf("worker: load upstream script: %w", err)
+		}
 	}
 	// B1: style is sourced from the projects row, NOT the storyboard todo's
 	// input. The M1 planner only writes input to the script node; every other
@@ -340,6 +407,24 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 	}
 	_ = json.Unmarshal(c.input, &in)
 
+	// Quota backstop (spec §12): the HTTP layer 429s /run and /regenerate, but
+	// fan-out can push an org past quota mid-run — re-check before spending.
+	// Anchor (评审修复 M4): this MUST fire before createAsset below, or an
+	// over-quota fan-out would strand a fresh 'generating' asset row.
+	if w.cfg.GenQuota > 0 && w.cfg.Cost != nil {
+		if orgID, oerr := w.cfg.Projects.OrgIDForProject(ctx, c.projectID); oerr == nil {
+			n, cerr := w.cfg.Cost.CountByOrgSince(ctx, orgID, w.cfg.Clock().Add(-24*time.Hour))
+			if cerr == nil && n >= w.cfg.GenQuota {
+				// Regenerate todos point at a v2 asset pre-created 'generating'
+				// at HTTP time — terminal-state it or it strands in the library.
+				if in.AssetID != "" {
+					_ = w.cfg.Assets.SetBlob(context.WithoutCancel(ctx), in.AssetID, "", "", "", "", "failed")
+				}
+				return "", fmt.Errorf("worker: org %s generation quota exceeded (%d/%d in 24h)", orgID, n, w.cfg.GenQuota)
+			}
+		}
+	}
+
 	// Determine the target asset row. Regenerate (assetId set) fills the pre-created
 	// v2 asset; fan-out (no assetId) inserts a fresh 'generating' row.
 	var created assetsRow
@@ -353,12 +438,40 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 		created = c2
 	}
 
-	out, gerr := w.cfg.Asset.Run(ctx, studioagents.AssetInput{
+	// Failure cleanup must survive CallTimeout expiry: when the per-call
+	// timeout fires, the dispatch ctx is already done — terminal-stating the
+	// asset on it would silently no-op and strand the row in 'generating'
+	// forever (评审修复 I1). WithoutCancel (Go 1.21+) detaches cancellation
+	// but keeps ctx values.
+	cctx := context.WithoutCancel(ctx)
+
+	// M3 模型路由 (M2 carry #1): the org's default model_config resolves through
+	// the registry to a concrete generator; no default / lookup failure falls
+	// back to the agent's bound env-default generator. Resolution errors are
+	// deliberately non-fatal (routing must never break generation).
+	agentIn := studioagents.AssetInput{
 		ShotPrompt: firstNonEmpty(in.EditedPrompt, in.ShotPrompt), Style: in.Style,
-	})
+	}
+	var routed generate.MediaGenerator
+	if w.cfg.Models != nil && w.cfg.Registry != nil {
+		if orgID, oerr := w.cfg.Projects.OrgIDForProject(ctx, c.projectID); oerr == nil {
+			if provider, model, ok, derr := w.cfg.Models.DefaultForOrg(ctx, orgID, "image"); derr == nil && ok {
+				if g, rerr := w.cfg.Registry.Resolve(provider, model); rerr == nil {
+					routed = g
+				}
+			}
+		}
+	}
+	var out studioagents.AssetOutput
+	var gerr error
+	if routed != nil {
+		out, gerr = w.cfg.Asset.RunWith(ctx, routed, agentIn)
+	} else {
+		out, gerr = w.cfg.Asset.Run(ctx, agentIn)
+	}
 	if gerr != nil {
 		// Mark the asset failed so it isn't stuck 'generating'.
-		_ = w.cfg.Assets.SetBlob(ctx, created.id, "", "", "", "", "failed")
+		_ = w.cfg.Assets.SetBlob(cctx, created.id, "", "", "", "", "failed")
 		return "", gerr
 	}
 
@@ -366,27 +479,36 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 	blobKey := "assets/" + c.projectID + "/" + created.id
 	if len(out.Bytes) > 0 {
 		if err := w.cfg.Blob.Put(ctx, blobKey, bytesReader(out.Bytes), out.MimeType); err != nil {
-			_ = w.cfg.Assets.SetBlob(ctx, created.id, "", "", "", "", "failed")
+			_ = w.cfg.Assets.SetBlob(cctx, created.id, "", "", "", "", "failed")
 			return "", fmt.Errorf("worker: blob put: %w", err)
 		}
 	} else {
 		blobKey = "" // URL-only fallback (config 只存 URL); url recorded below
 	}
-	if err := w.cfg.Assets.SetBlob(ctx, created.id, blobKey, out.URL, out.Provider, out.Model, "pending_acceptance"); err != nil {
+	// Generation succeeded — money is already spent. Persist the outcome on the
+	// detached cctx so a fired CallTimeout cannot strand the asset in 'generating'
+	// or drop the cost ledger row (终审 nit: bookkeeping of completed work must
+	// not inherit the per-call deadline).
+	if err := w.cfg.Assets.SetBlob(cctx, created.id, blobKey, out.URL, out.Provider, out.Model, "pending_acceptance"); err != nil {
 		return "", fmt.Errorf("worker: asset set blob: %w", err)
 	}
 
-	// Ledger row (spec §6 generations). cost_micros is left 0 in M2 (no pricing
-	// table yet; M3 cost-center wires real pricing — the column exists now).
+	// M3 自动预审: advisory, post-generation, NEVER fails the todo. HITL stays
+	// the hard gate (spec §7.1: 人工采纳是硬门禁，自动预审仅辅助). Stays on the
+	// bounded ctx — it issues a fresh LLM call that must not outlive the lease.
+	w.prescreen(ctx, c, created.id, in.Style, out)
+
+	// Ledger row (spec §6 generations).
 	if w.cfg.Cost != nil {
-		_ = w.cfg.Cost.Record(ctx, cost.Generation{
+		// M3: RecordPriced fills cost_micros from the pricing table (M2 carry #2).
+		_ = w.cfg.Cost.RecordPriced(cctx, cost.Generation{
 			ProjectID: c.projectID, AssetID: created.id, TodoID: c.todoID, Kind: "image",
 			Provider: out.Provider, Model: out.Model, Prompt: out.Prompt,
 			Tokens: out.Tokens, ImageCount: out.ImageCount, LatencyMS: out.LatencyMS,
 		})
 	}
 	// Timeline: asset_generated (待审) — spec §9 SSE event.
-	_, _ = w.cfg.Events.Append(ctx, c.projectID, "asset_generated", c.todoID, map[string]any{"assetId": created.id, "status": "pending_acceptance"})
+	_, _ = w.cfg.Events.Append(cctx, c.projectID, "asset_generated", c.todoID, map[string]any{"assetId": created.id, "status": "pending_acceptance"})
 	return "asset:" + created.id, nil
 }
 
@@ -477,7 +599,7 @@ func (w *Worker) fail(ctx context.Context, c claimed, cause error) {
 		// run_done so the SSE timeline closes instead of hanging (mirrors the
 		// success path in process()).
 		if w.allDone(ctx, c.projectID) {
-			_, _ = w.cfg.Events.Append(ctx, c.projectID, "run_done", "", nil)
+			_, _, _ = w.cfg.Events.AppendRunDone(ctx, c.projectID)
 		}
 		return
 	}
@@ -491,3 +613,46 @@ func (w *Worker) fail(ctx context.Context, c claimed, cause error) {
 }
 
 func bytesReader(b []byte) *bytes.Reader { return bytes.NewReader(b) }
+
+// prescreen runs the ReviewAgent over the generation metadata and records the
+// verdict on the asset + an asset_prescreened timeline event. Errors degrade
+// to a prescreen_error flag with score -1 (unscreened).
+func (w *Worker) prescreen(ctx context.Context, c claimed, assetID, style string, out studioagents.AssetOutput) {
+	if w.cfg.Review == nil {
+		return
+	}
+	res, err := w.cfg.Review.Run(ctx, studioagents.ReviewInput{
+		Prompt: out.Prompt, Style: style, Provider: out.Provider, Model: out.Model, MimeType: out.MimeType,
+	})
+	if err != nil {
+		w.cfg.Logger.Warn("worker: prescreen failed", "asset", assetID, "err", err)
+		_ = w.cfg.Assets.SetPrescreen(ctx, assetID, -1, []string{"prescreen_error"}, err.Error())
+		return
+	}
+	if err := w.cfg.Assets.SetPrescreen(ctx, assetID, res.Score, res.Flags, res.Note); err != nil {
+		w.cfg.Logger.Warn("worker: persist prescreen failed", "asset", assetID, "err", err)
+		return
+	}
+	_, _ = w.cfg.Events.Append(ctx, c.projectID, "asset_prescreened", c.todoID,
+		map[string]any{"assetId": assetID, "score": res.Score, "flags": res.Flags})
+}
+
+// discardCanceledAsset terminal-states the asset produced by a discarded
+// (canceled mid-flight) asset todo. Best-effort: transition failures only mean
+// the cancel sweep already terminal-stated the row.
+func (w *Worker) discardCanceledAsset(ctx context.Context, c claimed, outputRef string) {
+	if c.typ != "asset" || !strings.HasPrefix(outputRef, "asset:") || w.cfg.Assets == nil {
+		return
+	}
+	id := strings.TrimPrefix(outputRef, "asset:")
+	for _, from := range []string{"pending_acceptance", "generating"} {
+		ok, err := w.cfg.Assets.TransitionStatus(ctx, id, from, "canceled")
+		if err != nil {
+			w.cfg.Logger.Warn("worker: discard canceled asset failed", "asset", id, "from", from, "err", err)
+			continue
+		}
+		if ok {
+			return
+		}
+	}
+}

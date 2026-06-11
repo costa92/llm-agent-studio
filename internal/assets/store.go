@@ -37,6 +37,10 @@ type Asset struct {
 	Version       int      `json:"version"`
 	ParentAssetID string   `json:"parentAssetId"`
 	Tags          []string `json:"tags"`
+
+	PrescreenScore int      `json:"prescreenScore"` // -1 = not screened (M3 ReviewAgent)
+	PrescreenFlags []string `json:"prescreenFlags"`
+	PrescreenNote  string   `json:"prescreenNote"`
 }
 
 // CreateInput is the input to Create / CreateVersion.
@@ -67,12 +71,13 @@ func newID() string {
 	return hex.EncodeToString(b)
 }
 
-const assetCols = `id, project_id, shot_id, todo_id, type, blob_key, url, prompt, style, provider, model, status, version, parent_asset_id, tags`
+const assetCols = `id, project_id, shot_id, todo_id, type, blob_key, url, prompt, style, provider, model, status, version, parent_asset_id, tags, prescreen_score, prescreen_flags, prescreen_note`
 
 func scanAsset(row pgx.Row) (Asset, error) {
 	var a Asset
 	err := row.Scan(&a.ID, &a.ProjectID, &a.ShotID, &a.TodoID, &a.Type, &a.BlobKey, &a.URL,
-		&a.Prompt, &a.Style, &a.Provider, &a.Model, &a.Status, &a.Version, &a.ParentAssetID, &a.Tags)
+		&a.Prompt, &a.Style, &a.Provider, &a.Model, &a.Status, &a.Version, &a.ParentAssetID, &a.Tags,
+		&a.PrescreenScore, &a.PrescreenFlags, &a.PrescreenNote)
 	return a, err
 }
 
@@ -101,6 +106,7 @@ func (s *Store) insert(ctx context.Context, in CreateInput, version int, parentI
 		Type: in.Type, BlobKey: in.BlobKey, URL: in.URL, Prompt: in.Prompt, Style: in.Style,
 		Provider: in.Provider, Model: in.Model, Status: in.Status, Version: version,
 		ParentAssetID: parentID, Tags: tags,
+		PrescreenScore: -1, PrescreenFlags: []string{}, // -1 = not screened (M3)
 	}
 	if a.Type == "" {
 		a.Type = "image"
@@ -110,9 +116,10 @@ func (s *Store) insert(ctx context.Context, in CreateInput, version int, parentI
 	}
 	if _, err := s.pool.Exec(ctx,
 		`INSERT INTO assets (`+assetCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
 		a.ID, a.ProjectID, a.ShotID, a.TodoID, a.Type, a.BlobKey, a.URL, a.Prompt, a.Style,
-		a.Provider, a.Model, a.Status, a.Version, a.ParentAssetID, a.Tags); err != nil {
+		a.Provider, a.Model, a.Status, a.Version, a.ParentAssetID, a.Tags,
+		a.PrescreenScore, a.PrescreenFlags, a.PrescreenNote); err != nil {
 		return Asset{}, fmt.Errorf("assets: insert: %w", err)
 	}
 	return a, nil
@@ -157,13 +164,15 @@ func (s *Store) VersionHistory(ctx context.Context, id string) ([]Asset, error) 
 			SELECT `+assetCols+` FROM assets WHERE id=$1
 			UNION
 			SELECT a.id, a.project_id, a.shot_id, a.todo_id, a.type, a.blob_key, a.url, a.prompt,
-			       a.style, a.provider, a.model, a.status, a.version, a.parent_asset_id, a.tags
+			       a.style, a.provider, a.model, a.status, a.version, a.parent_asset_id, a.tags,
+			       a.prescreen_score, a.prescreen_flags, a.prescreen_note
 			FROM assets a JOIN up u ON a.id = u.parent_asset_id
 		), down AS (
 			SELECT `+assetCols+` FROM assets WHERE id=$1
 			UNION
 			SELECT a.id, a.project_id, a.shot_id, a.todo_id, a.type, a.blob_key, a.url, a.prompt,
-			       a.style, a.provider, a.model, a.status, a.version, a.parent_asset_id, a.tags
+			       a.style, a.provider, a.model, a.status, a.version, a.parent_asset_id, a.tags,
+			       a.prescreen_score, a.prescreen_flags, a.prescreen_note
 			FROM assets a JOIN down d ON a.parent_asset_id = d.id
 		)
 		SELECT `+assetCols+` FROM up
@@ -229,7 +238,8 @@ func (s *Store) Library(ctx context.Context, f LibraryFilter) ([]Asset, string, 
 	}
 	args = append(args, limit)
 	q := `SELECT a.id, a.project_id, a.shot_id, a.todo_id, a.type, a.blob_key, a.url, a.prompt,
-		a.style, a.provider, a.model, a.status, a.version, a.parent_asset_id, a.tags
+		a.style, a.provider, a.model, a.status, a.version, a.parent_asset_id, a.tags,
+		a.prescreen_score, a.prescreen_flags, a.prescreen_note
 		FROM assets a JOIN projects p ON a.project_id = p.id
 		WHERE ` + strings.Join(conds, " AND ") + `
 		ORDER BY a.id ASC LIMIT $` + fmt.Sprintf("%d", len(args))
@@ -266,4 +276,18 @@ func (s *Store) OrgIDForAsset(ctx context.Context, assetID string) (string, erro
 		return "", ErrNotFound
 	}
 	return orgID, err
+}
+
+// SetPrescreen records the advisory ReviewAgent verdict (M3). Unconditional on
+// status: the verdict is metadata, valid whatever HITL later decides.
+func (s *Store) SetPrescreen(ctx context.Context, id string, score int, flags []string, note string) error {
+	if flags == nil {
+		flags = []string{}
+	}
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE assets SET prescreen_score=$2, prescreen_flags=$3, prescreen_note=$4 WHERE id=$1`,
+		id, score, flags, note); err != nil {
+		return fmt.Errorf("assets: set prescreen: %w", err)
+	}
+	return nil
 }

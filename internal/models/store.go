@@ -9,11 +9,52 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// ErrSecretParam is returned when params_json carries a credential-looking
+// field (密钥审计, spec §6: API key 不在此 — server-side env only, never the DB).
+var ErrSecretParam = errors.New("models: params must not contain credentials (API keys live in server env only)")
+
+// forbiddenParamKeys flag anywhere inside a (lowercased) key name. NOTE
+// (评审修复 M2): bare "token" is deliberately NOT in this substring list — it
+// false-positives on legitimate count/config fields (max_tokens, token_budget).
+// Credential token/key names are caught word-finally in isCredentialKey.
+var forbiddenParamKeys = []string{"apikey", "secret", "password", "passwd", "credential"}
+
+// isCredentialKey reports whether a params key looks like a credential.
+// "token"/"_key" match only as the FINAL word (api_token, access_token,
+// accessToken, api_key) so *_tokens-style count fields stay legal.
+func isCredentialKey(k string) bool {
+	lk := strings.ToLower(k)
+	for _, f := range forbiddenParamKeys {
+		if strings.Contains(lk, f) {
+			return true
+		}
+	}
+	return strings.HasSuffix(lk, "token") || strings.HasSuffix(lk, "_key")
+}
+
+// secretKeyIn recursively scans a decoded params object for credential-looking
+// key names. Returns the offending key.
+func secretKeyIn(m map[string]any) (string, bool) {
+	for k, v := range m {
+		if isCredentialKey(k) {
+			return k, true
+		}
+		if sub, ok := v.(map[string]any); ok {
+			if found, ok := secretKeyIn(sub); ok {
+				return found, true
+			}
+		}
+	}
+	return "", false
+}
 
 // CatalogEntry is one selectable provider+model in the built-in catalog.
 type CatalogEntry struct {
@@ -78,6 +119,14 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (ModelConfig, error)
 	kind := in.Kind
 	if kind == "" {
 		kind = "image"
+	}
+	if len(in.Params) > 0 {
+		var m map[string]any
+		if err := json.Unmarshal(in.Params, &m); err == nil {
+			if key, found := secretKeyIn(m); found {
+				return ModelConfig{}, fmt.Errorf("%w (field %q)", ErrSecretParam, key)
+			}
+		}
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {

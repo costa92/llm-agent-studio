@@ -89,7 +89,18 @@ func (s *Store) SignedURL(_ context.Context, key string, ttl time.Duration) (str
 	exp := strconv.FormatInt(time.Now().Add(ttl).Unix(), 10)
 	sig := s.sign(key, exp)
 	q := url.Values{"exp": {exp}, "sig": {sig}}
-	return s.urlPrefix + key + "?" + q.Encode(), nil
+	return s.urlPrefix + escapeKeyPath(key) + "?" + q.Encode(), nil
+}
+
+// escapeKeyPath percent-escapes each path segment of a blob key while keeping
+// the '/' separators (M2 carry #4). The HMAC stays over the RAW key: the blob
+// handler reads the decoded r.URL.Path, so KeyFromPath recovers the raw key.
+func escapeKeyPath(key string) string {
+	parts := strings.Split(key, "/")
+	for i, p := range parts {
+		parts[i] = url.PathEscape(p)
+	}
+	return strings.Join(parts, "/")
 }
 
 // Verify checks the signature and expiry for a key (called by the blob handler).
