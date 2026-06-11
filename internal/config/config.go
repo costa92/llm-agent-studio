@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -31,6 +32,20 @@ type Config struct {
 	WorkerBackoff    time.Duration
 
 	PerUserLimit int
+
+	// M3 横切 (spec §12/§15).
+	WorkerCallTimeout time.Duration // per-agent/generator-call ctx timeout; MUST be < WorkerLease
+	OrgDailyGenQuota  int           // rolling-24h generations per org; 0 = unlimited
+	MaxConcurrentGen  int           // global concurrent asset-todo cap; 0 = unlimited
+	ReviewPrescreen   bool          // run the ReviewAgent prescreen after generation
+
+	// Per-provider image keys (M3 模型路由): a key registers that provider's
+	// catalog models as real generators in the registry. Empty = not registered
+	// (org defaults pointing there resolve to the env default generator).
+	OpenAIAPIKey     string
+	GoogleAPIKey     string
+	MinimaxAPIKey    string
+	VolcengineAPIKey string
 
 	BlobMode    string // "localfs" | "s3"
 	BlobDir     string // localfs root
@@ -59,23 +74,34 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		}
 		return def
 	}
+	var errs []string
 	cfg := Config{
 		HTTPAddr:         get("HTTP_ADDR", ":8083"),
 		PGURL:            get("PG_URL", ""),
 		JWTSecret:        get("JWT_SECRET", ""),
-		AccessTTL:        durOf(get("ACCESS_TTL", "15m")),
-		RefreshTTL:       durOf(get("REFRESH_TTL", "720h")),
-		ShutdownTimeout:  durOf(get("SHUTDOWN_TIMEOUT", "20s")),
+		AccessTTL:        durOf("ACCESS_TTL", get("ACCESS_TTL", "15m"), &errs),
+		RefreshTTL:       durOf("REFRESH_TTL", get("REFRESH_TTL", "720h"), &errs),
+		ShutdownTimeout:  durOf("SHUTDOWN_TIMEOUT", get("SHUTDOWN_TIMEOUT", "20s"), &errs),
 		Provider:         get("PROVIDER", "deepseek"),
 		Model:            get("MODEL", "deepseek-chat"),
 		APIKey:           get("API_KEY", ""),
 		BaseURL:          get("BASE_URL", ""),
-		Workers:          intOf(get("WORKERS", "2")),
-		WorkerLease:      durOf(get("WORKER_LEASE", "120s")),
-		WorkerPoll:       durOf(get("WORKER_POLL", "1s")),
-		WorkerMaxAttempt: intOf(get("WORKER_MAX_ATTEMPTS", "3")),
-		WorkerBackoff:    durOf(get("WORKER_BACKOFF", "2s")),
-		PerUserLimit:     intOf(get("PER_USER_LIMIT", "120")),
+		Workers:          intOf("WORKERS", get("WORKERS", "2"), &errs),
+		WorkerLease:      durOf("WORKER_LEASE", get("WORKER_LEASE", "120s"), &errs),
+		WorkerPoll:       durOf("WORKER_POLL", get("WORKER_POLL", "1s"), &errs),
+		WorkerMaxAttempt: intOf("WORKER_MAX_ATTEMPTS", get("WORKER_MAX_ATTEMPTS", "3"), &errs),
+		WorkerBackoff:    durOf("WORKER_BACKOFF", get("WORKER_BACKOFF", "2s"), &errs),
+		PerUserLimit:     intOf("PER_USER_LIMIT", get("PER_USER_LIMIT", "120"), &errs),
+
+		WorkerCallTimeout: durOf("WORKER_CALL_TIMEOUT", get("WORKER_CALL_TIMEOUT", "90s"), &errs),
+		OrgDailyGenQuota:  intOf("ORG_DAILY_GEN_QUOTA", get("ORG_DAILY_GEN_QUOTA", "0"), &errs),
+		MaxConcurrentGen:  intOf("MAX_CONCURRENT_GENERATIONS", get("MAX_CONCURRENT_GENERATIONS", "0"), &errs),
+		ReviewPrescreen:   get("REVIEW_PRESCREEN", "true") == "true",
+		OpenAIAPIKey:      get("OPENAI_API_KEY", ""),
+		GoogleAPIKey:      get("GOOGLE_API_KEY", ""),
+		MinimaxAPIKey:     get("MINIMAX_API_KEY", ""),
+		VolcengineAPIKey:  get("VOLCENGINE_API_KEY", ""),
+
 		BlobMode:         get("BLOB_MODE", "localfs"),
 		BlobDir:          get("BLOB_DIR", "./blobdata"),
 		BlobSecret:       get("BLOB_SECRET", ""),
@@ -90,6 +116,13 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		OTLPProtocol:     get("OTLP_PROTOCOL", ""),
 		OTLPInsecure:     get("OTLP_INSECURE", "true") == "true",
 	}
+	if len(errs) > 0 {
+		return Config{}, fmt.Errorf("config: invalid values: %s", strings.Join(errs, "; "))
+	}
+	if cfg.WorkerCallTimeout > 0 && cfg.WorkerCallTimeout >= cfg.WorkerLease {
+		return Config{}, fmt.Errorf("config: WORKER_CALL_TIMEOUT (%s) must be strictly shorter than WORKER_LEASE (%s)",
+			cfg.WorkerCallTimeout, cfg.WorkerLease)
+	}
 	if cfg.PGURL == "" {
 		return Config{}, fmt.Errorf("config: PG_URL is required")
 	}
@@ -102,17 +135,22 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 	return cfg, nil
 }
 
-func durOf(s string) time.Duration {
+// durOf parses a duration, recording a load error naming the env key on
+// malformed input (M1 carry: parse errors must not silently become 0).
+func durOf(key, s string, errs *[]string) time.Duration {
 	d, err := time.ParseDuration(s)
 	if err != nil {
+		*errs = append(*errs, fmt.Sprintf("%s=%q: %v", key, s, err))
 		return 0
 	}
 	return d
 }
 
-func intOf(s string) int {
+// intOf parses an int, recording a load error naming the env key.
+func intOf(key, s string, errs *[]string) int {
 	n, err := strconv.Atoi(s)
 	if err != nil {
+		*errs = append(*errs, fmt.Sprintf("%s=%q: %v", key, s, err))
 		return 0
 	}
 	return n
