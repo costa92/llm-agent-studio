@@ -175,9 +175,35 @@ var m2Migrations = []string{
 	`CREATE INDEX IF NOT EXISTS model_configs_org_idx ON model_configs (org_id)`,
 }
 
-// Migrate applies the M1 + M2 migrations. Idempotent.
+// m3Migrations are the studio M3 surfaces (spec §15 M3): the pricing table
+// (provider+model unit prices feeding cost_micros — seeded, ops-tunable via
+// SQL, no admin CRUD by decision) and the assets prescreen columns written by
+// the ReviewAgent (advisory; HITL stays the hard gate). All idempotent.
+var m3Migrations = []string{
+	`ALTER TABLE assets ADD COLUMN IF NOT EXISTS prescreen_score INT NOT NULL DEFAULT -1`,
+	`ALTER TABLE assets ADD COLUMN IF NOT EXISTS prescreen_flags TEXT[] NOT NULL DEFAULT '{}'`,
+	`ALTER TABLE assets ADD COLUMN IF NOT EXISTS prescreen_note TEXT NOT NULL DEFAULT ''`,
+	`CREATE TABLE IF NOT EXISTS pricing (
+		provider             TEXT NOT NULL,
+		model                TEXT NOT NULL,
+		kind                 TEXT NOT NULL DEFAULT 'image',
+		micros_per_image     BIGINT NOT NULL DEFAULT 0,
+		micros_per_1k_tokens BIGINT NOT NULL DEFAULT 0,
+		PRIMARY KEY (provider, model)
+	)`,
+	`INSERT INTO pricing (provider, model, kind, micros_per_image, micros_per_1k_tokens) VALUES
+		('openai',     'gpt-image-1',             'image', 40000, 10000),
+		('openai',     'dall-e-3',                'image', 40000, 0),
+		('google',     'imagen-3.0-generate-002', 'image', 30000, 0),
+		('minimax',    'image-01',                'image', 20000, 0),
+		('volcengine', 'doubao-seedream-3-0-t2i', 'image', 20000, 0)
+	 ON CONFLICT (provider, model) DO NOTHING`,
+}
+
+// Migrate applies the M1 + M2 + M3 migrations in order. Idempotent.
 func (s *Storage) Migrate(ctx context.Context) error {
-	for _, stmt := range append(append([]string{}, m1Migrations...), m2Migrations...) {
+	all := append(append(append([]string{}, m1Migrations...), m2Migrations...), m3Migrations...)
+	for _, stmt := range all {
 		if _, err := s.pool.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("storage: migrate: %w", err)
 		}

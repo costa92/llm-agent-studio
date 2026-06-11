@@ -72,3 +72,34 @@ func TestMigrateCreatesM2Tables(t *testing.T) {
 		}
 	}
 }
+
+func TestMigrateCreatesM3Surfaces(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, Config{PGURL: testDSN(t)})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	// pricing table exists and is seeded with the catalog unit prices.
+	var n int
+	if err := st.Pool().QueryRow(ctx, `SELECT count(*) FROM pricing`).Scan(&n); err != nil {
+		t.Fatalf("pricing table missing: %v", err)
+	}
+	if n < 5 {
+		t.Fatalf("pricing not seeded: %d rows, want >= 5", n)
+	}
+	// assets carries the ReviewAgent prescreen columns.
+	for _, col := range []string{"prescreen_score", "prescreen_flags", "prescreen_note"} {
+		var exists bool
+		if err := st.Pool().QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='assets' AND column_name=$1)`, col).Scan(&exists); err != nil {
+			t.Fatalf("check assets.%s: %v", col, err)
+		}
+		if !exists {
+			t.Fatalf("assets.%s missing", col)
+		}
+	}
+}
