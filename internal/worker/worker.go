@@ -531,7 +531,12 @@ func (w *Worker) discardCanceledAsset(ctx context.Context, c claimed, outputRef 
 	}
 	id := strings.TrimPrefix(outputRef, "asset:")
 	for _, from := range []string{"pending_acceptance", "generating"} {
-		if ok, err := w.cfg.Assets.TransitionStatus(ctx, id, from, "canceled"); err == nil && ok {
+		ok, err := w.cfg.Assets.TransitionStatus(ctx, id, from, "canceled")
+		if err != nil {
+			w.cfg.Logger.Warn("worker: discard canceled asset failed", "asset", id, "from", from, "err", err)
+			continue
+		}
+		if ok {
 			return
 		}
 	}
