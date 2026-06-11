@@ -200,9 +200,42 @@ var m3Migrations = []string{
 	 ON CONFLICT (provider, model) DO NOTHING`,
 }
 
-// Migrate applies the M1 + M2 + M3 migrations in order. Idempotent.
+// m4Migrations are the studio M4 surfaces (spec §6 二期异步引擎): the async poll
+// budget column, the external-job handle + submit timestamp, the crash-idempotency
+// partial unique indexes (B1 assets_todo_uniq / B3 generations_asset_todo_uniq),
+// the per-second pricing dimension, and video/audio catalog seed prices. All
+// idempotent, additive only — never alters M1-M3 columns destructively.
+var m4Migrations = []string{
+	`ALTER TABLE todos  ADD COLUMN IF NOT EXISTS poll_attempts INT NOT NULL DEFAULT 0`,
+	`ALTER TABLE assets ADD COLUMN IF NOT EXISTS external_job_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE assets ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMPTZ`,
+	// Reverse lookup by external job (cancel/reconcile); partial avoids '' bloat.
+	`CREATE INDEX IF NOT EXISTS assets_extjob_idx ON assets (external_job_id) WHERE external_job_id <> ''`,
+	// B1: one asset row per todo (crash reclaim reuses the row, never re-creates).
+	// Partial so the many regenerate/image rows with todo_id='' don't collide.
+	`CREATE UNIQUE INDEX IF NOT EXISTS assets_todo_uniq ON assets (todo_id) WHERE todo_id <> ''`,
+	// B3: async ledger dedup is a DB invariant (submit-insert / poll-update hit the
+	// same row); partial excludes the empty keys image's sync path may carry.
+	`CREATE UNIQUE INDEX IF NOT EXISTS generations_asset_todo_uniq ON generations (asset_id, todo_id)
+	  WHERE asset_id <> '' AND todo_id <> ''`,
+	// Per-second pricing dimension (video frame seconds / audio seconds, Q3).
+	`ALTER TABLE pricing ADD COLUMN IF NOT EXISTS micros_per_second BIGINT NOT NULL DEFAULT 0`,
+	// Video/audio prices: fake (live-verification ledger assertions) + real models
+	// (placeholders, ops-tunable via SQL). Order-of-magnitude, NOT a quote.
+	`INSERT INTO pricing (provider, model, kind, micros_per_second) VALUES
+		('fake',       'fake-video-async', 'video', 500000),
+		('fake',       'fake-audio-async', 'audio',  50000),
+		('runway',     'gen-3',            'video', 500000),
+		('kling',      'kling-v1',         'video', 280000),
+		('google',     'veo-2',            'video', 500000),
+		('openai',     'tts-1',            'audio',  15000)
+	 ON CONFLICT (provider, model) DO NOTHING`,
+}
+
+// Migrate applies the M1 + M2 + M3 + M4 migrations in order. Idempotent.
 func (s *Storage) Migrate(ctx context.Context) error {
-	all := append(append(append([]string{}, m1Migrations...), m2Migrations...), m3Migrations...)
+	all := append(append(append(append([]string{},
+		m1Migrations...), m2Migrations...), m3Migrations...), m4Migrations...)
 	for _, stmt := range all {
 		if _, err := s.pool.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("storage: migrate: %w", err)
