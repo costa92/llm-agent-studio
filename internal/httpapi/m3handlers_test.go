@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/costa92/llm-agent-studio/internal/cost"
+	"github.com/costa92/llm-agent-studio/internal/planner"
+	"github.com/costa92/llm-agent-studio/internal/project"
 )
 
 // stubCost is a canned CostStore for handler tests.
@@ -92,5 +94,70 @@ func TestOrgGenerationsHandler(t *testing.T) {
 	h(rr, req)
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"id":"g1"`) {
 		t.Fatalf("code=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// --- quota stubs ---
+
+type stubProjects struct{ orgID string }
+
+func (s stubProjects) Create(_ context.Context, _ project.CreateInput) (project.Project, error) {
+	return project.Project{}, nil
+}
+func (s stubProjects) Get(_ context.Context, id string) (project.Project, error) {
+	return project.Project{ID: id, OrgID: s.orgID, Status: "draft"}, nil
+}
+func (s stubProjects) ListByOrg(_ context.Context, _ string, _ int, _ string) ([]project.Project, string, error) {
+	return nil, "", nil
+}
+func (s stubProjects) SetStatus(_ context.Context, _, _ string) error { return nil }
+func (s stubProjects) Cancel(_ context.Context, _ string) error       { return nil }
+func (s stubProjects) OrgIDForProject(_ context.Context, _ string) (string, error) {
+	return s.orgID, nil
+}
+
+type stubPlanner struct{}
+
+func (stubPlanner) Plan(_ context.Context, _ string, _ planner.Brief) (planner.Result, error) {
+	return planner.Result{PlanID: "pl", Valid: true}, nil
+}
+
+type stubAppender struct{}
+
+func (stubAppender) Append(_ context.Context, _, _, _ string, _ any) (int64, error) { return 1, nil }
+
+func TestRunHandler429WhenQuotaExhausted(t *testing.T) {
+	cs := &stubCost{count: 5} // org already used 5 generations in the window
+	h := runHandler(stubProjects{orgID: "o1"}, stubPlanner{}, stubAppender{}, cs, 5)
+	req := httptest.NewRequest("POST", "/api/projects/p1/run", nil)
+	req.SetPathValue("id", "p1")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("quota-exhausted run should 429, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRunHandlerPassesUnderQuota(t *testing.T) {
+	cs := &stubCost{count: 4}
+	h := runHandler(stubProjects{orgID: "o1"}, stubPlanner{}, stubAppender{}, cs, 5)
+	req := httptest.NewRequest("POST", "/api/projects/p1/run", nil)
+	req.SetPathValue("id", "p1")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("under-quota run should 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRunHandlerQuotaZeroDisabled(t *testing.T) {
+	cs := &stubCost{count: 1000}
+	h := runHandler(stubProjects{orgID: "o1"}, stubPlanner{}, stubAppender{}, cs, 0)
+	req := httptest.NewRequest("POST", "/api/projects/p1/run", nil)
+	req.SetPathValue("id", "p1")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("quota=0 must disable the check, got %d", rr.Code)
 	}
 }

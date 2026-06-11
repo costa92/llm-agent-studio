@@ -33,26 +33,28 @@ import (
 
 // Config configures a Worker.
 type Config struct {
-	Pool        *pgxpool.Pool
-	Todos       *todos.Store
-	Projects    *project.Store
-	Events      *events.Store
-	Script      *studioagents.ScriptAgent
-	Storyboard  *studioagents.StoryboardAgent
-	Asset       *studioagents.AssetAgent
-	Review      *studioagents.ReviewAgent // nil → prescreen disabled
-	Blob        blob.BlobStore
-	Assets      *assets.Store
-	Cost        *cost.Store
-	Models      *models.Store      // resolve org default provider+model; nil → registry default
-	Registry    *generate.Registry // nil → use Asset's bound generator directly
-	WorkerID    string
-	Lease       time.Duration    // default 120s
-	MaxAttempts int              // default 3
-	BaseBackoff time.Duration    // default 2s
-	CallTimeout time.Duration    // per-dispatch ctx timeout; MUST be < Lease (0 = no bound)
-	Clock       func() time.Time // nil → time.Now
-	Logger      *slog.Logger     // nil → slog.Default()
+	Pool             *pgxpool.Pool
+	Todos            *todos.Store
+	Projects         *project.Store
+	Events           *events.Store
+	Script           *studioagents.ScriptAgent
+	Storyboard       *studioagents.StoryboardAgent
+	Asset            *studioagents.AssetAgent
+	Review           *studioagents.ReviewAgent // nil → prescreen disabled
+	Blob             blob.BlobStore
+	Assets           *assets.Store
+	Cost             *cost.Store
+	Models           *models.Store      // resolve org default provider+model; nil → registry default
+	Registry         *generate.Registry // nil → use Asset's bound generator directly
+	WorkerID         string
+	GenQuota         int              // rolling-24h per-org generation quota; 0 = unlimited (backstop for fan-out)
+	MaxConcurrentGen int              // global concurrent asset-todo cap; 0 = unlimited
+	Lease            time.Duration    // default 120s
+	MaxAttempts      int              // default 3
+	BaseBackoff      time.Duration    // default 2s
+	CallTimeout      time.Duration    // per-dispatch ctx timeout; MUST be < Lease (0 = no bound)
+	Clock            func() time.Time // nil → time.Now
+	Logger           *slog.Logger     // nil → slog.Default()
 }
 
 // Worker drains the todos queue.
@@ -144,13 +146,24 @@ func (w *Worker) claim(ctx context.Context) (claimed, bool, error) {
 		lease = 120
 	}
 	var c claimed
+	// Global concurrent-generation cap (spec §12): an asset todo is claimable
+	// only while fewer than MaxConcurrentGen asset todos hold a LIVE lease (the
+	// expired-lease exclusion keeps stuck-reclaim from being blocked by its own
+	// stale lease). This is a SOFT/approximate cap (评审修复 M5): FOR UPDATE
+	// SKIP LOCKED locks only the claimed row, not the count, so overlapping
+	// claim transactions under READ COMMITTED each see the old count and can
+	// transiently overshoot the cap by up to Workers-1. Good enough for
+	// generation throttling; do not treat it as hard isolation. 0 = unlimited.
 	row := tx.QueryRow(ctx, `
 		SELECT id, project_id, type, attempts, input_json FROM todos
-		WHERE (status='ready' AND next_run_at <= now())
-		   OR (status='running' AND locked_until IS NOT NULL AND locked_until < now())
+		WHERE ((status='ready' AND next_run_at <= now())
+		   OR (status='running' AND locked_until IS NOT NULL AND locked_until < now()))
+		  AND (type <> 'asset' OR $1 <= 0
+		       OR (SELECT count(*) FROM todos
+		           WHERE type='asset' AND status='running' AND locked_until > now()) < $1)
 		ORDER BY next_run_at ASC
 		FOR UPDATE SKIP LOCKED
-		LIMIT 1`)
+		LIMIT 1`, w.cfg.MaxConcurrentGen)
 	if err := row.Scan(&c.todoID, &c.projectID, &c.typ, &c.attempts, &c.input); err != nil {
 		if err == pgx.ErrNoRows {
 			return claimed{}, false, nil
@@ -377,6 +390,19 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 		EditedPrompt string `json:"editedPrompt"`
 	}
 	_ = json.Unmarshal(c.input, &in)
+
+	// Quota backstop (spec §12): the HTTP layer 429s /run and /regenerate, but
+	// fan-out can push an org past quota mid-run — re-check before spending.
+	// Anchor (评审修复 M4): this MUST fire before createAsset below, or an
+	// over-quota fan-out would strand a fresh 'generating' asset row.
+	if w.cfg.GenQuota > 0 && w.cfg.Cost != nil {
+		if orgID, oerr := w.cfg.Projects.OrgIDForProject(ctx, c.projectID); oerr == nil {
+			n, cerr := w.cfg.Cost.CountByOrgSince(ctx, orgID, w.cfg.Clock().Add(-24*time.Hour))
+			if cerr == nil && n >= w.cfg.GenQuota {
+				return "", fmt.Errorf("worker: org %s generation quota exceeded (%d/%d in 24h)", orgID, n, w.cfg.GenQuota)
+			}
+		}
+	}
 
 	// Determine the target asset row. Regenerate (assetId set) fills the pre-created
 	// v2 asset; fan-out (no assetId) inserts a fresh 'generating' row.

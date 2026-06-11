@@ -414,3 +414,118 @@ func TestRunAssetPrescreensViaReviewAgent(t *testing.T) {
 		t.Fatalf("want 1 asset_prescreened event, got %d", n)
 	}
 }
+
+func TestClaimRespectsGlobalGenerationCap(t *testing.T) {
+	pool := assetTestPool(t)
+	ctx := context.Background()
+	var pid string
+	_ = pool.QueryRow(ctx, `INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),'org_cap','p','u') RETURNING id`).Scan(&pid)
+	// One asset todo RUNNING with a live lease occupies the only slot…
+	_, _ = pool.Exec(ctx,
+		`INSERT INTO todos (id,project_id,plan_id,type,status,locked_by,locked_until,input_json)
+		 VALUES ($1,$2,'plan','asset','running','other', now() + interval '60 seconds','{}')`, newID(), pid)
+	// …so this READY asset todo must not be claimable at cap=1.
+	readyID := newID()
+	_, _ = pool.Exec(ctx,
+		`INSERT INTO todos (id,project_id,plan_id,type,status,input_json) VALUES ($1,$2,'plan','asset','ready','{}')`,
+		readyID, pid)
+	// Neutralize leftover claimable todos from earlier tests in this shared
+	// package DB (评审修复 M7): the bounded drains below ORDER BY next_run_at
+	// ASC and would otherwise burn their bound on stale rows and flake. Push
+	// everything outside this test's project out of the claim window; our rows
+	// (project pid) keep next_run_at = now() and sort first.
+	_, _ = pool.Exec(ctx, `
+		UPDATE todos
+		SET next_run_at = now() + interval '1 hour',
+		    locked_until = CASE WHEN status='running' THEN now() + interval '1 hour' ELSE locked_until END
+		WHERE project_id <> $1 AND status IN ('ready','running')`, pid)
+
+	capped := New(Config{Pool: pool, WorkerID: "capped", Lease: time.Minute, MaxConcurrentGen: 1})
+	// Drain claims and assert OUR ready asset todo is never taken while the
+	// slot is occupied (pre-existing rows were neutralized above, so the first
+	// empty claim ends the loop deterministically).
+	for i := 0; i < 20; i++ {
+		c, ok, err := capped.claim(ctx)
+		if err != nil {
+			t.Fatalf("claim: %v", err)
+		}
+		if !ok {
+			break
+		}
+		if c.todoID == readyID {
+			t.Fatalf("cap=1 with an in-flight generation must not claim another asset todo")
+		}
+	}
+	// cap=0 disables the gate: the todo becomes claimable.
+	uncapped := New(Config{Pool: pool, WorkerID: "uncapped", Lease: time.Minute})
+	claimedOurs := false
+	for i := 0; i < 20; i++ {
+		c, ok, err := uncapped.claim(ctx)
+		if err != nil {
+			t.Fatalf("claim: %v", err)
+		}
+		if !ok {
+			break
+		}
+		if c.todoID == readyID {
+			claimedOurs = true
+			break
+		}
+	}
+	if !claimedOurs {
+		t.Fatalf("cap=0 should leave the asset todo claimable")
+	}
+}
+
+func TestRunAssetQuotaBackstopFailsOverQuotaTodo(t *testing.T) {
+	// 评审修复 M3: the worker-side quota backstop gets its own failing test.
+	// The org has already spent its single quota slot; an asset todo run via
+	// runAsset must fail with a quota error, record NO new generation, and
+	// (评审修复 M4 锚点) strand NO fresh 'generating' asset row — the check
+	// fires before createAsset.
+	pool := assetTestPool(t)
+	ctx := context.Background()
+	orgID := "org_qbs_" + randHex3()
+	var pid string
+	_ = pool.QueryRow(ctx,
+		`INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),$1,'p','u') RETURNING id`,
+		orgID).Scan(&pid)
+	cs := cost.New(pool)
+	if err := cs.Record(ctx, cost.Generation{
+		ProjectID: pid, AssetID: "a0", TodoID: "t0", Kind: "image",
+		Provider: "fake", Model: "m", ImageCount: 1,
+	}); err != nil {
+		t.Fatalf("seed generation: %v", err)
+	}
+	todoID := newID()
+	_, _ = pool.Exec(ctx,
+		`INSERT INTO todos (id,project_id,plan_id,type,status,input_json) VALUES ($1,$2,'plan','asset','running',$3)`,
+		todoID, pid, `{"shotId":"s1","shotPrompt":"x","style":""}`)
+	fake := generate.NewFakeLooping(generate.GenResult{Bytes: []byte("P"), MimeType: "image/png", Provider: "fake", Model: "m", ImageCount: 1})
+	w := New(Config{
+		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
+		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
+		Blob:     blob.NewFake(),
+		Assets:   assets.New(pool),
+		Cost:     cs,
+		GenQuota: 1,
+		WorkerID: "backstop", Lease: time.Minute, MaxAttempts: 1, BaseBackoff: time.Millisecond,
+	})
+	_, err := w.runAsset(ctx, claimed{todoID: todoID, projectID: pid, typ: "asset", attempts: 1,
+		input: []byte(`{"shotId":"s1","shotPrompt":"x","style":""}`)})
+	if err == nil || !strings.Contains(err.Error(), "quota") {
+		t.Fatalf("over-quota runAsset must fail with a quota error, got %v", err)
+	}
+	// No new generation was recorded (only the seed row remains)…
+	var nGen int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM generations WHERE project_id=$1`, pid).Scan(&nGen)
+	if nGen != 1 {
+		t.Fatalf("over-quota run must not record a generation, ledger rows = %d, want 1", nGen)
+	}
+	// …and the quota check fired BEFORE createAsset: no orphan 'generating' row.
+	var nAssets int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM assets WHERE project_id=$1`, pid).Scan(&nAssets)
+	if nAssets != 0 {
+		t.Fatalf("quota backstop must fire before createAsset, found %d asset rows", nAssets)
+	}
+}

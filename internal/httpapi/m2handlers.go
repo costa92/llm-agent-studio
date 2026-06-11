@@ -130,13 +130,23 @@ func rejectHandler(rv ReviewPort) http.HandlerFunc {
 // regenerateHandler (POST /api/assets/{id}/regenerate): admin. Body = edited
 // prompt. No run_event (same reason as acceptHandler); the spawned asset todo's
 // own todo_ready is emitted by the worker's emitNewlyReady on the next claim.
-func regenerateHandler(rv ReviewPort) http.HandlerFunc {
+func regenerateHandler(rv ReviewPort, lib AssetLibrary, cs CostStore, quota int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		var req struct {
 			Prompt string `json:"prompt"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
+		orgID, err := lib.OrgIDForAsset(r.Context(), id)
+		if err == nil {
+			if over, qerr := quotaExceeded(r.Context(), cs, quota, orgID); qerr != nil {
+				http.Error(w, qerr.Error(), http.StatusInternalServerError)
+				return
+			} else if over {
+				http.Error(w, "generation quota exceeded for org", http.StatusTooManyRequests)
+				return
+			}
+		}
 		newAssetID, todoID, err := rv.Regenerate(r.Context(), id, req.Prompt)
 		if err != nil {
 			if errors.Is(err, errReviewConflict) {

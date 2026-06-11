@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	authzhttp "github.com/costa92/llm-agent-authz/httpapi"
 	authzrole "github.com/costa92/llm-agent-authz/role"
@@ -138,9 +139,22 @@ func getProjectHandler(ps ProjectStore) http.HandlerFunc {
 	}
 }
 
+// quotaExceeded reports whether the org used up its rolling-24h generation
+// quota (spec §12 生成调用配额，防成本失控). quota<=0 disables the check.
+func quotaExceeded(ctx context.Context, cs CostStore, quota int, orgID string) (bool, error) {
+	if quota <= 0 {
+		return false, nil
+	}
+	n, err := cs.CountByOrgSince(ctx, orgID, time.Now().Add(-24*time.Hour))
+	if err != nil {
+		return false, err
+	}
+	return n >= quota, nil
+}
+
 // runHandler (POST /api/projects/{id}/run): editor+. Sets status=planning, runs
 // the planner (synchronously enqueues todos), emits planner_started.
-func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender) http.HandlerFunc {
+func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore, quota int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		p, err := ps.Get(r.Context(), id)
@@ -149,6 +163,13 @@ func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender) http.HandlerF
 			return
 		} else if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if over, err := quotaExceeded(r.Context(), cs, quota, p.OrgID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if over {
+			http.Error(w, "generation quota exceeded for org", http.StatusTooManyRequests)
 			return
 		}
 		if err := ps.SetStatus(r.Context(), id, "planning"); err != nil {

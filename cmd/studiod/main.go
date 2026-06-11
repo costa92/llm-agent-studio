@@ -172,11 +172,13 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 			Script: scriptAgent, Storyboard: storyboardAgent,
 			Asset: assetAgent, Review: reviewAgent, Blob: blobStore, Assets: assetStore, Cost: costStore,
 			Models: modelStore, Registry: registry,
-			WorkerID:    fmt.Sprintf("studiod-%d", i),
-			Lease:       cfg.WorkerLease,
-			MaxAttempts: cfg.WorkerMaxAttempt,
-			BaseBackoff: cfg.WorkerBackoff,
-			CallTimeout: cfg.WorkerCallTimeout,
+			WorkerID:         fmt.Sprintf("studiod-%d", i),
+			GenQuota:         cfg.OrgDailyGenQuota,
+			MaxConcurrentGen: cfg.MaxConcurrentGen,
+			Lease:            cfg.WorkerLease,
+			MaxAttempts:      cfg.WorkerMaxAttempt,
+			BaseBackoff:      cfg.WorkerBackoff,
+			CallTimeout:      cfg.WorkerCallTimeout,
 		})
 		wg.Add(1)
 		go func() { defer wg.Done(); w.Run(workerCtx, cfg.WorkerPoll) }()
@@ -205,6 +207,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		Models:        modelStore,
 		Cost:          costStore,
 		PromptBuilder: promptBuilder,
+		GenQuota:      cfg.OrgDailyGenQuota,
 	})
 
 	cleanup := func() {
