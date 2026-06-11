@@ -159,3 +159,48 @@ func TestAggregatesByRangePerProjectAndRecent(t *testing.T) {
 		t.Fatalf("CountByOrgSince = %d err=%v, want 1", n, err)
 	}
 }
+
+func TestPerSecondPricingAndUpsertFlow(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	s := New(pool)
+	if _, err := pool.Exec(ctx, `INSERT INTO pricing (provider, model, kind, micros_per_second)
+		VALUES ('fake','fake-video-async','video',500000) ON CONFLICT (provider, model) DO NOTHING`); err != nil {
+		t.Fatalf("seed pricing: %v", err)
+	}
+	p, ok, err := s.PriceFor(ctx, "fake", "fake-video-async")
+	if err != nil || !ok || p.MicrosPerSecond != 500000 {
+		t.Fatalf("PriceFor per-second: %+v ok=%v err=%v", p, ok, err)
+	}
+	if got := ComputeCostMicros(p, 0, 0, 6); got != 6*500000 {
+		t.Fatalf("ComputeCostMicros seconds = %d, want %d", got, 6*500000)
+	}
+	pid := seedProject(t, pool, "org_upsert")
+	g := Generation{ProjectID: pid, AssetID: "asset-1", TodoID: "todo-1", Kind: "video",
+		Provider: "fake", Model: "fake-video-async", VideoSeconds: 6, CostMicros: 6 * 500000}
+	id1, err := s.UpsertSubmittedGeneration(ctx, g)
+	if err != nil || id1 == "" {
+		t.Fatalf("upsert#1: id=%q err=%v", id1, err)
+	}
+	// Crash-retry: a second upsert on the same (asset_id, todo_id) returns the
+	// SAME row id and does NOT double-insert (B3 DB-enforced dedup).
+	id2, err := s.UpsertSubmittedGeneration(ctx, g)
+	if err != nil || id2 != id1 {
+		t.Fatalf("upsert#2 must return same id: %q vs %q err=%v", id2, id1, err)
+	}
+	var nRows int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM generations WHERE asset_id='asset-1' AND todo_id='todo-1'`).Scan(&nRows)
+	if nRows != 1 {
+		t.Fatalf("ledger must have exactly 1 row, got %d", nRows)
+	}
+	// poll-done backfill: real seconds/cost overwrite the estimate in place.
+	if err := s.UpdateGenerationByAssetTodo(ctx, "asset-1", "todo-1", 8, 8*500000); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	var sec int
+	var micros int64
+	_ = pool.QueryRow(ctx, `SELECT video_seconds, cost_micros FROM generations WHERE asset_id='asset-1' AND todo_id='todo-1'`).Scan(&sec, &micros)
+	if sec != 8 || micros != 8*500000 {
+		t.Fatalf("backfill = %ds / %d micros, want 8s / %d", sec, micros, 8*500000)
+	}
+}

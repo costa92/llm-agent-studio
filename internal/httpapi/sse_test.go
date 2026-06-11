@@ -50,3 +50,25 @@ func TestStreamWhitelistsEventNames(t *testing.T) {
 		t.Fatalf("run_done must terminate the stream:\n%s", body)
 	}
 }
+
+func TestStreamWhitelistsAssetSubmitted(t *testing.T) {
+	// M4: asset_submitted joins the whitelist (UI shows "生成中…轮询"). asset_polling
+	// is DEFERRED — it must NOT be whitelisted (it degrades to 'message' if ever
+	// emitted, which it isn't in M4).
+	h := streamEventsHandler(scriptedReader{evs: []events.Event{
+		{Seq: 1, Kind: "asset_submitted", TodoID: "t1"},
+		{Seq: 2, Kind: "asset_polling", TodoID: "t1"},
+		{Seq: 3, Kind: "run_done"},
+	}})
+	req := httptest.NewRequest("GET", "/api/projects/p1/events/stream", nil)
+	req.SetPathValue("id", "p1")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	body := rr.Body.String()
+	if !strings.Contains(body, "event: asset_submitted\n") {
+		t.Fatalf("asset_submitted must stream under its own name:\n%s", body)
+	}
+	if strings.Contains(body, "event: asset_polling\n") {
+		t.Fatalf("asset_polling must NOT be whitelisted (M4 DEFER):\n%s", body)
+	}
+}

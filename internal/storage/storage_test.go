@@ -103,3 +103,81 @@ func TestMigrateCreatesM3Surfaces(t *testing.T) {
 		}
 	}
 }
+
+func TestMigrateCreatesM4Surfaces(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, Config{PGURL: testDSN(t)})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	// todos.poll_attempts (async poll budget, separate from claim attempts).
+	for _, c := range []struct{ table, col string }{
+		{"todos", "poll_attempts"},
+		{"assets", "external_job_id"},
+		{"assets", "submitted_at"},
+		{"pricing", "micros_per_second"},
+	} {
+		var exists bool
+		if err := st.Pool().QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name=$1 AND column_name=$2)`,
+			c.table, c.col).Scan(&exists); err != nil {
+			t.Fatalf("check %s.%s: %v", c.table, c.col, err)
+		}
+		if !exists {
+			t.Fatalf("%s.%s missing", c.table, c.col)
+		}
+	}
+	// Partial unique indexes (B1 assets_todo_uniq + B3 generations_asset_todo_uniq).
+	for _, idx := range []string{"assets_todo_uniq", "generations_asset_todo_uniq"} {
+		var exists bool
+		if err := st.Pool().QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname=$1)`, idx).Scan(&exists); err != nil {
+			t.Fatalf("check index %s: %v", idx, err)
+		}
+		if !exists {
+			t.Fatalf("index %s missing", idx)
+		}
+	}
+	// assets_todo_uniq rejects a duplicate non-empty todo_id (and allows blanks).
+	// M1: generate ids inline via md5(random()::text) — no dependency on a
+	// randHex3() helper (which is NOT in the storage package; copying it would
+	// fail to compile). Insert the project letting Postgres mint both ids, then
+	// read back the todo id we need to assert the unique-index collision.
+	var pid string
+	if err := st.Pool().QueryRow(ctx,
+		`INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),'o','n','u') RETURNING id`).Scan(&pid); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	var tid string
+	if err := st.Pool().QueryRow(ctx, `SELECT md5(random()::text)`).Scan(&tid); err != nil {
+		t.Fatalf("mint todo id: %v", err)
+	}
+	if _, err := st.Pool().Exec(ctx,
+		`INSERT INTO assets (id, project_id, todo_id, status) VALUES (md5(random()::text),$1,$2,'generating')`, pid, tid); err != nil {
+		t.Fatalf("seed asset 1: %v", err)
+	}
+	if _, err := st.Pool().Exec(ctx,
+		`INSERT INTO assets (id, project_id, todo_id, status) VALUES (md5(random()::text),$1,$2,'generating')`, pid, tid); err == nil {
+		t.Fatalf("duplicate non-empty todo_id must violate assets_todo_uniq")
+	}
+	// Two empty-todo_id assets coexist (regenerate v2 carries todo_id='').
+	for i := 0; i < 2; i++ {
+		if _, err := st.Pool().Exec(ctx,
+			`INSERT INTO assets (id, project_id, todo_id, status) VALUES (md5(random()::text),$1,'','generating')`, pid); err != nil {
+			t.Fatalf("empty todo_id asset %d must be allowed: %v", i, err)
+		}
+	}
+	// Video/audio prices seeded.
+	var n int
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT count(*) FROM pricing WHERE kind IN ('video','audio') AND micros_per_second > 0`).Scan(&n); err != nil {
+		t.Fatalf("pricing per-second: %v", err)
+	}
+	if n < 4 {
+		t.Fatalf("per-second pricing not seeded: %d rows, want >= 4", n)
+	}
+}

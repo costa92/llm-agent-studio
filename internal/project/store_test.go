@@ -64,9 +64,11 @@ func TestCancelSweepsGeneratingAssets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	// One in-flight asset, one already awaiting review.
+	// One in-flight sync asset ('generating'), one in-flight async asset
+	// ('submitted' — external job running), one already awaiting review.
 	if _, err := pool.Exec(ctx, `INSERT INTO assets (id, project_id, status) VALUES
 		(md5(random()::text), $1, 'generating'),
+		(md5(random()::text), $1, 'submitted'),
 		(md5(random()::text), $1, 'pending_acceptance')`, p.ID); err != nil {
 		t.Fatalf("seed assets: %v", err)
 	}
@@ -76,8 +78,10 @@ func TestCancelSweepsGeneratingAssets(t *testing.T) {
 	var canceled, pending int
 	_ = pool.QueryRow(ctx, `SELECT count(*) FROM assets WHERE project_id=$1 AND status='canceled'`, p.ID).Scan(&canceled)
 	_ = pool.QueryRow(ctx, `SELECT count(*) FROM assets WHERE project_id=$1 AND status='pending_acceptance'`, p.ID).Scan(&pending)
-	if canceled != 1 {
-		t.Fatalf("generating asset should be canceled, got %d canceled", canceled)
+	// F1: BOTH 'generating' (sync) AND 'submitted' (async) in-flight assets must be
+	// swept to 'canceled' — a submitted asset stranded otherwise (spec §5.4 必修).
+	if canceled != 2 {
+		t.Fatalf("generating + submitted assets should be canceled, got %d canceled (want 2)", canceled)
 	}
 	// Decision: pending_acceptance assets stay reviewable (real money was spent;
 	// HITL accept/reject still applies after a cancel).
@@ -99,5 +103,33 @@ func TestOrgIDForProject(t *testing.T) {
 	}
 	if org != "org-y" {
 		t.Fatalf("org=%q want org-y", org)
+	}
+}
+
+func TestCancelSweepsSubmittedAssets(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	p, err := s.Create(ctx, CreateInput{OrgID: "org_cancel_sub", Name: "P", CreatedBy: "u"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// One submitted (external job in flight), one generating, one pending.
+	if _, err := pool.Exec(ctx, `INSERT INTO assets (id, project_id, status) VALUES
+		(md5(random()::text), $1, 'submitted'),
+		(md5(random()::text), $1, 'generating'),
+		(md5(random()::text), $1, 'pending_acceptance')`, p.ID); err != nil {
+		t.Fatalf("seed assets: %v", err)
+	}
+	if err := s.Cancel(ctx, p.ID); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	var canceled, pending int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM assets WHERE project_id=$1 AND status='canceled'`, p.ID).Scan(&canceled)
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM assets WHERE project_id=$1 AND status='pending_acceptance'`, p.ID).Scan(&pending)
+	if canceled != 2 {
+		t.Fatalf("submitted + generating must both be canceled, got %d canceled", canceled)
+	}
+	if pending != 1 {
+		t.Fatalf("pending_acceptance must survive cancel, got %d", pending)
 	}
 }

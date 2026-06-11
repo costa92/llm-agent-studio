@@ -115,3 +115,50 @@ func TestLoadM3Defaults(t *testing.T) {
 		t.Fatalf("ReviewPrescreen should default true")
 	}
 }
+
+func TestLoadM4Defaults(t *testing.T) {
+	cfg, err := LoadFromLookup(func(k string) (string, bool) {
+		switch k {
+		case "PG_URL":
+			return "postgres://x", true
+		case "JWT_SECRET":
+			return "s", true
+		}
+		return "", false
+	})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.PollBackoff != 5*time.Second || cfg.MaxPollBackoff != 30*time.Second {
+		t.Fatalf("poll backoff defaults = %v/%v, want 5s/30s", cfg.PollBackoff, cfg.MaxPollBackoff)
+	}
+	if cfg.MaxPollAttempts != 60 {
+		t.Fatalf("MaxPollAttempts default = %d, want 60", cfg.MaxPollAttempts)
+	}
+	if cfg.MaxConcurrentVideo != 0 || cfg.MaxConcurrentAudio != 0 {
+		t.Fatalf("concurrency caps should default 0 (disabled): %+v", cfg)
+	}
+	if cfg.LeaseRenewInterval <= 0 || cfg.LeaseRenewInterval >= cfg.WorkerLease {
+		t.Fatalf("LeaseRenewInterval = %v must be >0 and < WorkerLease %v", cfg.LeaseRenewInterval, cfg.WorkerLease)
+	}
+	if cfg.VideoFetchMaxBytes != 512<<20 {
+		t.Fatalf("VideoFetchMaxBytes default = %d, want 512MB", cfg.VideoFetchMaxBytes)
+	}
+}
+
+func TestLoadM4RejectsMalformedPollKnob(t *testing.T) {
+	_, err := LoadFromLookup(func(k string) (string, bool) {
+		switch k {
+		case "PG_URL":
+			return "postgres://x", true
+		case "JWT_SECRET":
+			return "s", true
+		case "MAX_POLL_ATTEMPTS":
+			return "lots", true
+		}
+		return "", false
+	})
+	if err == nil || !strings.Contains(err.Error(), "MAX_POLL_ATTEMPTS") {
+		t.Fatalf("want MAX_POLL_ATTEMPTS parse error, got %v", err)
+	}
+}

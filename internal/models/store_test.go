@@ -14,14 +14,16 @@ import (
 
 func TestCatalogListsImageProviders(t *testing.T) {
 	cat := Catalog()
-	// spec §13 R3: only openai/google/minimax/volcengine image providers.
+	// spec §13 R3: the openai/google/minimax/volcengine image providers are all
+	// present and image-kind. (M4 also adds video/audio entries — see
+	// TestCatalogIncludesVideoAndAudio — so this no longer asserts image-only.)
 	want := map[string]bool{"openai": false, "google": false, "minimax": false, "volcengine": false}
 	for _, e := range cat {
+		if e.Kind != "image" {
+			continue
+		}
 		if _, ok := want[e.Provider]; ok {
 			want[e.Provider] = true
-		}
-		if e.Kind != "image" {
-			t.Fatalf("M2 catalog is image-only, got kind %q", e.Kind)
 		}
 	}
 	for p, seen := range want {
@@ -121,5 +123,20 @@ func TestSecretParamMatchingExcludesTokenCounts(t *testing.T) {
 		if k, found := secretKeyIn(m); found {
 			t.Fatalf("params %s wrongly flagged (key %q) — count fields are legal", params, k)
 		}
+	}
+}
+
+func TestCatalogIncludesVideoAndAudio(t *testing.T) {
+	var hasVideo, hasAudio bool
+	for _, e := range Catalog() {
+		if e.Kind == "video" {
+			hasVideo = true
+		}
+		if e.Kind == "audio" {
+			hasAudio = true
+		}
+	}
+	if !hasVideo || !hasAudio {
+		t.Fatalf("catalog must include video + audio entries (M4): video=%v audio=%v", hasVideo, hasAudio)
 	}
 }

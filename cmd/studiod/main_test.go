@@ -19,6 +19,8 @@ import (
 
 	"github.com/costa92/llm-agent-studio/internal/config"
 	"github.com/costa92/llm-agent-studio/internal/generate"
+	"github.com/costa92/llm-agent-studio/internal/obs"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 // loadCfgWith builds a deterministic config (Workers=1 keeps scripted-LLM
@@ -802,5 +804,122 @@ func TestEndToEndGenerationQuota429(t *testing.T) {
 	}
 	if gens, _ := costBody["generations"].(float64); gens < 1 {
 		t.Fatalf("cost ledger should show >= 1 generation after the first run, got %v", costBody)
+	}
+}
+
+// TestEndToEndFakeAsyncVideoSubmitPoll exercises the M4 async engine end-to-end
+// via the FakeAsync generator (zero network, deterministic submit→poll). The
+// FakeAsync is injected through the registryHook seam — WRAPPED with
+// obs.WrapGenerator exactly like production, so this also proves the otel wrapper
+// preserves the AsyncGenerator interface in the live assembly chain (B1): if the
+// wrapper stripped Submit/Poll the worker's routed.(AsyncGenerator) assertion
+// would be false and the asset would never advance past 'generating'.
+//
+// Routing note: the storyboard fan-out hardcodes the asset todo kind to "image"
+// (worker.go), and DefaultForOrg keys on (org,kind). So the org's IMAGE default
+// is pointed at fake/fake-video-async; the per-second pricing/ledger key on
+// provider+model, so per-second billing still applies, and the async path is
+// taken purely because the resolved generator is an AsyncGenerator (spec §4.2).
+func TestEndToEndFakeAsyncVideoSubmitPoll(t *testing.T) {
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run the studio async e2e")
+	}
+	// FakeAsync: 2 polls (poll#1 pending → poll#2 done). Bytes-only done result
+	// (no URL) so completeAsync stores the bytes directly without the SSRF-safe
+	// fetcher (production build() uses a non-loopback fetcher; URL+loopback pull
+	// is covered by worker/fetch unit tests). EstSeconds echoes the request
+	// duration (6s from the storyboard shot below) for per-second billing.
+	doneResult := generate.GenResult{
+		Bytes: []byte("FAKEMP4"), MimeType: "video/mp4", Provider: "fake", Model: "fake-video-async",
+	}
+	tp := sdktrace.NewTracerProvider()
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	registryHook = func(r *generate.Registry) {
+		fa := generate.NewFakeAsync("video", 2, doneResult)
+		wrapped := obs.WrapGenerator(fa, tp) // mirror production wrapping (B1)
+		if _, ok := wrapped.(generate.AsyncGenerator); !ok {
+			t.Fatalf("B1: obs.WrapGenerator(FakeAsync) lost the AsyncGenerator seam in the assembly chain")
+		}
+		r.Register("fake", "fake-video-async", wrapped)
+	}
+	defer func() { registryHook = nil }()
+
+	// Default (env) generator is a plain sync image fake — unused once the org
+	// default routes to fake-video-async, but build() requires one.
+	defGen := generate.NewFakeLooping(generate.GenResult{
+		Bytes: []byte("D"), MimeType: "image/png", Provider: "default", Model: "d", ImageCount: 1,
+	})
+	// One shot, duration 6 → DurationSeconds=6 → 6 * 500000 micros/sec = 3000000.
+	srv, done := newHarnessWith(t, dsn, defGen,
+		map[string]string{"REVIEW_PRESCREEN": "false", "POLL_BACKOFF": "50ms", "MAX_POLL_BACKOFF": "200ms"},
+		llm.Response{Text: `{"nodes":[{"id":"s","type":"script","dependsOn":[]},{"id":"b","type":"storyboard","dependsOn":["s"]}]}`},
+		llm.Response{Text: `{"title":"V","logline":"x","scenes":[{"heading":"INT","description":"d","dialogue":""}]}`},
+		llm.Response{Text: `{"shots":[{"shotNo":1,"camera":"wide","scene":"s1","action":"a","prompt":"a city flythrough","duration":6}]}`},
+	)
+	defer done()
+	do := newDoer(t, srv)
+	token, orgID, projID := setupOrgProject(t, do, "async@studio.com", "")
+
+	// Point the org's IMAGE default at the async fake (routing keys on kind=image
+	// from fan-out; the AsyncGenerator interface drives the submit→poll engine).
+	if code, mc := do("POST", "/api/orgs/"+orgID+"/model-configs", token,
+		`{"kind":"image","provider":"fake","model":"fake-video-async","enabled":true,"isDefault":true}`); code != http.StatusOK {
+		t.Fatalf("model-config code=%d body=%v", code, mc)
+	}
+	if code, body := do("POST", "/api/projects/"+projID+"/run", token, ""); code != http.StatusAccepted {
+		t.Fatalf("run code=%d body=%v", code, body)
+	}
+
+	// The async asset advances submitted → pending_acceptance across multiple
+	// short poll dispatches (the worker re-claims the rescheduled todo each poll).
+	assetID := pollAssetWithStatus(do, token, projID, "pending_acceptance")
+	if assetID == "" {
+		t.Fatalf("async asset never reached pending_acceptance (submit→poll engine did not complete)")
+	}
+	_, av := do("GET", "/api/assets/"+assetID, token, "")
+	asset, _ := av["asset"].(map[string]any)
+	if provider, _ := asset["provider"].(string); provider != "fake" {
+		t.Fatalf("async asset provider = %q, want fake (routing did not take effect): %v", provider, asset)
+	}
+
+	// Per-second billing: 6s * 500000 micros/sec = 3,000,000 micros in the ledger.
+	for i := 0; i < 150; i++ {
+		_, cb := do("GET", "/api/orgs/"+orgID+"/cost", token, "")
+		gens, _ := cb["generations"].(float64)
+		micros, _ := cb["costMicros"].(float64)
+		if gens >= 1 && micros >= 3000000 {
+			break
+		}
+		if i == 149 {
+			t.Fatalf("per-second billing did not land: cost=%v", cb)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Timeline (spec §9.5 M2): asset_submitted + asset_generated are emitted;
+	// asset_polling is NEVER emitted (deliberately not whitelisted — poll noise).
+	_, eb := do("GET", "/api/projects/"+projID+"/events", token, "")
+	items, _ := eb["items"].([]any)
+	var sawSubmitted, sawGenerated, sawPolling bool
+	for _, it := range items {
+		m, _ := it.(map[string]any)
+		switch m["kind"] {
+		case "asset_submitted":
+			sawSubmitted = true
+		case "asset_generated":
+			sawGenerated = true
+		case "asset_polling":
+			sawPolling = true
+		}
+	}
+	if !sawSubmitted {
+		t.Fatalf("timeline missing asset_submitted: %v", items)
+	}
+	if !sawGenerated {
+		t.Fatalf("timeline missing asset_generated: %v", items)
+	}
+	if sawPolling {
+		t.Fatalf("asset_polling must never be emitted (M4 DEFER)")
 	}
 }

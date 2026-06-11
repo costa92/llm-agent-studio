@@ -27,6 +27,7 @@ var sseEventNames = map[string]bool{
 	"todo_failed":       true,
 	"asset_generated":   true,
 	"asset_prescreened": true,
+	"asset_submitted":   true,
 	"run_done":          true,
 }
 

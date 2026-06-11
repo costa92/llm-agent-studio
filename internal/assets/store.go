@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -41,6 +42,8 @@ type Asset struct {
 	PrescreenScore int      `json:"prescreenScore"` // -1 = not screened (M3 ReviewAgent)
 	PrescreenFlags []string `json:"prescreenFlags"`
 	PrescreenNote  string   `json:"prescreenNote"`
+
+	ExternalJobID string `json:"externalJobId"` // M4 async: provider job handle
 }
 
 // CreateInput is the input to Create / CreateVersion.
@@ -71,13 +74,13 @@ func newID() string {
 	return hex.EncodeToString(b)
 }
 
-const assetCols = `id, project_id, shot_id, todo_id, type, blob_key, url, prompt, style, provider, model, status, version, parent_asset_id, tags, prescreen_score, prescreen_flags, prescreen_note`
+const assetCols = `id, project_id, shot_id, todo_id, type, blob_key, url, prompt, style, provider, model, status, version, parent_asset_id, tags, prescreen_score, prescreen_flags, prescreen_note, external_job_id`
 
 func scanAsset(row pgx.Row) (Asset, error) {
 	var a Asset
 	err := row.Scan(&a.ID, &a.ProjectID, &a.ShotID, &a.TodoID, &a.Type, &a.BlobKey, &a.URL,
 		&a.Prompt, &a.Style, &a.Provider, &a.Model, &a.Status, &a.Version, &a.ParentAssetID, &a.Tags,
-		&a.PrescreenScore, &a.PrescreenFlags, &a.PrescreenNote)
+		&a.PrescreenScore, &a.PrescreenFlags, &a.PrescreenNote, &a.ExternalJobID)
 	return a, err
 }
 
@@ -116,10 +119,10 @@ func (s *Store) insert(ctx context.Context, in CreateInput, version int, parentI
 	}
 	if _, err := s.pool.Exec(ctx,
 		`INSERT INTO assets (`+assetCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
 		a.ID, a.ProjectID, a.ShotID, a.TodoID, a.Type, a.BlobKey, a.URL, a.Prompt, a.Style,
 		a.Provider, a.Model, a.Status, a.Version, a.ParentAssetID, a.Tags,
-		a.PrescreenScore, a.PrescreenFlags, a.PrescreenNote); err != nil {
+		a.PrescreenScore, a.PrescreenFlags, a.PrescreenNote, a.ExternalJobID); err != nil {
 		return Asset{}, fmt.Errorf("assets: insert: %w", err)
 	}
 	return a, nil
@@ -134,15 +137,26 @@ func (s *Store) Get(ctx context.Context, id string) (Asset, error) {
 	return a, err
 }
 
-// SetBlob updates blob_key/url/provider/model/status after generation completes
-// (generating → pending_acceptance / failed). Guarded on status='generating' so
-// it only ever advances an in-flight asset once; if the asset already left the
-// 'generating' state (e.g. concurrent reclaim), the update is a no-op.
-func (s *Store) SetBlob(ctx context.Context, id, blobKey, url, provider, model, newStatus string) error {
-	_, err := s.pool.Exec(ctx,
-		`UPDATE assets SET blob_key=$2, url=$3, provider=$4, model=$5, status=$6 WHERE id=$1 AND status='generating'`,
+// SetBlob updates blob_key/url/provider/model/status after generation completes.
+// Guarded on status IN ('generating','submitted') so it advances both the sync
+// image path (generating→pending_acceptance) AND the async poll-done completion
+// (submitted→pending_acceptance, M4 §5.4); a row that already left those states
+// (concurrent reclaim/cancel) is a no-op.
+//
+// Returns won=(rowsAffected==1): the caller learns whether THIS transition
+// actually advanced the row. The async poll-done completion (F-INT-1) uses won
+// as the TOCTOU-free won/lost arbiter under cross-worker reclaim — only the
+// worker whose SetBlob flips submitted→pending_acceptance emits asset_generated
+// + books the ledger; a loser (won=false) bows out benignly.
+func (s *Store) SetBlob(ctx context.Context, id, blobKey, url, provider, model, newStatus string) (bool, error) {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE assets SET blob_key=$2, url=$3, provider=$4, model=$5, status=$6
+		 WHERE id=$1 AND status IN ('generating','submitted')`,
 		id, blobKey, url, provider, model, newStatus)
-	return err
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // TransitionStatus moves an asset from→to atomically, returning ok=false (no
@@ -165,14 +179,14 @@ func (s *Store) VersionHistory(ctx context.Context, id string) ([]Asset, error) 
 			UNION
 			SELECT a.id, a.project_id, a.shot_id, a.todo_id, a.type, a.blob_key, a.url, a.prompt,
 			       a.style, a.provider, a.model, a.status, a.version, a.parent_asset_id, a.tags,
-			       a.prescreen_score, a.prescreen_flags, a.prescreen_note
+			       a.prescreen_score, a.prescreen_flags, a.prescreen_note, a.external_job_id
 			FROM assets a JOIN up u ON a.id = u.parent_asset_id
 		), down AS (
 			SELECT `+assetCols+` FROM assets WHERE id=$1
 			UNION
 			SELECT a.id, a.project_id, a.shot_id, a.todo_id, a.type, a.blob_key, a.url, a.prompt,
 			       a.style, a.provider, a.model, a.status, a.version, a.parent_asset_id, a.tags,
-			       a.prescreen_score, a.prescreen_flags, a.prescreen_note
+			       a.prescreen_score, a.prescreen_flags, a.prescreen_note, a.external_job_id
 			FROM assets a JOIN down d ON a.parent_asset_id = d.id
 		)
 		SELECT `+assetCols+` FROM up
@@ -239,7 +253,7 @@ func (s *Store) Library(ctx context.Context, f LibraryFilter) ([]Asset, string, 
 	args = append(args, limit)
 	q := `SELECT a.id, a.project_id, a.shot_id, a.todo_id, a.type, a.blob_key, a.url, a.prompt,
 		a.style, a.provider, a.model, a.status, a.version, a.parent_asset_id, a.tags,
-		a.prescreen_score, a.prescreen_flags, a.prescreen_note
+		a.prescreen_score, a.prescreen_flags, a.prescreen_note, a.external_job_id
 		FROM assets a JOIN projects p ON a.project_id = p.id
 		WHERE ` + strings.Join(conds, " AND ") + `
 		ORDER BY a.id ASC LIMIT $` + fmt.Sprintf("%d", len(args))
@@ -290,4 +304,86 @@ func (s *Store) SetPrescreen(ctx context.Context, id string, score int, flags []
 		return fmt.Errorf("assets: set prescreen: %w", err)
 	}
 	return nil
+}
+
+// GetOrCreateForTodo returns the existing asset for a todo_id, or inserts a fresh
+// one (B1 crash-idempotency: a reclaimed submit dispatch reuses the same row
+// rather than creating a duplicate). Relies on the assets_todo_uniq partial
+// unique index; the ON CONFLICT + re-read closes the concurrent-insert window.
+// TodoID MUST be non-empty (fan-out/async submit only — regenerate carries
+// todo_id='' and uses the fill-in-place path, never this).
+func (s *Store) GetOrCreateForTodo(ctx context.Context, in CreateInput) (Asset, error) {
+	if in.TodoID == "" {
+		return Asset{}, fmt.Errorf("assets: GetOrCreateForTodo requires a non-empty todo_id")
+	}
+	existing, err := scanAsset(s.pool.QueryRow(ctx,
+		`SELECT `+assetCols+` FROM assets WHERE todo_id=$1`, in.TodoID))
+	if err == nil {
+		return existing, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return Asset{}, fmt.Errorf("assets: get for todo: %w", err)
+	}
+	created, err := s.Create(ctx, in)
+	if err == nil {
+		return created, nil
+	}
+	// Lost an insert race: re-read the winner.
+	got, rerr := scanAsset(s.pool.QueryRow(ctx, `SELECT `+assetCols+` FROM assets WHERE todo_id=$1`, in.TodoID))
+	if rerr == nil {
+		return got, nil
+	}
+	return Asset{}, fmt.Errorf("assets: get-or-create for todo: %w", err)
+}
+
+// SetSubmitted advances an async asset generating→submitted, recording the
+// provider job handle + submit timestamp (the timestamp feeds the orphan
+// reaper, M4 §5.4). Guarded on status='generating' so a re-submit after
+// reclaim doesn't reset an already-submitted row.
+func (s *Store) SetSubmitted(ctx context.Context, id, externalJobID string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE assets SET status='submitted', external_job_id=$2, submitted_at=now()
+		 WHERE id=$1 AND status='generating'`, id, externalJobID)
+	if err != nil {
+		return fmt.Errorf("assets: set submitted: %w", err)
+	}
+	return nil
+}
+
+// SetAsyncFailed terminal-states an async asset from generating OR submitted
+// (B2: every async failure/cancel path uses this — SetBlob's generating-only
+// guard would silently strand a submitted asset). image's sync path keeps using
+// SetBlob(...,'failed').
+func (s *Store) SetAsyncFailed(ctx context.Context, id string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE assets SET status='failed' WHERE id=$1 AND status IN ('generating','submitted')`, id)
+	if err != nil {
+		return fmt.Errorf("assets: set async failed: %w", err)
+	}
+	return nil
+}
+
+// CountInFlightByKind counts external jobs currently in flight for a kind (B2
+// submit-admission cap: limits PROVIDER-SIDE in-flight jobs, not local running
+// todos — submitted spans the whole external job lifetime). Reuses assets_status_idx.
+func (s *Store) CountInFlightByKind(ctx context.Context, kind string) (int, error) {
+	var n int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM assets WHERE status='submitted' AND type=$1`, kind).Scan(&n); err != nil {
+		return 0, fmt.Errorf("assets: count in-flight: %w", err)
+	}
+	return n, nil
+}
+
+// ReapStaleSubmitted terminal-states submitted assets older than the cutoff
+// (orphan reaper, M4 §5.4 M1: a provider that never returns would strand the
+// asset forever). Returns the number reaped.
+func (s *Store) ReapStaleSubmitted(ctx context.Context, olderThan time.Time) (int64, error) {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE assets SET status='failed' WHERE status='submitted' AND submitted_at IS NOT NULL AND submitted_at < $1`,
+		olderThan)
+	if err != nil {
+		return 0, fmt.Errorf("assets: reap stale submitted: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }

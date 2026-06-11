@@ -165,10 +165,14 @@ func (s *Store) RefreshStatus(ctx context.Context, projectID string) (string, er
 	return status, nil
 }
 
-// Cancel marks all non-terminal todos canceled, sweeps in-flight ('generating')
-// assets to a terminal 'canceled' (M3 取消语义 — in-flight generation results
-// then no-op on arrival because assets.SetBlob is guarded on
-// status='generating'), and sets the project canceled. pending_acceptance
+// Cancel marks all non-terminal todos canceled, sweeps in-flight assets
+// ('generating' sync + 'submitted' async, spec §5.4 必修) to a terminal
+// 'canceled' (M3 取消语义 — in-flight generation results then no-op on arrival
+// because assets.SetBlob is guarded on status='generating'/'submitted'), and
+// sets the project canceled. An async 'submitted' asset has an external job
+// running for real money; the cancel sweep terminal-states it so the poll-path
+// worker (whose guarded reschedule then finds 0 rows) stops and the row does
+// not strand in 'submitted'. pending_acceptance
 // assets are deliberately KEPT reviewable: the generation already cost real
 // money and HITL accept/reject still applies; DeriveStatus's Canceled branch
 // outranks the review branch so the project status stays canceled.
@@ -179,7 +183,7 @@ func (s *Store) Cancel(ctx context.Context, projectID string) error {
 		return fmt.Errorf("project: cancel todos: %w", err)
 	}
 	if _, err := s.pool.Exec(ctx,
-		`UPDATE assets SET status='canceled' WHERE project_id=$1 AND status='generating'`, projectID); err != nil {
+		`UPDATE assets SET status='canceled' WHERE project_id=$1 AND status IN ('generating','submitted')`, projectID); err != nil {
 		return fmt.Errorf("project: cancel assets: %w", err)
 	}
 	return s.SetStatus(ctx, projectID, "canceled")

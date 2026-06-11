@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	authzhttp "github.com/costa92/llm-agent-authz/httpapi"
 	authzsvc "github.com/costa92/llm-agent-authz/service"
@@ -30,8 +31,11 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/config"
 	"github.com/costa92/llm-agent-studio/internal/cost"
 	"github.com/costa92/llm-agent-studio/internal/events"
+	"github.com/costa92/llm-agent-studio/internal/fetch"
 	"github.com/costa92/llm-agent-studio/internal/generate"
+	genaudio "github.com/costa92/llm-agent-studio/internal/generate/audio"
 	genimage "github.com/costa92/llm-agent-studio/internal/generate/image"
+	genvideo "github.com/costa92/llm-agent-studio/internal/generate/video"
 	"github.com/costa92/llm-agent-studio/internal/httpapi"
 	"github.com/costa92/llm-agent-studio/internal/models"
 	"github.com/costa92/llm-agent-studio/internal/obs"
@@ -150,6 +154,15 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		st.Close()
 		return nil, nil, err
 	}
+	// M4: key-gated async video/audio adapters (skeletons; real HTTP is M5).
+	if err := registerVideoGenerators(registry, cfg, tp); err != nil {
+		st.Close()
+		return nil, nil, err
+	}
+	if err := registerAudioGenerators(registry, cfg, tp); err != nil {
+		st.Close()
+		return nil, nil, err
+	}
 	if registryHook != nil {
 		registryHook(registry) // e2e seam: inject distinguishable fakes
 	}
@@ -165,6 +178,14 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	}
 	reviewSvc := review.New(assetStore, todoStore)
 
+	// SSRF-safe video/audio result puller (spec §9.4): content-type allowlist +
+	// 512MB hard cap (no streaming in M4 — memory ceiling ≈ MaxConcurrent×512MB).
+	videoFetcher := fetch.New(fetch.Config{
+		Timeout:             5 * time.Minute,
+		MaxBytes:            cfg.VideoFetchMaxBytes,
+		AllowedContentTypes: []string{"video/", "audio/", "application/octet-stream"},
+	})
+
 	// Worker pool — bounded concurrency (agents call LLMs; slow).
 	workerCtx, stopWorkers := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
@@ -174,10 +195,17 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 			Script: scriptAgent, Storyboard: storyboardAgent,
 			Asset: assetAgent, Review: reviewAgent, Blob: blobStore, Assets: assetStore, Cost: costStore,
 			Models: modelStore, Registry: registry,
-			WorkerID:         fmt.Sprintf("studiod-%d", i),
-			GenQuota:         cfg.OrgDailyGenQuota,
-			MaxConcurrentGen: cfg.MaxConcurrentGen,
-			Lease:            cfg.WorkerLease,
+			WorkerID:           fmt.Sprintf("studiod-%d", i),
+			GenQuota:           cfg.OrgDailyGenQuota,
+			MaxConcurrentGen:   cfg.MaxConcurrentGen,
+			MaxConcurrentVideo: cfg.MaxConcurrentVideo,
+			MaxConcurrentAudio: cfg.MaxConcurrentAudio,
+			VideoFetcher:       videoFetcher,
+			PollBackoff:        cfg.PollBackoff,
+			MaxPollBackoff:     cfg.MaxPollBackoff,
+			MaxPollAttempts:    cfg.MaxPollAttempts,
+			LeaseRenewInterval: cfg.LeaseRenewInterval,
+			Lease:              cfg.WorkerLease,
 			MaxAttempts:      cfg.WorkerMaxAttempt,
 			BaseBackoff:      cfg.WorkerBackoff,
 			CallTimeout:      cfg.WorkerCallTimeout,
@@ -186,6 +214,16 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		wg.Add(1)
 		go func() { defer wg.Done(); w.Run(workerCtx, cfg.WorkerPoll) }()
 	}
+
+	// Orphan reaper — terminal-states 'submitted' assets whose external job
+	// never returned (spec §5.4 M1). TTL = 2× the full poll budget so it only
+	// fires well past any legitimate poll window.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ttl := 2 * time.Duration(cfg.MaxPollAttempts) * cfg.MaxPollBackoff
+		worker.RunOrphanReaper(workerCtx, assetStore, cfg.MaxPollBackoff, ttl)
+	}()
 
 	issuer := authztoken.NewIssuer([]byte(cfg.JWTSecret), cfg.AccessTTL)
 	authService := authzsvc.New(az, issuer, cfg.RefreshTTL)
@@ -288,6 +326,9 @@ var registryHook func(*generate.Registry)
 // verified: all four providers implement llm.ImageGenerator (providers v0.7.0).
 func registerImageGenerators(reg *generate.Registry, cfg config.Config, tp trace.TracerProvider) error {
 	for _, e := range models.Catalog() {
+		if e.Kind != "image" {
+			continue // M3 catalog now carries video/audio entries (M4); skip them here.
+		}
 		var ig llm.ImageGenerator
 		var err error
 		switch e.Provider {
@@ -318,6 +359,60 @@ func registerImageGenerators(reg *generate.Registry, cfg config.Config, tp trace
 			return fmt.Errorf("studiod: build %s/%s image generator: %w", e.Provider, e.Model, err)
 		}
 		reg.Register(e.Provider, e.Model, obs.WrapGenerator(genimage.New(ig, nil), tp))
+	}
+	return nil
+}
+
+// registerVideoGenerators registers a key-gated async video adapter per video
+// catalog entry whose provider has a key (spec §8.1, mirrors registerImage-
+// Generators). Filtered to e.Kind=="video" (M3). Wrapped with obs.WrapGenerator
+// — which preserves the AsyncGenerator seam (B1). Unkeyed providers resolve to
+// the registry default.
+func registerVideoGenerators(reg *generate.Registry, cfg config.Config, tp trace.TracerProvider) error {
+	for _, e := range models.Catalog() {
+		if e.Kind != "video" {
+			continue
+		}
+		var ag generate.MediaGenerator
+		switch e.Provider {
+		case "runway":
+			if cfg.RunwayAPIKey == "" {
+				continue
+			}
+			ag = genvideo.NewRunway(cfg.RunwayAPIKey)
+		case "kling":
+			if cfg.KlingAPIKey == "" {
+				continue
+			}
+			ag = genvideo.NewKling(cfg.KlingAPIKey)
+		case "google":
+			if cfg.GoogleAPIKey == "" {
+				continue
+			}
+			ag = genvideo.NewVeo(cfg.GoogleAPIKey)
+		default:
+			continue
+		}
+		reg.Register(e.Provider, e.Model, obs.WrapGenerator(ag, tp))
+	}
+	return nil
+}
+
+// registerAudioGenerators is the audio analog (key-gated, e.Kind=="audio").
+func registerAudioGenerators(reg *generate.Registry, cfg config.Config, tp trace.TracerProvider) error {
+	for _, e := range models.Catalog() {
+		if e.Kind != "audio" {
+			continue
+		}
+		switch e.Provider {
+		case "openai":
+			if cfg.TTSAPIKey == "" {
+				continue
+			}
+			reg.Register(e.Provider, e.Model, obs.WrapGenerator(genaudio.NewOpenAITTS(cfg.TTSAPIKey), tp))
+		default:
+			continue
+		}
 	}
 	return nil
 }
