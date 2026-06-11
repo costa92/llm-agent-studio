@@ -363,8 +363,18 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 		// Fan-out: one asset todo per shot (spec §15 M2). The shot's prompt + the
 		// PROJECT style (sourced from the projects row, NOT the storyboard todo's
 		// empty input — see B1) become the asset todo's input.
-		input, _ := json.Marshal(map[string]string{
+		//
+		// I3: write the asset kind + media duration into the todo input. The kind
+		// is what the route reads via DefaultForOrg(kind); duration comes from
+		// shots.duration. Without these, the per-kind concurrency cap never fires
+		// and video billing has no duration. M4 storyboard shots have NO kind field
+		// (StoryboardShot = ShotNo/Camera/Scene/Action/Prompt/Duration only — see
+		// internal/agents/storyboard.go), so fan-out writes the constant "image"
+		// here; the video/audio kind for M4 is driven by org model_config routing +
+		// e2e FakeAsync injection (T9), NOT read from the storyboard shot.
+		input, _ := json.Marshal(map[string]any{
 			"shotId": shotID, "shotPrompt": sh.Prompt, "style": projectStyle,
+			"kind": "image", "duration": sh.Duration,
 		})
 		assetSpecs = append(assetSpecs, todos.DynamicSpec{Type: "asset", InputJSON: input})
 	}
@@ -399,6 +409,8 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 		ShotID     string `json:"shotId"`
 		ShotPrompt string `json:"shotPrompt"`
 		Style      string `json:"style"`
+		Kind       string `json:"kind"`     // image|video|audio (I3, fan-out/regenerate)
+		Duration   int    `json:"duration"` // media seconds (video frame / audio)
 		// regenerate path carries the pre-created v2 asset id (review.Regenerate
 		// already CreateVersion'd it) + an edited prompt. The worker FILLS that
 		// asset in place rather than creating a new row (T11).
@@ -406,6 +418,10 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 		EditedPrompt string `json:"editedPrompt"`
 	}
 	_ = json.Unmarshal(c.input, &in)
+	kind := in.Kind
+	if kind == "" {
+		kind = "image"
+	}
 
 	// Quota backstop (spec §12): the HTTP layer 429s /run and /regenerate, but
 	// fan-out can push an org past quota mid-run — re-check before spending.
@@ -431,7 +447,7 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 	if in.AssetID != "" {
 		created = assetsRow{id: in.AssetID}
 	} else {
-		c2, err := w.createAsset(ctx, c, in.ShotID, in.ShotPrompt, in.Style)
+		c2, err := w.createAsset(ctx, c, in.ShotID, in.ShotPrompt, in.Style, kind)
 		if err != nil {
 			return "", err
 		}
@@ -455,7 +471,7 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 	var routed generate.MediaGenerator
 	if w.cfg.Models != nil && w.cfg.Registry != nil {
 		if orgID, oerr := w.cfg.Projects.OrgIDForProject(ctx, c.projectID); oerr == nil {
-			if provider, model, ok, derr := w.cfg.Models.DefaultForOrg(ctx, orgID, "image"); derr == nil && ok {
+			if provider, model, ok, derr := w.cfg.Models.DefaultForOrg(ctx, orgID, kind); derr == nil && ok {
 				if g, rerr := w.cfg.Registry.Resolve(provider, model); rerr == nil {
 					routed = g
 				}
@@ -502,7 +518,7 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 	if w.cfg.Cost != nil {
 		// M3: RecordPriced fills cost_micros from the pricing table (M2 carry #2).
 		_ = w.cfg.Cost.RecordPriced(cctx, cost.Generation{
-			ProjectID: c.projectID, AssetID: created.id, TodoID: c.todoID, Kind: "image",
+			ProjectID: c.projectID, AssetID: created.id, TodoID: c.todoID, Kind: kind,
 			Provider: out.Provider, Model: out.Model, Prompt: out.Prompt,
 			Tokens: out.Tokens, ImageCount: out.ImageCount, LatencyMS: out.LatencyMS,
 		})
@@ -515,9 +531,9 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 // assetsRow is the minimal handle the worker keeps after inserting the row.
 type assetsRow struct{ id string }
 
-func (w *Worker) createAsset(ctx context.Context, c claimed, shotID, shotPrompt, style string) (assetsRow, error) {
+func (w *Worker) createAsset(ctx context.Context, c claimed, shotID, shotPrompt, style, typ string) (assetsRow, error) {
 	a, err := w.cfg.Assets.Create(ctx, assets.CreateInput{
-		ProjectID: c.projectID, ShotID: shotID, TodoID: c.todoID, Type: "image",
+		ProjectID: c.projectID, ShotID: shotID, TodoID: c.todoID, Type: typ,
 		Prompt: shotPrompt, Style: style, Status: "generating",
 	})
 	if err != nil {

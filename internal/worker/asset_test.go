@@ -529,3 +529,44 @@ func TestRunAssetQuotaBackstopFailsOverQuotaTodo(t *testing.T) {
 		t.Fatalf("quota backstop must fire before createAsset, found %d asset rows", nAssets)
 	}
 }
+
+func TestFanOutWritesKindAndDuration(t *testing.T) {
+	// I3: storyboard fan-out must write input_json.kind + duration — without it the
+	// per-kind concurrency cap never fires and video billing has no duration. M4
+	// shots carry no kind, so fan-out writes the constant "image"; duration comes
+	// from the shot. (DB-gated; reuses storyboard helpers.)
+	pool := assetTestPool(t)
+	ctx := context.Background()
+	var pid string
+	_ = pool.QueryRow(ctx, `INSERT INTO projects (id,org_id,name,created_by,style) VALUES (md5(random()::text),'org_fk','p','u','realistic') RETURNING id`).Scan(&pid)
+	// Seed a script + its done script todo so runStoryboard resolves a parent.
+	scriptID := newID()
+	_, _ = pool.Exec(ctx, `INSERT INTO scripts (id, project_id, todo_id, content_json) VALUES ($1,$2,'t0','{}')`, scriptID, pid)
+	parentTodo := newID()
+	_, _ = pool.Exec(ctx, `INSERT INTO todos (id,project_id,plan_id,type,status,output_ref) VALUES ($1,$2,'plan','script','done',$3)`, parentTodo, pid, "script:"+scriptID)
+	sbTodo := newID()
+	_, _ = pool.Exec(ctx, `INSERT INTO todos (id,project_id,plan_id,type,status,depends_on,input_json) VALUES ($1,$2,'plan','storyboard','running',$3,'{}')`, sbTodo, pid, []string{parentTodo})
+
+	fake := generate.NewFakeLooping(generate.GenResult{Bytes: []byte("P"), MimeType: "image/png", Provider: "fake", Model: "m", ImageCount: 1})
+	w := New(Config{
+		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
+		Storyboard: newStoryboardAgentWithShots(t, 1),
+		Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
+		Blob:       blob.NewFake(), Assets: assets.New(pool), Cost: cost.New(pool),
+		WorkerID: "fanout", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
+	})
+	if _, err := w.runStoryboard(ctx, claimed{todoID: sbTodo, projectID: pid, typ: "storyboard", attempts: 1, input: []byte(`{}`)}); err != nil {
+		t.Fatalf("runStoryboard: %v", err)
+	}
+	var kind string
+	var dur int
+	if err := pool.QueryRow(ctx,
+		`SELECT input_json->>'kind', (input_json->>'duration')::int FROM todos WHERE project_id=$1 AND type='asset' LIMIT 1`,
+		pid).Scan(&kind, &dur); err != nil {
+		t.Fatalf("read asset todo input: %v", err)
+	}
+	// M4 fan-out always writes the constant "image" (shots carry no kind).
+	if kind != "image" {
+		t.Fatalf("fan-out kind = %q, want image (M4 fan-out constant)", kind)
+	}
+}

@@ -92,9 +92,13 @@ func (s *Service) Regenerate(ctx context.Context, assetID, editedPrompt string) 
 	// todo holds no upstream TODO dependencies (it's created ready); the previous
 	// []string{assetID} was wrong (assetID is an ASSET id, depends_on holds TODO
 	// ids).
-	input, _ := json.Marshal(map[string]string{
+	input, _ := json.Marshal(map[string]any{
 		"assetId": child.ID, "shotId": parent.ShotID, "shotPrompt": parent.Prompt,
 		"style": parent.Style, "editedPrompt": prompt,
+		"kind": parent.Type, // regenerate keeps the original asset's kind (I3)
+		// duration: regenerate has no shot row to read here; the async path will
+		// derive EstSeconds from the parent's recorded seconds if needed (M4 keeps
+		// duration=0 for regenerate — video regenerate duration is an M5 refinement).
 	})
 	todoID := newID()
 	if _, err := s.todos.AddSingleReady(ctx, child.ProjectID, todoID, "asset", nil, input); err != nil {
