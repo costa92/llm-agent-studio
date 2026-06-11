@@ -62,3 +62,9 @@ func (a *AssetAgent) RunWith(ctx context.Context, gen generate.MediaGenerator, i
 func (a *AssetAgent) Run(ctx context.Context, in AssetInput) (AssetOutput, error) {
 	return a.RunWith(ctx, a.gen, in)
 }
+
+// BuildPrompt exposes the PromptBuilder for the async path (the worker submits
+// to AsyncGenerator directly, not via Run/RunWith).
+func (a *AssetAgent) BuildPrompt(shotPrompt, style string) string {
+	return a.builder.Build(shotPrompt, style)
+}

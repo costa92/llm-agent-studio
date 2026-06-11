@@ -570,3 +570,155 @@ func TestFanOutWritesKindAndDuration(t *testing.T) {
 		t.Fatalf("fan-out kind = %q, want image (M4 fan-out constant)", kind)
 	}
 }
+
+// asyncWorkerSetup builds a worker wired with a FakeAsync video generator routed
+// via an org default model_config. pollsToDone controls the poll lifecycle length.
+func asyncWorkerSetup(t *testing.T, pool *pgxpool.Pool, pollsToDone int) (*Worker, string, string) {
+	t.Helper()
+	ctx := context.Background()
+	orgID := "org_async_" + randHex3()
+	var pid string
+	_ = pool.QueryRow(ctx, `INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),$1,'p','u') RETURNING id`, orgID).Scan(&pid)
+	// Seed video per-second pricing so the ledger asserts a real amount.
+	_, _ = pool.Exec(ctx, `INSERT INTO pricing (provider, model, kind, micros_per_second)
+		VALUES ('fake','fake-video-async','video',500000) ON CONFLICT (provider, model) DO NOTHING`)
+	ms := models.New(pool)
+	_, _ = ms.Create(ctx, models.CreateInput{OrgID: orgID, Kind: "video", Provider: "fake", Model: "fake-video-async", Enabled: true, IsDefault: true})
+
+	fakeAsync := generate.NewFakeAsync("video", pollsToDone, generate.GenResult{
+		URL: "", Bytes: []byte("VIDEO"), MimeType: "video/mp4", Provider: "fake", Model: "fake-video-async",
+	})
+	reg := generate.NewRegistry()
+	reg.SetDefault(generate.NewFakeLooping(generate.GenResult{Bytes: []byte("IMG"), Provider: "img", Model: "i", ImageCount: 1}))
+	reg.Register("fake", "fake-video-async", fakeAsync)
+
+	w := New(Config{
+		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
+		Asset:  studioagents.NewAssetAgent(prompt.NewBuilder(), generate.NewFakeLooping(generate.GenResult{Provider: "img"})),
+		Blob:   blob.NewFake(), Assets: assets.New(pool), Cost: cost.New(pool),
+		Models: ms, Registry: reg,
+		WorkerID: "async", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
+		PollBackoff: time.Millisecond, MaxPollBackoff: time.Millisecond, MaxPollAttempts: 60,
+	})
+	return w, pid, orgID
+}
+
+func seedVideoAssetTodo(t *testing.T, pool *pgxpool.Pool, pid string) string {
+	t.Helper()
+	todoID := newID()
+	// Seed as claim() would leave it: running + locked_by the async worker. The
+	// reschedule UPDATEs guard on locked_by=$worker AND status='running', so the
+	// lease owner must match (real dispatches always arrive post-claim).
+	_, _ = pool.Exec(context.Background(),
+		`INSERT INTO todos (id,project_id,plan_id,type,status,locked_by,locked_until,input_json)
+		 VALUES ($1,$2,'plan','asset','running','async',now()+interval '1 minute',$3)`,
+		todoID, pid, `{"shotId":"s1","shotPrompt":"a city","style":"","kind":"video","duration":6}`)
+	return todoID
+}
+
+func TestRunAssetSubmitReschedulesThenPollsToDone(t *testing.T) {
+	pool := assetTestPool(t)
+	ctx := context.Background()
+	w, pid, _ := asyncWorkerSetup(t, pool, 2)
+	todoID := seedVideoAssetTodo(t, pool, pid)
+
+	// Dispatch 1 = submit → self-reschedules (errRescheduled), asset submitted.
+	_, err := w.runAsset(ctx, claimed{todoID: todoID, projectID: pid, typ: "asset", attempts: 1,
+		input: []byte(`{"shotId":"s1","shotPrompt":"a city","style":"","kind":"video","duration":6}`)})
+	if !errorsIsRescheduled(err) {
+		t.Fatalf("submit dispatch must return errRescheduled, got %v", err)
+	}
+	var status, extJob string
+	_ = pool.QueryRow(ctx, `SELECT status, external_job_id FROM assets WHERE project_id=$1`, pid).Scan(&status, &extJob)
+	if status != "submitted" || extJob == "" {
+		t.Fatalf("after submit: status=%q extJob=%q, want submitted + non-empty", status, extJob)
+	}
+	// A submit-time generations row pre-registers the estimated cost (I2).
+	var preMicros int64
+	_ = pool.QueryRow(ctx, `SELECT cost_micros FROM generations WHERE project_id=$1`, pid).Scan(&preMicros)
+	if preMicros != 6*500000 {
+		t.Fatalf("submit pre-register cost = %d, want %d", preMicros, 6*500000)
+	}
+	// Re-fetch the (rescheduled, ready) todo's claimed shape for poll dispatches.
+	reclaim := func() claimed {
+		return claimed{todoID: todoID, projectID: pid, typ: "asset", attempts: 1,
+			input: []byte(`{"shotId":"s1","shotPrompt":"a city","style":"","kind":"video","duration":6}`)}
+	}
+	// Mark the todo running again (claim would do this) for the poll dispatch.
+	_, _ = pool.Exec(ctx, `UPDATE todos SET status='running', locked_by='async' WHERE id=$1`, todoID)
+	// Dispatch 2 = poll → pending (pollsToDone=2) → reschedule again.
+	if _, err := w.runAsset(ctx, reclaim()); !errorsIsRescheduled(err) {
+		t.Fatalf("poll#1 dispatch must reschedule (pending), got %v", err)
+	}
+	_, _ = pool.Exec(ctx, `UPDATE todos SET status='running', locked_by='async' WHERE id=$1`, todoID)
+	// Dispatch 3 = poll → done → pull bytes → pending_acceptance.
+	ref, err := w.runAsset(ctx, reclaim())
+	if err != nil {
+		t.Fatalf("poll#2 dispatch (done) errored: %v", err)
+	}
+	if ref == "" {
+		t.Fatalf("poll-done must return asset:<id> output ref")
+	}
+	_ = pool.QueryRow(ctx, `SELECT status FROM assets WHERE project_id=$1`, pid).Scan(&status)
+	if status != "pending_acceptance" {
+		t.Fatalf("after poll-done: %q, want pending_acceptance", status)
+	}
+	// Ledger backfilled in place (still ONE row, real seconds = 6).
+	var nRows, sec int
+	_ = pool.QueryRow(ctx, `SELECT count(*), max(video_seconds) FROM generations WHERE project_id=$1`, pid).Scan(&nRows, &sec)
+	if nRows != 1 || sec != 6 {
+		t.Fatalf("ledger = %d rows / %ds, want 1 row / 6s (I5 in-place backfill)", nRows, sec)
+	}
+}
+
+func TestProcessReschedulePreservesHealthyAsset(t *testing.T) {
+	// I1: process must NOT discardCanceledAsset a healthy submitted asset when
+	// runAsset self-reschedules (MarkDone would see done=false).
+	pool := assetTestPool(t)
+	ctx := context.Background()
+	w, pid, _ := asyncWorkerSetup(t, pool, 3)
+	todoID := seedVideoAssetTodo(t, pool, pid)
+	w.process(ctx, claimed{todoID: todoID, projectID: pid, typ: "asset", attempts: 1,
+		input: []byte(`{"shotId":"s1","shotPrompt":"a city","style":"","kind":"video","duration":6}`)})
+	var status string
+	_ = pool.QueryRow(ctx, `SELECT status FROM assets WHERE project_id=$1`, pid).Scan(&status)
+	if status == "canceled" {
+		t.Fatalf("healthy submitted asset was wrongly discarded as canceled (I1 regression)")
+	}
+	if status != "submitted" {
+		t.Fatalf("after submit dispatch: %q, want submitted", status)
+	}
+	// And the todo is rescheduled ready with attempts reset to 0 (I6).
+	var tStatus string
+	var attempts, pollAttempts int
+	_ = pool.QueryRow(ctx, `SELECT status, attempts, poll_attempts FROM todos WHERE id=$1`, todoID).Scan(&tStatus, &attempts, &pollAttempts)
+	if tStatus != "ready" || attempts != 0 {
+		t.Fatalf("todo after reschedule: status=%q attempts=%d, want ready + attempts 0 (I6)", tStatus, attempts)
+	}
+}
+
+func TestSubmitAdmissionCapBlocksNewSubmitButNotPoll(t *testing.T) {
+	// B2: when CountInFlightByKind('video') >= cap, a NEW submit is held back
+	// (errRescheduled, no attempts spent); but a poll re-claim of an already-
+	// submitted asset is NOT blocked (else drain deadlocks).
+	pool := assetTestPool(t)
+	ctx := context.Background()
+	w, pid, _ := asyncWorkerSetup(t, pool, 5)
+	w.cfg.MaxConcurrentVideo = 1
+	// Pre-load one in-flight submitted video (occupies the single slot).
+	_, _ = pool.Exec(ctx, `INSERT INTO assets (id,project_id,todo_id,type,status,submitted_at) VALUES (md5(random()::text),$1,'occupy','video','submitted',now())`, pid)
+	todoID := seedVideoAssetTodo(t, pool, pid)
+	if _, err := w.runAsset(ctx, claimed{todoID: todoID, projectID: pid, typ: "asset", attempts: 1,
+		input: []byte(`{"shotId":"s1","shotPrompt":"a city","style":"","kind":"video","duration":6}`)}); !errorsIsRescheduled(err) {
+		t.Fatalf("over-cap submit must be held (errRescheduled), got %v", err)
+	}
+	// The held asset must NOT have been submitted (still generating or absent).
+	var n int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM assets WHERE todo_id=$1 AND status='submitted'`, todoID).Scan(&n)
+	if n != 0 {
+		t.Fatalf("over-cap todo must not submit, got %d submitted", n)
+	}
+}
+
+// errorsIsRescheduled is a test shim around the worker's internal sentinel.
+func errorsIsRescheduled(err error) bool { return err != nil && err.Error() == "worker: todo rescheduled" }
