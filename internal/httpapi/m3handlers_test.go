@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/costa92/llm-agent-studio/internal/cost"
+	"github.com/costa92/llm-agent-studio/internal/models"
 	"github.com/costa92/llm-agent-studio/internal/planner"
 	"github.com/costa92/llm-agent-studio/internal/project"
 )
@@ -159,5 +160,26 @@ func TestRunHandlerQuotaZeroDisabled(t *testing.T) {
 	h(rr, req)
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("quota=0 must disable the check, got %d", rr.Code)
+	}
+}
+
+type secretRejectingModels struct{}
+
+func (secretRejectingModels) Create(_ context.Context, _ models.CreateInput) (models.ModelConfig, error) {
+	return models.ModelConfig{}, models.ErrSecretParam
+}
+func (secretRejectingModels) ListByOrg(_ context.Context, _ string) ([]models.ModelConfig, error) {
+	return nil, nil
+}
+
+func TestCreateModelConfig400OnSecretParams(t *testing.T) {
+	h := createModelConfigHandler(secretRejectingModels{})
+	req := httptest.NewRequest("POST", "/api/orgs/o1/model-configs",
+		strings.NewReader(`{"provider":"openai","model":"dall-e-3","params":{"apiKey":"sk-1"}}`))
+	req.SetPathValue("org", "o1")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("secret params must 400 (audit: keys never persisted), got %d", rr.Code)
 	}
 }

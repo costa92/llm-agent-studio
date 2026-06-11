@@ -275,6 +275,10 @@ func createModelConfigHandler(ms ModelStore) http.HandlerFunc {
 			Enabled: req.Enabled, IsDefault: req.IsDefault, Params: req.Params,
 		})
 		if err != nil {
+			if errors.Is(err, models.ErrSecretParam) {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
