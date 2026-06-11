@@ -399,6 +399,11 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 		if orgID, oerr := w.cfg.Projects.OrgIDForProject(ctx, c.projectID); oerr == nil {
 			n, cerr := w.cfg.Cost.CountByOrgSince(ctx, orgID, w.cfg.Clock().Add(-24*time.Hour))
 			if cerr == nil && n >= w.cfg.GenQuota {
+				// Regenerate todos point at a v2 asset pre-created 'generating'
+				// at HTTP time — terminal-state it or it strands in the library.
+				if in.AssetID != "" {
+					_ = w.cfg.Assets.SetBlob(context.WithoutCancel(ctx), in.AssetID, "", "", "", "", "failed")
+				}
 				return "", fmt.Errorf("worker: org %s generation quota exceeded (%d/%d in 24h)", orgID, n, w.cfg.GenQuota)
 			}
 		}
