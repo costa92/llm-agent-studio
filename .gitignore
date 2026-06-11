@@ -4,3 +4,4 @@
 .env
 blobdata/
 cmd/studiod/blobdata/
+bin

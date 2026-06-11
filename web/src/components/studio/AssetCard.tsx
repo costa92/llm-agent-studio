@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils"
-import { AssetThumb } from "@/features/workflow/AssetThumb"
+import { AssetThumb } from "@/features/workflow/AssetThumb.tsx"
 
 // 原型 .asset-card：default / hover / sel（amber 描边）。
 // 图走 /api/assets/{id}/content（302→签名 URL，AssetThumb，§已知缺口 1）。

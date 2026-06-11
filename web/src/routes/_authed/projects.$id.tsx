@@ -4,7 +4,7 @@ import { toast } from "sonner"
 import { getAccessToken } from "@/lib/apiClient"
 import { Skeleton } from "@/components/ui/skeleton"
 import { WorkbenchView } from "@/features/workflow/WorkbenchPage"
-import { AssetThumb } from "@/features/workflow/AssetThumb"
+import { AssetThumb } from "@/features/workflow/AssetThumb.tsx"
 import {
   fetchAllEvents,
   useCancel,
