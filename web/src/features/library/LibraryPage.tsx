@@ -4,6 +4,7 @@ import { Badge } from "@/components/studio/Badge"
 import { Button } from "@/components/studio/Button"
 import { AssetCard } from "@/components/studio/AssetCard"
 import { AssetThumb } from "@/features/workflow/AssetThumb"
+import { useResolvedAssetUrl } from "@/features/workflow/assetThumb"
 import { PromptBox } from "@/components/studio/PromptBox"
 import { LineageTrail, type LineageNode } from "@/components/studio/LineageTrail"
 import { cn } from "@/lib/utils"
@@ -336,21 +337,35 @@ function AssetDetailBody({ detail }: { detail: AssetDetail }) {
   )
 }
 
-// 媒体渲染：视频/音频用原生播放器（生成后端驱动，前端只播放），
-// 其余（图片）走 AssetThumb（/content 302→签名 URL）。
+// 媒体渲染：视频/音频用原生播放器（生成后端驱动，前端只播放），其余（图片）走 AssetThumb。
+//   /content 在 auth middleware 后（需 Bearer），原生 <video>/<audio> 的 src 带不上 token，
+//   故同样走 useResolvedAssetUrl（authed fetch 跟 302 到签名 URL → blob object URL）。
 function AssetMedia({ asset }: { asset: Asset }) {
-  const src = `/api/assets/${asset.id}/content`
   if (asset.type === "video") {
-    return <video controls src={src} className="w-full bg-black" aria-label={asset.prompt} />
+    return <AssetVideoAudio asset={asset} kind="video" />
   }
   if (asset.type === "audio") {
-    return (
-      <div className="p-5">
-        <audio controls src={src} className="w-full" aria-label={asset.prompt} />
-      </div>
-    )
+    return <AssetVideoAudio asset={asset} kind="audio" />
   }
   return <AssetThumb assetId={asset.id} alt={asset.prompt} className="aspect-square w-full rounded-none border-0" />
+}
+
+function AssetVideoAudio({ asset, kind }: { asset: Asset; kind: "video" | "audio" }) {
+  const { url, loading } = useResolvedAssetUrl(asset.id)
+  const placeholderCls = cn(
+    "grid place-items-center text-[12px] text-text-3",
+    kind === "video" ? "aspect-video w-full bg-black" : "p-5",
+  )
+  if (loading) return <div className={placeholderCls}>加载中…</div>
+  if (url == null) return <div className={placeholderCls}>媒体不可用</div>
+  if (kind === "video") {
+    return <video controls src={url} className="w-full bg-black" aria-label={asset.prompt} />
+  }
+  return (
+    <div className="p-5">
+      <audio controls src={url} className="w-full" aria-label={asset.prompt} />
+    </div>
+  )
 }
 
 function Kv({ label, value }: { label: string; value: string }) {

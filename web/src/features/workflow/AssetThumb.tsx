@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useState } from "react"
 import { cn } from "@/lib/utils"
-import { resolveAssetUrl } from "./assetThumb"
+import { useResolvedAssetUrl } from "./assetThumb"
 
 // 资产缩略图（计划 Task 10 Step 4 / §已知缺口 1）：
-//   走 GET /api/assets/{id}/content（302→签名 URL），apiFetch + redirect:"manual" 读 Location，
-//   把签名 URL 塞 <img src>。签名过期（img onError）→ 重拉一次刷新（UI-spec §11 默认决策 3）。
+//   走 GET /api/assets/{id}/content（apiFetch 注入 Bearer，redirect:"follow" 跟 302 到签名 URL），
+//   下载字节生成 blob object URL 塞 <img src>。effect 清理时 revokeObjectURL 释放。
+//   签名过期/加载失败（img onError）→ 重拉一次刷新（UI-spec §11 默认决策 3）。
 export interface AssetThumbProps {
   assetId: string
   alt?: string
@@ -12,40 +13,34 @@ export interface AssetThumbProps {
 }
 
 export function AssetThumb({ assetId, alt = "", className }: AssetThumbProps) {
-  const [url, setUrl] = useState<string | null>(null)
-  const [failed, setFailed] = useState(false)
-  // reloadKey 自增触发重拉（签名过期刷新）。
+  // 重拉/降级态：reloadKey 自增触发重拉（签名过期刷新，只一次）；imgFailed 标记最终降级。
+  //   assetId 变化时用 React 官方 "adjusting state on prop change" 模式（渲染期 setState，
+  //   非 effect 内、非 ref 变更）复位，避免 lint 告警。
   const [reloadKey, setReloadKey] = useState(0)
-  // 防止过期重拉死循环：只刷新一次。
-  const refreshedRef = useRef(false)
+  const [, setRefreshed] = useState(false)
+  const [imgFailed, setImgFailed] = useState(false)
+  const [trackedAssetId, setTrackedAssetId] = useState(assetId)
+  if (trackedAssetId !== assetId) {
+    setTrackedAssetId(assetId)
+    setReloadKey(0)
+    setRefreshed(false)
+    setImgFailed(false)
+  }
 
-  useEffect(() => {
-    let cancelled = false
-    // 异步取签名 URL（setState 在 await 之后，非 effect 体内同步）。
-    void (async () => {
-      const next = await resolveAssetUrl(assetId)
-      if (cancelled) return
-      setUrl(next)
-      setFailed(next == null)
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [assetId, reloadKey])
-
-  // assetId 变更时复位"已刷新"标记。
-  useEffect(() => {
-    refreshedRef.current = false
-  }, [assetId])
+  const { url, loading } = useResolvedAssetUrl(assetId, reloadKey)
+  // 解析失败（url == null 且非加载中）或 img 加载失败 → 降级占位。
+  const failed = imgFailed || (!loading && url == null)
 
   const onError = useCallback(() => {
     // 签名过期 → 重拉一次刷新；再失败则标记降级。
-    if (refreshedRef.current) {
-      setFailed(true)
-      return
-    }
-    refreshedRef.current = true
-    setReloadKey((k) => k + 1)
+    setRefreshed((prev) => {
+      if (prev) {
+        setImgFailed(true)
+      } else {
+        setReloadKey((k) => k + 1)
+      }
+      return true
+    })
   }, [])
 
   if (failed || url == null) {

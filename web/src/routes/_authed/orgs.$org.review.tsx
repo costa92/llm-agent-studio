@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { z } from "zod"
 import { toast } from "sonner"
 import { useRole } from "@/app/rbac"
+import { AdminGate } from "@/features/cost/AdminGate"
 import { ReviewBoardView } from "@/features/review/ReviewBoardPage"
 import {
   useAccept,
@@ -27,7 +28,8 @@ function ReviewPage() {
   const { org } = Route.useParams()
   const { asset: selectedId } = Route.useSearch()
   const navigate = useNavigate()
-  const { isAdmin } = useRole(org)
+  const role = useRole(org)
+  const { isAdmin } = role
 
   const queue = useReviewQueue(org)
   const detail = useAsset(selectedId ?? "")
@@ -99,19 +101,21 @@ function ReviewPage() {
   }
 
   return (
-    <ReviewBoardView
-      queue={queue.data}
-      isLoading={queue.isLoading}
-      isError={queue.isError}
-      onRetry={() => void queue.refetch()}
-      isAdmin={isAdmin}
-      selectedId={selectedId ?? null}
-      onSelect={selectAsset}
-      detail={detail.data}
-      detailLoading={selectedId != null && detail.isLoading}
-      onAccept={handleAccept}
-      onReject={handleReject}
-      onRegenerate={handleRegenerate}
-    />
+    <AdminGate role={role}>
+      <ReviewBoardView
+        queue={queue.data}
+        isLoading={queue.isLoading}
+        isError={queue.isError}
+        onRetry={() => void queue.refetch()}
+        isAdmin={isAdmin}
+        selectedId={selectedId ?? null}
+        onSelect={selectAsset}
+        detail={detail.data}
+        detailLoading={selectedId != null && detail.isLoading}
+        onAccept={handleAccept}
+        onReject={handleReject}
+        onRegenerate={handleRegenerate}
+      />
+    </AdminGate>
   )
 }

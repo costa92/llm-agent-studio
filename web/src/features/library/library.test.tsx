@@ -5,9 +5,11 @@ import { LibraryView, type LibraryViewProps } from "./LibraryPage"
 import { assetStatusLabel, assetStatusVariant } from "./assetStatus"
 import type { Asset, AssetDetail, Project, Style } from "@/lib/types"
 
-// AssetThumb 走 /content 302→签名 URL；jsdom 无网络 —— stub 为 null（显占位）。
+// AssetThumb/AssetMedia 走 authed fetch → blob object URL；jsdom 无网络 ——
+// stub 为 null（显占位），避免测试触网。
 vi.mock("@/features/workflow/assetThumb", () => ({
   resolveAssetUrl: vi.fn().mockResolvedValue(null),
+  useResolvedAssetUrl: vi.fn(() => ({ url: null, loading: false })),
 }))
 
 afterEach(() => {

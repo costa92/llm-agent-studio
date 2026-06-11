@@ -4,13 +4,15 @@ import userEvent from "@testing-library/user-event"
 import { resolveReviewAction, isInputTarget } from "./keyboard"
 import { hitlErrorMessage } from "./hitlError"
 import { ApiError } from "@/lib/apiClient"
+import { AdminGate } from "@/features/cost/AdminGate"
 import { ReviewBoardView, type ReviewBoardViewProps } from "./ReviewBoardPage"
 import type { Asset, AssetDetail } from "@/lib/types"
 
-// AssetThumb 走 /content 302→签名 URL；jsdom 无网络——stub resolveAssetUrl 为 null
+// AssetThumb 走 authed fetch → blob object URL；jsdom 无网络——stub 为 null
 // （AssetThumb 显"加载中…/不可用"占位），避免测试触网。
 vi.mock("@/features/workflow/assetThumb", () => ({
   resolveAssetUrl: vi.fn().mockResolvedValue(null),
+  useResolvedAssetUrl: vi.fn(() => ({ url: null, loading: false })),
 }))
 
 afterEach(() => {
@@ -230,5 +232,30 @@ describe("ReviewBoardView", () => {
     )
     await user.keyboard("a")
     expect(onAccept).toHaveBeenCalledWith("as1")
+  })
+})
+
+// ── 审核路由 AdminGate（与成本/模型配置一致：路由级 admin 门禁）───────────
+// 路由 orgs.$org.review 现把 ReviewBoardView 包进 AdminGate；此处复现该组合，
+// 断言非 admin 见门禁文案而非看板，admin 见看板。
+describe("review board admin gate (route-level)", () => {
+  it("non-admin sees the admin-required message instead of the board", () => {
+    render(
+      <AdminGate role={{ isAdmin: false, isLoading: false }}>
+        <ReviewBoardView {...baseProps({ isAdmin: false })} />
+      </AdminGate>,
+    )
+    expect(screen.getByText("需要管理员权限")).toBeInTheDocument()
+    expect(screen.queryByText(/待审 2/)).not.toBeInTheDocument()
+  })
+
+  it("admin sees the board through the gate", () => {
+    render(
+      <AdminGate role={{ isAdmin: true, isLoading: false }}>
+        <ReviewBoardView {...baseProps()} />
+      </AdminGate>,
+    )
+    expect(screen.getByText(/待审 2/)).toBeInTheDocument()
+    expect(screen.queryByText("需要管理员权限")).not.toBeInTheDocument()
   })
 })
