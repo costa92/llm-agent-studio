@@ -5,9 +5,11 @@ import {
   usePromptStyles,
 } from "@/features/projects/api"
 import { ProjectListView } from "@/features/projects/ProjectListPage"
+import { requireOrgParam } from "@/app/org"
 
 // T9：项目列表 + 建项目视图。
 export const Route = createFileRoute("/_authed/orgs/$org/projects")({
+  beforeLoad: ({ params }) => requireOrgParam(params),
   component: ProjectsPage,
 })
 

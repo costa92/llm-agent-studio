@@ -6,6 +6,7 @@ import { useAsset } from "@/features/review/api"
 import { useProjects, usePromptStyles } from "@/features/projects/api"
 import { flattenPages } from "@/features/library/keyset"
 import type { LibraryFilter } from "@/features/library/filter"
+import { requireOrgParam } from "@/app/org"
 
 // T12：资产库（过滤 + keyset 分页 + 版本血缘）。
 // typed search params 持有过滤态（type/status/style/project/tag）+ ?asset= 控制详情 Drawer。
@@ -19,6 +20,7 @@ const librarySearchSchema = z.object({
 })
 
 export const Route = createFileRoute("/_authed/orgs/$org/assets")({
+  beforeLoad: ({ params }) => requireOrgParam(params),
   validateSearch: librarySearchSchema,
   component: AssetsPage,
 })

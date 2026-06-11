@@ -12,6 +12,7 @@ import {
   useReviewQueue,
 } from "@/features/review/api"
 import { hitlErrorMessage } from "@/features/review/hitlError"
+import { requireOrgParam } from "@/app/org"
 
 // T11：HITL 审核看板（admin 门禁，accept/reject/regenerate，版本血缘）。
 // ?asset= typed search param 控制 Drawer 开合（UI-spec §7.6 / 5.1）。
@@ -20,6 +21,7 @@ const reviewSearchSchema = z.object({
 })
 
 export const Route = createFileRoute("/_authed/orgs/$org/review")({
+  beforeLoad: ({ params }) => requireOrgParam(params),
   validateSearch: reviewSearchSchema,
   component: ReviewPage,
 })

@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router"
 import { toast } from "sonner"
 import { useRole } from "@/app/rbac"
+import { requireOrgParam } from "@/app/org"
 import { AdminGate } from "@/features/cost/AdminGate"
 import { ModelConfigView } from "@/features/cost/ModelConfigPage"
 import { useCreateModelConfig, useModelCatalog, useModelConfigs } from "@/features/cost/api"
@@ -9,6 +10,7 @@ import type { CreateModelConfigInput, ModelConfig } from "@/lib/types"
 
 // T13：模型配置（admin-only）。含密钥型 param → 后端 400 ErrSecretParam → toast。
 export const Route = createFileRoute("/_authed/orgs/$org/model-configs")({
+  beforeLoad: ({ params }) => requireOrgParam(params),
   component: ModelConfigsPage,
 })
 

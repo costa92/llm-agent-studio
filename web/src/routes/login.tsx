@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/studio/Button"
 import { useAuth } from "@/app/auth"
+import { sanitizeLoginRedirect } from "@/app/org"
 
 // T6：rhf+zod 登录表单 + AuthProvider 接入。
 // 登录请求体 {email,password}（与 authz 自带测试一致；Go JSON 大小写不敏感）。
@@ -109,7 +110,7 @@ function LoginPage() {
         <LoginForm
           onSuccess={() => {
             // 登录成功 → 回跳来源页，否则去根落地（org 选择/默认项目列表）。
-            navigate({ to: redirect ?? "/" })
+            navigate({ to: sanitizeLoginRedirect(redirect) })
           }}
         />
       </div>

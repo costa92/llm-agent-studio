@@ -12,10 +12,10 @@ import { AppShell } from "./AppShell"
 
 // AppShell 用 <Link>，需挂在 RouterProvider 下。建一个含 4 个 nav 目标的最小内存路由树，
 // 把待测的 AppShell 渲染进根布局，断言导航项与角色门禁。
-function renderShell(props: { isAdmin?: boolean }) {
+function renderShell(props: { isAdmin?: boolean; org?: string; initialEntry?: string } = {}) {
   const rootRoute = createRootRoute({
     component: () => (
-      <AppShell org="acme" isAdmin={props.isAdmin}>
+      <AppShell org={props.org ?? "acme"} isAdmin={props.isAdmin}>
         <Outlet />
       </AppShell>
     ),
@@ -31,7 +31,7 @@ function renderShell(props: { isAdmin?: boolean }) {
   ])
   const router = createRouter({
     routeTree,
-    history: createMemoryHistory({ initialEntries: ["/orgs/acme/projects"] }),
+    history: createMemoryHistory({ initialEntries: [props.initialEntry ?? "/orgs/acme/projects"] }),
   })
   return render(<RouterProvider router={router as never} />)
 }
@@ -53,5 +53,13 @@ describe("AppShell", () => {
     expect(screen.queryByText("审核")).not.toBeInTheDocument()
     expect(screen.queryByText("成本")).not.toBeInTheDocument()
     expect(screen.queryByText("模型")).not.toBeInTheDocument()
+  })
+
+  it("does not render org scoped nav links when org is empty", async () => {
+    renderShell({ org: "", initialEntry: "/" })
+
+    expect(await screen.findByLabelText("选择组织")).toBeInTheDocument()
+    expect(screen.queryByText("项目")).not.toBeInTheDocument()
+    expect(screen.queryByText("资产")).not.toBeInTheDocument()
   })
 })

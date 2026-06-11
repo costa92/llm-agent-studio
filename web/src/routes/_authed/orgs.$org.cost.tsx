@@ -9,9 +9,11 @@ import {
   useOrgCostProjects,
 } from "@/features/cost/api"
 import { RANGE_PRESETS, rangeToParams } from "@/features/cost/format"
+import { requireOrgParam } from "@/app/org"
 
 // T13：成本中心（admin-only）。导航入口已按角色隐藏（AppShell）；直访路由 → AdminGate 拦。
 export const Route = createFileRoute("/_authed/orgs/$org/cost")({
+  beforeLoad: ({ params }) => requireOrgParam(params),
   component: CostPage,
 })
 
