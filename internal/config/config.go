@@ -47,6 +47,21 @@ type Config struct {
 	MinimaxAPIKey    string
 	VolcengineAPIKey string
 
+	// M4 异步引擎 (spec §5.6/§9.4).
+	PollBackoff        time.Duration // async poll base backoff (env POLL_BACKOFF, 5s)
+	MaxPollBackoff     time.Duration // poll backoff cap (env MAX_POLL_BACKOFF, 30s)
+	MaxPollAttempts    int           // per-asset poll budget (env MAX_POLL_ATTEMPTS, 60)
+	MaxConcurrentVideo int           // video submit-admission + fetch cap; 0 = unlimited
+	MaxConcurrentAudio int           // audio submit-admission + fetch cap; 0 = unlimited
+	LeaseRenewInterval time.Duration // heartbeat renewLease period; MUST be < WorkerLease
+	VideoFetchMaxBytes int64         // hard cap on a pulled video/audio body (default 512MB)
+
+	// M4 video/audio provider keys (key-gated real-adapter skeletons, spec §8).
+	RunwayAPIKey string
+	KlingAPIKey  string
+	TTSAPIKey    string
+	// Veo reuses GoogleAPIKey (already present, spec §8.2).
+
 	BlobMode    string // "localfs" | "s3"
 	BlobDir     string // localfs root
 	BlobSecret  string // HMAC secret for localfs signed URLs (falls back to JWTSecret)
@@ -102,6 +117,17 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		MinimaxAPIKey:     get("MINIMAX_API_KEY", ""),
 		VolcengineAPIKey:  get("VOLCENGINE_API_KEY", ""),
 
+		PollBackoff:        durOf("POLL_BACKOFF", get("POLL_BACKOFF", "5s"), &errs),
+		MaxPollBackoff:     durOf("MAX_POLL_BACKOFF", get("MAX_POLL_BACKOFF", "30s"), &errs),
+		MaxPollAttempts:    intOf("MAX_POLL_ATTEMPTS", get("MAX_POLL_ATTEMPTS", "60"), &errs),
+		MaxConcurrentVideo: intOf("MAX_CONCURRENT_VIDEO", get("MAX_CONCURRENT_VIDEO", "0"), &errs),
+		MaxConcurrentAudio: intOf("MAX_CONCURRENT_AUDIO", get("MAX_CONCURRENT_AUDIO", "0"), &errs),
+		LeaseRenewInterval: durOf("LEASE_RENEW_INTERVAL", get("LEASE_RENEW_INTERVAL", "40s"), &errs),
+		VideoFetchMaxBytes: int64(intOf("VIDEO_FETCH_MAX_BYTES", get("VIDEO_FETCH_MAX_BYTES", "536870912"), &errs)),
+		RunwayAPIKey:       get("RUNWAY_API_KEY", ""),
+		KlingAPIKey:        get("KLING_API_KEY", ""),
+		TTSAPIKey:          get("TTS_API_KEY", ""),
+
 		BlobMode:         get("BLOB_MODE", "localfs"),
 		BlobDir:          get("BLOB_DIR", "./blobdata"),
 		BlobSecret:       get("BLOB_SECRET", ""),
@@ -122,6 +148,10 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 	if cfg.WorkerCallTimeout > 0 && cfg.WorkerCallTimeout >= cfg.WorkerLease {
 		return Config{}, fmt.Errorf("config: WORKER_CALL_TIMEOUT (%s) must be strictly shorter than WORKER_LEASE (%s)",
 			cfg.WorkerCallTimeout, cfg.WorkerLease)
+	}
+	if cfg.LeaseRenewInterval > 0 && cfg.LeaseRenewInterval >= cfg.WorkerLease {
+		return Config{}, fmt.Errorf("config: LEASE_RENEW_INTERVAL (%s) must be strictly shorter than WORKER_LEASE (%s)",
+			cfg.LeaseRenewInterval, cfg.WorkerLease)
 	}
 	if cfg.PGURL == "" {
 		return Config{}, fmt.Errorf("config: PG_URL is required")
