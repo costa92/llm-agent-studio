@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -53,8 +54,11 @@ type ModelStore interface {
 
 // CostStore is the cost aggregation surface (satisfied by *cost.Store).
 type CostStore interface {
-	ByOrg(ctx context.Context, orgID string) (cost.Aggregate, error)
-	ByProject(ctx context.Context, projectID string) (cost.Aggregate, error)
+	ByOrgBetween(ctx context.Context, orgID string, from, to time.Time) (cost.Aggregate, error)
+	ByProjectBetween(ctx context.Context, projectID string, from, to time.Time) (cost.Aggregate, error)
+	PerProjectByOrg(ctx context.Context, orgID string, from, to time.Time) ([]cost.ProjectAggregate, error)
+	RecentByOrg(ctx context.Context, orgID string, limit int) ([]cost.LedgerEntry, error)
+	CountByOrgSince(ctx context.Context, orgID string, since time.Time) (int, error)
 }
 
 const signedURLTTL = 10 * time.Minute
@@ -275,10 +279,31 @@ func listModelConfigsHandler(ms ModelStore) http.HandlerFunc {
 	}
 }
 
-// orgCostHandler (GET /api/orgs/{org}/cost): admin.
+// parseTimeRange reads optional RFC3339 from/to query params. Malformed values
+// are a 400 (not silently ignored — M1 carry lesson: don't swallow parse errors).
+func parseTimeRange(r *http.Request) (from, to time.Time, err error) {
+	if v := r.URL.Query().Get("from"); v != "" {
+		if from, err = time.Parse(time.RFC3339, v); err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("bad from: %w", err)
+		}
+	}
+	if v := r.URL.Query().Get("to"); v != "" {
+		if to, err = time.Parse(time.RFC3339, v); err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("bad to: %w", err)
+		}
+	}
+	return from, to, nil
+}
+
+// orgCostHandler (GET /api/orgs/{org}/cost?from=&to=): admin. 时间范围聚合.
 func orgCostHandler(cs CostStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		agg, err := cs.ByOrg(r.Context(), r.PathValue("org"))
+		from, to, err := parseTimeRange(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		agg, err := cs.ByOrgBetween(r.Context(), r.PathValue("org"), from, to)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -287,14 +312,56 @@ func orgCostHandler(cs CostStore) http.HandlerFunc {
 	}
 }
 
-// projectCostHandler (GET /api/projects/{id}/cost): admin.
+// projectCostHandler (GET /api/projects/{id}/cost?from=&to=): admin.
 func projectCostHandler(cs CostStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		agg, err := cs.ByProject(r.Context(), r.PathValue("id"))
+		from, to, err := parseTimeRange(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		agg, err := cs.ByProjectBetween(r.Context(), r.PathValue("id"), from, to)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, http.StatusOK, agg)
+	}
+}
+
+// orgCostProjectsHandler (GET /api/orgs/{org}/cost/projects?from=&to=): admin.
+// Per-project rollup (UI 按项目成本条).
+func orgCostProjectsHandler(cs CostStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		from, to, err := parseTimeRange(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		items, err := cs.PerProjectByOrg(r.Context(), r.PathValue("org"), from, to)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
+// orgGenerationsHandler (GET /api/orgs/{org}/generations?limit=): admin.
+// Recent usage-detail rows (UI 用量明细表).
+func orgGenerationsHandler(cs CostStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		limit := 0
+		if v := r.URL.Query().Get("limit"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				limit = n
+			}
+		}
+		items, err := cs.RecentByOrg(r.Context(), r.PathValue("org"), limit)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	}
 }

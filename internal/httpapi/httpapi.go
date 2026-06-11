@@ -134,6 +134,8 @@ func NewMux(d Deps) *http.ServeMux {
 	// Cost center (admin).
 	mux.Handle("GET /api/orgs/{org}/cost", scoped(roleAdmin, orgScope, orgCostHandler(d.Cost)))
 	mux.Handle("GET /api/projects/{id}/cost", proj(roleAdmin, projectCostHandler(d.Cost)))
+	mux.Handle("GET /api/orgs/{org}/cost/projects", scoped(roleAdmin, orgScope, orgCostProjectsHandler(d.Cost)))
+	mux.Handle("GET /api/orgs/{org}/generations", scoped(roleAdmin, orgScope, orgGenerationsHandler(d.Cost)))
 	return mux
 }
 
