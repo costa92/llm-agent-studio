@@ -22,6 +22,36 @@ GOWORK=off go test ./...
 - **M6 (v0.6.0)**：单进程全栈交付 —— studiod 经 `WEB_DIR` 静态服务已构建的 SPA（`os.DirFS` + `GET /` catch-all，排序低于所有 `/api/*` 路由，故零遮蔽）：真实文件按 content-type 直出（哈希资产可缓存），其余非 `/api` 路径回落 `index.html`（`Cache-Control: no-cache`，客户端路由可在刷新/直链下渲染深链），未命中的 `/api/*` 仍返回 404（不退化成 HTML）。默认 `WEB_DIR=""` 为纯后端模式（行为不变）。生产：`pnpm -C web build` 后 `WEB_DIR=web/dist studiod`，前后端同源单端口。**显式延后**：`go:embed` 自包含二进制（dist 是 gitignored 构建产物、embed 无法跨目录引用，需 copy-into-package 构建步，留待 CI/Docker 管线）/ 真实浏览器 E2E（sandbox 无浏览器）。
 - **M7 (v0.7.0)**：对象存储扩展 OSS/COS —— `BlobStore` 新增两种生产后端，`BLOB_MODE` 由 `localfs|s3` 扩为 `localfs|s3|oss|cos`。**阿里云 OSS**（`internal/blob/oss`，官方 `aliyun-oss-go-sdk`）：OSS 自有签名 ≠ AWS SigV4，minio-go presigned URL 对 OSS 验证不过，故独立适配器，`SignedURL`=OSS `SignURL`（本地签名无 I/O，scheme 缺省补 https）。**腾讯云 COS**（S3 高度兼容）：**复用现有 `internal/blob/s3`(minio-go) 适配器**，仅在 config/main 派生虚拟主机端点 `cos.<region>.myqcloud.com`（`COS_ENDPOINT` 可覆盖）、强制 TLS、`SecretID→AccessKey`，零 COS 专用依赖。新增 env：`OSS_ENDPOINT/OSS_BUCKET/OSS_ACCESS_KEY_ID/OSS_ACCESS_KEY_SECRET`、`COS_REGION/COS_ENDPOINT/COS_BUCKET/COS_SECRET_ID/COS_SECRET_KEY`。**验证**：`go build`+`go vet` 净 + blob/oss 离线单测（`SignedURL` 实地签名出含 `OSSAccessKeyId/Expires/Signature` 的 https 虚拟主机 URL，满足 `BlobStore`）+ config 插桩/COS 端点派生单测。**显式延后/不可验**：真实 OSS/COS 连通（`Put/Delete` 需密钥+外网，沙箱不可达，同 M4 真实 SaaS）——离线只能验签名直链与装配，联通留待有密钥环境。
 
+### 存储后端（BlobStore）用法
+
+资产字节由 `BlobStore`（`internal/blob`，仅 `Put/SignedURL/Delete`）统一收口；`SignedURL` 出短期签名直链，前端/客户端直连对象存储取件，studiod **不代理字节**。经 `BLOB_MODE` 选择后端：
+
+| `BLOB_MODE` | 后端 | 必需 env | 签名直链机制 |
+|---|---|---|---|
+| `localfs`（默认） | 本地磁盘（开发） | `BLOB_DIR`（默认 `./blobdata`） | studiod HMAC 签名回源 URL → `GET /api/blob/{key}`（无鉴权，签名即门禁）；可选 `BLOB_SECRET`（缺省回落 `JWT_SECRET`）、`BLOB_PUBLIC_PREFIX`（默认 `/api/blob/`） |
+| `s3` | S3 兼容（MinIO / AWS S3） | `S3_ENDPOINT`(host:port 无 scheme)、`S3_BUCKET`、`S3_ACCESS_KEY`、`S3_SECRET_KEY` | minio-go presigned GET（直连对象存储）；可选 `S3_REGION`、`S3_USE_SSL`（默认 `true`） |
+| `oss` | 阿里云 OSS（官方 SDK） | `OSS_ENDPOINT`（如 `oss-cn-hangzhou.aliyuncs.com`，scheme 可省→默认 https）、`OSS_BUCKET`、`OSS_ACCESS_KEY_ID`、`OSS_ACCESS_KEY_SECRET` | OSS `SignURL`（本地签名，虚拟主机 https 直链） |
+| `cos` | 腾讯云 COS（复用 s3/minio-go） | `COS_REGION`（如 `ap-guangzhou`）、`COS_BUCKET`（`name-appid`）、`COS_SECRET_ID`、`COS_SECRET_KEY` | minio-go presigned GET，端点派生 `cos.<region>.myqcloud.com`、强制 TLS；可选 `COS_ENDPOINT` 覆盖（私有/金融云） |
+
+要点：
+
+- **云后端 bucket 不自动创建**（`s3/oss/cos` 的 `New` 不建桶）——运维在控制台/`mc` 预建；缺 bucket 或 endpoint 时 studiod **启动即报错**（无静默回落）。
+- **OSS 为何不并入 s3**：OSS 请求签名 ≠ AWS SigV4，minio-go 的 presigned URL 对 OSS 验证不过，故用独立官方 SDK 适配器。**COS 反之**高度 S3 兼容，直接复用 minio-go 适配器，仅派生端点 / 强制 TLS / `SecretID→AccessKey`，零 COS 专用依赖。
+- **凭据只经环境变量**进程内持有——绝不入库、不进 API 响应面、不打日志（密钥审计基线）。`docker-compose.yml` 的 `studiod` 段含 oss/cos 注释示例（host-env 透传）。
+- 切换示例（其余 LLM/PG/JWT env 同 localfs）：
+
+```bash
+# 阿里云 OSS
+BLOB_MODE=oss \
+  OSS_ENDPOINT=oss-cn-hangzhou.aliyuncs.com OSS_BUCKET=studio-assets \
+  OSS_ACCESS_KEY_ID=*** OSS_ACCESS_KEY_SECRET=*** studiod
+
+# 腾讯云 COS（bucket 为 name-appid）
+BLOB_MODE=cos \
+  COS_REGION=ap-guangzhou COS_BUCKET=studio-assets-1250000000 \
+  COS_SECRET_ID=*** COS_SECRET_KEY=*** studiod
+```
+
 ### M4 异步引擎机制
 
 - **submit→poll 状态机**：长任务拆成多次**短** dispatch——submit dispatch 秒级返回（todo 重排为轮询态），每次 poll dispatch 是一次状态查询（远 < `WORKER_CALL_TIMEOUT`），故 `CallTimeout < Lease` 不变量原样成立，无需放大。
