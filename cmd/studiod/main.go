@@ -23,6 +23,7 @@ import (
 	deepseekprovider "github.com/costa92/llm-agent-providers/deepseek"
 	googleprovider "github.com/costa92/llm-agent-providers/google"
 	minimaxprovider "github.com/costa92/llm-agent-providers/minimax"
+	ollamaprovider "github.com/costa92/llm-agent-providers/ollama"
 	openaiprovider "github.com/costa92/llm-agent-providers/openai"
 	volcengineprovider "github.com/costa92/llm-agent-providers/volcengine"
 
@@ -341,6 +342,13 @@ func buildModel(cfg config.Config) (llm.ChatModel, error) {
 			openaiprovider.WithAPIKey(cfg.APIKey),
 			openaiprovider.WithBaseURL(cfg.BaseURL),
 		)
+	case "ollama":
+		// Ollama 本地运行时，无需 API key；base_url 缺省 http://localhost:11434。
+		opts := []ollamaprovider.Option{ollamaprovider.WithModel(cfg.Model)}
+		if cfg.BaseURL != "" {
+			opts = append(opts, ollamaprovider.WithBaseURL(cfg.BaseURL))
+		}
+		return ollamaprovider.New(opts...)
 	default: // deepseek
 		opts := []deepseekprovider.Option{
 			deepseekprovider.WithModel(cfg.Model),
@@ -444,6 +452,9 @@ func modelAvailable(cfg config.Config) func(provider, kind string) bool {
 				return cfg.OpenAIAPIKey != "" || cfg.APIKey != ""
 			case "deepseek":
 				return cfg.APIKey != ""
+			case "ollama":
+				// Ollama 本地运行、无需服务端 key → 始终标可用。
+				return true
 			}
 		}
 		return false
@@ -580,6 +591,13 @@ func buildChatFactory(tp trace.TracerProvider) func(provider, model, apiKey, bas
 				opts = append(opts, googleprovider.WithBaseURL(baseURL))
 			}
 			m, err = googleprovider.New(opts...)
+		case "ollama":
+			// 本地 Ollama：无需 key；base_url 缺省 http://localhost:11434。
+			opts := []ollamaprovider.Option{ollamaprovider.WithModel(model)}
+			if baseURL != "" {
+				opts = append(opts, ollamaprovider.WithBaseURL(baseURL))
+			}
+			m, err = ollamaprovider.New(opts...)
 		default:
 			return nil, fmt.Errorf("studiod: unknown chat provider %q", provider)
 		}

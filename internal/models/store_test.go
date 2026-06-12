@@ -233,3 +233,15 @@ func TestCatalogIncludesVideoAndAudio(t *testing.T) {
 		t.Fatalf("catalog must include video + audio entries (M4): video=%v audio=%v", hasVideo, hasAudio)
 	}
 }
+
+func TestCatalogIncludesOllamaText(t *testing.T) {
+	var hasOllama bool
+	for _, e := range Catalog() {
+		if e.Provider == "ollama" && e.Kind == "text" {
+			hasOllama = true
+		}
+	}
+	if !hasOllama {
+		t.Fatal("catalog must include an ollama text entry (local chat provider)")
+	}
+}
