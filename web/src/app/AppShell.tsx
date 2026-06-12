@@ -6,6 +6,7 @@ import {
   FolderKanban,
   HardDrive,
   Image,
+  ListChecks,
   Menu,
   ShieldCheck,
   SlidersHorizontal,
@@ -29,6 +30,7 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { to: "/orgs/$org/projects", params: {}, icon: <FolderKanban />, label: "项目" },
+  { to: "/orgs/$org/tasks", params: {}, icon: <ListChecks />, label: "任务中心" },
   { to: "/orgs/$org/review", params: {}, icon: <CheckSquare />, label: "审核", adminOnly: true },
   { to: "/orgs/$org/assets", params: {}, icon: <Image />, label: "资产" },
   { to: "/orgs/$org/prompt", params: {}, icon: <Wand2 />, label: "Prompt" },

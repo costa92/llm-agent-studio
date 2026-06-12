@@ -36,6 +36,7 @@ function renderShell(
     createRoute({ getParentRoute: () => rootRoute, path, component: () => null })
   const routeTree = rootRoute.addChildren([
     makeLeaf("/orgs/$org/projects"),
+    makeLeaf("/orgs/$org/tasks"),
     makeLeaf("/orgs/$org/review"),
     makeLeaf("/orgs/$org/assets"),
     makeLeaf("/orgs/$org/cost"),
@@ -54,6 +55,7 @@ describe("AppShell", () => {
   it("renders all nav entries for admin", async () => {
     renderShell({ isAdmin: true })
     expect(await screen.findByText("项目")).toBeInTheDocument()
+    expect(screen.getByText("任务中心")).toBeInTheDocument()
     expect(screen.getByText("审核")).toBeInTheDocument()
     expect(screen.getByText("资产")).toBeInTheDocument()
     expect(screen.getByText("成本")).toBeInTheDocument()
@@ -64,6 +66,8 @@ describe("AppShell", () => {
     renderShell({ isAdmin: false })
     expect(await screen.findByText("项目")).toBeInTheDocument()
     expect(screen.getByText("资产")).toBeInTheDocument()
+    // 任务中心非 admin-only —— viewer 也应可见。
+    expect(screen.getByText("任务中心")).toBeInTheDocument()
     expect(screen.queryByText("审核")).not.toBeInTheDocument()
     expect(screen.queryByText("成本")).not.toBeInTheDocument()
     expect(screen.queryByText("模型")).not.toBeInTheDocument()
