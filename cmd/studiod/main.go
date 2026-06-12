@@ -306,6 +306,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		BlobRouter:     storageRouter,
 		BlobServer:     localfsDefault,
 		Models:         modelStore,
+		StorageConfig:  storageStore,
 		Cost:           costStore,
 		PromptBuilder:  promptBuilder,
 		GenQuota:       cfg.OrgDailyGenQuota,

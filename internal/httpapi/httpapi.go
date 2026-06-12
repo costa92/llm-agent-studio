@@ -43,6 +43,7 @@ type Deps struct {
 	BlobRouter    BlobRouter // per-org → global → 内置默认 的对象存储路由 (asset content 按 org 签名)
 	BlobServer    BlobServer // 内置 localfs回源 handler (始终非空)
 	Models        ModelStore
+	StorageConfig StorageConfigStore // per-org / global 对象存储后端配置 (secret write-only)
 	Cost          CostStore
 	PromptBuilder *prompt.Builder
 	GenQuota      int // rolling-24h per-org generation quota; 0 = unlimited
@@ -154,6 +155,12 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("GET /api/orgs/{org}/model-configs", scoped(roleAdmin, orgScope, listModelConfigsHandler(d.Models)))
 	mux.Handle("PUT /api/orgs/{org}/model-configs/{id}", scoped(roleAdmin, orgScope, updateModelConfigHandler(d.Models)))
 	mux.Handle("DELETE /api/orgs/{org}/model-configs/{id}", scoped(roleAdmin, orgScope, deleteModelConfigHandler(d.Models)))
+	// Storage config (对象存储后端). Per-org: org_admin scoped. Global: any-org-admin gate.
+	mux.Handle("GET /api/orgs/{org}/storage-config", scoped(roleAdmin, orgScope, getOrgStorageConfigHandler(d.StorageConfig)))
+	mux.Handle("PUT /api/orgs/{org}/storage-config", scoped(roleAdmin, orgScope, putOrgStorageConfigHandler(d.StorageConfig)))
+	mux.Handle("DELETE /api/orgs/{org}/storage-config", scoped(roleAdmin, orgScope, deleteOrgStorageConfigHandler(d.StorageConfig)))
+	mux.Handle("GET /api/storage-config/global", authOnly(requireAnyOrgAdmin(d.OrgList, getGlobalStorageConfigHandler(d.StorageConfig))))
+	mux.Handle("PUT /api/storage-config/global", authOnly(requireAnyOrgAdmin(d.OrgList, putGlobalStorageConfigHandler(d.StorageConfig))))
 	// Cost center (admin).
 	mux.Handle("GET /api/orgs/{org}/cost", scoped(roleAdmin, orgScope, orgCostHandler(d.Cost)))
 	mux.Handle("GET /api/projects/{id}/cost", proj(roleAdmin, projectCostHandler(d.Cost)))
