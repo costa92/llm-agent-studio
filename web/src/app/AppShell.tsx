@@ -7,6 +7,7 @@ import {
   HardDrive,
   Image,
   Menu,
+  ShieldCheck,
   SlidersHorizontal,
   Wallet,
   Wand2,
@@ -39,6 +40,8 @@ export interface AppShellProps {
   org: string
   /** 当前用户在该 org 是否 admin —— 控制审核/成本入口显隐（T6 rbac 注入；T4 默认 false）。 */
   isAdmin?: boolean
+  /** 当前用户是否平台超级管理员 —— 控制「平台」入口显隐（非 org-scoped，whoami 注入）。 */
+  isPlatformAdmin?: boolean
   /** 头像点击（T6 接入登出/账户菜单）。 */
   avatar?: ReactNode
   children: ReactNode
@@ -87,7 +90,49 @@ function DrawerLinks({
   ))
 }
 
-export function AppShell({ org, isAdmin = false, avatar, children }: AppShellProps) {
+// 「平台」入口：非 org-scoped（无 $org 参数），仅平台超级管理员可见。
+// 桌面轨道竖排样式。
+function PlatformRailLink() {
+  return (
+    <Link
+      to="/platform"
+      className="grid h-11 w-11 place-items-center rounded-[10px] text-[11px] leading-tight text-text-3 transition-colors hover:bg-bg-raised hover:text-text-2"
+      activeProps={{ className: "bg-amber/12 text-amber hover:bg-amber/12 hover:text-amber" }}
+    >
+      <span className="grid place-items-center gap-0.5">
+        <span className="[&>svg]:h-[18px] [&>svg]:w-[18px]">
+          <ShieldCheck />
+        </span>
+        平台
+      </span>
+    </Link>
+  )
+}
+
+// 移动抽屉横排样式；选中后关闭抽屉。
+function PlatformDrawerLink({ onNavigate }: { onNavigate: () => void }) {
+  return (
+    <Link
+      to="/platform"
+      onClick={onNavigate}
+      className="flex items-center gap-3 rounded-[10px] px-3 py-2.5 text-[14px] text-text-2 transition-colors hover:bg-bg-raised hover:text-text-1"
+      activeProps={{ className: "bg-amber/12 text-amber hover:bg-amber/12 hover:text-amber" }}
+    >
+      <span className="[&>svg]:h-[18px] [&>svg]:w-[18px]">
+        <ShieldCheck />
+      </span>
+      平台
+    </Link>
+  )
+}
+
+export function AppShell({
+  org,
+  isAdmin = false,
+  isPlatformAdmin = false,
+  avatar,
+  children,
+}: AppShellProps) {
   const items = NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin)
   const currentOrg = cleanOrg(org)
   const hasOrg = currentOrg !== ""
@@ -148,6 +193,10 @@ export function AppShell({ org, isAdmin = false, avatar, children }: AppShellPro
                   选择组织
                 </button>
               )}
+              {/* 平台入口：非 org-scoped，无论有无当前 org 都对平台管理员展示。 */}
+              {isPlatformAdmin && (
+                <PlatformDrawerLink onNavigate={() => setDrawerOpen(false)} />
+              )}
               <div className="flex-1" />
               {hasOrg && (
                 <Button
@@ -198,6 +247,8 @@ export function AppShell({ org, isAdmin = false, avatar, children }: AppShellPro
             <Building2 className="h-[18px] w-[18px]" />
           </button>
         )}
+        {/* 平台入口：非 org-scoped，无论有无当前 org 都对平台管理员展示。 */}
+        {isPlatformAdmin && <PlatformRailLink />}
         <div className="flex-1" />
         {hasOrg && (
           <Button

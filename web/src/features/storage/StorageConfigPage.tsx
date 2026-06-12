@@ -503,15 +503,10 @@ export interface StorageConfigViewProps {
   onOrgRetry: () => void
   onOrgSubmit: (input: UpsertStorageConfigInput) => Promise<StorageConfig>
   onOrgDelete: () => Promise<void>
-  // 全局默认配置。
-  globalConfig: StorageConfig | null | undefined
-  globalLoading: boolean
-  globalError: boolean
-  onGlobalRetry: () => void
-  onGlobalSubmit: (input: UpsertStorageConfigInput) => Promise<StorageConfig>
 }
 
-// 存储配置页（admin-only）：本组织存储（可删除回退全局）+ 全局默认存储（修改影响全局）。
+// 组织存储配置页（admin-only）：仅本组织存储覆盖（可删除回退全局）。
+// 全局默认存储已迁至平台管理页（/platform，平台超级管理员专属）。
 export function StorageConfigView({
   orgConfig,
   orgLoading,
@@ -519,11 +514,6 @@ export function StorageConfigView({
   onOrgRetry,
   onOrgSubmit,
   onOrgDelete,
-  globalConfig,
-  globalLoading,
-  globalError,
-  onGlobalRetry,
-  onGlobalSubmit,
 }: StorageConfigViewProps) {
   // 删除确认弹窗开合（mirror 模型配置退回确认模式）。
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -533,8 +523,8 @@ export function StorageConfigView({
       <header className="flex flex-col gap-1.5">
         <h1 className="font-heading text-[22px] font-bold text-text-1">存储配置</h1>
         <p className="text-[12px] text-text-3">
-          配置资产对象存储后端（本地磁盘 / S3 / 阿里云 OSS / 腾讯云 COS / GitHub 仓库）。
-          密钥仅写入、加密存储，不会回显。
+          配置本组织专属的资产对象存储后端（本地磁盘 / S3 / 阿里云 OSS / 腾讯云 COS / GitHub 仓库）；
+          未配置或停用时回退到全局默认。密钥仅写入、加密存储，不会回显。
         </p>
       </header>
 
@@ -549,17 +539,6 @@ export function StorageConfigView({
         isOrgScope
         onRequestDelete={() => setConfirmDelete(true)}
         canDelete={orgConfig != null}
-      />
-
-      <StorageSection
-        title="全局默认存储"
-        description="所有未单独配置的组织共用；修改影响全局。"
-        config={globalConfig}
-        isLoading={globalLoading}
-        isError={globalError}
-        onRetry={onGlobalRetry}
-        onSubmit={onGlobalSubmit}
-        isOrgScope={false}
       />
 
       {/* 删除确认弹窗：仅「确认删除」才调 onOrgDelete；「取消」零副作用。 */}

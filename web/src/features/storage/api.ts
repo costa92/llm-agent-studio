@@ -69,20 +69,20 @@ export function useDeleteOrgStorageConfig(
   })
 }
 
-// 全局默认存储配置：GET /api/storage-config/global → {config}
-//（any-org-admin，getGlobalStorageConfigHandler）。所有未单独配置的 org 共用此配置。
+// 全局默认存储配置：GET /api/platform/storage-config/global → {config}
+//（平台管理员，platformAdmin → getGlobalStorageConfigHandler）。所有未单独配置的 org 共用此配置。
 export function useGlobalStorageConfig(): UseQueryResult<StorageConfig | null> {
   return useQuery({
     queryKey: ["storage-config", "global"],
     queryFn: () =>
-      apiJSON<StorageConfigEnvelope>(`/api/storage-config/global`).then(
+      apiJSON<StorageConfigEnvelope>(`/api/platform/storage-config/global`).then(
         (env) => env.config,
       ),
   })
 }
 
-// 更新全局默认存储：PUT /api/storage-config/global body=write shape
-//   → 200 StorageConfig（any-org-admin，putGlobalStorageConfigHandler）。修改影响全局。
+// 更新全局默认存储：PUT /api/platform/storage-config/global body=write shape
+//   → 200 StorageConfig（平台管理员，platformAdmin → putGlobalStorageConfigHandler）。修改影响全局。
 export function useUpsertGlobalStorageConfig(): UseMutationResult<
   StorageConfig,
   Error,
@@ -91,7 +91,7 @@ export function useUpsertGlobalStorageConfig(): UseMutationResult<
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (input: UpsertStorageConfigInput) =>
-      apiJSON<StorageConfig>(`/api/storage-config/global`, {
+      apiJSON<StorageConfig>(`/api/platform/storage-config/global`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(input),
