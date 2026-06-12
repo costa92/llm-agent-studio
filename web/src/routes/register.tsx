@@ -120,7 +120,7 @@ function RegisterPage() {
   const navigate = useNavigate()
 
   return (
-    <div className="grid h-screen place-items-center bg-bg-base text-text-1">
+    <div className="grid min-h-screen place-items-center bg-bg-base text-text-1">
       <div className="flex flex-col items-center gap-6">
         <h1 className="font-heading text-[22px] font-bold text-amber">
           AI Studio

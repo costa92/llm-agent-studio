@@ -267,9 +267,15 @@ export function AppShell({
                   选择组织
                 </button>
               )}
-              {/* 平台入口：非 org-scoped，无论有无当前 org 都对平台管理员展示。 */}
+              {/* 平台入口：非 org-scoped，无论有无当前 org 都对平台管理员展示。
+                  区段标题标识进入「平台管理」层级。 */}
               {isPlatformAdmin && (
                 <>
+                  <div className="mt-2 border-t border-line pt-3">
+                    <h2 className="px-3 pb-1 text-[11px] font-semibold tracking-[0.08em] text-text-3">
+                      平台管理
+                    </h2>
+                  </div>
                   <PlatformDrawerLink onNavigate={() => setDrawerOpen(false)} />
                   <PlatformOrgsDrawerLink onNavigate={() => setDrawerOpen(false)} />
                   <PlatformUsersDrawerLink onNavigate={() => setDrawerOpen(false)} />
@@ -325,9 +331,11 @@ export function AppShell({
             <Building2 className="h-[18px] w-[18px]" />
           </button>
         )}
-        {/* 平台入口：非 org-scoped，无论有无当前 org 都对平台管理员展示。 */}
+        {/* 平台入口：非 org-scoped，无论有无当前 org 都对平台管理员展示。
+            上方分隔线标识进入「平台管理」区域（窄轨道仅以描边区分层级）。 */}
         {isPlatformAdmin && (
           <>
+            <div className="my-1.5 w-7 border-t border-line" aria-hidden />
             <PlatformRailLink />
             <PlatformOrgsRailLink />
             <PlatformUsersRailLink />

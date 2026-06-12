@@ -40,7 +40,7 @@ export function ProjectListView({
   )
 
   return (
-    <div className="flex flex-col gap-5 p-6">
+    <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-5 p-6">
       <header className="flex items-center justify-between">
         <h1 className="font-heading text-[22px] font-bold text-text-1">项目</h1>
         {canCreate && (

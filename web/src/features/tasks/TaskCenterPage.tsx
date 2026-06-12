@@ -85,7 +85,7 @@ export function TaskCenterView({
   })
 
   return (
-    <div className="flex flex-col gap-5 p-6">
+    <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-5 p-6">
       <header className="flex flex-col gap-1">
         <h1 className="font-heading text-[22px] font-bold text-text-1">任务中心</h1>
         <p className="text-[12.5px] text-text-3">项目运行看板</p>
