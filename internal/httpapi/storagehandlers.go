@@ -85,11 +85,23 @@ func getOrgStorageConfigHandler(s StorageConfigStore) http.HandlerFunc {
 // putOrgStorageConfigHandler (PUT /api/orgs/{org}/storage-config): org_admin.
 // body=storageConfigWriteBody (secret 空=保留既有)。ErrEncUnavailable/validation→400，
 // 成功→200 StorageConfig DTO (绝不回显 secret)。
+//
+// 拒收 mode="localfs"（M8 §10 已知限制）：buildStorageStore 在 cmd/studiod/main.go
+// 对 mode=localfs 强制复用 localfsDefault（保持单一回源 server），故 per-org localfs
+// 配置即使写库也不会被 factory 解析，无法实现 per-org 存储隔离。允许写入会让管理员
+// 误以为已配 per-org 隔离，实际所有 org 共享同一根/同一密钥——UX 陷阱。
+// 全局 (PUT /api/platform/storage-config/global) 允许 localfs（语义是"使用 env 默认"）。
 func putOrgStorageConfigHandler(s StorageConfigStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req storageConfigWriteBody
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "bad request: invalid body", http.StatusBadRequest)
+			return
+		}
+		if req.Mode == "localfs" {
+			http.Error(w,
+				"per-org storage cannot use mode=\"localfs\" (all localfs configs share the platform's single env-configured root, so per-org localfs would not isolate storage; use s3, oss, cos, or github for per-org isolation)",
+				http.StatusBadRequest)
 			return
 		}
 		sc, err := s.UpsertForOrg(r.Context(), r.PathValue("org"), req.toInput())
