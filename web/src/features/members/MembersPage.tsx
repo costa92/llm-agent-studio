@@ -113,7 +113,7 @@ export function MembersPage({ org }: { org: string }) {
   }
 
   return (
-    <div className="flex flex-col gap-6 p-6">
+    <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-6 p-6">
       <header className="flex flex-col gap-1.5">
         <h1 className="font-heading text-[22px] font-bold text-text-1">成员管理</h1>
         <p className="text-[12px] text-text-3">

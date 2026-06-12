@@ -97,7 +97,7 @@ export function ModelConfigView({
   )
 
   return (
-    <div className="flex flex-col gap-6 p-6">
+    <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-6 p-6">
       <header className="flex items-center justify-between">
         <h1 className="font-heading text-[22px] font-bold text-text-1">模型配置</h1>
         {!isLoading && (configs?.length ?? 0) > 0 && addButton}

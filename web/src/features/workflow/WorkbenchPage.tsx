@@ -125,7 +125,7 @@ export function WorkbenchView({
       </header>
 
       {/* 三栏：≥lg 固定三列（桌面原型）；<lg 单列竖排滚动，制片轨道排首位（order-first）确保不被推到折叠下方。 */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:grid lg:grid-cols-[250px_1fr_330px] lg:overflow-hidden">
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:grid lg:grid-cols-[280px_1fr_300px] lg:overflow-hidden">
         {/* 左：计划。 */}
         <aside className="border-b border-line p-[18px] lg:order-none lg:overflow-y-auto lg:border-r lg:border-b-0">
           <section className="mb-5">
@@ -192,11 +192,16 @@ export function WorkbenchView({
         </div>
 
         {/* 右：工件预览。 */}
-        <aside className="border-t border-line p-[18px] lg:overflow-y-auto lg:border-t-0 lg:border-l">
+        <aside className="flex flex-col border-t border-line p-[18px] lg:overflow-y-auto lg:border-t-0 lg:border-l">
           <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
             选中工件
           </h4>
-          {preview ?? <p className="text-[12px] text-text-3">选中节点以预览工件</p>}
+          {preview ?? (
+            <div className="flex flex-1 flex-col items-center justify-center gap-1.5 py-16 text-center">
+              <p className="text-[13px] text-text-2">选择一个工件查看详情</p>
+              <p className="text-[12px] text-text-3">时间线节点产出后在此预览</p>
+            </div>
+          )}
         </aside>
       </div>
       {/* T3：抽屉插槽（剧本/分镜检视）——容器组装，覆盖在轨道之上，SSE 仍挂载。 */}

@@ -78,7 +78,7 @@ export function PlatformGate({ children }: { children: ReactNode }) {
 // 平台设置页（/platform）：全局默认存储 + 平台管理员。门禁由路由布局的 PlatformGate 承担。
 export function PlatformSettingsPage() {
   return (
-    <div className="flex flex-col gap-6 p-6">
+    <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-6 p-6">
       <header className="flex flex-col gap-1.5">
         <h1 className="font-heading text-[22px] font-bold text-text-1">平台设置</h1>
         <p className="text-[12px] text-text-3">
@@ -95,7 +95,7 @@ export function PlatformSettingsPage() {
 // 全部组织页（/platform/orgs）：服务端所有组织一览。门禁由路由布局的 PlatformGate 承担。
 export function AllOrgsPage() {
   return (
-    <div className="flex flex-col gap-6 p-6">
+    <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-6 p-6">
       <header className="flex flex-col gap-1.5">
         <h1 className="font-heading text-[22px] font-bold text-text-1">全部组织</h1>
         <p className="text-[12px] text-text-3">
@@ -112,7 +112,7 @@ export function AllOrgsPage() {
 // 门禁由路由布局的 PlatformGate 承担。
 export function AllUsersPage() {
   return (
-    <div className="flex flex-col gap-6 p-6">
+    <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-6 p-6">
       <header className="flex flex-col gap-1.5">
         <h1 className="font-heading text-[22px] font-bold text-text-1">用户管理</h1>
         <p className="text-[12px] text-text-3">

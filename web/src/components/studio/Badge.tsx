@@ -11,7 +11,7 @@ const badgeVariants = cva(
       variant: {
         running: "bg-amber/12 text-amber",
         done: "bg-review/12 text-review",
-        pending: "bg-amber/12 text-amber",
+        pending: "bg-text-3/12 text-text-2",
         rejected: "bg-danger/12 text-danger",
       },
     },
@@ -24,7 +24,7 @@ const dotVariants = cva("h-1.5 w-1.5 rounded-full", {
     variant: {
       running: "bg-amber motion-safe:animate-pulse",
       done: "bg-review",
-      pending: "bg-amber",
+      pending: "border border-text-3 bg-transparent",
       rejected: "bg-danger",
     },
   },
