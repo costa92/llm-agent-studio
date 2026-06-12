@@ -41,6 +41,7 @@ function renderShell(
     makeLeaf("/orgs/$org/cost"),
     makeLeaf("/orgs/$org/model-configs"),
     makeLeaf("/platform"),
+    makeLeaf("/platform/orgs"),
   ])
   const router = createRouter({
     routeTree,
@@ -114,10 +115,17 @@ describe("AppShell", () => {
     expect(await screen.findAllByText("平台")).not.toHaveLength(0)
   })
 
-  it("hides the 平台 nav item when not a platform admin (even if org admin)", async () => {
+  // 全部组织入口（非 org-scoped）：与「平台」并列，仅平台超级管理员可见。
+  it("shows the 全部组织 nav item when isPlatformAdmin", async () => {
+    renderShell({ isPlatformAdmin: true })
+    expect(await screen.findAllByText("全部组织")).not.toHaveLength(0)
+  })
+
+  it("hides the 平台 / 全部组织 nav items when not a platform admin (even if org admin)", async () => {
     renderShell({ isAdmin: true, isPlatformAdmin: false })
     expect(await screen.findByText("项目")).toBeInTheDocument()
     expect(screen.queryByText("平台")).not.toBeInTheDocument()
+    expect(screen.queryByText("全部组织")).not.toBeInTheDocument()
   })
 
   it("shows the 平台 nav item for a platform admin even with no current org", async () => {

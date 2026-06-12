@@ -126,6 +126,41 @@ function PlatformDrawerLink({ onNavigate }: { onNavigate: () => void }) {
   )
 }
 
+// 「全部组织」入口：非 org-scoped，仅平台超级管理员可见。桌面轨道竖排样式。
+function PlatformOrgsRailLink() {
+  return (
+    <Link
+      to="/platform/orgs"
+      className="grid h-11 w-11 place-items-center rounded-[10px] text-[11px] leading-tight text-text-3 transition-colors hover:bg-bg-raised hover:text-text-2"
+      activeProps={{ className: "bg-amber/12 text-amber hover:bg-amber/12 hover:text-amber" }}
+    >
+      <span className="grid place-items-center gap-0.5">
+        <span className="[&>svg]:h-[18px] [&>svg]:w-[18px]">
+          <Building2 />
+        </span>
+        全部组织
+      </span>
+    </Link>
+  )
+}
+
+// 移动抽屉横排样式；选中后关闭抽屉。
+function PlatformOrgsDrawerLink({ onNavigate }: { onNavigate: () => void }) {
+  return (
+    <Link
+      to="/platform/orgs"
+      onClick={onNavigate}
+      className="flex items-center gap-3 rounded-[10px] px-3 py-2.5 text-[14px] text-text-2 transition-colors hover:bg-bg-raised hover:text-text-1"
+      activeProps={{ className: "bg-amber/12 text-amber hover:bg-amber/12 hover:text-amber" }}
+    >
+      <span className="[&>svg]:h-[18px] [&>svg]:w-[18px]">
+        <Building2 />
+      </span>
+      全部组织
+    </Link>
+  )
+}
+
 export function AppShell({
   org,
   isAdmin = false,
@@ -195,7 +230,10 @@ export function AppShell({
               )}
               {/* 平台入口：非 org-scoped，无论有无当前 org 都对平台管理员展示。 */}
               {isPlatformAdmin && (
-                <PlatformDrawerLink onNavigate={() => setDrawerOpen(false)} />
+                <>
+                  <PlatformDrawerLink onNavigate={() => setDrawerOpen(false)} />
+                  <PlatformOrgsDrawerLink onNavigate={() => setDrawerOpen(false)} />
+                </>
               )}
               <div className="flex-1" />
               {hasOrg && (
@@ -248,7 +286,12 @@ export function AppShell({
           </button>
         )}
         {/* 平台入口：非 org-scoped，无论有无当前 org 都对平台管理员展示。 */}
-        {isPlatformAdmin && <PlatformRailLink />}
+        {isPlatformAdmin && (
+          <>
+            <PlatformRailLink />
+            <PlatformOrgsRailLink />
+          </>
+        )}
         <div className="flex-1" />
         {hasOrg && (
           <Button
