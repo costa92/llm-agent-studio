@@ -211,7 +211,11 @@
 ## 横向参考
 
 - 单 run 路径详图：[run-flow.md](./run-flow.md)
-- M2 实现剖析：[../m2-implementation-deep-dive.md](../m2-implementation-deep-dive.md)
+- 里程碑实现深扫：
+  - [M1 文本管线骨架](../m1-implementation-deep-dive.md) — planner + worker + SSE + RBAC + otel
+  - [M2 图片生成 + BYOK 模型路由 + 成本账本](../m2-implementation-deep-dive.md)
+  - [M4 异步视频/音频引擎 (submit→poll + heartbeat)](../m4-implementation-deep-dive.md)
+  - [M8 BYOK + 存储配置 + 平台超级管理员 + secretbox 加密](../m8-implementation-deep-dive.md)
 - M4 延后项与已知窗口：[../m4-deferred.md](../m4-deferred.md)
 - M5 延后项：[../m5-deferred.md](../m5-deferred.md)
 - 生态根仓导航：`../../CLAUDE.md`（ecosystem 级别规则）

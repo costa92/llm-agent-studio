@@ -6,6 +6,11 @@ AI Studio — Multi-Agent 内容生产平台（生态 sibling 案例项目）。
 
 - [docs/architecture/run-flow.md](docs/architecture/run-flow.md) —— 单次 run 的完整调用链（PR 描述/故障排查用）
 - [docs/architecture/subsystem-map.md](docs/architecture/subsystem-map.md) —— 子系统全景图 + Keystones + 包索引（onboarding 用）
+- 里程碑实现深扫：
+  - [docs/m1-implementation-deep-dive.md](docs/m1-implementation-deep-dive.md) — M1 文本管线骨架
+  - [docs/m2-implementation-deep-dive.md](docs/m2-implementation-deep-dive.md) — M2 图片生成 + BYOK + 成本账本
+  - [docs/m4-implementation-deep-dive.md](docs/m4-implementation-deep-dive.md) — M4 异步视频/音频引擎
+  - [docs/m8-implementation-deep-dive.md](docs/m8-implementation-deep-dive.md) — M8 BYOK + 存储配置 + 平台管理员
 
 ## 开发
 
