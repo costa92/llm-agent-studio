@@ -31,6 +31,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/assets"
 	"github.com/costa92/llm-agent-studio/internal/blob"
 	"github.com/costa92/llm-agent-studio/internal/blob/localfs"
+	blobgithub "github.com/costa92/llm-agent-studio/internal/blob/github"
 	bloboss "github.com/costa92/llm-agent-studio/internal/blob/oss"
 	blobs3 "github.com/costa92/llm-agent-studio/internal/blob/s3"
 	"github.com/costa92/llm-agent-studio/internal/config"
@@ -200,6 +201,14 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 			return blobs3.New(blobs3.Config{
 				Endpoint: cosEndpointHost(rs.Region, rs.Endpoint), Bucket: rs.Bucket, Region: rs.Region,
 				AccessKey: rs.AccessKeyID, SecretKey: rs.SecretKey, UseSSL: true,
+			})
+		case "github":
+			// 列复用：AccessKeyID=owner, Bucket=repo, Region=branch, PublicPrefix=path
+			// 前缀, Endpoint=GHE API 根覆盖, SecretKey=token。token 缺失 → New 报错 →
+			// router 回落 default store (见下方 silent-fallback 注释)。
+			return blobgithub.New(blobgithub.Config{
+				Owner: rs.AccessKeyID, Repo: rs.Bucket, Branch: rs.Region,
+				PathPrefix: rs.PublicPrefix, Token: rs.SecretKey, APIBase: rs.Endpoint,
 			})
 		default:
 			return nil, fmt.Errorf("studiod: unknown storage mode %q", rs.Mode)
