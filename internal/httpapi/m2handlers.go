@@ -85,10 +85,34 @@ func promptBuildHandler(b *prompt.Builder) http.HandlerFunc {
 	}
 }
 
-// modelCatalogHandler (GET /api/model-catalog): admin.
-func modelCatalogHandler() http.HandlerFunc {
+// catalogEntryView augments a static models.CatalogEntry with a runtime
+// `available` flag (provider key configured → adapter is/will be registered).
+// Availability is runtime state, not catalog data, so it lives only in this view.
+type catalogEntryView struct {
+	Provider  string `json:"provider"`
+	Model     string `json:"model"`
+	Kind      string `json:"kind"`
+	Label     string `json:"label"`
+	Available bool   `json:"available"`
+}
+
+// modelCatalogHandler (GET /api/model-catalog): admin. avail reports whether a
+// (provider, kind) entry's key is configured; nil → treat all as available.
+func modelCatalogHandler(avail func(provider, kind string) bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"catalog": models.Catalog()})
+		cat := models.Catalog()
+		out := make([]catalogEntryView, 0, len(cat))
+		for _, e := range cat {
+			available := true
+			if avail != nil {
+				available = avail(e.Provider, e.Kind)
+			}
+			out = append(out, catalogEntryView{
+				Provider: e.Provider, Model: e.Model, Kind: e.Kind, Label: e.Label,
+				Available: available,
+			})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"catalog": out})
 	}
 }
 

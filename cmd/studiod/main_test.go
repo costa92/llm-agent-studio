@@ -814,6 +814,40 @@ func TestEndToEndFakeModeKeylessPipeline(t *testing.T) {
 	}
 }
 
+// TestBuildGeneratorNeverUsesChatModel proves the model-config fix: in non-fake
+// mode with NO image provider keys, buildGenerator returns the SAFE placeholder
+// (DevFakeGenerator, provider "fake") instead of binding an image generator to
+// the chat model (which yielded capability-not-supported on every asset). No
+// Postgres required — pure unit test of the wiring decision.
+func TestBuildGeneratorNeverUsesChatModel(t *testing.T) {
+	// Non-fake chat config (the deepseek-chat default) with no image keys: the
+	// default generator must NOT be an openai/minimax image gen built from cfg.Model.
+	nonFake := config.Config{Provider: "deepseek", Model: "deepseek-chat", APIKey: "chat-key"}
+	g, err := buildGenerator(nonFake)
+	if err != nil {
+		t.Fatalf("buildGenerator(non-fake): %v", err)
+	}
+	if _, ok := g.(*generate.DevFakeGenerator); !ok {
+		t.Fatalf("non-fake default generator = %T, want *generate.DevFakeGenerator (placeholder)", g)
+	}
+	res, gerr := g.Generate(context.Background(), generate.GenRequest{Prompt: "x"})
+	if gerr != nil {
+		t.Fatalf("placeholder Generate: %v", gerr)
+	}
+	if res.Provider != "fake" {
+		t.Fatalf("placeholder provider = %q, want fake", res.Provider)
+	}
+
+	// Fake mode: also the placeholder (unchanged behavior).
+	fake, err := buildGenerator(config.Config{FakeGen: true})
+	if err != nil {
+		t.Fatalf("buildGenerator(fake): %v", err)
+	}
+	if _, ok := fake.(*generate.DevFakeGenerator); !ok {
+		t.Fatalf("fake-mode generator = %T, want *generate.DevFakeGenerator", fake)
+	}
+}
+
 // gatedGen blocks Generate until released — lets the e2e freeze an asset in
 // 'generating' to exercise the cancel path.
 type gatedGen struct{ release chan struct{} }

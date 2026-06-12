@@ -276,15 +276,16 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		Artifacts:    studiosvc.NewArtifacts(st.Pool()),
 		PerUserLimit: cfg.PerUserLimit,
 
-		Review:        reviewSvc,
-		AssetLibrary:  assetStore,
-		BlobSigner:    blobStore,
-		BlobServer:    blobServerOrNil(blobServer),
-		Models:        modelStore,
-		Cost:          costStore,
-		PromptBuilder: promptBuilder,
-		GenQuota:      cfg.OrgDailyGenQuota,
-		WebFS:         webFS,
+		Review:         reviewSvc,
+		AssetLibrary:   assetStore,
+		BlobSigner:     blobStore,
+		BlobServer:     blobServerOrNil(blobServer),
+		Models:         modelStore,
+		Cost:           costStore,
+		PromptBuilder:  promptBuilder,
+		GenQuota:       cfg.OrgDailyGenQuota,
+		ModelAvailable: modelAvailable(cfg),
+		WebFS:          webFS,
 	})
 
 	cleanup := func() {
@@ -369,26 +370,52 @@ func buildGenerator(cfg config.Config) (generate.MediaGenerator, error) {
 		// provider, so fake mode leaves the registry default as this fake.
 		return generate.NewDevFakeGenerator(), nil
 	}
-	switch cfg.Provider {
-	case "minimax":
-		mm, err := minimaxprovider.New(
-			minimaxprovider.WithModel(cfg.Model),
-			minimaxprovider.WithAPIKey(cfg.APIKey),
-		)
-		if err != nil {
-			return nil, err
+	// Org-agnostic fallback: NEVER build an image generator from the CHAT model
+	// (cfg.Provider/cfg.Model/cfg.APIKey is a chat triple — binding it to an image
+	// generator yields capability-not-supported on every asset). Real image models
+	// come from registerImageGenerators (keyed per catalog entry) and are selected
+	// per-org via model-configs; the default is only a safe fallback → placeholder.
+	log.Printf("studiod: no default image model configured — using placeholder generator; configure a model per-org in 模型配置 (model-configs) and set the matching provider API key")
+	return generate.NewDevFakeGenerator(), nil
+}
+
+// modelAvailable reports whether a catalog (provider, kind) entry is usable —
+// its provider API key is configured, so registerImage/Video/AudioGenerators
+// has registered (or will register) the adapter. Mirrors the key-gating in those
+// register* funcs exactly. The "fake" provider needs no key (always available).
+func modelAvailable(cfg config.Config) func(provider, kind string) bool {
+	return func(provider, kind string) bool {
+		if provider == "fake" {
+			return true
 		}
-		return genimage.New(mm, nil), nil
-	default: // openai image
-		oa, err := openaiprovider.New(
-			openaiprovider.WithModel(cfg.Model),
-			openaiprovider.WithAPIKey(cfg.APIKey),
-			openaiprovider.WithBaseURL(cfg.BaseURL),
-		)
-		if err != nil {
-			return nil, err
+		switch kind {
+		case "image":
+			switch provider {
+			case "openai":
+				return cfg.OpenAIAPIKey != ""
+			case "google":
+				return cfg.GoogleAPIKey != ""
+			case "minimax":
+				return cfg.MinimaxAPIKey != ""
+			case "volcengine":
+				return cfg.VolcengineAPIKey != ""
+			}
+		case "video":
+			switch provider {
+			case "runway":
+				return cfg.RunwayAPIKey != ""
+			case "kling":
+				return cfg.KlingAPIKey != ""
+			case "google":
+				return cfg.GoogleAPIKey != ""
+			}
+		case "audio":
+			switch provider {
+			case "openai":
+				return cfg.TTSAPIKey != ""
+			}
 		}
-		return genimage.New(oa, nil), nil
+		return false
 	}
 }
 

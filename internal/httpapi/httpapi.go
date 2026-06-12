@@ -46,6 +46,11 @@ type Deps struct {
 	PromptBuilder *prompt.Builder
 	GenQuota      int // rolling-24h per-org generation quota; 0 = unlimited
 
+	// ModelAvailable reports whether a catalog (provider, kind) entry is actually
+	// usable — i.e. its provider API key is configured so the adapter is/will be
+	// registered. nil → all entries treated as available (focused unit tests omit it).
+	ModelAvailable func(provider, kind string) bool
+
 	// WebFS, when non-nil, mounts a built SPA under "GET /" (catch-all, ranked
 	// below every /api/* route). nil = backend-only (no UI served).
 	WebFS fs.FS
@@ -143,7 +148,7 @@ func NewMux(d Deps) *http.ServeMux {
 		mux.Handle("GET /api/blob/{key...}", blobHandler(d.BlobServer))
 	}
 	// Model management (admin).
-	mux.Handle("GET /api/model-catalog", authOnly(modelCatalogHandler()))
+	mux.Handle("GET /api/model-catalog", authOnly(modelCatalogHandler(d.ModelAvailable)))
 	mux.Handle("POST /api/orgs/{org}/model-configs", scoped(roleAdmin, orgScope, createModelConfigHandler(d.Models)))
 	mux.Handle("GET /api/orgs/{org}/model-configs", scoped(roleAdmin, orgScope, listModelConfigsHandler(d.Models)))
 	// Cost center (admin).
