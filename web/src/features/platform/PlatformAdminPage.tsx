@@ -206,7 +206,8 @@ function AllOrgsSection() {
           ))}
         </div>
       ) : orgs.data && orgs.data.length > 0 ? (
-        <Table>
+        // 移动端：列保持宽度，容器横向滚动（min-w 触发 table-container 的 overflow-x-auto）。
+        <Table className="min-w-[640px]">
           <TableHeader>
             <TableRow>
               <TableHead>名称</TableHead>
@@ -480,7 +481,9 @@ function AllUsersSection() {
           ))}
         </div>
       ) : users.data && users.data.length > 0 ? (
-        <Table>
+        // 移动端：列保持宽度，容器横向滚动（min-w 触发 table-container 的 overflow-x-auto），
+        // 确保「操作」列可达。
+        <Table className="min-w-[720px]">
           <TableHeader>
             <TableRow>
               <TableHead>邮箱</TableHead>

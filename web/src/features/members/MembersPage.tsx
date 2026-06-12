@@ -132,7 +132,7 @@ export function MembersPage({ org }: { org: string }) {
         {/* 添加：邮箱输入 + 角色选择 + 添加按钮。 */}
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="member-email">按邮箱添加</Label>
-          <div className="flex gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row">
             <input
               id="member-email"
               type="email"
@@ -180,7 +180,7 @@ export function MembersPage({ org }: { org: string }) {
             ))}
           </div>
         ) : members.data && members.data.length > 0 ? (
-          <Table>
+          <Table className="min-w-[560px]">
             <TableHeader>
               <TableRow>
                 <TableHead>邮箱</TableHead>

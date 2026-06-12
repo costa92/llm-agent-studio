@@ -186,6 +186,47 @@ describe("ReviewBoardView", () => {
     expect(onAccept).toHaveBeenCalledWith("as1")
   })
 
+  // P0-4：触屏/移动端可达性——三个动作按钮（采纳/退回/重生成）必须显式渲染，
+  // 不能只靠键盘 A/R/E。admin + 选中资产时三按钮齐现，点击各自触发对应回调。
+  it("renders all three HITL action buttons (touch-reachable) and each invokes its handler", async () => {
+    const onAccept = vi.fn()
+    const onReject = vi.fn()
+    const onRegenerate = vi.fn()
+    const user = userEvent.setup()
+    render(
+      <ReviewBoardView
+        {...baseProps({
+          selectedId: "as1",
+          detail: makeDetail(),
+          onAccept,
+          onReject,
+          onRegenerate,
+        })}
+      />,
+    )
+    // 三按钮齐现（非仅键盘提示）。
+    const acceptBtn = screen.getByRole("button", { name: /采纳/ })
+    const rejectBtn = screen.getByRole("button", { name: /退回/ })
+    const regenBtn = screen.getByRole("button", { name: /改 Prompt 重生成/ })
+    expect(acceptBtn).toBeInTheDocument()
+    expect(rejectBtn).toBeInTheDocument()
+    expect(regenBtn).toBeInTheDocument()
+
+    // 采纳 → onAccept(id)。
+    await user.click(acceptBtn)
+    expect(onAccept).toHaveBeenCalledWith("as1")
+
+    // 退回 → 确认弹窗 → onReject(id)。
+    await user.click(screen.getByRole("button", { name: /退回/ }))
+    await user.click(screen.getByRole("button", { name: "确认退回" }))
+    expect(onReject).toHaveBeenCalledWith("as1")
+
+    // 重生成 → 编辑态 → 确认重生成 → onRegenerate(id, prompt)。
+    await user.click(screen.getByRole("button", { name: /改 Prompt 重生成/ }))
+    await user.click(screen.getByRole("button", { name: "确认重生成" }))
+    expect(onRegenerate).toHaveBeenCalledWith("as1", "guofeng teahouse dusk")
+  })
+
   it("hides HITL actions in the drawer for non-admin (read-only browse)", () => {
     render(
       <ReviewBoardView
