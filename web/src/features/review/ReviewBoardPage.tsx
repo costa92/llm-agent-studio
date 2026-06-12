@@ -1,8 +1,18 @@
 import { useEffect, useState } from "react"
 import { Sheet, SheetContent } from "@/components/ui/sheet"
 import { Skeleton } from "@/components/ui/skeleton"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Button } from "@/components/studio/Button"
+import { Button as UiButton } from "@/components/ui/button"
 import { AssetCard } from "@/components/studio/AssetCard"
+import { AssetMedia } from "@/features/workflow/AssetMedia"
 import { PromptBox } from "@/components/studio/PromptBox"
 import { LineageTrail, type LineageNode } from "@/components/studio/LineageTrail"
 import type { Asset, AssetDetail } from "@/lib/types"
@@ -12,6 +22,11 @@ import {
   type ReviewAction,
 } from "./keyboard"
 
+// 资产是否为图片（仅 image 走 AssetThumb；video/audio 走 AssetMedia / 占位）。
+function isImageAsset(type: string): boolean {
+  return type === "image"
+}
+
 export interface ReviewBoardViewProps {
   queue: Asset[] | undefined
   isLoading: boolean
@@ -19,6 +34,10 @@ export interface ReviewBoardViewProps {
   onRetry: () => void
   // HITL 三动作 admin-only。
   isAdmin: boolean
+  // T4：当前项目筛选（?project=）；null = org 级全量队列。
+  projectFilter: string | null
+  // 清除项目筛选，回到 org 级队列。
+  onClearProjectFilter: () => void
   // 当前选中资产（?asset= 控制）；null = Drawer 关闭。
   selectedId: string | null
   onSelect: (id: string | null) => void
@@ -40,6 +59,8 @@ export function ReviewBoardView({
   isError,
   onRetry,
   isAdmin,
+  projectFilter,
+  onClearProjectFilter,
   selectedId,
   onSelect,
   detail,
@@ -51,6 +72,8 @@ export function ReviewBoardView({
   // 改 Prompt 重生成的编辑态（[E] 打开）。
   const [editing, setEditing] = useState(false)
   const [draftPrompt, setDraftPrompt] = useState("")
+  // T7：退回确认弹窗——保存待确认退回的资产 id；null = 弹窗关闭。
+  const [rejectTarget, setRejectTarget] = useState<string | null>(null)
   // 选中变更 → 退出编辑态（render 期对比 prev，避免 setState-in-effect 级联渲染）。
   const [prevSelected, setPrevSelected] = useState(selectedId)
   if (prevSelected !== selectedId) {
@@ -94,7 +117,8 @@ export function ReviewBoardView({
       // A/R/E 需有选中资产。
       if (!selectedId) return
       if (action === "accept") onAccept(selectedId)
-      else if (action === "reject") onReject(selectedId)
+      // T7：R 不直接提交退回，先开确认弹窗。
+      else if (action === "reject") setRejectTarget(selectedId)
       else if (action === "regenerate") {
         setDraftPrompt(detail?.asset.prompt ?? "")
         setEditing(true)
@@ -107,8 +131,23 @@ export function ReviewBoardView({
 
   return (
     <div className="flex h-full flex-col p-6">
-      <header className="mb-5 flex items-center justify-between">
-        <h1 className="font-heading text-[22px] font-bold text-text-1">审核看板</h1>
+      <header className="mb-5 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <h1 className="font-heading text-[22px] font-bold text-text-1">审核看板</h1>
+          {/* T4：?project= 时显示筛选 chip + 「查看全部」清除入口。 */}
+          {projectFilter != null && (
+            <span className="inline-flex items-center gap-2 rounded-full border border-line bg-bg-raised px-3 py-1 text-[12px] text-text-2">
+              正在筛选项目：{projectFilter}
+              <button
+                type="button"
+                onClick={onClearProjectFilter}
+                className="text-amber underline-offset-2 hover:underline"
+              >
+                查看全部
+              </button>
+            </span>
+          )}
+        </div>
         <span className="text-[12px] text-text-3">
           待审 {items.length} · ←/→ 浏览{isAdmin ? " · A 采纳 R 退回 E 重生成" : ""}
         </span>
@@ -139,6 +178,8 @@ export function ReviewBoardView({
               key={asset.id}
               assetId={asset.id}
               alt={asset.prompt}
+              // T4：非图片资产（video/audio）卡片显示类型徽标占位，避免破图。
+              type={asset.type}
               caption={`v${asset.version}`}
               selected={asset.id === selectedId}
               onSelect={() => onSelect(asset.id)}
@@ -172,12 +213,46 @@ export function ReviewBoardView({
               }}
               onCancelEdit={() => setEditing(false)}
               onAccept={() => onAccept(detail.asset.id)}
-              onReject={() => onReject(detail.asset.id)}
+              // T7：退回先开确认弹窗，不直接提交。
+              onReject={() => setRejectTarget(detail.asset.id)}
               onRegenerate={() => onRegenerate(detail.asset.id, draftPrompt)}
             />
           )}
         </SheetContent>
       </Sheet>
+
+      {/* T7：退回确认弹窗（owner 推翻可撤销 toast，改显式确认，消除静默退回陷阱）。
+          仅「确认退回」才调 onReject；「取消」零副作用。后端无 un-reject 端点，故确认即终态。 */}
+      <Dialog
+        open={rejectTarget != null}
+        onOpenChange={(open) => {
+          if (!open) setRejectTarget(null)
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>确认退回该资产？</DialogTitle>
+            <DialogDescription>
+              退回后该资产将被标记为 rejected，且无法撤销。确认要退回吗？
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <UiButton variant="outline" onClick={() => setRejectTarget(null)}>
+              取消
+            </UiButton>
+            <UiButton
+              variant="destructive"
+              onClick={() => {
+                const id = rejectTarget
+                setRejectTarget(null)
+                if (id) onReject(id)
+              }}
+            >
+              确认退回
+            </UiButton>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -219,8 +294,16 @@ function ReviewDrawerBody({
 
   return (
     <>
-      {/* hero 签名图。 */}
-      <AssetCard assetId={asset.id} alt={asset.prompt} className="rounded-none border-0" />
+      {/* hero：图片走签名图缩略；video/audio 走可播放媒体（T4）。 */}
+      {isImageAsset(asset.type) ? (
+        <AssetCard assetId={asset.id} alt={asset.prompt} className="rounded-none border-0" />
+      ) : (
+        <AssetMedia
+          assetId={asset.id}
+          type={asset.type}
+          className="aspect-square w-full rounded-none border-0"
+        />
+      )}
 
       <div className="flex flex-col gap-4 p-5">
         {/* KV：类型 / Shot / Provider·Model / version。 */}

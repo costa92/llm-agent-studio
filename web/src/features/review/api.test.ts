@@ -27,7 +27,7 @@ function jsonResponse(body: unknown): Response {
 }
 
 describe("useReviewQueue", () => {
-  it("requests status=pending_acceptance&type=image and returns items", async () => {
+  it("requests status=pending_acceptance WITHOUT type=image (surface video/audio too)", async () => {
     const asset = { id: "as1", type: "image", status: "pending_acceptance" } as Asset
     const fetchMock = vi
       .fn()
@@ -44,7 +44,27 @@ describe("useReviewQueue", () => {
     // status 过滤项已核实真实存在（m2handlers.go:175 → store.go:244）。
     expect(url).toContain("/api/orgs/acme/assets")
     expect(url).toContain("status=pending_acceptance")
-    expect(url).toContain("type=image")
+    // Phase 3 T4：移除硬编码 type=image，让 video/audio 待审资产也进队列。
+    expect(url).not.toContain("type=image")
+    // 无 project 参数时不带 &project=。
+    expect(url).not.toContain("project=")
+  })
+
+  it("appends &project= when a project filter is given", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ items: [], next_cursor: "" }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    const { result } = renderHook(() => useReviewQueue("acme", "proj-1"), {
+      wrapper: wrapper(),
+    })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    const url = String(fetchMock.mock.calls[0][0])
+    expect(url).toContain("status=pending_acceptance")
+    expect(url).toContain("project=proj-1")
+    expect(url).not.toContain("type=image")
   })
 })
 

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { resolveReviewAction, isInputTarget } from "./keyboard"
@@ -8,12 +8,23 @@ import { AdminGate } from "@/features/cost/AdminGate"
 import { ReviewBoardView, type ReviewBoardViewProps } from "./ReviewBoardPage"
 import type { Asset, AssetDetail } from "@/lib/types"
 
-// AssetThumb 走 authed fetch → blob object URL；jsdom 无网络——stub 为 null
-// （AssetThumb 显"加载中…/不可用"占位），避免测试触网。
+// AssetThumb / AssetMedia 走 authed fetch → blob object URL；jsdom 无网络。
+// 默认 stub 为 null（显"加载中…/不可用"占位），避免触网；非图片媒体测试里再
+// 用 mockReturnValueOnce 给一个可解析 URL，让 <video>/<audio> 真正渲染。
+const { useResolvedAssetUrlMock } = vi.hoisted(() => ({
+  useResolvedAssetUrlMock: vi.fn(() => ({
+    url: null as string | null,
+    loading: false,
+  })),
+}))
 vi.mock("@/features/workflow/assetThumb", () => ({
   resolveAssetUrl: vi.fn().mockResolvedValue(null),
-  useResolvedAssetUrl: vi.fn(() => ({ url: null, loading: false })),
+  useResolvedAssetUrl: () => useResolvedAssetUrlMock(),
 }))
+
+beforeEach(() => {
+  useResolvedAssetUrlMock.mockReturnValue({ url: null, loading: false })
+})
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -121,6 +132,8 @@ function baseProps(over: Partial<ReviewBoardViewProps> = {}): ReviewBoardViewPro
     isError: false,
     onRetry: vi.fn(),
     isAdmin: true,
+    projectFilter: null,
+    onClearProjectFilter: vi.fn(),
     selectedId: null,
     onSelect: vi.fn(),
     detail: undefined,
@@ -200,6 +213,81 @@ describe("ReviewBoardView", () => {
     await user.type(box, "新的 prompt")
     await user.click(screen.getByRole("button", { name: "确认重生成" }))
     expect(onRegenerate).toHaveBeenCalledWith("as1", "新的 prompt")
+  })
+
+  // T4：?project= 在看板头部显示筛选指示 + 清除入口。
+  it("shows the project-filter chip and a clear control when projectFilter is set", async () => {
+    const onClearProjectFilter = vi.fn()
+    const user = userEvent.setup()
+    render(
+      <ReviewBoardView
+        {...baseProps({ projectFilter: "proj-1", onClearProjectFilter })}
+      />,
+    )
+    expect(screen.getByText(/正在筛选项目/)).toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: /查看全部/ }))
+    expect(onClearProjectFilter).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not show the project-filter chip when no projectFilter (org-wide)", () => {
+    render(<ReviewBoardView {...baseProps()} />)
+    expect(screen.queryByText(/正在筛选项目/)).not.toBeInTheDocument()
+  })
+
+  // T4：非图片资产（video/audio）在详情 Drawer 里可播放/有类型标识，而非破图。
+  it("renders a <video> player for a video asset in the drawer", () => {
+    useResolvedAssetUrlMock.mockReturnValue({ url: "blob:fake-video", loading: false })
+    const detail = {
+      asset: makeAsset({ type: "video" }),
+      versions: [makeAsset({ type: "video" })],
+    }
+    render(<ReviewBoardView {...baseProps({ selectedId: "as1", detail })} />)
+    // Sheet/Drawer 走 Radix portal → 渲染到 document.body，需全局查询。
+    expect(document.querySelector("video")).not.toBeNull()
+    useResolvedAssetUrlMock.mockReturnValue({ url: null, loading: false })
+  })
+
+  it("renders an <audio> player for an audio asset in the drawer", () => {
+    useResolvedAssetUrlMock.mockReturnValue({ url: "blob:fake-audio", loading: false })
+    const detail = {
+      asset: makeAsset({ type: "audio" }),
+      versions: [makeAsset({ type: "audio" })],
+    }
+    render(<ReviewBoardView {...baseProps({ selectedId: "as1", detail })} />)
+    expect(document.querySelector("audio")).not.toBeNull()
+    useResolvedAssetUrlMock.mockReturnValue({ url: null, loading: false })
+  })
+
+  // T7：退回必须显式确认——点退回不直接触发 onReject，先开确认弹窗；
+  //   确认才触发一次，取消零次。
+  it("reject requires explicit confirmation: opens a dialog, fires onReject only on confirm", async () => {
+    const onReject = vi.fn()
+    const user = userEvent.setup()
+    render(
+      <ReviewBoardView
+        {...baseProps({ selectedId: "as1", detail: makeDetail(), onReject })}
+      />,
+    )
+    await user.click(screen.getByRole("button", { name: /退回/ }))
+    // 点退回后尚未提交。
+    expect(onReject).not.toHaveBeenCalled()
+    // 弹出确认窗口。
+    await user.click(screen.getByRole("button", { name: "确认退回" }))
+    expect(onReject).toHaveBeenCalledTimes(1)
+    expect(onReject).toHaveBeenCalledWith("as1")
+  })
+
+  it("reject confirmation can be canceled with zero side effects", async () => {
+    const onReject = vi.fn()
+    const user = userEvent.setup()
+    render(
+      <ReviewBoardView
+        {...baseProps({ selectedId: "as1", detail: makeDetail(), onReject })}
+      />,
+    )
+    await user.click(screen.getByRole("button", { name: /退回/ }))
+    await user.click(screen.getByRole("button", { name: "取消" }))
+    expect(onReject).not.toHaveBeenCalled()
   })
 
   it("arrow keys move selection across the queue (all roles)", async () => {

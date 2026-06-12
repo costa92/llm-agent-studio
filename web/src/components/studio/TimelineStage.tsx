@@ -53,6 +53,8 @@ export interface TimelineStageProps {
   children?: ReactNode
   // 是否末阶段（不画下连接线）。
   last?: boolean
+  // T3：可检视阶段（S2/S3）传入回调 → 标题行渲染为按钮（hover/cursor/键盘可达），点击打开抽屉。
+  onSelect?: () => void
   className?: string
 }
 
@@ -61,6 +63,7 @@ export function TimelineStage({
   sub,
   children,
   last = false,
+  onSelect,
   className,
 }: TimelineStageProps) {
   const meta = STAGE_META[stage.kind]
@@ -112,13 +115,28 @@ export function TimelineStage({
       </div>
       {/* 主体。 */}
       <div className="flex-1 pt-0.5">
-        <div className="flex items-center gap-2 text-[13.5px] font-semibold text-text-1">
-          <span className="font-mono text-[10px] font-bold text-text-3">{meta.sn}</span>
-          {meta.name}
-          <span className={tchipVariants({ status: stage.status })}>
-            {TCHIP_LABEL[stage.status]}
-          </span>
-        </div>
+        {/* 可检视阶段（S2/S3）标题行渲染为按钮：hover/cursor 提示 + 键盘可达。 */}
+        {onSelect ? (
+          <button
+            type="button"
+            onClick={onSelect}
+            className="-mx-1.5 flex items-center gap-2 rounded-md px-1.5 py-0.5 text-[13.5px] font-semibold text-text-1 transition-colors hover:bg-bg-raised"
+          >
+            <span className="font-mono text-[10px] font-bold text-text-3">{meta.sn}</span>
+            {meta.name}
+            <span className={tchipVariants({ status: stage.status })}>
+              {TCHIP_LABEL[stage.status]}
+            </span>
+          </button>
+        ) : (
+          <div className="flex items-center gap-2 text-[13.5px] font-semibold text-text-1">
+            <span className="font-mono text-[10px] font-bold text-text-3">{meta.sn}</span>
+            {meta.name}
+            <span className={tchipVariants({ status: stage.status })}>
+              {TCHIP_LABEL[stage.status]}
+            </span>
+          </div>
+        )}
         {sub != null && (
           <div className="mt-0.5 text-[11.5px] text-text-3">{sub}</div>
         )}

@@ -13,17 +13,25 @@ import type {
   RegenerateResponse,
 } from "@/lib/types"
 
-// 审核队列：GET /api/orgs/{org}/assets?status=pending_acceptance&type=image → {items, next_cursor}
-// （viewer+，libraryHandler，keyset 分页）。status 过滤项已核实：internal/httpapi/m2handlers.go:175
-// 透传 q.Get("status") 给 assets.LibraryFilter.Status，store.go:244 拼 a.status=$N。
-// 审核看板只看待审图片，故固定 status=pending_acceptance + type=image。
-export function useReviewQueue(org: string): UseQueryResult<Asset[]> {
+// 审核队列：GET /api/orgs/{org}/assets?status=pending_acceptance[&project=…] → {items, next_cursor}
+// （viewer+，libraryHandler，keyset 分页）。status/project 过滤项已核实：
+// internal/httpapi/m2handlers.go:197-200 透传 q.Get("status")/q.Get("project") 给
+// assets.LibraryFilter，store.go:238-245 拼 a.status=$N / a.project_id=$N。
+// Phase 3 T4：移除硬编码 type=image，让 video/audio 待审资产也进队列；可选 project 筛选
+// 由「去审核」CTA 携来的 ?project= 驱动（审核台默认仍是 org 级收件箱）。
+export function useReviewQueue(
+  org: string,
+  project?: string,
+): UseQueryResult<Asset[]> {
   return useQuery({
-    queryKey: ["review-queue", org],
-    queryFn: () =>
-      apiJSON<ListEnvelope<Asset>>(
-        `/api/orgs/${org}/assets?status=pending_acceptance&type=image`,
-      ).then((env) => env.items),
+    queryKey: ["review-queue", org, project ?? null],
+    queryFn: () => {
+      const params = new URLSearchParams({ status: "pending_acceptance" })
+      if (project) params.set("project", project)
+      return apiJSON<ListEnvelope<Asset>>(
+        `/api/orgs/${org}/assets?${params.toString()}`,
+      ).then((env) => env.items)
+    },
     enabled: org !== "",
   })
 }

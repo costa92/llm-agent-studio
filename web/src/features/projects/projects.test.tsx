@@ -71,6 +71,38 @@ describe("ProjectListView", () => {
     ).toBeGreaterThan(0)
   })
 
+  it("nudges to configure a model in the empty state when no enabled config exists", async () => {
+    const onConfigureModel = vi.fn()
+    const user = userEvent.setup()
+    render(
+      <ProjectListView
+        {...baseViewProps()}
+        projects={[]}
+        needsModelConfig
+        onConfigureModel={onConfigureModel}
+      />,
+    )
+    expect(
+      screen.getByText("先配置一个生成模型再开始制作"),
+    ).toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "去配置模型" }))
+    expect(onConfigureModel).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps the normal empty state when a model is configured", () => {
+    render(
+      <ProjectListView
+        {...baseViewProps()}
+        projects={[]}
+        needsModelConfig={false}
+      />,
+    )
+    expect(screen.getByText("还没有项目")).toBeInTheDocument()
+    expect(
+      screen.queryByText("先配置一个生成模型再开始制作"),
+    ).not.toBeInTheDocument()
+  })
+
   it("hides the create CTA for non-editors (canCreate=false)", () => {
     render(
       <ProjectListView {...baseViewProps()} projects={[]} canCreate={false} />,

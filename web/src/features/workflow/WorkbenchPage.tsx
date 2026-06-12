@@ -8,7 +8,7 @@ import { TimelineStage } from "@/components/studio/TimelineStage"
 import { PipGroup } from "@/components/studio/PipGroup"
 import { WarnStrip } from "@/components/studio/WarnStrip"
 import type { Project } from "@/lib/types"
-import type { TimelineState } from "@/lib/timeline"
+import type { Pip, StageId, TimelineState } from "@/lib/timeline"
 import type { SseConnState } from "./useProductionTimeline"
 import { statusLabel, statusVariant } from "@/features/projects/status"
 
@@ -19,6 +19,9 @@ const STAGE_SUB: Record<string, ReactNode> = {
   S3: "StoryboardAgent · 分镜拆解",
   S5: "采纳后入资产库 · admin 门禁",
 }
+
+// T3：仅 S2（剧本）/ S3（分镜）可点开抽屉检视产物（S1/S4/S5 无单一可检视文档）。
+const INSPECTABLE_STAGES: Record<string, boolean> = { S2: true, S3: true }
 
 // SseConnState → SseIndicator 的可视态。idle（完成态/未开流）也显"已断开"灰点。
 const CONN_TO_STATUS: Record<SseConnState, SseStatus> = {
@@ -43,6 +46,14 @@ export interface WorkbenchViewProps {
   isRunning: boolean
   // 右栏选中工件预览（缩略图等）；可空。
   preview?: ReactNode
+  // T3：点击可检视阶段（S2/S3）→ 容器打开抽屉。
+  onSelectStage?: (stageId: StageId) => void
+  // T3：点击已完成 pip → 容器把右栏预览切到该工件。
+  onSelectPip?: (pip: Pip) => void
+  // T3：抽屉插槽（容器组装 Sheet + ScriptView/StoryboardView，SSE/轨道保持挂载）。
+  drawer?: ReactNode
+  // T2：run_done（或 review 态）→「去审核」CTA，容器做 SPA 跳转携 ?project=。
+  onOpenReview?: () => void
   // 顶栏面包屑返回项目列表。
   onBack?: () => void
 }
@@ -59,12 +70,17 @@ export function WorkbenchView({
   onCancel,
   isRunning,
   preview,
+  onSelectStage,
+  onSelectPip,
+  drawer,
+  onOpenReview,
   onBack,
 }: WorkbenchViewProps) {
   const { stages, pips, doneAssetCount, pipCount, pendingAssetCount, slateVisible, runStatus } =
     timeline
 
-  // run_done 后徽标改「待审核 · N」；否则用项目状态。
+  // run_done（或项目 review 态）→ 进入待审核：徽标改「待审核 · N」+「去审核」CTA。
+  const readyForReview = runStatus === "done" || project.status === "review"
   const badge =
     runStatus === "done" ? (
       <Badge variant="pending">待审核 · {pendingAssetCount}</Badge>
@@ -74,8 +90,8 @@ export function WorkbenchView({
 
   return (
     <div className="flex h-full flex-col">
-      {/* 顶栏。 */}
-      <header className="relative flex items-center gap-3 border-b border-line px-6 py-3.5">
+      {/* 顶栏。窄屏允许换行，避免标题/动作横向溢出。 */}
+      <header className="relative flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-4 py-3 sm:px-6 sm:py-3.5">
         <button
           type="button"
           onClick={onBack}
@@ -85,7 +101,14 @@ export function WorkbenchView({
         </button>
         <span className="font-heading text-[16px] font-bold text-text-1">{project.name}</span>
         {badge}
-        <div className="ml-auto flex items-center gap-3">
+        {/* T2：进入待审核 → 跳审核台（容器携 ?project= 做 SPA 跳转）。 */}
+        {readyForReview && onOpenReview && (
+          <Button variant="ghost" onClick={onOpenReview}>
+            去审核 →
+          </Button>
+        )}
+        {/* 窄屏动作过多时换行而非横向溢出。 */}
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-2 sm:gap-3">
           {live && <SseIndicator status={CONN_TO_STATUS[conn]} />}
           {canRun && (
             <>
@@ -101,10 +124,10 @@ export function WorkbenchView({
         <SlateBar visible={slateVisible} />
       </header>
 
-      {/* 三栏。 */}
-      <div className="grid min-h-0 flex-1 grid-cols-[250px_1fr_330px] overflow-hidden">
+      {/* 三栏：≥lg 固定三列（桌面原型）；<lg 单列竖排滚动，制片轨道排首位（order-first）确保不被推到折叠下方。 */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:grid lg:grid-cols-[250px_1fr_330px] lg:overflow-hidden">
         {/* 左：计划。 */}
-        <aside className="overflow-y-auto border-r border-line p-[18px]">
+        <aside className="border-b border-line p-[18px] lg:order-none lg:overflow-y-auto lg:border-r lg:border-b-0">
           <section className="mb-5">
             <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
               创意 BRIEF
@@ -140,34 +163,44 @@ export function WorkbenchView({
           </section>
         </aside>
 
-        {/* 中：制片轨道。 */}
-        <div className="overflow-y-auto p-[18px]">
+        {/* 中：制片轨道（主视图）。<lg 排首位避免被左栏挤到折叠下方。 */}
+        <div className="order-first p-[18px] lg:order-none lg:overflow-y-auto">
           <div className="relative mx-auto max-w-[560px] pl-2">
             {stages.map((stage, i) => (
               <TimelineStage
                 key={stage.id}
                 stage={stage}
                 last={i === stages.length - 1}
+                // 仅 S2/S3 可点开抽屉检视产物（容器 gated 拉 script/shots）。
+                onSelect={
+                  onSelectStage && INSPECTABLE_STAGES[stage.id]
+                    ? () => onSelectStage(stage.id)
+                    : undefined
+                }
                 sub={
                   stage.id === "S4"
                     ? `素材生成 · ${doneAssetCount}/${pipCount || "?"}`
                     : STAGE_SUB[stage.id]
                 }
               >
-                {stage.id === "S4" && pips.length > 0 && <PipGroup pips={pips} />}
+                {stage.id === "S4" && pips.length > 0 && (
+                  <PipGroup pips={pips} onSelectPip={onSelectPip} />
+                )}
               </TimelineStage>
             ))}
           </div>
         </div>
 
         {/* 右：工件预览。 */}
-        <aside className="overflow-y-auto border-l border-line p-[18px]">
+        <aside className="border-t border-line p-[18px] lg:overflow-y-auto lg:border-t-0 lg:border-l">
           <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
             选中工件
           </h4>
           {preview ?? <p className="text-[12px] text-text-3">选中节点以预览工件</p>}
         </aside>
       </div>
+      {/* T3：抽屉插槽（剧本/分镜检视）——容器组装，覆盖在轨道之上，SSE 仍挂载。 */}
+      {drawer}
     </div>
   )
 }
