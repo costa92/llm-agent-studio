@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/costa92/llm-agent-studio/internal/events"
@@ -49,6 +50,15 @@ func streamEventsHandler(reader EventReader) http.HandlerFunc {
 		w.Header().Set("Connection", "keep-alive")
 
 		var after int64
+		// SSE reconnect: honor Last-Event-ID so fetch-event-source (and any
+		// EventSource-compatible client) skips already-seen events on reconnect
+		// instead of re-replaying the full history. Invalid/missing → 0 (full
+		// replay, preserves M1 default for clients that don't yet capture id:).
+		if v := r.Header.Get("Last-Event-ID"); v != "" {
+			if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+				after = n
+			}
+		}
 		emit := func() (done bool, err error) {
 			evs, lerr := reader.List(r.Context(), projectID, after, 200)
 			if lerr != nil {
@@ -63,7 +73,7 @@ func streamEventsHandler(reader EventReader) http.HandlerFunc {
 				if !sseEventNames[name] {
 					name = "message"
 				}
-				_, _ = io.WriteString(w, "event: "+name+"\ndata: "+string(payload)+"\n\n")
+				_, _ = io.WriteString(w, "id: "+strconv.FormatInt(e.Seq, 10)+"\nevent: "+name+"\ndata: "+string(payload)+"\n\n")
 				if e.Kind == "run_done" {
 					done = true
 				}
