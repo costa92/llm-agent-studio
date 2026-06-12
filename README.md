@@ -20,37 +20,36 @@ GOWORK=off go test ./...
 - **M4 (v0.4.0)**：异步视频/音频生成引擎（二期 Option A） —— **异步长任务引擎**（submit→poll todo 状态机 + 租约续约 heartbeat + 按 kind 并发隔离 + submit-admission 在途上限）+ **`AsyncGenerator` 接缝**（可选 `Submit`/`Poll` 接口对；image 适配器零改、仍单遍同步；video/audio 走 submit→poll）+ **FakeAsync generator**（sandbox 内零网络确定性活验）+ **key-gated 真实 provider 适配器骨架**（Runway/Kling/Veo/TTS：接口实现 + key-gated 注册 + `// TODO(m5)` HTTP stub，无真实 SaaS 接线）+ **新资产类型 video/audio** + **按秒计费**（`pricing.micros_per_second`）+ 异步账本（submit 预登记 upsert + poll-done 回填）+ SSRF-safe 512MB 拉回 + 孤儿 reaper + 全量复用 M3 横切（otel/quota/SSRF/SSE/authz）。**显式延后**：配音/自动剪辑(ffmpeg)/图片 LoRA/数字人/真实 SaaS HTTP+密钥/流式拉回——见 [docs/m4-deferred.md](docs/m4-deferred.md)。
 - **M5 (v0.5.0)**：前端 React SPA（**前端专属里程碑，后端零改动**） —— `web/` 下 Vite 8 + React 19 + TS 6 单页应用驱动 M1–M4 接口：登录（**内存** access token + single-flight refresh-on-401 + httpOnly refresh cookie + X-CSRF 双提交）+ 组织/项目管理 + **实时制片轨道**（SSE over `@microsoft/fetch-event-source`，按 `seq` 去重的状态机 reducer，回放续接实时）+ 剧本/分镜视图 + **HITL 审核看板**（accept/reject/regenerate，admin 门禁，版本血缘，键盘流）+ 资产库（过滤 + keyset 分页）+ 成本中心 + 模型配置（均 admin-only）+ Prompt Builder。Tailwind v4（`@tailwindcss/vite`，theme 在 `@theme`）+ shadcn/ui(radix-nova) + TanStack Router(file-based)/Query。dev 经 Vite proxy `/api` → studiod `:8083`（同源，无 CORS）。验证 = build + tsc + vitest（152 例 / 23 文件）+ eslint 三绿。详见 [web/README.md](web/README.md)。**显式延后**：真实浏览器/Playwright E2E（sandbox 无浏览器）/ 视频·音频生成触发与库过滤（"二期"）——见 [docs/m5-deferred.md](docs/m5-deferred.md)。
 - **M6 (v0.6.0)**：单进程全栈交付 —— studiod 经 `WEB_DIR` 静态服务已构建的 SPA（`os.DirFS` + `GET /` catch-all，排序低于所有 `/api/*` 路由，故零遮蔽）：真实文件按 content-type 直出（哈希资产可缓存），其余非 `/api` 路径回落 `index.html`（`Cache-Control: no-cache`，客户端路由可在刷新/直链下渲染深链），未命中的 `/api/*` 仍返回 404（不退化成 HTML）。默认 `WEB_DIR=""` 为纯后端模式（行为不变）。生产：`pnpm -C web build` 后 `WEB_DIR=web/dist studiod`，前后端同源单端口。**显式延后**：`go:embed` 自包含二进制（dist 是 gitignored 构建产物、embed 无法跨目录引用，需 copy-into-package 构建步，留待 CI/Docker 管线）/ 真实浏览器 E2E（sandbox 无浏览器）。
-- **M7 (v0.7.0)**：对象存储扩展 OSS/COS —— `BlobStore` 新增两种生产后端，`BLOB_MODE` 由 `localfs|s3` 扩为 `localfs|s3|oss|cos`。**阿里云 OSS**（`internal/blob/oss`，官方 `aliyun-oss-go-sdk`）：OSS 自有签名 ≠ AWS SigV4，minio-go presigned URL 对 OSS 验证不过，故独立适配器，`SignedURL`=OSS `SignURL`（本地签名无 I/O，scheme 缺省补 https）。**腾讯云 COS**（S3 高度兼容）：**复用现有 `internal/blob/s3`(minio-go) 适配器**，仅在 config/main 派生虚拟主机端点 `cos.<region>.myqcloud.com`（`COS_ENDPOINT` 可覆盖）、强制 TLS、`SecretID→AccessKey`，零 COS 专用依赖。新增 env：`OSS_ENDPOINT/OSS_BUCKET/OSS_ACCESS_KEY_ID/OSS_ACCESS_KEY_SECRET`、`COS_REGION/COS_ENDPOINT/COS_BUCKET/COS_SECRET_ID/COS_SECRET_KEY`。**验证**：`go build`+`go vet` 净 + blob/oss 离线单测（`SignedURL` 实地签名出含 `OSSAccessKeyId/Expires/Signature` 的 https 虚拟主机 URL，满足 `BlobStore`）+ config 插桩/COS 端点派生单测。**显式延后/不可验**：真实 OSS/COS 连通（`Put/Delete` 需密钥+外网，沙箱不可达，同 M4 真实 SaaS）——离线只能验签名直链与装配，联通留待有密钥环境。
+- **M7 (v0.7.0)**：对象存储扩展 OSS/COS —— `BlobStore` 新增两种生产后端（`localfs|s3|oss|cos`）。**阿里云 OSS**（`internal/blob/oss`，官方 `aliyun-oss-go-sdk`）：OSS 自有签名 ≠ AWS SigV4，minio-go presigned URL 对 OSS 验证不过，故独立适配器，`SignedURL`=OSS `SignURL`（本地签名无 I/O，scheme 缺省补 https）。**腾讯云 COS**（S3 高度兼容）：**复用现有 `internal/blob/s3`(minio-go) 适配器**，仅派生虚拟主机端点 `cos.<region>.myqcloud.com`、强制 TLS、`SecretID→AccessKey`，零 COS 专用依赖。（v0.7.0 经 `BLOB_MODE` + 一组 env 选择后端；**v0.8.0 起改为 DB 配置模块**，见下。）
+- **M8 (v0.8.0)**：可配置化 + 真实使用流程修通（在 M1–M7 全栈基础上，把"写死在代码/env"的配置搬进 DB+UI）。
+  - **模型配置 BYOK**：按 org 配 `provider/model/base_url/API key`（AES-256-GCM 加密存，`STUDIO_CONFIG_ENC_KEY`），`ModelRouter` 按 org 路由 chat + 媒体生成器，支持现有 provider + 自定义 model/base_url + **OpenAI 兼容** + 本地 **Ollama**（无 key，缺省 `http://localhost:11434`）；**编辑/删除**（key 留空=保留原密钥）。
+  - **存储配置模块**：blob 后端从 env 改为 **DB 唯一来源** 的可配置模块，两层"**全局默认 + 按组织覆盖**"，secret 加密存，`StorageRouter` 按 asset 的 org 解析（per-org → 全局 → 内置 localfs 兜底）。详见下方"存储后端配置"。
+  - **前端可用性**：自助注册 + 刷新保会话 + 制片轨道交互（时间线节点开抽屉看剧本/分镜、pip 预览、run→审核 CTA、首次配模型引导）+ 审核台项目过滤/非图片资产/显式拒绝确认 + 响应式 + 工作台时间线在"拒绝→重生成"后的 planner-卡死/计数错乱修复。
 
-### 存储后端（BlobStore）用法
+### 存储后端（BlobStore）配置
 
-资产字节由 `BlobStore`（`internal/blob`，仅 `Put/SignedURL/Delete`）统一收口；`SignedURL` 出短期签名直链，前端/客户端直连对象存储取件，studiod **不代理字节**。经 `BLOB_MODE` 选择后端：
+资产字节由 `BlobStore`（`internal/blob`，仅 `Put/SignedURL/Delete`）统一收口；`SignedURL` 出短期签名直链，前端/客户端直连对象存储取件，studiod **不代理字节**。
 
-| `BLOB_MODE` | 后端 | 必需 env | 签名直链机制 |
+**v0.8.0 起，存储配置是 DB 唯一来源（不再读 `BLOB_MODE`/`S3_*`/`OSS_*`/`COS_*` env）**，经管理 UI / API 配置，两层：
+
+- **全局默认** —— `GET/PUT /api/storage-config/global`（凡在 ≥1 org 为 admin 者可改；本应用 RBAC 无服务级超管，务实折中）。
+- **按组织覆盖** —— `GET/PUT/DELETE /api/orgs/{org}/storage-config`（org admin）。
+
+解析顺序：**per-org（enabled）→ 全局（enabled）→ 内置 localfs 默认**（未配置时兜底，故首部署即可用）。S3/OSS/COS 的 secret key 经 secretbox **AES-256-GCM 加密存 DB**（`STUDIO_CONFIG_ENC_KEY`，与 BYOK 模型密钥同一把钥匙），**对外只回 `hasSecret`，绝不回传密文/明文**。
+
+| mode | 后端 | 必填字段（UI/API） | 签名直链机制 |
 |---|---|---|---|
-| `localfs`（默认） | 本地磁盘（开发） | `BLOB_DIR`（默认 `./blobdata`） | studiod HMAC 签名回源 URL → `GET /api/blob/{key}`（无鉴权，签名即门禁）；可选 `BLOB_SECRET`（缺省回落 `JWT_SECRET`）、`BLOB_PUBLIC_PREFIX`（默认 `/api/blob/`） |
-| `s3` | S3 兼容（MinIO / AWS S3） | `S3_ENDPOINT`(host:port 无 scheme)、`S3_BUCKET`、`S3_ACCESS_KEY`、`S3_SECRET_KEY` | minio-go presigned GET（直连对象存储）；可选 `S3_REGION`、`S3_USE_SSL`（默认 `true`） |
-| `oss` | 阿里云 OSS（官方 SDK） | `OSS_ENDPOINT`（如 `oss-cn-hangzhou.aliyuncs.com`，scheme 可省→默认 https）、`OSS_BUCKET`、`OSS_ACCESS_KEY_ID`、`OSS_ACCESS_KEY_SECRET` | OSS `SignURL`（本地签名，虚拟主机 https 直链） |
-| `cos` | 腾讯云 COS（复用 s3/minio-go） | `COS_REGION`（如 `ap-guangzhou`）、`COS_BUCKET`（`name-appid`）、`COS_SECRET_ID`、`COS_SECRET_KEY` | minio-go presigned GET，端点派生 `cos.<region>.myqcloud.com`、强制 TLS；可选 `COS_ENDPOINT` 覆盖（私有/金融云） |
+| `localfs`（内置默认） | 本地磁盘（开发） | —（内置默认用下方 3 个 env 作运维参数） | studiod HMAC 签名回源 → `GET /api/blob/{key}`（签名即门禁） |
+| `s3` | S3 兼容（MinIO / AWS） | `endpoint`、`bucket`、`accessKeyId`、`secret`（可选 `region`、`useSsl`） | minio-go presigned GET |
+| `oss` | 阿里云 OSS（官方 SDK） | `endpoint`（如 `oss-cn-hangzhou.aliyuncs.com`）、`bucket`、`accessKeyId`、`secret` | OSS `SignURL`（虚拟主机 https 直链） |
+| `cos` | 腾讯云 COS（复用 s3/minio-go） | `region`（如 `ap-guangzhou`）、`bucket`（`name-appid`）、`accessKeyId`(SecretId)、`secret`(SecretKey)（`endpoint` 可空，私有云覆盖） | minio-go presigned GET，端点派生 `cos.<region>.myqcloud.com` |
 
 要点：
 
-- **云后端 bucket 不自动创建**（`s3/oss/cos` 的 `New` 不建桶）——运维在控制台/`mc` 预建；缺 bucket 或 endpoint 时 studiod **启动即报错**（无静默回落）。
-- **OSS 为何不并入 s3**：OSS 请求签名 ≠ AWS SigV4，minio-go 的 presigned URL 对 OSS 验证不过，故用独立官方 SDK 适配器。**COS 反之**高度 S3 兼容，直接复用 minio-go 适配器，仅派生端点 / 强制 TLS / `SecretID→AccessKey`，零 COS 专用依赖。
-- **凭据只经环境变量**进程内持有——绝不入库、不进 API 响应面、不打日志（密钥审计基线）。`docker-compose.yml` 的 `studiod` 段含 oss/cos 注释示例（host-env 透传）。
-- 切换示例（其余 LLM/PG/JWT env 同 localfs）：
-
-```bash
-# 阿里云 OSS
-BLOB_MODE=oss \
-  OSS_ENDPOINT=oss-cn-hangzhou.aliyuncs.com OSS_BUCKET=studio-assets \
-  OSS_ACCESS_KEY_ID=*** OSS_ACCESS_KEY_SECRET=*** studiod
-
-# 腾讯云 COS（bucket 为 name-appid）
-BLOB_MODE=cos \
-  COS_REGION=ap-guangzhou COS_BUCKET=studio-assets-1250000000 \
-  COS_SECRET_ID=*** COS_SECRET_KEY=*** studiod
-```
+- **保留的存储 env 仅 3 个**（仅供内置 localfs 默认 + 回源服务）：`BLOB_DIR`（默认 `./blobdata`）、`BLOB_SECRET`（缺省回落 `JWT_SECRET`）、`BLOB_PUBLIC_PREFIX`（默认 `/api/blob/`）。`STUDIO_CONFIG_ENC_KEY`（base64 32B）用于加密 BYOK/存储密钥——未设则无法保存带密钥的配置（回退到 env-less 的内置 localfs 默认）。
+- **云后端 bucket 不自动创建** —— 运维在控制台/`mc` 预建。
+- **OSS 为何不并入 s3**：OSS 签名 ≠ AWS SigV4，minio-go presigned 对 OSS 验证不过 → 独立官方 SDK 适配器。**COS** 高度 S3 兼容 → 复用 minio-go，仅派生端点/强制 TLS/`SecretId→AccessKey`。
+- **已知限制**：改 org 存储**不迁移**旧桶已写资产（旧 key 将不可访问）；所有 localfs 配置共享单根/密钥/回源（per-org localfs 磁盘多路复用超范围）；`STUDIO_CONFIG_ENC_KEY` 轮换无 re-encrypt（同 BYOK 模型密钥）。
 
 ### M4 异步引擎机制
 
@@ -86,7 +85,7 @@ BLOB_MODE=cos \
 - **blob 生命周期清扫未做**（spec R8）：被拒/孤儿资产与版本增长依赖后续保留策略 + 后台清扫。
 - **otel metrics 计数器未做**（决策）：spec §12 范围是 trace wrap + span 属性 + 账本双写，traces-only；metrics SDK 是新依赖、留待真实需求。
 - **docker-compose 仅 config 级验证**：沙箱无法拉镜像；`docker compose config -q` 通过，live bring-up 需在能访问镜像源的环境执行。
-- **密钥审计基线**：provider/S3 凭据只经环境变量进程内持有；`model_configs.params_json` 拒收凭据形字段（`ErrSecretParam` → 400）；API 响应面（model-configs/catalog/cost）不含任何 key 字段。日志不打印配置对象。
+- **密钥审计基线**：v0.8.0 起 BYOK 模型密钥与存储 secret 经 secretbox **AES-256-GCM 加密入库**（`STUDIO_CONFIG_ENC_KEY`）、服务端按需解密；provider 全局 fallback key 仍只经 env 进程内持有；`model_configs.params_json` 拒收凭据形字段（`ErrSecretParam` → 400）；API 响应面（model-configs/storage-config/catalog/cost）只回 `hasApiKey`/`hasSecret`，**绝不回传任何 key/密文/明文**。日志不打印配置对象。
 
 ### M4 已知限制与决策（延后项见 [docs/m4-deferred.md](docs/m4-deferred.md)）
 
