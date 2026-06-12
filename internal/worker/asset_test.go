@@ -1009,6 +1009,74 @@ func errorsIsLostLease(err error) bool {
 	return err != nil && err.Error() == "worker: poll lease lost to another worker"
 }
 
+// TestRunAssetAsyncRefusesSubmitForNonGeneratingAsset closes 审计观察 #4: when
+// a regenerate dispatch lands on a v2 asset that is NOT in 'generating' (most
+// likely 'failed' from a prior async terminalFail, or a partial 'submitted'
+// with empty external_job_id), the SUBMIT path must precondition-fail BEFORE
+// calling the provider. Without this guard, submitTx's
+// `UPDATE assets ... WHERE status='generating'` 0-rows silently, the tx still
+// commits (ledger ON CONFLICT no-ops, todo reschedule resets attempts=0/
+// poll_attempts=0 every cycle) — so every dispatch wastes a provider Submit
+// call AND the budget counters never exhaust, leaving the todo in an infinite
+// re-submit loop.
+func TestRunAssetAsyncRefusesSubmitForNonGeneratingAsset(t *testing.T) {
+	pool := assetTestPool(t)
+	ctx := context.Background()
+	w, pid, _, _ := asyncWorkerSetup(t, pool, 2)
+	todoID := seedVideoAssetTodo(t, pool, pid)
+
+	// Seed a v2 asset row already in 'failed' state (simulates prior async
+	// terminalFail). Regenerate writes todo_id='' (assets/store.go ~L314: the
+	// regenerate path carries empty todo_id to avoid the assets_todo_uniq
+	// partial index colliding with the prior version's row).
+	failedAssetID := "regen-failed-" + randHex3()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO assets (id,project_id,todo_id,type,status,prompt) VALUES ($1,$2,'','video','failed','old')`,
+		failedAssetID, pid); err != nil {
+		t.Fatalf("seed failed asset: %v", err)
+	}
+
+	// Snapshot the 'submitted' asset count before dispatch — fail-fast must NOT
+	// add any new submitted rows.
+	var beforeSubmitted int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM assets WHERE project_id=$1 AND status='submitted'`, pid).Scan(&beforeSubmitted)
+
+	_, err := w.runAsset(ctx, claimed{todoID: todoID, projectID: pid, typ: "asset", attempts: 1,
+		input: []byte(`{"shotId":"s1","shotPrompt":"a city","style":"","kind":"video","duration":6,"assetId":"` + failedAssetID + `"}`)})
+
+	// Must NOT return errRescheduled (that would mean submitTx ran and pushed
+	// the todo back into the re-submit loop). Must NOT return "asset:<id>" (no
+	// successful generation either). Must return the precondition error so
+	// worker.fail() retires the todo via MaxAttempts.
+	if err == nil {
+		t.Fatalf("non-'generating' regen asset must precondition-fail, got nil error")
+	}
+	if errorsIsRescheduled(err) {
+		t.Fatalf("non-'generating' regen asset must NOT reschedule (precondition fail-fast), got %v", err)
+	}
+	if !strings.Contains(err.Error(), "precondition violated") {
+		t.Fatalf("expected precondition error, got %v", err)
+	}
+
+	// The failed asset row stays untouched (no status flip, no external_job_id).
+	var status, extJob string
+	_ = pool.QueryRow(ctx, `SELECT status, external_job_id FROM assets WHERE id=$1`, failedAssetID).Scan(&status, &extJob)
+	if status != "failed" {
+		t.Fatalf("asset status after fail-fast = %q, want unchanged 'failed'", status)
+	}
+	if extJob != "" {
+		t.Fatalf("asset external_job_id after fail-fast = %q, want empty (Submit must not have fired)", extJob)
+	}
+
+	// No new 'submitted' asset rows exist (Submit + submitTx skipped end-to-end).
+	var afterSubmitted int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM assets WHERE project_id=$1 AND status='submitted'`, pid).Scan(&afterSubmitted)
+	if afterSubmitted != beforeSubmitted {
+		t.Fatalf("submitted-asset count changed from %d to %d — Submit must not have fired",
+			beforeSubmitted, afterSubmitted)
+	}
+}
+
 // TestPollDoneDoubleCompleteDoesNotCancelOrDoubleEmit proves F-INT-1: under a
 // cross-worker reclaim where BOTH in-flight Polls return Done, the winning
 // completeAsync (submitted→pending_acceptance) emits asset_generated once; the

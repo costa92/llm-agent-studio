@@ -947,6 +947,21 @@ func (w *Worker) runAssetAsync(ctx, cctx context.Context, c claimed, regenAssetI
 		return w.pollAsync(ctx, cctx, c, asset, duration, ag)
 	}
 
+	// SUBMIT precondition (defense-in-depth, 审计观察 #4): the asset must be in
+	// 'generating' to enter the submit path. The short-circuit above handled
+	// (submitted+job_id). Any other status — most commonly 'failed' from a prior
+	// async terminalFail where the regenerate todo somehow re-entered submit, or
+	// a partial 'submitted' lacking ExternalJobID — would 0-row the
+	// `UPDATE assets ... WHERE status='generating'` in submitTx without erroring.
+	// submitTx still commits (ledger ON CONFLICT no-ops, todo reschedule resets
+	// attempts=0/poll_attempts=0), and the next dispatch repeats the cycle: every
+	// loop wastes a provider Submit call AND the budget counters reset so the
+	// todo never terminates. Fail-fast so worker.fail() can retire the todo via
+	// MaxAttempts.
+	if asset.Status != "generating" {
+		return "", fmt.Errorf("worker: async submit precondition violated: asset %s in status %q (expected 'generating')", asset.ID, asset.Status)
+	}
+
 	// SUBMIT phase. Admission cap (B2): hold a NEW submit when in-flight jobs for
 	// this kind are at the cap (poll re-claims never reach here — they short-
 	// circuited above). Held submits reschedule WITHOUT spending attempts AND
