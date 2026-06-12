@@ -34,6 +34,47 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadFakeGenMode(t *testing.T) {
+	base := func(extra map[string]string) func(string) (string, bool) {
+		return func(k string) (string, bool) {
+			if v, ok := extra[k]; ok {
+				return v, true
+			}
+			switch k {
+			case "PG_URL":
+				return "postgres://x", true
+			case "JWT_SECRET":
+				return "s", true
+			}
+			return "", false
+		}
+	}
+	// Default: fake mode OFF.
+	cfg, err := LoadFromLookup(base(nil))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.FakeGen {
+		t.Fatalf("FakeGen must default off")
+	}
+	// PROVIDER=fake turns it on.
+	cfg, err = LoadFromLookup(base(map[string]string{"PROVIDER": "fake"}))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.FakeGen {
+		t.Fatalf("PROVIDER=fake must enable FakeGen")
+	}
+	// STUDIO_FAKE_GEN=1 also turns it on (even with a real provider name).
+	cfg, err = LoadFromLookup(base(map[string]string{"STUDIO_FAKE_GEN": "1"}))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.FakeGen {
+		t.Fatalf("STUDIO_FAKE_GEN=1 must enable FakeGen")
+	}
+}
+
 func TestLoadOSSAndCOS(t *testing.T) {
 	cfg, err := LoadFromLookup(func(k string) (string, bool) {
 		m := map[string]string{

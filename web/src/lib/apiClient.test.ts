@@ -4,6 +4,7 @@ import {
   apiFetch,
   getAccessToken,
   setAccessToken,
+  tryRestoreSession,
 } from "./apiClient"
 import { installFetchRoutes, jsonResponse } from "@/test/helpers"
 
@@ -115,6 +116,43 @@ describe("apiFetch", () => {
     })
 
     await expect(apiFetch("/api/projects/p1")).rejects.toBeInstanceOf(AuthError)
+    expect(getAccessToken()).toBeNull()
+  })
+})
+
+describe("tryRestoreSession", () => {
+  it("no-ops to true when a token already exists (no network call)", async () => {
+    setAccessToken("access-old")
+    const mock = installFetchRoutes({
+      "/api/auth/refresh": () =>
+        jsonResponse({ access_token: "access-new", expires_in: 900 }),
+    })
+
+    await expect(tryRestoreSession()).resolves.toBe(true)
+    // 幂等：已有 token 直接返回，不打刷新接口。
+    expect(mock).not.toHaveBeenCalled()
+    expect(getAccessToken()).toBe("access-old")
+  })
+
+  it("on no token + valid refresh cookie sets the token and returns true", async () => {
+    setAccessToken(null)
+    installFetchRoutes({
+      "/api/auth/refresh": () =>
+        jsonResponse({ access_token: "restored", expires_in: 900 }),
+    })
+
+    await expect(tryRestoreSession()).resolves.toBe(true)
+    expect(getAccessToken()).toBe("restored")
+  })
+
+  it("on no token + failed refresh returns false and never throws", async () => {
+    setAccessToken(null)
+    installFetchRoutes({
+      "/api/auth/refresh": () =>
+        jsonResponse({ error: "expired" }, { status: 401 }),
+    })
+
+    await expect(tryRestoreSession()).resolves.toBe(false)
     expect(getAccessToken()).toBeNull()
   })
 })

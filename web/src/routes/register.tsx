@@ -8,30 +8,31 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/studio/Button"
 import { useAuth } from "@/app/auth"
-import { sanitizeLoginRedirect } from "@/app/org"
+import { ApiError } from "@/lib/apiClient"
 
-// T6：rhf+zod 登录表单 + AuthProvider 接入。
-// 登录请求体 {email,password}（与 authz 自带测试一致；Go JSON 大小写不敏感）。
-// 登录响应仅 {access_token,expires_in}——无角色对象；角色由 rbac.useRole 探针推断。
-const loginSearchSchema = z.object({
-  redirect: z.string().optional(),
+// 自助注册：rhf+zod 表单 + AuthProvider.register。
+// 注册请求体 {email,password}（与后端契约一致）；成功即登录（响应 {access_token,expires_in} + Set-Cookie）。
+// 409 邮箱已注册 / 400 入参非法。
+export const Route = createFileRoute("/register")({
+  component: RegisterPage,
 })
 
-export const Route = createFileRoute("/login")({
-  validateSearch: loginSearchSchema,
-  component: LoginPage,
-})
-
-const formSchema = z.object({
-  email: z.string().min(1, "请输入邮箱"),
-  password: z.string().min(1, "请输入密码"),
-})
+const formSchema = z
+  .object({
+    email: z.string().email("请输入有效的邮箱"),
+    password: z.string().min(8, "密码至少 8 位"),
+    confirm: z.string().min(1, "请再次输入密码"),
+  })
+  .refine((v) => v.password === v.confirm, {
+    path: ["confirm"],
+    message: "两次输入的密码不一致",
+  })
 
 type FormValues = z.infer<typeof formSchema>
 
-// 无路由依赖的纯表单组件，便于单测。登录成功调 onSuccess。
-export function LoginForm({ onSuccess }: { onSuccess: () => void }) {
-  const { login } = useAuth()
+// 无路由依赖的纯表单组件，便于单测。注册成功调 onSuccess。
+export function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
+  const { register: registerAccount } = useAuth()
   const [submitError, setSubmitError] = useState<string | null>(null)
   const {
     register,
@@ -39,17 +40,21 @@ export function LoginForm({ onSuccess }: { onSuccess: () => void }) {
     formState: { errors, isSubmitting },
   } = useForm<FormValues>({
     resolver: zodResolver(formSchema),
-    defaultValues: { email: "", password: "" },
+    defaultValues: { email: "", password: "", confirm: "" },
   })
 
   const onSubmit = handleSubmit(async (values) => {
     setSubmitError(null)
     try {
-      await login(values.email, values.password)
+      await registerAccount(values.email, values.password)
       onSuccess()
-    } catch {
-      // 凭据错（401）或其余失败统一映射为该文案（不区分，避免泄露账号是否存在）。
-      setSubmitError("邮箱或密码错误，请重试")
+    } catch (err) {
+      // 409 → 邮箱已注册；其余统一兜底文案。
+      if (err instanceof ApiError && err.status === 409) {
+        setSubmitError("该邮箱已注册，请直接登录")
+      } else {
+        setSubmitError("注册失败，请重试")
+      }
     }
   })
 
@@ -74,12 +79,26 @@ export function LoginForm({ onSuccess }: { onSuccess: () => void }) {
         <Input
           id="password"
           type="password"
-          autoComplete="current-password"
+          autoComplete="new-password"
           aria-invalid={errors.password != null}
           {...register("password")}
         />
         {errors.password && (
           <p className="text-[12px] text-danger">{errors.password.message}</p>
+        )}
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="confirm">确认密码</Label>
+        <Input
+          id="confirm"
+          type="password"
+          autoComplete="new-password"
+          aria-invalid={errors.confirm != null}
+          {...register("confirm")}
+        />
+        {errors.confirm && (
+          <p className="text-[12px] text-danger">{errors.confirm.message}</p>
         )}
       </div>
 
@@ -91,15 +110,14 @@ export function LoginForm({ onSuccess }: { onSuccess: () => void }) {
 
       <Button type="submit" variant="amber" disabled={isSubmitting}>
         {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-        登录
+        注册
       </Button>
     </form>
   )
 }
 
-function LoginPage() {
+function RegisterPage() {
   const navigate = useNavigate()
-  const { redirect } = Route.useSearch()
 
   return (
     <div className="grid h-screen place-items-center bg-bg-base text-text-1">
@@ -107,16 +125,16 @@ function LoginPage() {
         <h1 className="font-heading text-[22px] font-bold text-amber">
           AI Studio
         </h1>
-        <LoginForm
+        <RegisterForm
           onSuccess={() => {
-            // 登录成功 → 回跳来源页，否则去根落地（org 选择/默认项目列表）。
-            navigate({ to: sanitizeLoginRedirect(redirect) })
+            // 注册即登录 → 去根落地（org 选择/默认项目列表）。
+            navigate({ to: "/" })
           }}
         />
         <p className="text-[12px] text-text-3">
-          还没有账号？
-          <Link to="/register" className="text-amber hover:underline">
-            注册
+          已有账号？
+          <Link to="/login" className="text-amber hover:underline">
+            登录
           </Link>
         </p>
       </div>

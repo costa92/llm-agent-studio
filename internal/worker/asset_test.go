@@ -2,8 +2,10 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -265,6 +267,184 @@ func TestProcessDiscardsAssetWhenTodoCanceledMidFlight(t *testing.T) {
 	_ = pool.QueryRow(ctx, `SELECT count(*) FROM run_events WHERE project_id=$1 AND kind='todo_finished'`, pid).Scan(&nFinished)
 	if nFinished != 0 {
 		t.Fatalf("discarded work must not emit todo_finished, got %d", nFinished)
+	}
+}
+
+// flakyGen fails its first failUntil Generate calls, then succeeds with ok.
+// Proves the sync asset retry path reuses the same asset row (BUG #3) instead
+// of inserting a duplicate that violates assets_todo_uniq.
+type flakyGen struct {
+	mu       sync.Mutex
+	calls    int
+	failUntil int
+	ok       generate.GenResult
+}
+
+func (g *flakyGen) Kind() string { return "image" }
+func (g *flakyGen) Generate(context.Context, generate.GenRequest) (generate.GenResult, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.calls++
+	if g.calls <= g.failUntil {
+		return generate.GenResult{}, fmt.Errorf("flakyGen: induced failure #%d", g.calls)
+	}
+	return g.ok, nil
+}
+
+// TestRunAssetSyncRetryReusesRowNoDuplicateKey proves BUG #3: a sync image asset
+// todo whose FIRST generation fails (asset row → 'failed') must, on retry, REUSE
+// the same asset row via GetOrCreateForTodo — no assets_todo_uniq duplicate-key
+// error — and the successful retry must reach 'pending_acceptance'.
+func TestRunAssetSyncRetryReusesRowNoDuplicateKey(t *testing.T) {
+	pool := assetTestPool(t)
+	ctx := context.Background()
+	var pid string
+	_ = pool.QueryRow(ctx, `INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),'org_retry','p','u') RETURNING id`).Scan(&pid)
+	todoID := newID()
+	in := `{"shotId":"s1","shotPrompt":"a teahouse","style":"国风"}`
+	_, _ = pool.Exec(ctx,
+		`INSERT INTO todos (id,project_id,plan_id,type,status,input_json) VALUES ($1,$2,'plan','asset','running',$3)`,
+		todoID, pid, in)
+
+	gen := &flakyGen{failUntil: 1, ok: generate.GenResult{
+		Bytes: []byte("PNG"), MimeType: "image/png", Provider: "fake", Model: "m", ImageCount: 1,
+	}}
+	w := New(Config{
+		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
+		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), gen),
+		Blob:     blob.NewFake(),
+		Assets:   assets.New(pool),
+		Cost:     cost.New(pool),
+		WorkerID: "retry", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
+	})
+	// Dispatch 1: generation fails → asset row terminal-stated 'failed', error returned.
+	if _, err := w.runAsset(ctx, claimed{todoID: todoID, projectID: pid, typ: "asset", attempts: 1,
+		input: []byte(in)}); err == nil {
+		t.Fatalf("first dispatch must fail (induced generation error)")
+	}
+	var n int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM assets WHERE todo_id=$1`, todoID).Scan(&n)
+	if n != 1 {
+		t.Fatalf("after first failed dispatch: want exactly 1 asset row, got %d", n)
+	}
+	// Dispatch 2 (retry): must REUSE the same row (no duplicate-key) and succeed.
+	ref, err := w.runAsset(ctx, claimed{todoID: todoID, projectID: pid, typ: "asset", attempts: 2,
+		input: []byte(in)})
+	if err != nil {
+		t.Fatalf("retry dispatch must succeed reusing the row, got: %v", err)
+	}
+	if ref == "" {
+		t.Fatalf("retry must return an asset output ref")
+	}
+	// Still exactly ONE asset row, now pending_acceptance.
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM assets WHERE todo_id=$1`, todoID).Scan(&n)
+	if n != 1 {
+		t.Fatalf("retry must reuse the row, found %d asset rows (duplicate insert?)", n)
+	}
+	var status string
+	_ = pool.QueryRow(ctx, `SELECT status FROM assets WHERE todo_id=$1`, todoID).Scan(&status)
+	if status != "pending_acceptance" {
+		t.Fatalf("reused row status = %q, want pending_acceptance", status)
+	}
+}
+
+// TestRunAssetSyncPermanentFailureTerminalFailsViaProcess proves a permanently-
+// failing sync generation eventually terminal-fails the todo (status 'failed')
+// through the full process()/fail() retry loop — it must NOT loop forever on
+// duplicate-key (BUG #3 regression).
+func TestRunAssetSyncPermanentFailureTerminalFailsViaProcess(t *testing.T) {
+	pool := assetTestPool(t)
+	ctx := context.Background()
+	var pid string
+	_ = pool.QueryRow(ctx, `INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),'org_permfail','p','u') RETURNING id`).Scan(&pid)
+	todoID := newID()
+	in := `{"shotId":"s1","shotPrompt":"x","style":""}`
+	// Seed 'ready' so claim() can pick it up (a 'running' row with locked_until=NULL
+	// is not claimable). Push other projects' claimable rows out of the window so
+	// the bounded loop spends its budget on OUR todo (shared package DB).
+	_, _ = pool.Exec(ctx, `
+		UPDATE todos SET next_run_at = now() + interval '1 hour',
+		    locked_until = CASE WHEN status='running' THEN now() + interval '1 hour' ELSE locked_until END
+		WHERE project_id <> $1 AND status IN ('ready','running')`, pid)
+	_, _ = pool.Exec(ctx,
+		`INSERT INTO todos (id,project_id,plan_id,type,status,input_json) VALUES ($1,$2,'plan','asset','ready',$3)`,
+		todoID, pid, in)
+
+	// failUntil huge → always fails.
+	gen := &flakyGen{failUntil: 1 << 30}
+	w := New(Config{
+		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
+		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), gen),
+		Blob:     blob.NewFake(),
+		Assets:   assets.New(pool),
+		Cost:     cost.New(pool),
+		WorkerID: "permfail", Lease: time.Minute, MaxAttempts: 2, BaseBackoff: 0,
+	})
+	// Drive the full claim→process loop. Each failed attempt reschedules the todo
+	// (BaseBackoff=0 → immediately re-claimable); the retry must NOT hit duplicate-
+	// key, so attempts climb to MaxAttempts and the todo terminal-fails. Bound the
+	// loop so a duplicate-key spin can't hang the test; the empty-claim break ends it.
+	for i := 0; i < 20; i++ {
+		ran, err := w.RunOnce(ctx)
+		if err != nil {
+			t.Fatalf("run once: %v", err)
+		}
+		if !ran {
+			break
+		}
+	}
+	var status, errMsg string
+	_ = pool.QueryRow(ctx, `SELECT status, error FROM todos WHERE id=$1`, todoID).Scan(&status, &errMsg)
+	if status != "failed" {
+		t.Fatalf("permanently-failing todo status = %q, want failed", status)
+	}
+	if strings.Contains(errMsg, "duplicate key") || strings.Contains(errMsg, "assets_todo_uniq") {
+		t.Fatalf("todo must not terminal-fail on a duplicate-key loop: %q", errMsg)
+	}
+	// Exactly one asset row exists (reused across retries), terminal-stated failed.
+	var n int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM assets WHERE todo_id=$1`, todoID).Scan(&n)
+	if n != 1 {
+		t.Fatalf("want exactly 1 (reused) asset row, got %d", n)
+	}
+}
+
+// TestRunAssetWithDevFakeGeneratorReachesPendingAcceptance proves FIX D: the
+// keyless dev fake generator (generate.NewDevFakeGenerator) drives a sync image
+// asset todo all the way to 'pending_acceptance' with non-empty stored bytes —
+// i.e. a deployment with NO provider API keys can run the image path end-to-end.
+func TestRunAssetWithDevFakeGeneratorReachesPendingAcceptance(t *testing.T) {
+	pool := assetTestPool(t)
+	ctx := context.Background()
+	var pid string
+	_ = pool.QueryRow(ctx, `INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),'org_fake','p','u') RETURNING id`).Scan(&pid)
+	todoID := newID()
+	in := `{"shotId":"s1","shotPrompt":"a teahouse","style":"国风"}`
+	_, _ = pool.Exec(ctx,
+		`INSERT INTO todos (id,project_id,plan_id,type,status,input_json) VALUES ($1,$2,'plan','asset','running',$3)`,
+		todoID, pid, in)
+
+	w := New(Config{
+		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
+		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), generate.NewDevFakeGenerator()),
+		Blob:     blob.NewFake(),
+		Assets:   assets.New(pool),
+		Cost:     cost.New(pool),
+		WorkerID: "fakegen", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
+	})
+	ref, err := w.runAsset(ctx, claimed{todoID: todoID, projectID: pid, typ: "asset", attempts: 1, input: []byte(in)})
+	if err != nil {
+		t.Fatalf("runAsset with dev fake generator: %v", err)
+	}
+	if ref == "" {
+		t.Fatalf("expected asset output ref")
+	}
+	var status, blobKey, provider string
+	if err := pool.QueryRow(ctx, `SELECT status, blob_key, provider FROM assets WHERE project_id=$1`, pid).Scan(&status, &blobKey, &provider); err != nil {
+		t.Fatalf("load asset: %v", err)
+	}
+	if status != "pending_acceptance" || blobKey == "" || provider != "fake" {
+		t.Fatalf("keyless asset wrong: status=%q key=%q provider=%q", status, blobKey, provider)
 	}
 }
 

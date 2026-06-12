@@ -20,6 +20,7 @@ import type { LoginResponse } from "@/lib/types"
 interface AuthContextValue {
   isAuthenticated: boolean
   login: (email: string, password: string) => Promise<void>
+  register: (email: string, password: string) => Promise<void>
   logout: () => Promise<void>
 }
 
@@ -47,6 +48,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setIsAuthenticated(true)
   }, [])
 
+  // 自助注册：POST /api/auth/register {email,password} → 注册即登录（同 login 响应 + Set-Cookie）。
+  // 409 邮箱已注册 / 400 入参非法；非 2xx 抛 ApiError 交由注册视图映射文案。
+  const register = useCallback(async (email: string, password: string) => {
+    const res = await fetch("/api/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ email, password }),
+    })
+    if (!res.ok) {
+      throw new ApiError(res.status, await res.text())
+    }
+    const data = (await res.json()) as LoginResponse
+    setAccessToken(data.access_token)
+    setIsAuthenticated(true)
+  }, [])
+
   const logout = useCallback(async () => {
     try {
       await fetch("/api/auth/logout", {
@@ -63,8 +81,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const value = useMemo<AuthContextValue>(
-    () => ({ isAuthenticated, login, logout }),
-    [isAuthenticated, login, logout],
+    () => ({ isAuthenticated, login, register, logout }),
+    [isAuthenticated, login, register, logout],
   )
 
   return <AuthContext value={value}>{children}</AuthContext>

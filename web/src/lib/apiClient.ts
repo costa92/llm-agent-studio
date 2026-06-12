@@ -63,6 +63,19 @@ async function refresh(): Promise<string> {
   }
 }
 
+// 冷启动/硬刷新静默恢复会话：内存 token 已没了，但 httpOnly 刷新 cookie 仍可能有效。
+// 仅当内存无 token 时打一次 refresh（复用上面的 single-flight）；成功置内存 token 返回 true，
+// 任何失败返回 false（绝不抛）。幂等：已有 token 直接返回 true，不发请求——可安全反复调用。
+export async function tryRestoreSession(): Promise<boolean> {
+  if (getAccessToken() != null) return true
+  try {
+    await refresh()
+    return true
+  } catch {
+    return false
+  }
+}
+
 function withAuth(init: RequestInit | undefined, token: string | null): RequestInit {
   const headers = new Headers(init?.headers)
   if (token) headers.set("Authorization", `Bearer ${token}`)

@@ -25,8 +25,11 @@ type EventAppender interface {
 type Deps struct {
 	Issuer       *authztoken.Issuer
 	AuthHandlers *authzhttp.Handlers // /api/auth/*; nil in focused unit tests
+	AuthService  SessionIssuer       // authz service for register's auto-login; nil in focused unit tests
 	RoleResolver authzhttp.RoleResolver
+	Register     UserRegistrar // self-serve registration; nil in focused unit tests
 	OrgBootstrap OrgBootstrapper
+	OrgList      OrgLister
 	Projects     ProjectStore
 	Planner      PlannerPort
 	Events       EventAppender
@@ -83,6 +86,11 @@ func NewMux(d Deps) *http.ServeMux {
 	if d.AuthHandlers != nil {
 		d.AuthHandlers.Mount(mux, "/api/auth")
 	}
+	// Self-serve registration: OPEN (unauthenticated), an ADDITIONAL route on the
+	// same mux as authz's login/refresh/logout (no pattern collision).
+	if d.Register != nil && d.AuthService != nil {
+		mux.Handle("POST /api/auth/register", registerHandler(d.Register, d.AuthService))
+	}
 	guard := limits.New(d.PerUserLimit)
 
 	authOnly := func(h http.HandlerFunc) http.Handler {
@@ -101,6 +109,7 @@ func NewMux(d Deps) *http.ServeMux {
 
 	// Org bootstrap + project create/list (org-scoped).
 	mux.Handle("POST /api/orgs", authOnly(createOrgHandler(d.OrgBootstrap)))
+	mux.Handle("GET /api/orgs", authOnly(listOrgsHandler(d.OrgList)))
 	mux.Handle("POST /api/orgs/{org}/projects", scoped(roleEditor, orgScope, createProjectHandler(d.Projects)))
 	mux.Handle("GET /api/orgs/{org}/projects", scoped(roleViewer, orgScope, listProjectsHandler(d.Projects)))
 

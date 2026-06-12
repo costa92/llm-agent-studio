@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -263,8 +264,11 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	mux := httpapi.NewMux(httpapi.Deps{
 		Issuer:       issuer,
 		AuthHandlers: authHandlers,
+		AuthService:  authService,
 		RoleResolver: az,
+		Register:     studiosvc.NewRegister(az),
 		OrgBootstrap: studiosvc.NewOrg(az),
+		OrgList:      studiosvc.NewOrgList(st.Pool()),
 		Projects:     projectStore,
 		Planner:      plannerSvc,
 		Events:       eventStore,
@@ -299,6 +303,14 @@ func buildModel(cfg config.Config) (llm.ChatModel, error) {
 	if providerOverride != nil {
 		return providerOverride(cfg)
 	}
+	if cfg.FakeGen {
+		// Keyless dev/demo mode: a content-aware fake ChatModel. The planner falls
+		// back to its default script→storyboard pipeline; the script + storyboard
+		// agents need VALID JSON to keep the pipeline flowing to the asset stage, so
+		// the fake returns canned JSON keyed off each agent's system prompt. No real
+		// API key is required anywhere.
+		return &fakeChatModel{}, nil
+	}
 	switch cfg.Provider {
 	case "openai":
 		return openaiprovider.New(
@@ -318,6 +330,30 @@ func buildModel(cfg config.Config) (llm.ChatModel, error) {
 	}
 }
 
+// fakeChatModel is the keyless dev/demo ChatModel (FakeGen mode). It returns
+// canned, valid JSON keyed off each agent's system prompt so the script +
+// storyboard agents keep the pipeline flowing to the asset stage with no real
+// API key. Stream/Info are inherited from an embedded empty ScriptedLLM. NOT a
+// test double — it backs the runtime PROVIDER=fake / STUDIO_FAKE_GEN=1 mode.
+type fakeChatModel struct{ llm.ScriptedLLM }
+
+func (m *fakeChatModel) Generate(_ context.Context, req llm.Request) (llm.Response, error) {
+	sys := req.SystemPrompt
+	var text string
+	switch {
+	case strings.Contains(sys, "screenwriter"):
+		text = `{"title":"Fake Demo","logline":"a keyless demo","scenes":[{"heading":"INT. STUDIO","description":"a placeholder scene","dialogue":"hello"}]}`
+	case strings.Contains(sys, "storyboard"):
+		text = `{"shots":[{"shotNo":1,"camera":"wide","scene":"studio","action":"open","prompt":"a placeholder shot","duration":3}]}`
+	case strings.Contains(sys, "planner"):
+		text = `{"nodes":[{"id":"s","type":"script","dependsOn":[]},{"id":"b","type":"storyboard","dependsOn":["s"]}]}`
+	default:
+		// ReviewAgent + anything else: a neutral advisory verdict.
+		text = `{"score":80,"flags":[],"note":"fake-mode placeholder"}`
+	}
+	return llm.Response{Text: text, Provider: "fake", Model: "fake"}, nil
+}
+
 // generatorOverride lets e2e inject a fake MediaGenerator instead of a real
 // image provider (the image analog of providerOverride).
 var generatorOverride func(config.Config) (generate.MediaGenerator, error)
@@ -325,6 +361,13 @@ var generatorOverride func(config.Config) (generate.MediaGenerator, error)
 func buildGenerator(cfg config.Config) (generate.MediaGenerator, error) {
 	if generatorOverride != nil {
 		return generatorOverride(cfg)
+	}
+	if cfg.FakeGen {
+		// Keyless dev/demo mode: a placeholder-PNG generator so the sync image path
+		// (blob Put + asset pending_acceptance) succeeds with no provider key. The
+		// keyed registerImage/Video/AudioGenerators below skip every unkeyed
+		// provider, so fake mode leaves the registry default as this fake.
+		return generate.NewDevFakeGenerator(), nil
 	}
 	switch cfg.Provider {
 	case "minimax":
