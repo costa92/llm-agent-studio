@@ -46,6 +46,7 @@ type Deps struct {
 	StorageConfig StorageConfigStore // per-org / global 对象存储后端配置 (secret write-only)
 	Members       MemberService      // org 成员管理: 列出/按邮箱添加/改角色/移除 (org-scoped)
 	Platform      PlatformService    // 平台超级管理员: 系统级存储配置 + 所有 org 视图 + 平台管理员名册
+	TaskBoard     TaskBoardReader    // 任务中心: 跨项目运行状态聚合 (org-scoped, viewer+)
 	Cost          CostStore
 	PromptBuilder *prompt.Builder
 	GenQuota      int // rolling-24h per-org generation quota; 0 = unlimited
@@ -128,6 +129,8 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("GET /api/orgs", authOnly(listOrgsHandler(d.OrgList)))
 	mux.Handle("POST /api/orgs/{org}/projects", scoped(roleEditor, orgScope, createProjectHandler(d.Projects)))
 	mux.Handle("GET /api/orgs/{org}/projects", scoped(roleViewer, orgScope, listProjectsHandler(d.Projects)))
+	// Task center (任务中心): cross-project run dashboard (org-scoped, viewer+).
+	mux.Handle("GET /api/orgs/{org}/tasks", scoped(roleViewer, orgScope, taskboardHandler(d.TaskBoard)))
 
 	// Project-scoped routes ({id}).
 	mux.Handle("GET /api/projects/{id}", proj(roleViewer, getProjectHandler(d.Projects)))

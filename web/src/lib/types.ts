@@ -305,3 +305,23 @@ export interface LoginResponse {
   access_token: string
   expires_in: number
 }
+
+// 任务中心（项目运行看板）。GET /api/orgs/{org}/tasks → {items, counts}（viewer+ 只读）。
+// 每行 = 一个项目的运行态聚合；lastActivityAt 为 RFC3339 字符串。
+export interface TaskRow {
+  projectId: string
+  name: string
+  status: string
+  progressDone: number
+  progressTotal: number
+  pendingReview: number
+  failed: boolean
+  failingAgent: string
+  lastActivityAt: string
+}
+
+// counts 桶计数键 = all/running/review/failed/completed/draft（后端聚合）。
+export interface TaskBoardResponse {
+  items: TaskRow[]
+  counts: Record<string, number>
+}
