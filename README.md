@@ -24,6 +24,7 @@ GOWORK=off go test ./...
 - **M8 (v0.8.0)**：可配置化 + 真实使用流程修通（在 M1–M7 全栈基础上，把"写死在代码/env"的配置搬进 DB+UI）。
   - **模型配置 BYOK**：按 org 配 `provider/model/base_url/API key`（AES-256-GCM 加密存，`STUDIO_CONFIG_ENC_KEY`），`ModelRouter` 按 org 路由 chat + 媒体生成器，支持现有 provider + 自定义 model/base_url + **OpenAI 兼容** + 本地 **Ollama**（无 key，缺省 `http://localhost:11434`）；**编辑/删除**（key 留空=保留原密钥）。
   - **存储配置模块**：blob 后端从 env 改为 **DB 唯一来源** 的可配置模块，两层"**全局默认 + 按组织覆盖**"，secret 加密存，`StorageRouter` 按 asset 的 org 解析（per-org → 全局 → 内置 localfs 兜底）。详见下方"存储后端配置"。
+- **post-v0.8.0（main，未打新 tag）**：存储后端新增 **GitHub 仓库**（Contents API，公开仓库 raw 直链）；新增 **平台超级管理员角色 + 平台管理页**——全局配置不再由任意 org admin 可改，改由 `PLATFORM_ADMIN_EMAILS` 引导的平台管理员在 `/platform` 页管理（全局存储 + 全部组织列表 + 管理员授予/撤销）。详见下方"存储后端配置"/"平台管理员"。
   - **前端可用性**：自助注册 + 刷新保会话 + 制片轨道交互（时间线节点开抽屉看剧本/分镜、pip 预览、run→审核 CTA、首次配模型引导）+ 审核台项目过滤/非图片资产/显式拒绝确认 + 响应式 + 工作台时间线在"拒绝→重生成"后的 planner-卡死/计数错乱修复。
 
 ### 存储后端（BlobStore）配置
@@ -32,8 +33,8 @@ GOWORK=off go test ./...
 
 **v0.8.0 起，存储配置是 DB 唯一来源（不再读 `BLOB_MODE`/`S3_*`/`OSS_*`/`COS_*` env）**，经管理 UI / API 配置，两层：
 
-- **全局默认** —— `GET/PUT /api/storage-config/global`（凡在 ≥1 org 为 admin 者可改；本应用 RBAC 无服务级超管，务实折中）。
-- **按组织覆盖** —— `GET/PUT/DELETE /api/orgs/{org}/storage-config`（org admin）。
+- **全局默认** —— `GET/PUT /api/platform/storage-config/global`，仅 **平台管理员**（platform super-admin）可改，在「平台」管理页配置（见下方"平台管理员"）。
+- **按组织覆盖** —— `GET/PUT/DELETE /api/orgs/{org}/storage-config`（org admin），在组织的「存储」页配置。
 
 解析顺序：**per-org（enabled）→ 全局（enabled）→ 内置 localfs 默认**（未配置时兜底，故首部署即可用）。S3/OSS/COS 的 secret key 经 secretbox **AES-256-GCM 加密存 DB**（`STUDIO_CONFIG_ENC_KEY`，与 BYOK 模型密钥同一把钥匙），**对外只回 `hasSecret`，绝不回传密文/明文**。
 
@@ -52,6 +53,14 @@ GOWORK=off go test ./...
 - **OSS 为何不并入 s3**：OSS 签名 ≠ AWS SigV4，minio-go presigned 对 OSS 验证不过 → 独立官方 SDK 适配器。**COS** 高度 S3 兼容 → 复用 minio-go，仅派生端点/强制 TLS/`SecretId→AccessKey`。
 - **GitHub 为对象存储的取舍**：无"桶"概念，资产作为文件经 Contents API 提交进仓库（`Put` 先取 sha 再 PUT 避免 422、`Delete` 取 sha 后删，幂等）；GitHub 无 presigned URL，故仅**公开仓库**可用——`SignedURL` 返回 `raw.githubusercontent.com` 永久直链（studiod 不代理、token 不进读 URL）。受 GitHub 单文件 ~100MB 上限约束，适合图片、不适合视频。
 - **已知限制**：改 org 存储**不迁移**旧桶已写资产（旧 key 将不可访问）；所有 localfs 配置共享单根/密钥/回源（per-org localfs 磁盘多路复用超范围）；`STUDIO_CONFIG_ENC_KEY` 轮换无 re-encrypt（同 BYOK 模型密钥）。
+
+### 平台管理员（platform super-admin）
+
+服务级（全局）配置不属于任何单一组织，故由一个**专门的平台超级管理员角色**管理，而非任意 org admin。平台管理员 = 一条 authz 成员 `(scope_kind="platform", scope_id=nil, RoleAdmin)`（studio 自有，不改 authz 库；用一行哨兵 `auth_org(id='')` 作外键父行，不出现在任何组织列表）。
+
+- **引导**：环境变量 `PLATFORM_ADMIN_EMAILS`（逗号分隔邮箱）——启动时种子化已注册的匹配用户、并在这些邮箱**注册时自动补授**。之后平台管理员可在「平台」页授予/撤销他人（**拒绝移除最后一个平台管理员**）。**部署务必设置此变量**，否则无人能管理全局配置。
+- **平台页**（前端 `/platform`，仅平台管理员可见/可入）：① 全局存储默认配置；② **全部组织列表**（名称/ID/创建时间/成员数）；③ 平台管理员名单（按邮箱授予 / 撤销）。
+- **端点**：`GET /api/platform/whoami`（authOnly，返回 `{isPlatformAdmin}` 供前端导航门禁）；其余 `/api/platform/*`（storage-config/global、orgs、admins）均经 `RequireScopeRole "platform"` 门禁。
 
 ### M4 异步引擎机制
 
