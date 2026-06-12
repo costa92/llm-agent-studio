@@ -51,6 +51,8 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/review"
 	"github.com/costa92/llm-agent-studio/internal/secretbox"
 	"github.com/costa92/llm-agent-studio/internal/storage"
+	"github.com/costa92/llm-agent-studio/internal/storageconfig"
+	"github.com/costa92/llm-agent-studio/internal/storagerouter"
 	"github.com/costa92/llm-agent-studio/internal/studiosvc"
 	"github.com/costa92/llm-agent-studio/internal/todos"
 	"github.com/costa92/llm-agent-studio/internal/worker"
@@ -125,48 +127,11 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	scriptAgent := studioagents.NewScriptAgent(model)
 	storyboardAgent := studioagents.NewStoryboardAgent(model)
 
-	// BlobStore (spec §10): localfs (dev), S3/minio (presigned), Alibaba OSS
-	// (official SDK), or Tencent COS (S3-compatible → reuses the s3 adapter).
-	var blobStore blob.BlobStore
-	var blobServer *localfs.Store // non-nil only in localfs mode (回源 handler)
-	switch cfg.BlobMode {
-	case "s3":
-		s3s, err := blobs3.New(blobs3.Config{
-			Endpoint: cfg.S3Endpoint, Bucket: cfg.S3Bucket, Region: cfg.S3Region,
-			AccessKey: cfg.S3AccessKey, SecretKey: cfg.S3SecretKey, UseSSL: cfg.S3UseSSL,
-		})
-		if err != nil {
-			st.Close()
-			return nil, nil, err
-		}
-		blobStore = s3s
-	case "oss":
-		o, err := bloboss.New(bloboss.Config{
-			Endpoint: cfg.OSSEndpoint, Bucket: cfg.OSSBucket,
-			AccessKeyID: cfg.OSSAccessKeyID, AccessKeySecret: cfg.OSSAccessKeySecret,
-		})
-		if err != nil {
-			st.Close()
-			return nil, nil, err
-		}
-		blobStore = o
-	case "cos":
-		// COS is S3-compatible; reuse the minio-go adapter with COS's
-		// virtual-hosted endpoint (always TLS). SecretID → AccessKey.
-		c, err := blobs3.New(blobs3.Config{
-			Endpoint: cfg.COSEndpointHost(), Bucket: cfg.COSBucket, Region: cfg.COSRegion,
-			AccessKey: cfg.COSSecretID, SecretKey: cfg.COSSecretKey, UseSSL: true,
-		})
-		if err != nil {
-			st.Close()
-			return nil, nil, err
-		}
-		blobStore = c
-	default:
-		lfs := localfs.New(cfg.BlobDir, []byte(cfg.BlobSecret), cfg.BlobPublic)
-		blobStore = lfs
-		blobServer = lfs
-	}
+	// BlobStore (spec §10): 内置 localfs 默认 + 单一回源 server，env 配置 (dev/默认)。
+	// 远端对象存储 (S3/minio、Alibaba OSS、Tencent COS) 改由 DB storage_configs 配置 +
+	// StorageRouter 按 org 路由 (storageRouter 在 encBox 就绪后构造，见下)。这一个
+	// *localfs.Store 同时是 router 的 Default (实现 blob.BlobStore) 与回源 handler。
+	localfsDefault := localfs.New(cfg.BlobDir, []byte(cfg.BlobSecret), cfg.BlobPublic)
 
 	// Generator registry: build the org-agnostic default image generator from
 	// the configured provider (real) or a fake (e2e via generatorOverride).
@@ -209,6 +174,43 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	}
 	modelStore := models.New(st.Pool(), encBox)
 
+	// StorageRouter (Phase 3): per-org → global → 内置 localfs 默认 的对象存储路由。
+	// storageStore 复用 BYOK 同一把加密 box 解密 secret。buildStorageStore 复用 main 里
+	// 既有的 adapter 构造器 (绝不重实现 adapter)。零 storage_config 行时 ResolveForOrg
+	// 返回 !ok，router 始终回落 localfsDefault → 全流程仍可跑 (内置默认)。
+	storageStore := storageconfig.New(st.Pool(), encBox)
+	buildStorageStore := func(rs storageconfig.ResolvedStorage) (blob.BlobStore, error) {
+		switch rs.Mode {
+		case "localfs":
+			// 所有 localfs 配置共用同一根/secret，签名才能在唯一回源 handler 上验证通过。
+			// 故忽略 per-row root/secret，复用 localfsDefault (保持单一回源 server)。
+			return localfsDefault, nil
+		case "s3":
+			return blobs3.New(blobs3.Config{
+				Endpoint: rs.Endpoint, Bucket: rs.Bucket, Region: rs.Region,
+				AccessKey: rs.AccessKeyID, SecretKey: rs.SecretKey, UseSSL: rs.UseSSL,
+			})
+		case "oss":
+			return bloboss.New(bloboss.Config{
+				Endpoint: rs.Endpoint, Bucket: rs.Bucket,
+				AccessKeyID: rs.AccessKeyID, AccessKeySecret: rs.SecretKey,
+			})
+		case "cos":
+			// COS S3-compatible：复用 minio-go adapter，虚拟主机式 endpoint，恒 TLS。
+			return blobs3.New(blobs3.Config{
+				Endpoint: cosEndpointHost(rs.Region, rs.Endpoint), Bucket: rs.Bucket, Region: rs.Region,
+				AccessKey: rs.AccessKeyID, SecretKey: rs.SecretKey, UseSSL: true,
+			})
+		default:
+			return nil, fmt.Errorf("studiod: unknown storage mode %q", rs.Mode)
+		}
+	}
+	storageRouter := storagerouter.New(storagerouter.Config{
+		Configs: storageStore,
+		Default: localfsDefault,
+		Build:   buildStorageStore,
+	})
+
 	// BYOK 模型路由 (ModelRouter): resolves an org's stored model_config and builds
 	// the matching chat model / media generator via the factories below; falls
 	// back to the env-default chat model + the registry for orgs with no config.
@@ -242,7 +244,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		w := worker.New(worker.Config{
 			Pool: st.Pool(), Todos: todoStore, Projects: projectStore, Events: eventStore,
 			Script: scriptAgent, Storyboard: storyboardAgent,
-			Asset: assetAgent, Review: reviewAgent, Blob: blobStore, Assets: assetStore, Cost: costStore,
+			Asset: assetAgent, Review: reviewAgent, Storage: storageRouter, Assets: assetStore, Cost: costStore,
 			Models: modelStore, Registry: registry, Router: router,
 			WorkerID:           fmt.Sprintf("studiod-%d", i),
 			GenQuota:           cfg.OrgDailyGenQuota,
@@ -301,8 +303,8 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 
 		Review:         reviewSvc,
 		AssetLibrary:   assetStore,
-		BlobSigner:     blobStore,
-		BlobServer:     blobServerOrNil(blobServer),
+		BlobRouter:     storageRouter,
+		BlobServer:     localfsDefault,
 		Models:         modelStore,
 		Cost:           costStore,
 		PromptBuilder:  promptBuilder,
@@ -668,12 +670,15 @@ func buildMediaFactory(tp trace.TracerProvider) func(kind, provider, model, apiK
 	}
 }
 
-// blobServerOrNil avoids handing NewMux a typed-nil *localfs.Store wrapped in the
-// BlobServer interface (which would be non-nil and crash the blob route in S3
-// mode). Returns a nil interface when there's no localfs回源 server.
-func blobServerOrNil(s *localfs.Store) httpapi.BlobServer {
-	if s == nil {
-		return nil
+// cosEndpointHost 返回 COS S3-compatible endpoint host (无 scheme) 供 minio-go
+// adapter 使用：显式 endpoint 优先，否则按 region 派生 cos.<region>.myqcloud.com。
+// (Phase 3: 从 config.COSEndpointHost 迁来——env 存储配置已删，仅 Build factory 用。)
+func cosEndpointHost(region, explicit string) string {
+	if explicit != "" {
+		return explicit
 	}
-	return s
+	if region == "" {
+		return ""
+	}
+	return "cos." + region + ".myqcloud.com"
 }

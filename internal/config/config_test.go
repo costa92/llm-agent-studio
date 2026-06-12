@@ -75,45 +75,6 @@ func TestLoadFakeGenMode(t *testing.T) {
 	}
 }
 
-func TestLoadOSSAndCOS(t *testing.T) {
-	cfg, err := LoadFromLookup(func(k string) (string, bool) {
-		m := map[string]string{
-			"PG_URL": "postgres://x", "JWT_SECRET": "s",
-			"OSS_ENDPOINT": "oss-cn-hangzhou.aliyuncs.com", "OSS_BUCKET": "b",
-			"OSS_ACCESS_KEY_ID": "id", "OSS_ACCESS_KEY_SECRET": "sec",
-			"COS_REGION": "ap-guangzhou", "COS_BUCKET": "name-123",
-			"COS_SECRET_ID": "sid", "COS_SECRET_KEY": "sk",
-		}
-		v, ok := m[k]
-		return v, ok
-	})
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if cfg.OSSEndpoint != "oss-cn-hangzhou.aliyuncs.com" || cfg.OSSBucket != "b" ||
-		cfg.OSSAccessKeyID != "id" || cfg.OSSAccessKeySecret != "sec" {
-		t.Fatalf("OSS not plumbed: %+v", cfg)
-	}
-	if cfg.COSBucket != "name-123" || cfg.COSSecretID != "sid" || cfg.COSSecretKey != "sk" {
-		t.Fatalf("COS not plumbed: %+v", cfg)
-	}
-}
-
-func TestCOSEndpointHost(t *testing.T) {
-	// Derived from region when no explicit endpoint.
-	if got := (Config{COSRegion: "ap-guangzhou"}).COSEndpointHost(); got != "cos.ap-guangzhou.myqcloud.com" {
-		t.Fatalf("derived = %q", got)
-	}
-	// Explicit endpoint overrides derivation.
-	if got := (Config{COSRegion: "ap-guangzhou", COSEndpoint: "cos.internal:443"}).COSEndpointHost(); got != "cos.internal:443" {
-		t.Fatalf("override = %q", got)
-	}
-	// Neither set → empty (New will reject downstream).
-	if got := (Config{}).COSEndpointHost(); got != "" {
-		t.Fatalf("empty = %q", got)
-	}
-}
-
 func TestLoadWebDir(t *testing.T) {
 	cfg, err := LoadFromLookup(func(k string) (string, bool) {
 		switch k {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/costa92/llm-agent-studio/internal/assets"
+	"github.com/costa92/llm-agent-studio/internal/blob"
 	"github.com/costa92/llm-agent-studio/internal/cost"
 	"github.com/costa92/llm-agent-studio/internal/models"
 	"github.com/costa92/llm-agent-studio/internal/prompt"
@@ -34,9 +35,11 @@ type AssetLibrary interface {
 	OrgIDForAsset(ctx context.Context, assetID string) (string, error)
 }
 
-// BlobSigner mints signed blob URLs (satisfied by *localfs.Store or the s3 store).
-type BlobSigner interface {
-	SignedURL(ctx context.Context, key string, ttl time.Duration) (string, error)
+// BlobRouter resolves an org's对象存储 blob store (per-org → global → 内置默认)，供
+// assetContentHandler 按 asset 所属 org 取对应 store 再 SignedURL (satisfied by
+// *storagerouter.Router)。secret 永不进 handler——只取 store 句柄签 URL。
+type BlobRouter interface {
+	BlobStoreFor(ctx context.Context, orgID string) (blob.BlobStore, error)
 }
 
 // BlobServer additionally serves bytes for the localfs回源 handler.
@@ -229,9 +232,12 @@ func getAssetHandler(lib AssetLibrary) http.HandlerFunc {
 }
 
 // assetContentHandler (GET /api/assets/{id}/content): viewer+. 302 to signed URL.
-func assetContentHandler(lib AssetLibrary, signer BlobSigner) http.HandlerFunc {
+// 按 asset 所属 org 路由对象存储后再签名 (per-org → global → 内置默认)，多租户各自
+// 落在自己的 bucket/store 上。
+func assetContentHandler(lib AssetLibrary, router BlobRouter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		a, err := lib.Get(r.Context(), r.PathValue("id"))
+		id := r.PathValue("id")
+		a, err := lib.Get(r.Context(), id)
 		if errors.Is(err, assets.ErrNotFound) {
 			http.Error(w, "asset not found", http.StatusNotFound)
 			return
@@ -244,7 +250,17 @@ func assetContentHandler(lib AssetLibrary, signer BlobSigner) http.HandlerFunc {
 			http.Redirect(w, r, a.URL, http.StatusFound)
 			return
 		}
-		signed, err := signer.SignedURL(r.Context(), a.BlobKey, signedURLTTL)
+		orgID, err := lib.OrgIDForAsset(r.Context(), a.ID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		bs, err := router.BlobStoreFor(r.Context(), orgID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		signed, err := bs.SignedURL(r.Context(), a.BlobKey, signedURLTTL)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

@@ -15,7 +15,6 @@ import (
 
 	studioagents "github.com/costa92/llm-agent-studio/internal/agents"
 	"github.com/costa92/llm-agent-studio/internal/assets"
-	"github.com/costa92/llm-agent-studio/internal/blob"
 	"github.com/costa92/llm-agent-studio/internal/cost"
 	"github.com/costa92/llm-agent-studio/internal/events"
 	"github.com/costa92/llm-agent-studio/internal/generate"
@@ -63,7 +62,7 @@ func TestRunAssetWritesAssetAndGeneration(t *testing.T) {
 	w := New(Config{
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
-		Blob:     blob.NewFake(),
+		Storage:  testStorage(),
 		Assets:   assets.New(pool),
 		Cost:     cost.New(pool),
 		WorkerID: "test", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
@@ -205,7 +204,7 @@ func TestRunAssetRoutesViaOrgDefaultModelConfig(t *testing.T) {
 	w := New(Config{
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), defGen),
-		Blob:     blob.NewFake(),
+		Storage:  testStorage(),
 		Assets:   assets.New(pool),
 		Cost:     cost.New(pool),
 		Models:   ms,
@@ -247,7 +246,7 @@ func TestProcessDiscardsAssetWhenTodoCanceledMidFlight(t *testing.T) {
 	w := New(Config{
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
-		Blob:     blob.NewFake(),
+		Storage:  testStorage(),
 		Assets:   assets.New(pool),
 		Cost:     cost.New(pool),
 		WorkerID: "discarder", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
@@ -274,10 +273,10 @@ func TestProcessDiscardsAssetWhenTodoCanceledMidFlight(t *testing.T) {
 // Proves the sync asset retry path reuses the same asset row (BUG #3) instead
 // of inserting a duplicate that violates assets_todo_uniq.
 type flakyGen struct {
-	mu       sync.Mutex
-	calls    int
+	mu        sync.Mutex
+	calls     int
 	failUntil int
-	ok       generate.GenResult
+	ok        generate.GenResult
 }
 
 func (g *flakyGen) Kind() string { return "image" }
@@ -312,7 +311,7 @@ func TestRunAssetSyncRetryReusesRowNoDuplicateKey(t *testing.T) {
 	w := New(Config{
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), gen),
-		Blob:     blob.NewFake(),
+		Storage:  testStorage(),
 		Assets:   assets.New(pool),
 		Cost:     cost.New(pool),
 		WorkerID: "retry", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
@@ -375,7 +374,7 @@ func TestRunAssetSyncPermanentFailureTerminalFailsViaProcess(t *testing.T) {
 	w := New(Config{
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), gen),
-		Blob:     blob.NewFake(),
+		Storage:  testStorage(),
 		Assets:   assets.New(pool),
 		Cost:     cost.New(pool),
 		WorkerID: "permfail", Lease: time.Minute, MaxAttempts: 2, BaseBackoff: 0,
@@ -427,7 +426,7 @@ func TestRunAssetWithDevFakeGeneratorReachesPendingAcceptance(t *testing.T) {
 	w := New(Config{
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), generate.NewDevFakeGenerator()),
-		Blob:     blob.NewFake(),
+		Storage:  testStorage(),
 		Assets:   assets.New(pool),
 		Cost:     cost.New(pool),
 		WorkerID: "fakegen", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
@@ -470,7 +469,7 @@ func TestProcessAppliesCallTimeout(t *testing.T) {
 	w := New(Config{
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
 		Asset:       studioagents.NewAssetAgent(prompt.NewBuilder(), slowGen{}),
-		Blob:        blob.NewFake(),
+		Storage:     testStorage(),
 		Assets:      assets.New(pool),
 		Cost:        cost.New(pool),
 		WorkerID:    "timeouter",
@@ -537,7 +536,7 @@ func TestRunStoryboardUsesParentScriptTodo(t *testing.T) {
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
 		Storyboard: newStoryboardAgentWithShots(t, 1),
 		Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
-		Blob:       blob.NewFake(), Assets: assets.New(pool), Cost: cost.New(pool),
+		Storage:    testStorage(), Assets: assets.New(pool), Cost: cost.New(pool),
 		WorkerID: "parent", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
 	})
 	ref, err := w.runStoryboard(ctx, claimed{todoID: sbTodo, projectID: pid, typ: "storyboard", attempts: 1, input: []byte(`{}`)})
@@ -566,7 +565,7 @@ func TestRunAssetPrescreensViaReviewAgent(t *testing.T) {
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
 		Review:   studioagents.NewReviewAgent(reviewModel),
-		Blob:     blob.NewFake(),
+		Storage:  testStorage(),
 		Assets:   assets.New(pool),
 		Cost:     cost.New(pool),
 		WorkerID: "prescreener", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
@@ -685,7 +684,7 @@ func TestRunAssetQuotaBackstopFailsOverQuotaTodo(t *testing.T) {
 	w := New(Config{
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
-		Blob:     blob.NewFake(),
+		Storage:  testStorage(),
 		Assets:   assets.New(pool),
 		Cost:     cs,
 		GenQuota: 1,
@@ -732,7 +731,7 @@ func TestFanOutWritesKindAndDuration(t *testing.T) {
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
 		Storyboard: newStoryboardAgentWithShots(t, 1),
 		Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
-		Blob:       blob.NewFake(), Assets: assets.New(pool), Cost: cost.New(pool),
+		Storage:    testStorage(), Assets: assets.New(pool), Cost: cost.New(pool),
 		WorkerID: "fanout", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
 	})
 	if _, err := w.runStoryboard(ctx, claimed{todoID: sbTodo, projectID: pid, typ: "storyboard", attempts: 1, input: []byte(`{}`)}); err != nil {
@@ -774,8 +773,8 @@ func asyncWorkerSetup(t *testing.T, pool *pgxpool.Pool, pollsToDone int) (*Worke
 
 	w := New(Config{
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
-		Asset:  studioagents.NewAssetAgent(prompt.NewBuilder(), generate.NewFakeLooping(generate.GenResult{Provider: "img"})),
-		Blob:   blob.NewFake(), Assets: assets.New(pool), Cost: cost.New(pool),
+		Asset:   studioagents.NewAssetAgent(prompt.NewBuilder(), generate.NewFakeLooping(generate.GenResult{Provider: "img"})),
+		Storage: testStorage(), Assets: assets.New(pool), Cost: cost.New(pool),
 		Models: ms, Registry: reg,
 		WorkerID: "async", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
 		PollBackoff: time.Millisecond, MaxPollBackoff: time.Millisecond, MaxPollAttempts: 60,
@@ -1001,7 +1000,9 @@ func TestPollReclaimedByOtherWorkerDoesNotCancel(t *testing.T) {
 }
 
 // errorsIsRescheduled is a test shim around the worker's internal sentinel.
-func errorsIsRescheduled(err error) bool { return err != nil && err.Error() == "worker: todo rescheduled" }
+func errorsIsRescheduled(err error) bool {
+	return err != nil && err.Error() == "worker: todo rescheduled"
+}
 
 // errorsIsLostLease is a test shim around the worker's internal lost-lease sentinel.
 func errorsIsLostLease(err error) bool {

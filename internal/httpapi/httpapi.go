@@ -40,8 +40,8 @@ type Deps struct {
 
 	Review        ReviewPort
 	AssetLibrary  AssetLibrary
-	BlobSigner    BlobSigner
-	BlobServer    BlobServer // localfs回源 handler; nil for pure-S3 deployments
+	BlobRouter    BlobRouter // per-org → global → 内置默认 的对象存储路由 (asset content 按 org 签名)
+	BlobServer    BlobServer // 内置 localfs回源 handler (始终非空)
 	Models        ModelStore
 	Cost          CostStore
 	PromptBuilder *prompt.Builder
@@ -143,7 +143,7 @@ func NewMux(d Deps) *http.ServeMux {
 	// Asset library + single asset (viewer+).
 	mux.Handle("GET /api/orgs/{org}/assets", scoped(roleViewer, orgScope, libraryHandler(d.AssetLibrary)))
 	mux.Handle("GET /api/assets/{id}", asset(roleViewer, getAssetHandler(d.AssetLibrary)))
-	mux.Handle("GET /api/assets/{id}/content", asset(roleViewer, assetContentHandler(d.AssetLibrary, d.BlobSigner)))
+	mux.Handle("GET /api/assets/{id}/content", asset(roleViewer, assetContentHandler(d.AssetLibrary, d.BlobRouter)))
 	// Signed blob回源 (NO auth — HMAC sig in query gates access, spec §10).
 	if d.BlobServer != nil {
 		mux.Handle("GET /api/blob/{key...}", blobHandler(d.BlobServer))

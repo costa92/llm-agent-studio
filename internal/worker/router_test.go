@@ -10,7 +10,6 @@ import (
 
 	studioagents "github.com/costa92/llm-agent-studio/internal/agents"
 	"github.com/costa92/llm-agent-studio/internal/assets"
-	"github.com/costa92/llm-agent-studio/internal/blob"
 	"github.com/costa92/llm-agent-studio/internal/cost"
 	"github.com/costa92/llm-agent-studio/internal/events"
 	"github.com/costa92/llm-agent-studio/internal/generate"
@@ -91,7 +90,7 @@ func TestWorkerRoutesChatModelViaRouter(t *testing.T) {
 		Script:     studioagents.NewScriptAgent(bound),
 		Storyboard: studioagents.NewStoryboardAgent(bound),
 		Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fakeGen),
-		Blob:       blob.NewFake(), Assets: assets.New(pool), Cost: cost.New(pool),
+		Storage:    testStorage(), Assets: assets.New(pool), Cost: cost.New(pool),
 		Models: ms, Registry: reg, Router: router,
 		WorkerID: "route-chat", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
 	})
@@ -164,8 +163,8 @@ func TestWorkerRoutesMediaViaRouterBuildMedia(t *testing.T) {
 
 	w := New(Config{
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
-		Asset:  studioagents.NewAssetAgent(prompt.NewBuilder(), defGen),
-		Blob:   blob.NewFake(), Assets: assets.New(pool), Cost: cost.New(pool),
+		Asset:   studioagents.NewAssetAgent(prompt.NewBuilder(), defGen),
+		Storage: testStorage(), Assets: assets.New(pool), Cost: cost.New(pool),
 		Models: ms, Registry: reg, Router: router,
 		WorkerID: "route-media", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
 	})
