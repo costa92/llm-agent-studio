@@ -90,8 +90,8 @@ export function WorkbenchView({
 
   return (
     <div className="flex h-full flex-col">
-      {/* 顶栏。 */}
-      <header className="relative flex items-center gap-3 border-b border-line px-6 py-3.5">
+      {/* 顶栏。窄屏允许换行，避免标题/动作横向溢出。 */}
+      <header className="relative flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-4 py-3 sm:px-6 sm:py-3.5">
         <button
           type="button"
           onClick={onBack}
@@ -107,7 +107,8 @@ export function WorkbenchView({
             去审核 →
           </Button>
         )}
-        <div className="ml-auto flex items-center gap-3">
+        {/* 窄屏动作过多时换行而非横向溢出。 */}
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-2 sm:gap-3">
           {live && <SseIndicator status={CONN_TO_STATUS[conn]} />}
           {canRun && (
             <>
@@ -123,10 +124,10 @@ export function WorkbenchView({
         <SlateBar visible={slateVisible} />
       </header>
 
-      {/* 三栏。 */}
-      <div className="grid min-h-0 flex-1 grid-cols-[250px_1fr_330px] overflow-hidden">
+      {/* 三栏：≥lg 固定三列（桌面原型）；<lg 单列竖排滚动，制片轨道排首位（order-first）确保不被推到折叠下方。 */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:grid lg:grid-cols-[250px_1fr_330px] lg:overflow-hidden">
         {/* 左：计划。 */}
-        <aside className="overflow-y-auto border-r border-line p-[18px]">
+        <aside className="border-b border-line p-[18px] lg:order-none lg:overflow-y-auto lg:border-r lg:border-b-0">
           <section className="mb-5">
             <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
               创意 BRIEF
@@ -162,8 +163,8 @@ export function WorkbenchView({
           </section>
         </aside>
 
-        {/* 中：制片轨道。 */}
-        <div className="overflow-y-auto p-[18px]">
+        {/* 中：制片轨道（主视图）。<lg 排首位避免被左栏挤到折叠下方。 */}
+        <div className="order-first p-[18px] lg:order-none lg:overflow-y-auto">
           <div className="relative mx-auto max-w-[560px] pl-2">
             {stages.map((stage, i) => (
               <TimelineStage
@@ -191,7 +192,7 @@ export function WorkbenchView({
         </div>
 
         {/* 右：工件预览。 */}
-        <aside className="overflow-y-auto border-l border-line p-[18px]">
+        <aside className="border-t border-line p-[18px] lg:overflow-y-auto lg:border-t-0 lg:border-l">
           <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
             选中工件
           </h4>

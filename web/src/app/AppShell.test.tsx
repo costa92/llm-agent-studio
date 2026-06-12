@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest"
-import { render, screen } from "@testing-library/react"
+import { render, screen, within } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import {
   createRootRoute,
   createRoute,
@@ -61,5 +62,36 @@ describe("AppShell", () => {
     expect(await screen.findByLabelText("选择组织")).toBeInTheDocument()
     expect(screen.queryByText("项目")).not.toBeInTheDocument()
     expect(screen.queryByText("资产")).not.toBeInTheDocument()
+  })
+
+  // T8a：移动汉堡 + 抽屉。jsdom 不跑媒体查询，故无法验断点显隐，但能验：
+  // 桌面轨道始终在 DOM、汉堡控件存在、点开抽屉后里面有同一套 nav 项（且尊重 isAdmin）。
+  it("renders a hamburger control alongside the desktop rail nav", async () => {
+    renderShell({ isAdmin: true })
+    expect(await screen.findByText("项目")).toBeInTheDocument() // 桌面轨道
+    expect(screen.getByLabelText("打开导航菜单")).toBeInTheDocument() // 汉堡
+  })
+
+  it("opens a drawer exposing nav items respecting isAdmin (admin sees 审核/成本)", async () => {
+    const user = userEvent.setup()
+    renderShell({ isAdmin: true })
+    await user.click(await screen.findByLabelText("打开导航菜单"))
+    // 抽屉以 dialog 形式挂载；其内仍是 aria-label=主导航 的 nav。
+    const drawer = await screen.findByRole("dialog")
+    expect(within(drawer).getByText("项目")).toBeInTheDocument()
+    expect(within(drawer).getByText("审核")).toBeInTheDocument()
+    expect(within(drawer).getByText("成本")).toBeInTheDocument()
+    expect(within(drawer).getByText("模型")).toBeInTheDocument()
+  })
+
+  it("drawer hides admin-only nav items for non-admin", async () => {
+    const user = userEvent.setup()
+    renderShell({ isAdmin: false })
+    await user.click(await screen.findByLabelText("打开导航菜单"))
+    const drawer = await screen.findByRole("dialog")
+    expect(within(drawer).getByText("项目")).toBeInTheDocument()
+    expect(within(drawer).getByText("资产")).toBeInTheDocument()
+    expect(within(drawer).queryByText("审核")).not.toBeInTheDocument()
+    expect(within(drawer).queryByText("成本")).not.toBeInTheDocument()
   })
 })
