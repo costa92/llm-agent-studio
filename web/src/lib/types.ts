@@ -223,6 +223,50 @@ export interface PlatformAdmin {
   email: string
 }
 
+// GET /api/platform/users → {items: PlatformUser[]}。平台内全部用户一览。
+// createdAt 为 RFC3339 字符串；orgCount 为该用户所属 org 数。
+export interface PlatformUser {
+  userId: string
+  email: string
+  createdAt: string
+  isPlatformAdmin: boolean
+  orgCount: number
+}
+
+// UserDetail.orgs 项：用户在某 org 的成员关系。soleOrgAdmin 标记其为该 org 唯一管理员。
+export interface UserOrgMembership {
+  orgId: string
+  orgName: string
+  role: string
+  soleOrgAdmin: boolean
+}
+
+// GET /api/platform/users/{userId} → UserDetail。含所属 org 列表与角色。
+export interface UserDetail {
+  userId: string
+  email: string
+  createdAt: string
+  isPlatformAdmin: boolean
+  orgs: UserOrgMembership[]
+}
+
+// org 成员（authz membership，scope_kind='org'）。role ∈ viewer/editor/admin/org_admin。
+// GET /api/orgs/{org}/members → {items: OrgMember[]}（admin 网关；列表 viewer 可读）。
+export type OrgRole = "viewer" | "editor" | "admin" | "org_admin"
+
+export interface OrgMember {
+  userId: string
+  email: string
+  role: OrgRole
+}
+
+// POST /api/orgs/{org}/members 入参：按邮箱添加成员并赋角色。
+// 邮箱无对应用户 → 404；空邮箱/非法 role → 400。
+export interface AddMemberInput {
+  email: string
+  role: OrgRole
+}
+
 // cost/store.go Aggregate。GET /api/orgs/{org}/cost、GET /api/projects/{id}/cost。
 export interface Aggregate {
   generations: number

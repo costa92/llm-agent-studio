@@ -44,6 +44,7 @@ type Deps struct {
 	BlobServer    BlobServer // 内置 localfs回源 handler (始终非空)
 	Models        ModelStore
 	StorageConfig StorageConfigStore // per-org / global 对象存储后端配置 (secret write-only)
+	Members       MemberService      // org 成员管理: 列出/按邮箱添加/改角色/移除 (org-scoped)
 	Platform      PlatformService    // 平台超级管理员: 系统级存储配置 + 所有 org 视图 + 平台管理员名册
 	Cost          CostStore
 	PromptBuilder *prompt.Builder
@@ -167,6 +168,11 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("GET /api/orgs/{org}/storage-config", scoped(roleAdmin, orgScope, getOrgStorageConfigHandler(d.StorageConfig)))
 	mux.Handle("PUT /api/orgs/{org}/storage-config", scoped(roleAdmin, orgScope, putOrgStorageConfigHandler(d.StorageConfig)))
 	mux.Handle("DELETE /api/orgs/{org}/storage-config", scoped(roleAdmin, orgScope, deleteOrgStorageConfigHandler(d.StorageConfig)))
+	// Org 成员管理 (org-scoped). 列出对任意 org 成员开放 (viewer)；增删改角色限 org_admin (admin).
+	mux.Handle("GET /api/orgs/{org}/members", scoped(roleViewer, orgScope, listMembersHandler(d.Members)))
+	mux.Handle("POST /api/orgs/{org}/members", scoped(roleAdmin, orgScope, addMemberHandler(d.Members)))
+	mux.Handle("PUT /api/orgs/{org}/members/{userId}", scoped(roleAdmin, orgScope, setMemberRoleHandler(d.Members)))
+	mux.Handle("DELETE /api/orgs/{org}/members/{userId}", scoped(roleAdmin, orgScope, removeMemberHandler(d.Members)))
 	// 平台超级管理员 (spec: 平台角色). whoami 仅 authOnly（前端据此决定是否展示平台导航，
 	// 不必吃 403）；其余路由经 platformAdmin 门禁。系统级 global 存储配置从旧的
 	// any-org-admin 门禁迁到此处，由专属平台角色守护。
@@ -177,6 +183,9 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("GET /api/platform/admins", platformAdmin(platformListAdminsHandler(d.Platform)))
 	mux.Handle("POST /api/platform/admins", platformAdmin(platformGrantAdminHandler(d.Platform)))
 	mux.Handle("DELETE /api/platform/admins/{userId}", platformAdmin(platformRevokeAdminHandler(d.Platform)))
+	mux.Handle("GET /api/platform/users", platformAdmin(platformListUsersHandler(d.Platform)))
+	mux.Handle("GET /api/platform/users/{userId}", platformAdmin(platformUserDetailHandler(d.Platform)))
+	mux.Handle("DELETE /api/platform/users/{userId}", platformAdmin(platformDeleteUserHandler(d.Platform)))
 	// Cost center (admin).
 	mux.Handle("GET /api/orgs/{org}/cost", scoped(roleAdmin, orgScope, orgCostHandler(d.Cost)))
 	mux.Handle("GET /api/projects/{id}/cost", proj(roleAdmin, projectCostHandler(d.Cost)))

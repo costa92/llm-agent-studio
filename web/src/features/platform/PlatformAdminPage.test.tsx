@@ -2,11 +2,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { Toaster } from "sonner"
-import type { PlatformAdmin, PlatformOrg, StorageConfig } from "@/lib/types"
+import type {
+  PlatformAdmin,
+  PlatformOrg,
+  PlatformUser,
+  StorageConfig,
+  UserDetail,
+} from "@/lib/types"
+import { ApiError } from "@/lib/apiClient"
 
 // platform/api 钩子 mock：每个 describe 用 setHooks 注入需要的返回值。
 const grantMutate = vi.fn()
 const revokeMutate = vi.fn()
+const deleteMutate = vi.fn()
 const whoami = { value: { data: true, isLoading: false } as { data?: boolean; isLoading: boolean } }
 const orgs = {
   value: { data: [] as PlatformOrg[], isLoading: false, isError: false, refetch: vi.fn() },
@@ -14,13 +22,24 @@ const orgs = {
 const admins = {
   value: { data: [] as PlatformAdmin[], isLoading: false, isError: false, refetch: vi.fn() },
 }
+const users = {
+  value: { data: [] as PlatformUser[], isLoading: false, isError: false, refetch: vi.fn() },
+}
+// 详情按需返回；测试用 setHooks 注入。usePlatformUserDetail(userId) → 仅在 userId 非空时有数据。
+const userDetail = {
+  value: { data: undefined as UserDetail | undefined, isLoading: false, isError: false },
+}
 
 vi.mock("./api", () => ({
   usePlatformWhoami: () => whoami.value,
   usePlatformOrgs: () => orgs.value,
   usePlatformAdmins: () => admins.value,
+  usePlatformUsers: () => users.value,
+  usePlatformUserDetail: (userId: string | null) =>
+    userId == null ? { data: undefined, isLoading: false, isError: false } : userDetail.value,
   useGrantPlatformAdmin: () => ({ mutate: grantMutate, isPending: false }),
   useRevokePlatformAdmin: () => ({ mutate: revokeMutate, isPending: false }),
+  useDeleteUser: () => ({ mutate: deleteMutate, isPending: false }),
 }))
 
 // 全局存储钩子 mock（GlobalStorageSection 用）：返回已配置 config，不发请求。
@@ -52,6 +71,7 @@ vi.mock("@/features/storage/api", () => ({
 
 import {
   AllOrgsPage,
+  AllUsersPage,
   PlatformGate,
   PlatformSettingsPage,
 } from "./PlatformAdminPage"
@@ -77,10 +97,21 @@ function renderAllOrgs() {
   return render(<AllOrgsPage />)
 }
 
+function renderAllUsers() {
+  return render(
+    <>
+      <AllUsersPage />
+      <Toaster />
+    </>,
+  )
+}
+
 beforeEach(() => {
   whoami.value = { data: true, isLoading: false }
   orgs.value = { data: [], isLoading: false, isError: false, refetch: vi.fn() }
   admins.value = { data: [], isLoading: false, isError: false, refetch: vi.fn() }
+  users.value = { data: [], isLoading: false, isError: false, refetch: vi.fn() }
+  userDetail.value = { data: undefined, isLoading: false, isError: false }
 })
 
 afterEach(() => {
@@ -186,5 +217,130 @@ describe("AllOrgsPage", () => {
   it("shows empty state when there are no orgs", () => {
     renderAllOrgs()
     expect(screen.getByText("暂无组织。")).toBeInTheDocument()
+  })
+})
+
+describe("AllUsersPage", () => {
+  const USER_ADMIN: PlatformUser = {
+    userId: "u1",
+    email: "admin@example.com",
+    createdAt: "2026-01-01T00:00:00Z",
+    isPlatformAdmin: true,
+    orgCount: 2,
+  }
+  const USER_PLAIN: PlatformUser = {
+    userId: "u2",
+    email: "alice@example.com",
+    createdAt: "2026-02-01T00:00:00Z",
+    isPlatformAdmin: false,
+    orgCount: 1,
+  }
+
+  it("renders user rows from usePlatformUsers", () => {
+    users.value = {
+      data: [USER_ADMIN, USER_PLAIN],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    }
+    renderAllUsers()
+    expect(screen.getByText("admin@example.com")).toBeInTheDocument()
+    expect(screen.getByText("alice@example.com")).toBeInTheDocument()
+  })
+
+  it("opens the detail dialog with org list and soleOrgAdmin warning", async () => {
+    users.value = {
+      data: [USER_PLAIN],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    }
+    userDetail.value = {
+      data: {
+        userId: "u2",
+        email: "alice@example.com",
+        createdAt: "2026-02-01T00:00:00Z",
+        isPlatformAdmin: false,
+        orgs: [
+          { orgId: "acme", orgName: "Acme", role: "admin", soleOrgAdmin: true },
+          { orgId: "globex", orgName: "Globex", role: "member", soleOrgAdmin: false },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    }
+    const user = userEvent.setup()
+    renderAllUsers()
+    await user.click(screen.getByRole("button", { name: "查看 alice@example.com" }))
+    expect(screen.getByText("用户详情")).toBeInTheDocument()
+    expect(screen.getByText("Acme")).toBeInTheDocument()
+    expect(screen.getByText("Globex")).toBeInTheDocument()
+    expect(
+      screen.getByText(/此用户是以下组织的唯一管理员：Acme/),
+    ).toBeInTheDocument()
+  })
+
+  it("confirms before delete and calls useDeleteUser with userId", async () => {
+    users.value = {
+      data: [USER_PLAIN],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    }
+    const user = userEvent.setup()
+    renderAllUsers()
+
+    await user.click(screen.getByRole("button", { name: "删除 alice@example.com" }))
+    expect(screen.getByText("确认删除用户？")).toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "取消" }))
+    expect(deleteMutate).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole("button", { name: "删除 alice@example.com" }))
+    await user.click(screen.getByRole("button", { name: "确认删除" }))
+    await waitFor(() => expect(deleteMutate).toHaveBeenCalledTimes(1))
+    expect(deleteMutate.mock.calls[0][0]).toBe("u2")
+  })
+
+  it("shows 不能删除自己 toast on self-delete 409", async () => {
+    users.value = {
+      data: [USER_PLAIN],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    }
+    // mutate(userId, { onError }) → 触发 onError(ApiError 409 "cannot delete yourself")。
+    deleteMutate.mockImplementation(
+      (_id: string, opts: { onError: (e: unknown) => void }) => {
+        opts.onError(new ApiError(409, "cannot delete yourself"))
+      },
+    )
+    const user = userEvent.setup()
+    renderAllUsers()
+    await user.click(screen.getByRole("button", { name: "删除 alice@example.com" }))
+    await user.click(screen.getByRole("button", { name: "确认删除" }))
+    await waitFor(() =>
+      expect(screen.getByText("不能删除自己")).toBeInTheDocument(),
+    )
+  })
+
+  it("toggles admin: grant by email when off, revoke by userId when on", async () => {
+    users.value = {
+      data: [USER_ADMIN, USER_PLAIN],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    }
+    const user = userEvent.setup()
+    renderAllUsers()
+
+    // alice 非管理员 → 设为管理员 → grant(by email)。
+    await user.click(screen.getByRole("button", { name: "设为管理员 alice@example.com" }))
+    expect(grantMutate).toHaveBeenCalledTimes(1)
+    expect(grantMutate.mock.calls[0][0]).toBe("alice@example.com")
+
+    // admin 已是管理员 → 取消管理员 → revoke(by userId)。
+    await user.click(screen.getByRole("button", { name: "取消管理员 admin@example.com" }))
+    expect(revokeMutate).toHaveBeenCalledTimes(1)
+    expect(revokeMutate.mock.calls[0][0]).toBe("u1")
   })
 })

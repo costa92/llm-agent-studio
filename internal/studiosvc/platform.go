@@ -44,6 +44,33 @@ type PlatformAdmin struct {
 	Email  string `json:"email"`
 }
 
+// PlatformUser 是“全部用户”列表里的一行：身份 + 是否平台管理员 + 所属业务 org 数。
+type PlatformUser struct {
+	UserID    string `json:"userId"`
+	Email     string `json:"email"`
+	CreatedAt any    `json:"createdAt"`
+	IsAdmin   bool   `json:"isPlatformAdmin"`
+	OrgCount  int64  `json:"orgCount"`
+}
+
+// UserOrgMembership 是用户详情里的一条 org 归属：角色 + 是否该 org 的唯一 org_admin
+// （SoleOrgAdmin 用于前端在删除/降级前提示“这是该 org 仅存的管理员”）。
+type UserOrgMembership struct {
+	OrgID        string `json:"orgId"`
+	OrgName      string `json:"orgName"`
+	Role         string `json:"role"`
+	SoleOrgAdmin bool   `json:"soleOrgAdmin"`
+}
+
+// UserDetail 是单个用户的详情：身份 + 是否平台管理员 + 业务 org 归属列表。
+type UserDetail struct {
+	UserID    string              `json:"userId"`
+	Email     string              `json:"email"`
+	CreatedAt any                 `json:"createdAt"`
+	IsAdmin   bool                `json:"isPlatformAdmin"`
+	Orgs      []UserOrgMembership `json:"orgs"`
+}
+
 // NewPlatform 构造 Platform 适配器。
 func NewPlatform(az *authzstore.Store, pool *pgxpool.Pool) *Platform {
 	return &Platform{authz: az, pool: pool}
@@ -179,6 +206,89 @@ func (p *Platform) ListAllOrgs(ctx context.Context) ([]map[string]any, error) {
 		})
 	}
 	return out, rows.Err()
+}
+
+// ListUsers 列出所有用户（按 email 升序），含是否平台管理员与所属业务 org 数。
+// 空时返回非 nil 空切片。
+func (p *Platform) ListUsers(ctx context.Context) ([]PlatformUser, error) {
+	rows, err := p.pool.Query(ctx,
+		`SELECT u.id, u.email, u.created_at,
+		        EXISTS(SELECT 1 FROM auth_membership pa
+		               WHERE pa.user_id=u.id AND pa.scope_kind='platform' AND pa.org_id='' AND pa.role='admin') AS is_admin,
+		        (SELECT count(DISTINCT m.org_id) FROM auth_membership m
+		           WHERE m.user_id=u.id AND m.scope_kind='org') AS org_count
+		   FROM auth_user u ORDER BY u.email ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("studiosvc: list users: %w", err)
+	}
+	defer rows.Close()
+	out := make([]PlatformUser, 0)
+	for rows.Next() {
+		var u PlatformUser
+		if err := rows.Scan(&u.UserID, &u.Email, &u.CreatedAt, &u.IsAdmin, &u.OrgCount); err != nil {
+			return nil, fmt.Errorf("studiosvc: scan user: %w", err)
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// UserDetail 返回单个用户的详情：身份 + 是否平台管理员 + 业务 org 归属（含 SoleOrgAdmin）。
+// 无对应 auth_user → ErrUserNotFound。Orgs 空时为非 nil 空切片。
+func (p *Platform) UserDetail(ctx context.Context, userID string) (UserDetail, error) {
+	var d UserDetail
+	d.Orgs = make([]UserOrgMembership, 0)
+	err := p.pool.QueryRow(ctx,
+		`SELECT id, email, created_at FROM auth_user WHERE id=$1`, userID).
+		Scan(&d.UserID, &d.Email, &d.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return UserDetail{}, ErrUserNotFound
+	}
+	if err != nil {
+		return UserDetail{}, fmt.Errorf("studiosvc: lookup user: %w", err)
+	}
+	admin, err := p.IsPlatformAdmin(ctx, userID)
+	if err != nil {
+		return UserDetail{}, err
+	}
+	d.IsAdmin = admin
+
+	rows, err := p.pool.Query(ctx,
+		`SELECT o.id, o.name, m.role,
+		        ((SELECT count(*) FROM auth_membership a
+		            WHERE a.org_id=o.id AND a.scope_kind='org' AND a.scope_id IS NULL AND a.role='org_admin') = 1
+		         AND m.role='org_admin') AS sole_org_admin
+		   FROM auth_membership m JOIN auth_org o ON o.id=m.org_id
+		  WHERE m.user_id=$1 AND m.scope_kind='org' AND m.scope_id IS NULL AND o.id<>''
+		  ORDER BY o.name ASC`, userID)
+	if err != nil {
+		return UserDetail{}, fmt.Errorf("studiosvc: list user orgs: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var m UserOrgMembership
+		if err := rows.Scan(&m.OrgID, &m.OrgName, &m.Role, &m.SoleOrgAdmin); err != nil {
+			return UserDetail{}, fmt.Errorf("studiosvc: scan user org: %w", err)
+		}
+		d.Orgs = append(d.Orgs, m)
+	}
+	if err := rows.Err(); err != nil {
+		return UserDetail{}, err
+	}
+	return d, nil
+}
+
+// DeleteUser 删除 auth_user（其 auth_membership 经 FK ON DELETE CASCADE 一并清除）。
+// 无对应行 → ErrUserNotFound。自删/最后一名平台管理员的守护在 handler 层。
+func (p *Platform) DeleteUser(ctx context.Context, userID string) error {
+	tag, err := p.pool.Exec(ctx, `DELETE FROM auth_user WHERE id=$1`, userID)
+	if err != nil {
+		return fmt.Errorf("studiosvc: delete user: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrUserNotFound
+	}
+	return nil
 }
 
 // userIDByEmail 查 auth_user 的 id；无对应行 → ErrUserNotFound。emails 在 config 已
