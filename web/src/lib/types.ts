@@ -133,11 +133,12 @@ export interface CatalogEntry {
   model: string
   kind: string
   label: string
-  // available:false 表示该 model 的 provider API key 未在服务端配置，暂不可用。
+  // available:false 表示该 provider 未在服务端配置 env 密钥。
+  // BYO key 模式下用户仍可自填 API key 使用——故仅作信息提示，不再硬拦。
   available: boolean
 }
 
-// models/store.go ModelConfig。无 API key 字段——密钥服务端管理，永不下发。
+// models/store.go ModelConfig。密钥写入即加密、永不回显——列表只报 hasApiKey 布尔。
 export interface ModelConfig {
   id: string
   orgId: string
@@ -146,14 +147,22 @@ export interface ModelConfig {
   model: string
   enabled: boolean
   isDefault: boolean
+  // 自填 base_url（OpenAI 兼容端点等）；无则空串。
+  baseUrl: string
+  // 是否已为本配置写入 per-config API key；false → 回退服务端 env 密钥。
+  hasApiKey: boolean
   params?: Record<string, unknown>
 }
 
 // createModelConfigHandler 入参：POST /api/orgs/{org}/model-configs。
+// provider/model 为自由文本（provider 可为 catalog 项或 "openai-compatible"）。
+// baseUrl/apiKey 可选——空则省略（不发 ""）。apiKey 仅写入、加密存储、永不回显。
 export interface CreateModelConfigInput {
   kind: string
   provider: string
   model: string
+  baseUrl?: string
+  apiKey?: string
   enabled: boolean
   isDefault: boolean
   params?: Record<string, unknown>

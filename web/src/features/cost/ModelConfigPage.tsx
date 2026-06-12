@@ -24,15 +24,22 @@ import type {
   ModelConfig,
 } from "@/lib/types"
 
-// 一期开放 kind：chat 当前后端 catalog 未含（仅 image/video/audio），故按 kind 分组展示已有配置；
-// video/audio 标"二期"（生成走后端异步引擎，前端只配置/展示）。
+// kind 标签：text（文本/对话）+ image/video/audio。
 const KIND_LABELS: Record<string, string> = {
+  text: "文本",
   image: "图像",
   video: "视频",
   audio: "音频",
   chat: "对话",
 }
 const DEFERRED_KINDS = new Set(["video", "audio"])
+
+// 表单可选的 kind 顺序（chat 仅为兼容旧配置分组展示，不在创建表单暴露）。
+const FORM_KINDS = ["image", "video", "audio", "text"] as const
+
+// 自定义 OpenAI 兼容 provider：纯自由 model + 必填 base_url。
+const COMPATIBLE_PROVIDER = "openai-compatible"
+const COMPATIBLE_LABEL = "OpenAI 兼容 (自定义 base_url)"
 
 export interface ModelConfigViewProps {
   configs: ModelConfig[] | undefined
@@ -72,12 +79,6 @@ export function ModelConfigView({
     groups.set(c.kind, arr)
   }
 
-  // catalog 里 provider/model 当前是否可用（密钥已配置）。缺失则视为可用，不误标已存配置。
-  const isConfigUnavailable = (c: ModelConfig): boolean => {
-    const e = catalog?.find((x) => x.provider === c.provider && x.model === c.model)
-    return e != null && !e.available
-  }
-
   const addButton = (
     <CreateModelConfigDialog
       catalog={catalog ?? []}
@@ -94,7 +95,8 @@ export function ModelConfigView({
       </header>
 
       <p className="text-[12px] text-text-3">
-        模型密钥由服务端环境变量统一管理，配置中不包含也不下发任何 API key。
+        可选用内置 provider 或 OpenAI 兼容端点；API key 仅写入、加密存储，不会回显。
+        未填写密钥的配置回退服务端 env 密钥。
       </p>
 
       {isLoading ? (
@@ -127,13 +129,18 @@ export function ModelConfigView({
                   key={c.id}
                   className="flex items-center justify-between border-b border-line px-4 py-2.5 last:border-b-0 text-[12.5px]"
                 >
-                  <span className="text-text-1">
-                    {c.provider} · {c.model}
+                  <span className="flex flex-col gap-0.5">
+                    <span className="text-text-1">
+                      {c.provider} · {c.model}
+                    </span>
+                    {c.baseUrl && (
+                      <span className="text-[11px] text-text-3">{c.baseUrl}</span>
+                    )}
                   </span>
                   <span className="flex items-center gap-2">
-                    {isConfigUnavailable(c) && (
-                      <Badge variant="pending">需配置密钥</Badge>
-                    )}
+                    <Badge variant={c.hasApiKey ? "done" : "pending"}>
+                      {c.hasApiKey ? "已配置密钥" : "用服务端密钥"}
+                    </Badge>
                     {c.isDefault && <Badge variant="done">默认</Badge>}
                     <Badge variant={c.enabled ? "running" : "pending"}>
                       {c.enabled ? "已启用" : "已停用"}
@@ -149,21 +156,36 @@ export function ModelConfigView({
   )
 }
 
-// rhf+zod 创建表单（catalog 下拉选 provider·model·kind；enabled/isDefault 开关；params JSON）。
-// 绝不含 API key 字段；含密钥型 param 由后端 400 拒绝（ErrSecretParam）。
-const formSchema = z.object({
-  // catalog 索引（选中条目带出 provider/model/kind）。
-  catalogKey: z.string().min(1, "请选择模型"),
-  enabled: z.boolean(),
-  isDefault: z.boolean(),
-  // 可选 params JSON 文本。空 = 不带 params；非法 JSON 校验报错。
-  paramsText: z.string(),
-})
+// rhf+zod 创建表单（BYO key）：provider（含 openai-compatible）+ kind + 自由 model
+// + 可选 base_url + 可选 API key（写入即加密、永不回显）+ enabled/isDefault + params JSON。
+// 校验：openai-compatible 必填 base_url + model（兼容端点离不开 base_url）。
+const formSchema = z
+  .object({
+    provider: z.string().min(1, "请选择 provider"),
+    kind: z.string().min(1, "请选择类型"),
+    model: z.string().trim().min(1, "请填写 model"),
+    baseUrl: z.string().trim(),
+    apiKey: z.string(),
+    enabled: z.boolean(),
+    isDefault: z.boolean(),
+    // 可选 params JSON 文本。空 = 不带 params；非法 JSON 校验报错。
+    paramsText: z.string(),
+  })
+  .refine(
+    (v) => v.provider !== COMPATIBLE_PROVIDER || v.baseUrl.length > 0,
+    { path: ["baseUrl"], message: "请填写 Base URL（OpenAI 兼容端点必填）" },
+  )
 
 type FormValues = z.infer<typeof formSchema>
 
-function catalogKey(e: CatalogEntry): string {
-  return `${e.provider}/${e.model}`
+// catalog 里某 provider 下某 kind 的「常用模型」建议（快速填充 model 输入）。
+function suggestionsFor(
+  catalog: CatalogEntry[],
+  provider: string,
+  kind: string,
+): CatalogEntry[] {
+  if (provider === COMPATIBLE_PROVIDER) return []
+  return catalog.filter((e) => e.provider === provider && e.kind === kind)
 }
 
 export interface CreateModelConfigFormProps {
@@ -178,10 +200,8 @@ export function CreateModelConfigForm({
   onSuccess,
 }: CreateModelConfigFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null)
-  // 默认选中首个「可用」条目（provider 密钥已配置）；无可用条目时兜底到 catalog[0]
-  // （仍会被 select 禁用 + 提交拦截 + 内联提示挡住），避免默认就指向不可用模型。
-  const firstAvailable = catalog.find((e) => e.available) ?? catalog[0]
-  const hasAvailable = catalog.some((e) => e.available)
+  // catalog 里出现过的不重复 provider（保序）+ 末尾的 openai-compatible。
+  const providers = [...new Set(catalog.map((e) => e.provider))]
   const {
     register,
     handleSubmit,
@@ -191,28 +211,29 @@ export function CreateModelConfigForm({
   } = useForm<FormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      catalogKey: firstAvailable ? catalogKey(firstAvailable) : "",
+      provider: providers[0] ?? COMPATIBLE_PROVIDER,
+      kind: "image",
+      model: "",
+      baseUrl: "",
+      apiKey: "",
       enabled: true,
       isDefault: false,
       paramsText: "",
     },
   })
 
+  const provider = useWatch({ control, name: "provider" })
+  const kind = useWatch({ control, name: "kind" })
   const enabled = useWatch({ control, name: "enabled" })
   const isDefault = useWatch({ control, name: "isDefault" })
 
+  const suggestions = suggestionsFor(catalog, provider, kind)
+  // 当前 provider+kind 的建议里是否有「服务端未配置密钥」的条目（仅信息提示，不阻塞）。
+  const hasUnavailableSuggestion = suggestions.some((e) => !e.available)
+  const isCompatible = provider === COMPATIBLE_PROVIDER
+
   const submit = handleSubmit(async (values) => {
     setSubmitError(null)
-    const entry = catalog.find((e) => catalogKey(e) === values.catalogKey)
-    if (entry == null) {
-      setSubmitError("请选择有效的模型")
-      return
-    }
-    // 该 model 的 provider 密钥未在服务端配置 → 本地拦下，不打后端（否则生成会静默回退）。
-    if (!entry.available) {
-      setSubmitError("该模型对应 provider 的 API key 未配置，暂不可用")
-      return
-    }
 
     // params JSON 解析（空 = 不带）；非法 → 本地拦下（不打后端）。
     let params: Record<string, unknown> | undefined
@@ -231,50 +252,131 @@ export function CreateModelConfigForm({
       }
     }
 
+    // 空 base_url / apiKey → 省略（undefined），避免发成 ""。
+    const baseUrl = values.baseUrl.trim() || undefined
+    const apiKey = values.apiKey || undefined
+
     try {
       const mc = await onCreate({
-        kind: entry.kind,
-        provider: entry.provider,
-        model: entry.model,
+        kind: values.kind,
+        provider: values.provider,
+        model: values.model.trim(),
+        baseUrl,
+        apiKey,
         enabled: values.enabled,
         isDefault: values.isDefault,
         params,
       })
       onSuccess?.(mc)
     } catch (err) {
-      // 后端 400（含密钥型 param / 缺 provider·model）等 → 调用方 toast；此处兜底文案。
+      // 后端 400（缺密钥加密 / 缺 provider·model / 含密钥型 param）等 → 调用方 toast；此处兜底文案。
       setSubmitError(err instanceof Error ? "保存失败，请检查参数" : "保存失败")
     }
   })
 
+  const selectClass =
+    "rounded-md border border-line bg-bg-base px-2.5 py-2 text-[13px] text-text-1 focus-visible:outline-2 focus-visible:outline-amber"
+
   return (
     <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="mc-provider">Provider</Label>
+          <select id="mc-provider" {...register("provider")} className={selectClass}>
+            {providers.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+            <option value={COMPATIBLE_PROVIDER}>{COMPATIBLE_LABEL}</option>
+          </select>
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="mc-kind">类型</Label>
+          <select id="mc-kind" {...register("kind")} className={selectClass}>
+            {FORM_KINDS.map((k) => (
+              <option key={k} value={k}>
+                {KIND_LABELS[k]}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
       <div className="flex flex-col gap-1.5">
-        <Label htmlFor="mc-model">模型</Label>
-        <select
+        <Label htmlFor="mc-model">模型 (model)</Label>
+        <input
           id="mc-model"
-          aria-invalid={errors.catalogKey != null}
-          {...register("catalogKey")}
-          className="rounded-md border border-line bg-bg-base px-2.5 py-2 text-[13px] text-text-1 focus-visible:outline-2 focus-visible:outline-amber"
-        >
-          {catalog.map((e) => (
-            <option key={catalogKey(e)} value={catalogKey(e)} disabled={!e.available}>
-              {e.label}（{e.provider} · {e.model}）
-              {!e.available && "（未配置密钥）"}
-            </option>
-          ))}
-        </select>
-        <p className="text-[11.5px] text-text-3">
-          灰显（未配置密钥）的模型需先在服务端配置对应 provider 的 API key 后方可使用。
-        </p>
-        {!hasAvailable && (
-          <p className="text-[12px] text-danger">
-            当前没有可用模型：请在服务端配置对应 provider 的 API key。
+          list={suggestions.length > 0 ? "mc-model-suggestions" : undefined}
+          aria-invalid={errors.model != null}
+          placeholder={isCompatible ? "如 deepseek-chat" : "如 gpt-4o-mini"}
+          {...register("model")}
+          className={selectClass}
+        />
+        {suggestions.length > 0 && (
+          <datalist id="mc-model-suggestions">
+            {suggestions.map((e) => (
+              <option key={e.model} value={e.model}>
+                {e.label}
+              </option>
+            ))}
+          </datalist>
+        )}
+        {suggestions.length > 0 && (
+          <p className="flex flex-wrap gap-1.5 text-[11.5px] text-text-3">
+            常用：
+            {suggestions.map((e) => (
+              <button
+                key={e.model}
+                type="button"
+                onClick={() => setValue("model", e.model, { shouldValidate: true })}
+                className="rounded border border-line px-1.5 py-0.5 text-text-2 hover:text-text-1"
+              >
+                {e.model}
+              </button>
+            ))}
           </p>
         )}
-        {errors.catalogKey && (
-          <p className="text-[12px] text-danger">{errors.catalogKey.message}</p>
+        {errors.model && (
+          <p className="text-[12px] text-danger">{errors.model.message}</p>
         )}
+        {hasUnavailableSuggestion && (
+          <p className="text-[11.5px] text-text-3">
+            该 provider 未配置服务端密钥，请在下方填写 API key。
+          </p>
+        )}
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="mc-baseurl">
+          {isCompatible ? "Base URL（必填）" : "Base URL（可选）"}
+        </Label>
+        <input
+          id="mc-baseurl"
+          aria-invalid={errors.baseUrl != null}
+          placeholder="https://api.example.com/v1"
+          {...register("baseUrl")}
+          className={selectClass}
+        />
+        {errors.baseUrl && (
+          <p className="text-[12px] text-danger">{errors.baseUrl.message}</p>
+        )}
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="mc-apikey">API Key（可选）</Label>
+        <input
+          id="mc-apikey"
+          type="password"
+          autoComplete="off"
+          placeholder="sk-..."
+          {...register("apiKey")}
+          className={selectClass}
+        />
+        <p className="text-[11.5px] text-text-3">
+          密钥仅写入、加密存储，不会回显；留空则回退服务端 env 密钥。
+        </p>
       </div>
 
       <label className="flex items-center gap-2 text-[13px] text-text-1">
@@ -303,7 +405,7 @@ export function CreateModelConfigForm({
           {...register("paramsText")}
         />
         <p className="text-[11.5px] text-text-3">
-          参数中请勿包含 API key / secret 等密钥字段，密钥由服务端管理。
+          参数中请勿包含 API key / secret 等密钥字段，密钥请填上方密钥字段。
         </p>
       </div>
 
@@ -340,7 +442,8 @@ export function CreateModelConfigDialog({
         <DialogHeader>
           <DialogTitle>添加模型配置</DialogTitle>
           <DialogDescription>
-            从模型目录选择 provider/model；密钥由服务端管理，无需填写。
+            选择 provider（或 OpenAI 兼容端点）与类型，填写 model；可选填 base_url 与 API
+            key（仅写入、加密存储）。
           </DialogDescription>
         </DialogHeader>
         <CreateModelConfigForm
