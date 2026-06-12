@@ -1,4 +1,6 @@
-import { Sheet, SheetContent } from "@/components/ui/sheet"
+import { useState } from "react"
+import { SlidersHorizontal } from "lucide-react"
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Badge } from "@/components/studio/Badge"
 import { Button } from "@/components/studio/Button"
@@ -59,6 +61,21 @@ export function LibraryView({
     onFilterChange({ ...filter, [key]: filter[key] === value ? undefined : value })
   }
 
+  // 移动端筛选 Sheet 开合（≥md 走左侧 FilterRail，不用此 state）。
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const filterFields = (
+    <FilterFields
+      filter={filter}
+      onToggle={toggle}
+      onTagChange={(tag) => onFilterChange({ ...filter, tag: tag || undefined })}
+      onProjectChange={(project) =>
+        onFilterChange({ ...filter, project: project || undefined })
+      }
+      projects={projects}
+      styles={styles}
+    />
+  )
+
   return (
     <div className="flex h-full">
       <FilterRail
@@ -72,10 +89,32 @@ export function LibraryView({
         styles={styles}
       />
 
+      {/* 移动端筛选入口：≥md 隐藏（左 FilterRail 代之）。 */}
+      <Sheet open={filtersOpen} onOpenChange={setFiltersOpen}>
+        <SheetContent
+          side="left"
+          className="w-72 gap-5 overflow-y-auto border-line bg-bg-surface p-4 pt-12"
+        >
+          <SheetTitle className="sr-only">筛选</SheetTitle>
+          {filterFields}
+        </SheetContent>
+      </Sheet>
+
       <div className="flex min-w-0 flex-1 flex-col p-6">
-        <header className="mb-5 flex items-center justify-between">
+        <header className="mb-5 flex items-center justify-between gap-3">
           <h1 className="font-heading text-[22px] font-bold text-text-1">资产库</h1>
-          <span className="text-[12px] text-text-3">{assets.length} 个资产</span>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              aria-label="筛选"
+              onClick={() => setFiltersOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1.5 text-[12px] text-text-2 transition-colors hover:border-text-3 hover:text-text-1 md:hidden"
+            >
+              <SlidersHorizontal className="h-[14px] w-[14px]" />
+              筛选
+            </button>
+            <span className="text-[12px] text-text-3">{assets.length} 个资产</span>
+          </div>
         </header>
 
         {isLoading ? (
@@ -110,7 +149,7 @@ export function LibraryView({
                   />
                   <Badge
                     variant={assetStatusVariant(asset.status)}
-                    className="pointer-events-none absolute left-1.5 top-1.5"
+                    className="pointer-events-none absolute left-1.5 top-1.5 max-w-[calc(100%-12px)] truncate"
                   >
                     {assetStatusLabel(asset.status)}
                   </Badge>
@@ -162,8 +201,18 @@ interface FilterRailProps {
   styles: Style[]
 }
 
-// 左过滤栏：tag 搜索 + 类型/状态/风格单选 chip + 项目下拉。
-function FilterRail({
+// 左过滤栏（桌面）：tag 搜索 + 类型/状态/风格单选 chip + 项目下拉。
+// <md 隐藏，由 LibraryView 的「筛选」按钮 + Sheet 承载同样的 FilterFields。
+function FilterRail(props: FilterRailProps) {
+  return (
+    <aside className="hidden w-56 flex-shrink-0 flex-col gap-5 overflow-y-auto border-r border-line bg-bg-surface p-4 md:flex">
+      <FilterFields {...props} />
+    </aside>
+  )
+}
+
+// 过滤字段本体（桌面 aside 与移动 Sheet 复用）。
+function FilterFields({
   filter,
   onToggle,
   onTagChange,
@@ -172,7 +221,7 @@ function FilterRail({
   styles,
 }: FilterRailProps) {
   return (
-    <aside className="flex w-56 flex-shrink-0 flex-col gap-5 overflow-y-auto border-r border-line bg-bg-surface p-4">
+    <>
       <div className="flex flex-col gap-1.5">
         <label
           htmlFor="lib-tag"
@@ -249,7 +298,7 @@ function FilterRail({
           ))}
         </select>
       </div>
-    </aside>
+    </>
   )
 }
 

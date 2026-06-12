@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils"
 // 原型 .badge: inline-flex; gap 5px; padding 2px 9px; radius 999px; font 11px/500; 带 .dot 6px 圆点
 // 变体取自原型 b-running / b-done / b-pend / b-rej
 const badgeVariants = cva(
-  "inline-flex items-center gap-[5px] rounded-full px-[9px] py-0.5 text-[11px] font-medium",
+  "inline-flex shrink-0 items-center gap-[5px] whitespace-nowrap rounded-full px-[9px] py-0.5 text-[11px] font-medium",
   {
     variants: {
       variant: {

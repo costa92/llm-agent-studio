@@ -85,7 +85,7 @@ export function CostCenterView({
       </header>
 
       {isLoading ? (
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           {Array.from({ length: 3 }).map((_, i) => (
             <Skeleton key={i} className="h-24 rounded-xl" />
           ))}
@@ -97,7 +97,7 @@ export function CostCenterView({
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <StatCard label="本月成本" value={formatCurrency(aggregate.costMicros)} />
             <StatCard label="生成次数" value={formatCount(aggregate.generations)} unit="次" />
             <StatCard label="Token 用量" value={formatCount(aggregate.tokens)} />
@@ -137,7 +137,7 @@ function GenerationsTable({ rows }: { rows: LedgerEntry[] }) {
       {rows.length === 0 ? (
         <p className="py-6 text-center text-[12.5px] text-text-3">暂无生成记录</p>
       ) : (
-        <Table>
+        <Table className="min-w-[640px]">
           <TableHeader>
             <TableRow>
               <TableHead>时间</TableHead>
