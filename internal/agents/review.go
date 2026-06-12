@@ -39,27 +39,25 @@ const reviewSystemPrompt = `You are a content-safety and quality pre-screener fo
 // ReviewAgent runs the advisory prescreen via a single LLM call (same pattern
 // as ScriptAgent/StoryboardAgent: SimpleAgent + JSON prompt + tolerant parse).
 type ReviewAgent struct {
-	agent coreagents.Agent
+	model llm.ChatModel // bound default for Run; RunWith routes per-org (BYOK)
 }
 
 // NewReviewAgent builds a ReviewAgent over the given model.
 func NewReviewAgent(model llm.ChatModel) *ReviewAgent {
-	return &ReviewAgent{
-		agent: coreagents.NewSimpleAgent(model, coreagents.SimpleOptions{
-			Name:         "review",
-			SystemPrompt: reviewSystemPrompt,
-		}),
-	}
+	return &ReviewAgent{model: model}
 }
 
-// Run produces a ReviewOutput. Malformed JSON or an out-of-range score returns
-// an error — the WORKER decides what to do with it (record prescreen_error and
-// move on; a prescreen failure must never fail the asset todo).
-func (a *ReviewAgent) Run(ctx context.Context, in ReviewInput) (ReviewOutput, error) {
+// RunWith is Run with an explicit model (BYOK 模型路由): the worker resolves the
+// org's text model through the ModelRouter and passes it here. Run keeps the
+// bound default for un-routed callers.
+func (a *ReviewAgent) RunWith(ctx context.Context, model llm.ChatModel, in ReviewInput) (ReviewOutput, error) {
+	agent := coreagents.NewSimpleAgent(model, coreagents.SimpleOptions{
+		Name: "review", SystemPrompt: reviewSystemPrompt,
+	})
 	prompt := fmt.Sprintf(
 		"Generation prompt: %s\nStyle: %s\nProvider/model: %s/%s\nMime type: %s",
 		in.Prompt, in.Style, in.Provider, in.Model, in.MimeType)
-	res, err := a.agent.Run(ctx, prompt)
+	res, err := agent.Run(ctx, prompt)
 	if err != nil {
 		return ReviewOutput{}, fmt.Errorf("review: generate: %w", err)
 	}
@@ -78,4 +76,11 @@ func (a *ReviewAgent) Run(ctx context.Context, in ReviewInput) (ReviewOutput, er
 		out.Flags = []string{}
 	}
 	return out, nil
+}
+
+// Run produces a ReviewOutput. Malformed JSON or an out-of-range score returns
+// an error — the WORKER decides what to do with it (record prescreen_error and
+// move on; a prescreen failure must never fail the asset todo).
+func (a *ReviewAgent) Run(ctx context.Context, in ReviewInput) (ReviewOutput, error) {
+	return a.RunWith(ctx, a.model, in)
 }

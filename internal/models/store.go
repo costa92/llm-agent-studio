@@ -15,11 +15,17 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/costa92/llm-agent-studio/internal/secretbox"
 )
 
 // ErrSecretParam is returned when params_json carries a credential-looking
-// field (密钥审计, spec §6: API key 不在此 — server-side env only, never the DB).
-var ErrSecretParam = errors.New("models: params must not contain credentials (API keys live in server env only)")
+// field (密钥审计, spec §6: params 仍不得夹带凭据 — 专用 APIKey 字段是唯一合法入口)。
+var ErrSecretParam = errors.New("models: params must not contain credentials (use the dedicated api key field)")
+
+// ErrEncUnavailable 表示请求存储 per-config api key，但加密 box 未启用 (未配置
+// STUDIO_CONFIG_ENC_KEY)，无法静态加密，故拒绝。
+var ErrEncUnavailable = errors.New("models: api key storage requires STUDIO_CONFIG_ENC_KEY")
 
 // forbiddenParamKeys flag anywhere inside a (lowercased) key name. NOTE
 // (评审修复 M2): bare "token" is deliberately NOT in this substring list — it
@@ -80,10 +86,15 @@ func Catalog() []CatalogEntry {
 		{Provider: "kling", Model: "kling-v1", Kind: "video", Label: "Kling v1"},
 		{Provider: "google", Model: "veo-2", Kind: "video", Label: "Google Veo 2"},
 		{Provider: "openai", Model: "tts-1", Kind: "audio", Label: "OpenAI TTS-1"},
+		// BYOK: text/chat 模型建议项 (provider/model 在 store 中自由填写，UI 还可经
+		// "openai-compatible" 伪 provider 自定义 base_url + model — 后续任务)。
+		{Provider: "deepseek", Model: "deepseek-chat", Kind: "text", Label: "DeepSeek Chat"},
+		{Provider: "openai", Model: "gpt-4o-mini", Kind: "text", Label: "OpenAI GPT-4o mini"},
 	}
 }
 
-// ModelConfig is a model_configs row.
+// ModelConfig is a model_configs row returned to clients. 永不暴露 api key：只回
+// BaseURL + HasAPIKey 布尔标记 (解密后的 key 仅 ResolveForOrg 内部可见)。
 type ModelConfig struct {
 	ID        string          `json:"id"`
 	OrgID     string          `json:"orgId"`
@@ -92,7 +103,19 @@ type ModelConfig struct {
 	Model     string          `json:"model"`
 	Enabled   bool            `json:"enabled"`
 	IsDefault bool            `json:"isDefault"`
+	BaseURL   string          `json:"baseUrl"`
+	HasAPIKey bool            `json:"hasApiKey"`
 	Params    json.RawMessage `json:"params,omitempty"`
+}
+
+// ResolvedModel 是运行层 (ModelRouter) 用的解析结果，带解密后的 APIKey。
+// 这是唯一暴露明文 key 的路径，且只在服务端内部 (绝不进 HTTP handler)。
+type ResolvedModel struct {
+	Provider string
+	Model    string
+	BaseURL  string
+	APIKey   string
+	Params   json.RawMessage
 }
 
 // CreateInput is the input to Create.
@@ -103,14 +126,20 @@ type CreateInput struct {
 	Model     string
 	Enabled   bool
 	IsDefault bool
+	BaseURL   string          // 可选，per-config endpoint (openai-compatible)
+	APIKey    string          // 可选明文 key；非空则经 box 加密入库，绝不回显
 	Params    json.RawMessage
 }
 
 // Store persists model_configs.
-type Store struct{ pool *pgxpool.Pool }
+type Store struct {
+	pool *pgxpool.Pool
+	box  *secretbox.Box
+}
 
-// New builds a Store.
-func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
+// New builds a Store. box 提供 per-config api key 的静态加解密；nil/disabled box
+// 表示无法存储 key (带非空 APIKey 的 Create 返回 ErrEncUnavailable)。
+func New(pool *pgxpool.Pool, box *secretbox.Box) *Store { return &Store{pool: pool, box: box} }
 
 func newID() string {
 	b := make([]byte, 16)
@@ -128,6 +157,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (ModelConfig, error)
 	if kind == "" {
 		kind = "image"
 	}
+	// 守卫仍只扫 params_json (params 不得夹带凭据)。专用 APIKey 字段是合法入口。
 	if len(in.Params) > 0 {
 		var m map[string]any
 		if err := json.Unmarshal(in.Params, &m); err == nil {
@@ -135,6 +165,18 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (ModelConfig, error)
 				return ModelConfig{}, fmt.Errorf("%w (field %q)", ErrSecretParam, key)
 			}
 		}
+	}
+	// per-config api key：非空则静态加密入库；无可用 box 则拒绝 (不静默丢弃 key)。
+	var keyEnc []byte
+	if in.APIKey != "" {
+		if !s.box.Enabled() {
+			return ModelConfig{}, ErrEncUnavailable
+		}
+		enc, err := s.box.Encrypt([]byte(in.APIKey))
+		if err != nil {
+			return ModelConfig{}, fmt.Errorf("models: encrypt api key: %w", err)
+		}
+		keyEnc = enc
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -149,12 +191,13 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (ModelConfig, error)
 	}
 	mc := ModelConfig{
 		ID: newID(), OrgID: in.OrgID, Kind: kind, Provider: in.Provider, Model: in.Model,
-		Enabled: in.Enabled, IsDefault: in.IsDefault, Params: in.Params,
+		Enabled: in.Enabled, IsDefault: in.IsDefault, BaseURL: in.BaseURL,
+		HasAPIKey: keyEnc != nil, Params: in.Params,
 	}
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO model_configs (id, org_id, kind, provider, model, enabled, is_default, params_json)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-		mc.ID, mc.OrgID, mc.Kind, mc.Provider, mc.Model, mc.Enabled, mc.IsDefault, mc.Params); err != nil {
+		`INSERT INTO model_configs (id, org_id, kind, provider, model, enabled, is_default, base_url, api_key_enc, params_json)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		mc.ID, mc.OrgID, mc.Kind, mc.Provider, mc.Model, mc.Enabled, mc.IsDefault, mc.BaseURL, keyEnc, mc.Params); err != nil {
 		return ModelConfig{}, fmt.Errorf("models: insert: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -166,7 +209,8 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (ModelConfig, error)
 // ListByOrg lists an org's model configs, newest first.
 func (s *Store) ListByOrg(ctx context.Context, orgID string) ([]ModelConfig, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, org_id, kind, provider, model, enabled, is_default, params_json
+		`SELECT id, org_id, kind, provider, model, enabled, is_default,
+		        COALESCE(base_url,''), (api_key_enc IS NOT NULL) AS has_api_key, params_json
 		 FROM model_configs WHERE org_id=$1 ORDER BY created_at DESC`, orgID)
 	if err != nil {
 		return nil, err
@@ -175,12 +219,43 @@ func (s *Store) ListByOrg(ctx context.Context, orgID string) ([]ModelConfig, err
 	out := make([]ModelConfig, 0)
 	for rows.Next() {
 		var mc ModelConfig
-		if err := rows.Scan(&mc.ID, &mc.OrgID, &mc.Kind, &mc.Provider, &mc.Model, &mc.Enabled, &mc.IsDefault, &mc.Params); err != nil {
+		if err := rows.Scan(&mc.ID, &mc.OrgID, &mc.Kind, &mc.Provider, &mc.Model, &mc.Enabled, &mc.IsDefault,
+			&mc.BaseURL, &mc.HasAPIKey, &mc.Params); err != nil {
 			return nil, err
 		}
 		out = append(out, mc)
 	}
 	return out, rows.Err()
+}
+
+// ResolveForOrg 返回某 kind 的启用默认配置 (含解密后的 APIKey)，供运行层
+// ModelRouter 使用。无启用默认时 ok=false。这是唯一暴露明文 key 的路径，仅服务端
+// 内部调用 (绝不进 HTTP handler)。api_key_enc 为 NULL 时 APIKey 为空。
+func (s *Store) ResolveForOrg(ctx context.Context, orgID, kind string) (ResolvedModel, bool, error) {
+	row := s.pool.QueryRow(ctx,
+		`SELECT provider, model, COALESCE(base_url,''), api_key_enc, params_json
+		 FROM model_configs
+		 WHERE org_id=$1 AND kind=$2 AND enabled=true AND is_default=true
+		 ORDER BY created_at DESC LIMIT 1`, orgID, kind)
+	var rm ResolvedModel
+	var keyEnc []byte
+	if err := row.Scan(&rm.Provider, &rm.Model, &rm.BaseURL, &keyEnc, &rm.Params); err != nil {
+		if err == pgx.ErrNoRows {
+			return ResolvedModel{}, false, nil
+		}
+		return ResolvedModel{}, false, fmt.Errorf("models: resolve: %w", err)
+	}
+	if len(keyEnc) > 0 {
+		if !s.box.Enabled() {
+			return ResolvedModel{}, false, ErrEncUnavailable
+		}
+		pt, err := s.box.Decrypt(keyEnc)
+		if err != nil {
+			return ResolvedModel{}, false, fmt.Errorf("models: decrypt api key: %w", err)
+		}
+		rm.APIKey = string(pt)
+	}
+	return rm, true, nil
 }
 
 // DefaultForOrg returns the org's default provider+model for a kind. ok=false

@@ -23,6 +23,19 @@ func TestReviewAgentParsesScore(t *testing.T) {
 	}
 }
 
+func TestReviewAgentRunWithUsesPassedModel(t *testing.T) {
+	bound := llm.NewScriptedLLM(llm.WithResponses(llm.Response{Text: `{"score":10,"flags":[],"note":"bound"}`}))
+	routed := llm.NewScriptedLLM(llm.WithResponses(llm.Response{Text: `{"score":90,"flags":[],"note":"routed"}`}))
+	a := NewReviewAgent(bound)
+	out, err := a.RunWith(context.Background(), routed, ReviewInput{Prompt: "x"})
+	if err != nil {
+		t.Fatalf("runWith: %v", err)
+	}
+	if out.Score != 90 {
+		t.Fatalf("RunWith ignored the passed model: score=%d", out.Score)
+	}
+}
+
 func TestReviewAgentRejectsOutOfRangeScore(t *testing.T) {
 	model := llm.NewScriptedLLM(llm.WithResponses(llm.Response{Text: `{"score":150,"flags":[],"note":""}`}))
 	if _, err := NewReviewAgent(model).Run(context.Background(), ReviewInput{Prompt: "x"}); err == nil {

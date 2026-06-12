@@ -34,6 +34,15 @@ func (r *Registry) SetDefault(g MediaGenerator) {
 	r.def = g
 }
 
+// Default returns the fallback generator set via SetDefault (nil if unset).
+// The ModelRouter uses it as the last-resort generator when an org has no
+// usable config and no env-keyed adapter matches.
+func (r *Registry) Default() MediaGenerator {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.def
+}
+
 // Resolve returns the generator for provider+model, falling back to the default.
 func (r *Registry) Resolve(provider, model string) (MediaGenerator, error) {
 	r.mu.RLock()

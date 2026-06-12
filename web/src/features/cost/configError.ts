@@ -8,8 +8,12 @@ import { ApiError } from "@/lib/apiClient"
 //   其余 = 通用失败。
 export function modelConfigErrorMessage(err: unknown): string {
   if (err instanceof ApiError && err.status === 400) {
+    // 服务端未配置 STUDIO_CONFIG_ENC_KEY → 无法加密保存 per-config API key（ErrEncUnavailable）。
+    if (err.body.includes("encryption") || err.body.includes("STUDIO_CONFIG_ENC_KEY")) {
+      return "服务端未配置密钥加密 (STUDIO_CONFIG_ENC_KEY)，无法保存 API key"
+    }
     if (err.body.includes("credentials")) {
-      return "参数不能包含密钥（API key 由服务端管理，请移除密钥字段）"
+      return "参数不能包含密钥（请将 API key 填入下方密钥字段，而非 params）"
     }
     return "请填写 provider 和 model"
   }

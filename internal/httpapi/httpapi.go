@@ -32,6 +32,7 @@ type Deps struct {
 	OrgList      OrgLister
 	Projects     ProjectStore
 	Planner      PlannerPort
+	ChatRouter   ChatRouter // BYOK 模型路由 for the run handler's planner; nil → bound default
 	Events       EventAppender
 	EventReader  EventReader
 	Artifacts    ArtifactReader
@@ -120,7 +121,7 @@ func NewMux(d Deps) *http.ServeMux {
 
 	// Project-scoped routes ({id}).
 	mux.Handle("GET /api/projects/{id}", proj(roleViewer, getProjectHandler(d.Projects)))
-	mux.Handle("POST /api/projects/{id}/run", proj(roleEditor, runHandler(d.Projects, d.Planner, d.Events, d.Cost, d.GenQuota)))
+	mux.Handle("POST /api/projects/{id}/run", proj(roleEditor, runHandler(d.Projects, d.Planner, d.Events, d.Cost, d.GenQuota, d.ChatRouter)))
 	mux.Handle("POST /api/projects/{id}/cancel", proj(roleEditor, cancelHandler(d.Projects)))
 	mux.Handle("GET /api/projects/{id}/events", proj(roleViewer, listEventsHandler(d.EventReader)))
 	mux.Handle("GET /api/projects/{id}/events/stream", proj(roleViewer, streamEventsHandler(d.EventReader)))

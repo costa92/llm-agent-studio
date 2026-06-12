@@ -26,6 +26,24 @@ func TestScriptAgentParsesScenes(t *testing.T) {
 	}
 }
 
+func TestScriptAgentRunWithUsesPassedModel(t *testing.T) {
+	// Bound model returns the WRONG title; the passed model returns the right one.
+	bound := llm.NewScriptedLLM(llm.WithResponses(llm.Response{
+		Text: `{"title":"BOUND","logline":"x","scenes":[{"heading":"H","description":"d","dialogue":"l"}]}`,
+	}))
+	routed := llm.NewScriptedLLM(llm.WithResponses(llm.Response{
+		Text: `{"title":"ROUTED","logline":"x","scenes":[{"heading":"H","description":"d","dialogue":"l"}]}`,
+	}))
+	sa := NewScriptAgent(bound)
+	out, err := sa.RunWith(context.Background(), routed, ScriptInput{Brief: "b"})
+	if err != nil {
+		t.Fatalf("runWith: %v", err)
+	}
+	if out.Title != "ROUTED" {
+		t.Fatalf("RunWith ignored the passed model: title=%q", out.Title)
+	}
+}
+
 func TestScriptAgentMalformedJSONErrors(t *testing.T) {
 	model := llm.NewScriptedLLM(llm.WithResponses(llm.Response{Text: "I cannot do that."}))
 	sa := NewScriptAgent(model)

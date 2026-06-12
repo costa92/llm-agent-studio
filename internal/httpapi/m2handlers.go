@@ -286,6 +286,8 @@ func createModelConfigHandler(ms ModelStore) http.HandlerFunc {
 			Kind      string          `json:"kind"`
 			Provider  string          `json:"provider"`
 			Model     string          `json:"model"`
+			BaseURL   string          `json:"baseUrl"` // 可选 per-config endpoint (openai-compatible)
+			APIKey    string          `json:"apiKey"`  // 可选明文 key；加密入库，绝不回显
 			Enabled   bool            `json:"enabled"`
 			IsDefault bool            `json:"isDefault"`
 			Params    json.RawMessage `json:"params"`
@@ -296,10 +298,13 @@ func createModelConfigHandler(ms ModelStore) http.HandlerFunc {
 		}
 		mc, err := ms.Create(r.Context(), models.CreateInput{
 			OrgID: r.PathValue("org"), Kind: req.Kind, Provider: req.Provider, Model: req.Model,
-			Enabled: req.Enabled, IsDefault: req.IsDefault, Params: req.Params,
+			Enabled: req.Enabled, IsDefault: req.IsDefault, BaseURL: req.BaseURL, APIKey: req.APIKey, Params: req.Params,
 		})
 		if err != nil {
-			if errors.Is(err, models.ErrSecretParam) {
+			// ErrSecretParam (params 夹带凭据) 与 ErrEncUnavailable (要存 key 但未配
+			// STUDIO_CONFIG_ENC_KEY) 都是客户端可纠正的 400——后者带原文，UI 据此提示
+			// 管理员配置加密主密钥。其它错误才 500。响应永不回显 apiKey。
+			if errors.Is(err, models.ErrSecretParam) || errors.Is(err, models.ErrEncUnavailable) {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}

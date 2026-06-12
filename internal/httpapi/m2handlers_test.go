@@ -6,14 +6,19 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/costa92/llm-agent-studio/internal/assets"
 	"github.com/costa92/llm-agent-studio/internal/blob/localfs"
 	"github.com/costa92/llm-agent-studio/internal/models"
 	"github.com/costa92/llm-agent-studio/internal/prompt"
+	"github.com/costa92/llm-agent-studio/internal/secretbox"
+	"github.com/costa92/llm-agent-studio/internal/storage"
 )
 
 func TestPromptStylesHandler(t *testing.T) {
@@ -169,3 +174,148 @@ func TestBlobHandlerVerifiesSignature(t *testing.T) {
 
 var _ assets.Store // keep import (library handler uses *assets.Store via AssetLibrary port)
 var _ models.Store
+
+// modelTestPool opens the live PG store (LLM_AGENT_STUDIO_PG_URL), migrating the
+// schema. Skips when the env var is unset (mirrors models.testPool).
+func modelTestPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run model-config HTTP store tests")
+	}
+	ctx := context.Background()
+	st, err := storage.Open(ctx, storage.Config{PGURL: dsn})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(st.Close)
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return st.Pool()
+}
+
+// modelTestBox builds an enabled secretbox.Box from a fixed base64 32-byte key.
+func modelTestBox(t *testing.T) *secretbox.Box {
+	t.Helper()
+	b, err := secretbox.New("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatalf("test box: %v", err)
+	}
+	return b
+}
+
+// createModelConfigReq builds the POST request for an org with a JSON body.
+func createModelConfigReq(org, body string) *http.Request {
+	req := httptest.NewRequest("POST", "/api/orgs/"+org+"/model-configs", strings.NewReader(body))
+	req.SetPathValue("org", org)
+	return req
+}
+
+// TestCreateModelConfigBYOKHidesKey proves the HTTP layer (real *models.Store +
+// enabled box): a POST with apiKey+baseUrl returns 200 with baseUrl + hasApiKey
+// and NEVER echoes the apiKey; the list endpoint shows the same; and the stored
+// key is recoverable only via the store's ResolveForOrg (never over HTTP).
+func TestCreateModelConfigBYOKHidesKey(t *testing.T) {
+	pool := modelTestPool(t)
+	st := models.New(pool, modelTestBox(t))
+	const org = "org-byok-http"
+	const rawKey = "sk-http-byok-secret-123456789"
+	const baseURL = "https://api.example.com/v1"
+
+	rr := httptest.NewRecorder()
+	createModelConfigHandler(st)(rr, createModelConfigReq(org,
+		`{"kind":"text","provider":"openai-compatible","model":"gpt-4o-mini","baseUrl":"`+baseURL+`","apiKey":"`+rawKey+`","enabled":true,"isDefault":true}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create: code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if strings.Contains(body, rawKey) {
+		t.Fatalf("apiKey leaked in create response: %s", body)
+	}
+	if !strings.Contains(body, `"hasApiKey":true`) || !strings.Contains(body, `"baseUrl":"`+baseURL+`"`) {
+		t.Fatalf("create response missing hasApiKey/baseUrl: %s", body)
+	}
+	var created models.ModelConfig
+	if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+
+	// List shows the same config — still no key.
+	lr := httptest.NewRecorder()
+	lreq := httptest.NewRequest("GET", "/api/orgs/"+org+"/model-configs", nil)
+	lreq.SetPathValue("org", org)
+	listModelConfigsHandler(st)(lr, lreq)
+	if lr.Code != http.StatusOK {
+		t.Fatalf("list: code=%d body=%s", lr.Code, lr.Body.String())
+	}
+	lbody := lr.Body.String()
+	if strings.Contains(lbody, rawKey) {
+		t.Fatalf("apiKey leaked in list response: %s", lbody)
+	}
+	if !strings.Contains(lbody, `"hasApiKey":true`) || !strings.Contains(lbody, created.ID) {
+		t.Fatalf("list missing created config / hasApiKey: %s", lbody)
+	}
+
+	// The plaintext key is recoverable only server-side via ResolveForOrg.
+	rm, ok, err := st.ResolveForOrg(context.Background(), org, "text")
+	if err != nil || !ok || rm.APIKey != rawKey {
+		t.Fatalf("resolve: ok=%v err=%v key=%q", ok, err, rm.APIKey)
+	}
+}
+
+// TestCreateModelConfig400OnDisabledBox proves a POST carrying an apiKey when the
+// store's box is disabled returns 400 with the ErrEncUnavailable message (so the
+// UI can tell the admin to set STUDIO_CONFIG_ENC_KEY).
+func TestCreateModelConfig400OnDisabledBox(t *testing.T) {
+	pool := modelTestPool(t)
+	disabled, _ := secretbox.New("") // disabled box
+	st := models.New(pool, disabled)
+
+	rr := httptest.NewRecorder()
+	createModelConfigHandler(st)(rr, createModelConfigReq("org-nobox",
+		`{"kind":"text","provider":"openai","model":"gpt-4o-mini","apiKey":"sk-nope","enabled":true}`))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("apiKey with disabled box must 400, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), models.ErrEncUnavailable.Error()) {
+		t.Fatalf("400 body must carry ErrEncUnavailable message, got: %s", rr.Body.String())
+	}
+}
+
+// TestModelCatalogHandlerTextAvailability proves the catalog includes text-kind
+// entries and the injected ModelAvailable func drives their `available` flag.
+func TestModelCatalogHandlerTextAvailability(t *testing.T) {
+	// deepseek text keyed, openai text un-keyed.
+	avail := func(provider, kind string) bool {
+		return kind == "text" && provider == "deepseek"
+	}
+	rr := httptest.NewRecorder()
+	modelCatalogHandler(avail)(rr, httptest.NewRequest("GET", "/api/model-catalog", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var got struct {
+		Catalog []catalogEntryView `json:"catalog"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v body=%s", err, rr.Body.String())
+	}
+	avl := map[string]bool{}
+	var sawText bool
+	for _, e := range got.Catalog {
+		if e.Kind == "text" {
+			sawText = true
+		}
+		avl[e.Provider+"/"+e.Model] = e.Available
+	}
+	if !sawText {
+		t.Fatalf("catalog missing text entries: %s", rr.Body.String())
+	}
+	if !avl["deepseek/deepseek-chat"] {
+		t.Errorf("deepseek text (keyed) should be available:true")
+	}
+	if avl["openai/gpt-4o-mini"] {
+		t.Errorf("openai text (un-keyed) should be available:false")
+	}
+}

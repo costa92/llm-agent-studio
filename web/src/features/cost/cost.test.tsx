@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { render, screen, waitFor } from "@testing-library/react"
+import { render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { ApiError } from "@/lib/apiClient"
 import type {
@@ -18,7 +18,7 @@ import {
 } from "./format"
 import { modelConfigErrorMessage } from "./configError"
 import { CostCenterView } from "./CostCenterPage"
-import { CreateModelConfigForm, ModelConfigView } from "./ModelConfigPage"
+import { ModelConfigView } from "./ModelConfigPage"
 import { AdminGate } from "./AdminGate"
 
 afterEach(() => {
@@ -246,7 +246,8 @@ describe("CostCenterView", () => {
   })
 })
 
-// ── ModelConfigView + 创建表单（400 密钥拒绝处理）─────────────────────
+// ── ModelConfigView 列表（baseUrl + 密钥指示徽章）────────────────────
+// 注：创建表单（BYO key）的测试见 ModelConfigPage.test.tsx。
 const CATALOG: CatalogEntry[] = [
   { provider: "openai", model: "gpt-image-1", kind: "image", label: "OpenAI GPT-Image-1", available: true },
   { provider: "runway", model: "gen-3", kind: "video", label: "Runway Gen-3", available: true },
@@ -260,6 +261,8 @@ const CONFIGS: ModelConfig[] = [
     model: "gpt-image-1",
     enabled: true,
     isDefault: true,
+    baseUrl: "",
+    hasApiKey: false,
   },
 ]
 
@@ -281,7 +284,50 @@ describe("ModelConfigView", () => {
     expect(screen.getByText("已启用")).toBeInTheDocument()
   })
 
-  it("states keys are server-managed (no API key field) and shows empty state", () => {
+  it("shows the env-fallback indicator when hasApiKey is false", () => {
+    render(
+      <ModelConfigView
+        configs={CONFIGS}
+        catalog={CATALOG}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+        onCreate={vi.fn()}
+      />,
+    )
+    expect(screen.getByText("用服务端密钥")).toBeInTheDocument()
+    expect(screen.queryByText("已配置密钥")).not.toBeInTheDocument()
+  })
+
+  it("shows the configured-key badge and baseUrl when hasApiKey is true", () => {
+    const withKey: ModelConfig[] = [
+      {
+        id: "mc2",
+        orgId: "acme",
+        kind: "text",
+        provider: "openai-compatible",
+        model: "deepseek-chat",
+        enabled: true,
+        isDefault: false,
+        baseUrl: "https://api.deepseek.com/v1",
+        hasApiKey: true,
+      },
+    ]
+    render(
+      <ModelConfigView
+        configs={withKey}
+        catalog={CATALOG}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+        onCreate={vi.fn()}
+      />,
+    )
+    expect(screen.getByText("已配置密钥")).toBeInTheDocument()
+    expect(screen.getByText("https://api.deepseek.com/v1")).toBeInTheDocument()
+  })
+
+  it("states keys are write-only and shows empty state", () => {
     render(
       <ModelConfigView
         configs={[]}
@@ -293,136 +339,6 @@ describe("ModelConfigView", () => {
       />,
     )
     expect(screen.getByText("尚未配置模型")).toBeInTheDocument()
-    expect(
-      screen.getByText(/密钥由服务端环境变量统一管理/),
-    ).toBeInTheDocument()
-  })
-})
-
-describe("CreateModelConfigForm", () => {
-  it("submits the chosen catalog entry's provider/model/kind (no API key field)", async () => {
-    const created: ModelConfig = { ...CONFIGS[0], id: "new1" }
-    const onCreate = vi.fn().mockResolvedValue(created)
-    const onSuccess = vi.fn()
-    const user = userEvent.setup()
-
-    render(
-      <CreateModelConfigForm
-        catalog={CATALOG}
-        onCreate={onCreate}
-        onSuccess={onSuccess}
-      />,
-    )
-    // 表单不含任何 API key 输入。
-    expect(screen.queryByLabelText(/api key/i)).not.toBeInTheDocument()
-
-    await user.click(screen.getByRole("button", { name: "保存" }))
-
-    await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1))
-    expect(onCreate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        provider: "openai",
-        model: "gpt-image-1",
-        kind: "image",
-        enabled: true,
-        isDefault: false,
-      }),
-    )
-    await waitFor(() => expect(onSuccess).toHaveBeenCalledWith(created))
-  })
-
-  it("surfaces a 400 secret-param rejection without calling onSuccess", async () => {
-    const onCreate = vi
-      .fn()
-      .mockRejectedValue(
-        new ApiError(
-          400,
-          "models: params must not contain credentials (API keys live in server env only)",
-        ),
-      )
-    const onSuccess = vi.fn()
-    const user = userEvent.setup()
-
-    render(
-      <CreateModelConfigForm
-        catalog={CATALOG}
-        onCreate={onCreate}
-        onSuccess={onSuccess}
-      />,
-    )
-    // userEvent 把 {/[ 当键描述符——JSON 的花括号需转义为 {{。
-    await user.type(screen.getByLabelText(/参数/), '{{"apikey":"sk-leak"}')
-    await user.click(screen.getByRole("button", { name: "保存" }))
-
-    await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1))
-    expect(onSuccess).not.toHaveBeenCalled()
-    // 表单内兜底错误文案出现（route 层另有 toast 走 modelConfigErrorMessage）。
-    expect(await screen.findByRole("alert")).toBeInTheDocument()
-  })
-
-  it("rejects malformed params JSON locally before hitting the backend", async () => {
-    const onCreate = vi.fn()
-    const user = userEvent.setup()
-
-    render(<CreateModelConfigForm catalog={CATALOG} onCreate={onCreate} />)
-    await user.type(screen.getByLabelText(/参数/), "not json")
-    await user.click(screen.getByRole("button", { name: "保存" }))
-
-    expect(await screen.findByText("参数不是合法 JSON")).toBeInTheDocument()
-    expect(onCreate).not.toHaveBeenCalled()
-  })
-})
-
-// ── 模型可用性（provider 未配置密钥 → available:false 不可选）─────────
-// 第一条不可用、第二条可用：默认选中应跳过不可用条，落到首个可用条。
-const MIXED_CATALOG: CatalogEntry[] = [
-  { provider: "openai", model: "gpt-image-1", kind: "image", label: "OpenAI GPT-Image-1", available: false },
-  { provider: "runway", model: "gen-3", kind: "video", label: "Runway Gen-3", available: true },
-]
-
-describe("CreateModelConfigForm 可用性", () => {
-  it("disables unavailable options and marks them with （未配置密钥）", () => {
-    render(<CreateModelConfigForm catalog={MIXED_CATALOG} onCreate={vi.fn()} />)
-    const unavailable = screen.getByRole("option", { name: /未配置密钥/ })
-    expect(unavailable).toBeDisabled()
-    expect(unavailable).toHaveTextContent(/OpenAI GPT-Image-1/)
-    // 可用条不带标记、可选。
-    const available = screen.getByRole("option", { name: /Runway Gen-3/ })
-    expect(available).not.toBeDisabled()
-    expect(available).not.toHaveTextContent(/未配置密钥/)
-  })
-
-  it("defaults the selection to the first AVAILABLE entry and submits it", async () => {
-    const created: ModelConfig = { ...CONFIGS[0], id: "new2" }
-    const onCreate = vi.fn().mockResolvedValue(created)
-    const user = userEvent.setup()
-
-    render(<CreateModelConfigForm catalog={MIXED_CATALOG} onCreate={onCreate} />)
-    // 默认值 = 首个可用条（runway/gen-3），不是 catalog[0]（不可用的 openai）。
-    expect(screen.getByLabelText("模型")).toHaveValue("runway/gen-3")
-
-    await user.click(screen.getByRole("button", { name: "保存" }))
-    await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1))
-    expect(onCreate).toHaveBeenCalledWith(
-      expect.objectContaining({ provider: "runway", model: "gen-3", kind: "video" }),
-    )
-  })
-
-  it("blocks submit with an inline error when the selected model is unavailable, without calling onCreate", async () => {
-    const onCreate = vi.fn()
-    const user = userEvent.setup()
-
-    // 全部不可用 → 默认兜底到 catalog[0]（不可用），提交应被拦下。
-    const allUnavailable: CatalogEntry[] = [
-      { provider: "openai", model: "gpt-image-1", kind: "image", label: "OpenAI GPT-Image-1", available: false },
-    ]
-    render(<CreateModelConfigForm catalog={allUnavailable} onCreate={onCreate} />)
-    // 无可用模型的内联提示。
-    expect(screen.getByText(/当前没有可用模型/)).toBeInTheDocument()
-
-    await user.click(screen.getByRole("button", { name: "保存" }))
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(/未配置/)
-    expect(onCreate).not.toHaveBeenCalled()
+    expect(screen.getByText(/仅写入、加密存储/)).toBeInTheDocument()
   })
 })

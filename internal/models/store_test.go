@@ -7,10 +7,23 @@ import (
 	"os"
 	"testing"
 
+	"strings"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/costa92/llm-agent-studio/internal/secretbox"
 	"github.com/costa92/llm-agent-studio/internal/storage"
 )
+
+// testBox 用固定 base64 32 字节密钥构造 enabled box (BYOK 加密)。
+func testBox(t *testing.T) *secretbox.Box {
+	t.Helper()
+	b, err := secretbox.New("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatalf("test box: %v", err)
+	}
+	return b
+}
 
 func TestCatalogListsImageProviders(t *testing.T) {
 	cat := Catalog()
@@ -53,7 +66,7 @@ func testPool(t *testing.T) *pgxpool.Pool {
 
 func TestCreateAndListByOrg(t *testing.T) {
 	pool := testPool(t)
-	st := New(pool)
+	st := New(pool, testBox(t))
 	ctx := context.Background()
 	mc, err := st.Create(ctx, CreateInput{
 		OrgID: "org-m", Kind: "image", Provider: "openai", Model: "gpt-image-1",
@@ -74,7 +87,7 @@ func TestCreateAndListByOrg(t *testing.T) {
 
 func TestDefaultForOrg(t *testing.T) {
 	pool := testPool(t)
-	st := New(pool)
+	st := New(pool, testBox(t))
 	ctx := context.Background()
 	_, _ = st.Create(ctx, CreateInput{OrgID: "org-d", Kind: "image", Provider: "minimax", Model: "image-01", Enabled: true, IsDefault: false})
 	_, _ = st.Create(ctx, CreateInput{OrgID: "org-d", Kind: "image", Provider: "openai", Model: "gpt-image-1", Enabled: true, IsDefault: true})
@@ -89,7 +102,7 @@ func TestCreateRejectsSecretParams(t *testing.T) {
 	// free-form column an admin could be tempted to stash a key into — reject
 	// credential-looking keys outright, recursively. Validation fires before
 	// any DB access, so a nil pool proves the ordering.
-	s := New(nil)
+	s := New(nil, testBox(t))
 	for _, params := range []string{
 		`{"apiKey":"sk-123"}`,
 		`{"api_key":"sk-123"}`,
@@ -123,6 +136,86 @@ func TestSecretParamMatchingExcludesTokenCounts(t *testing.T) {
 		if k, found := secretKeyIn(m); found {
 			t.Fatalf("params %s wrongly flagged (key %q) — count fields are legal", params, k)
 		}
+	}
+}
+
+func TestCreateWithAPIKeyHidesKey(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	const rawKey = "sk-byok-super-secret-987654321"
+	mc, err := st.Create(ctx, CreateInput{
+		OrgID: "org-byok", Kind: "text", Provider: "openai-compatible", Model: "gpt-4o-mini",
+		Enabled: true, IsDefault: true, BaseURL: "https://api.example.com/v1", APIKey: rawKey,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if !mc.HasAPIKey || mc.BaseURL != "https://api.example.com/v1" {
+		t.Fatalf("create result: hasKey=%v baseURL=%q", mc.HasAPIKey, mc.BaseURL)
+	}
+	list, err := st.ListByOrg(ctx, "org-byok")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var got ModelConfig
+	for _, c := range list {
+		if c.ID == mc.ID {
+			got = c
+		}
+	}
+	if got.ID == "" {
+		t.Fatalf("created config %s not in list %+v", mc.ID, list)
+	}
+	if !got.HasAPIKey || got.BaseURL != "https://api.example.com/v1" {
+		t.Fatalf("list result: hasKey=%v baseURL=%q", got.HasAPIKey, got.BaseURL)
+	}
+	// 关键：序列化后明文 key 绝不出现 (结构体无 key 字段)。
+	b, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), rawKey) {
+		t.Fatalf("raw key leaked in ModelConfig JSON: %s", b)
+	}
+	if !strings.Contains(string(b), `"hasApiKey":true`) || !strings.Contains(string(b), `"baseUrl":"https://api.example.com/v1"`) {
+		t.Fatalf("JSON shape missing hasApiKey/baseUrl: %s", b)
+	}
+}
+
+func TestResolveForOrgDecryptsKey(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	const rawKey = "sk-resolve-me-555"
+	if _, err := st.Create(ctx, CreateInput{
+		OrgID: "org-rv", Kind: "text", Provider: "deepseek", Model: "deepseek-chat",
+		Enabled: true, IsDefault: true, BaseURL: "https://ds.example.com", APIKey: rawKey,
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	rm, ok, err := st.ResolveForOrg(ctx, "org-rv", "text")
+	if err != nil || !ok {
+		t.Fatalf("resolve: %v ok=%v", err, ok)
+	}
+	if rm.APIKey != rawKey || rm.BaseURL != "https://ds.example.com" || rm.Provider != "deepseek" {
+		t.Fatalf("resolved: %+v", rm)
+	}
+	// 无启用默认 → ok=false。
+	if _, ok, err := st.ResolveForOrg(ctx, "org-none", "text"); err != nil || ok {
+		t.Fatalf("no default: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestCreateAPIKeyDisabledBoxFails(t *testing.T) {
+	pool := testPool(t)
+	disabled, _ := secretbox.New("") // disabled box
+	st := New(pool, disabled)
+	_, err := st.Create(context.Background(), CreateInput{
+		OrgID: "org-x", Kind: "text", Provider: "openai", Model: "gpt-4o-mini", APIKey: "sk-nope",
+	})
+	if !errors.Is(err, ErrEncUnavailable) {
+		t.Fatalf("APIKey with disabled box must return ErrEncUnavailable, got %v", err)
 	}
 }
 
