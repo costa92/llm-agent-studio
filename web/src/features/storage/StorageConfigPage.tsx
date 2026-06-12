@@ -23,24 +23,27 @@ import type {
   UpsertStorageConfigInput,
 } from "@/lib/types"
 
-// mode 标签：localfs（本地磁盘）+ 三家对象存储（S3 兼容 / 阿里云 OSS / 腾讯云 COS）。
+// mode 标签：localfs（本地磁盘）+ 三家对象存储（S3 兼容 / 阿里云 OSS / 腾讯云 COS）+ GitHub 仓库。
 const MODE_LABELS: Record<StorageMode, string> = {
   localfs: "本地磁盘",
   s3: "Amazon S3 / S3 兼容",
   oss: "阿里云 OSS",
   cos: "腾讯云 COS",
+  github: "GitHub 仓库",
 }
-const MODES: StorageMode[] = ["localfs", "s3", "oss", "cos"]
+const MODES: StorageMode[] = ["localfs", "s3", "oss", "cos", "github"]
 
 // rhf+zod 表单。每个 mode 的必填字段不同（discriminated 校验走 superRefine）：
 //   localfs：无必填（publicPrefix 可空）。
 //   s3：bucket + endpoint 必填。
 //   oss（阿里云）：bucket + endpoint 必填。
 //   cos（腾讯云）：bucket + region 必填（endpoint 可空，私有云才覆盖）。
+//   github：accessKeyId(owner) + bucket(repo) 必填（region=branch / endpoint=API base 可空；
+//           token 走 secret，留空=保留既有，后端 New 在使用时强制要求）。
 // secret 永远可空：空 = 保留既有 secret（已配置时）；非空 = 替换。
 const formSchema = z
   .object({
-    mode: z.enum(["localfs", "s3", "oss", "cos"]),
+    mode: z.enum(["localfs", "s3", "oss", "cos", "github"]),
     endpoint: z.string().trim(),
     region: z.string().trim(),
     bucket: z.string().trim(),
@@ -62,6 +65,13 @@ const formSchema = z
         ctx.addIssue({ path: ["bucket"], code: z.ZodIssueCode.custom, message: "请填写 Bucket（name-appid）" })
       if (v.region === "")
         ctx.addIssue({ path: ["region"], code: z.ZodIssueCode.custom, message: "请填写 Region（如 ap-guangzhou）" })
+    }
+    if (v.mode === "github") {
+      // owner=accessKeyId、repo=bucket 必填（branch/token/API base 在 schema 层可空）。
+      if (v.accessKeyId === "")
+        ctx.addIssue({ path: ["accessKeyId"], code: z.ZodIssueCode.custom, message: "请填写 Owner（GitHub 用户/组织）" })
+      if (v.bucket === "")
+        ctx.addIssue({ path: ["bucket"], code: z.ZodIssueCode.custom, message: "请填写 Repo（仓库名）" })
     }
   })
 
@@ -112,7 +122,8 @@ export function StorageConfigForm({ initial, onSubmit, isOrgScope }: StorageConf
   // 同页有两个表单（本组织 + 全局）；按 scope 给字段 id 加前缀，避免重复 id 破坏 label 关联。
   const fid = (s: string) => `${isOrgScope ? "org" : "global"}-sc-${s}`
   const isLocal = mode === "localfs"
-  // 哪些 mode 暴露对象存储字段（endpoint/bucket/accessKey/secret）。
+  const isGithub = mode === "github"
+  // 哪些 mode 暴露对象存储字段（endpoint/bucket/accessKey/secret）。github 字段集不同，单独分支。
   const showObjectFields = mode === "s3" || mode === "oss" || mode === "cos"
   const showRegion = mode === "s3" || mode === "cos"
   // endpoint：s3/oss 必填；cos 可空（私有云覆盖）。
@@ -282,6 +293,96 @@ export function StorageConfigForm({ initial, onSubmit, isOrgScope }: StorageConf
         </>
       )}
 
+      {/* github：字段含义与对象存储不同（accessKeyId=owner / bucket=repo / region=branch /
+          publicPrefix=路径前缀 / secret=PAT / endpoint=API base）；共享 register 仅在本分支渲染，
+          与 showObjectFields 分支互斥，故不会重复渲染同一字段。 */}
+      {isGithub && (
+        <>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor={fid("gh-owner")}>Owner（owner，必填）</Label>
+            <input
+              id={fid("gh-owner")}
+              autoComplete="off"
+              aria-invalid={errors.accessKeyId != null}
+              placeholder="用户或组织名"
+              {...register("accessKeyId")}
+              className={fieldClass}
+            />
+            {errors.accessKeyId && (
+              <p className="text-[12px] text-danger">{errors.accessKeyId.message}</p>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor={fid("gh-repo")}>Repo（必填）</Label>
+            <input
+              id={fid("gh-repo")}
+              aria-invalid={errors.bucket != null}
+              placeholder="仓库名"
+              {...register("bucket")}
+              className={fieldClass}
+            />
+            {errors.bucket && (
+              <p className="text-[12px] text-danger">{errors.bucket.message}</p>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor={fid("gh-branch")}>Branch（默认 main）</Label>
+            <input
+              id={fid("gh-branch")}
+              placeholder="main"
+              {...register("region")}
+              className={fieldClass}
+            />
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor={fid("gh-prefix")}>路径前缀 (path prefix，可空)</Label>
+            <input
+              id={fid("gh-prefix")}
+              placeholder="如 assets"
+              {...register("publicPrefix")}
+              className={fieldClass}
+            />
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <span className="flex items-center gap-2">
+              <Label htmlFor={fid("gh-token")}>GitHub Token (PAT)</Label>
+              {initial?.hasSecret && <Badge variant="done">已配置密钥</Badge>}
+            </span>
+            <input
+              id={fid("gh-token")}
+              type="password"
+              autoComplete="off"
+              placeholder="ghp_… / fine-grained PAT"
+              {...register("secret")}
+              className={fieldClass}
+            />
+            <p className="text-[11.5px] text-text-3">
+              {initial?.hasSecret
+                ? "留空保持不变（已配置密钥）；填写则替换为新 Token。"
+                : "Token 仅写入、加密存储，不会回显（仅用于写入）。"}
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor={fid("gh-api")}>API base（GitHub Enterprise 可选）</Label>
+            <input
+              id={fid("gh-api")}
+              placeholder="https://api.github.com"
+              {...register("endpoint")}
+              className={fieldClass}
+            />
+          </div>
+
+          <p className="text-[11.5px] text-text-3">
+            公开仓库；资产经 raw.githubusercontent.com 直链取件；单文件 ≤ ~100MB（图片适用，视频不适合）；Token 仅用于写入。
+          </p>
+        </>
+      )}
+
       <label className="flex items-center gap-2 text-[13px] text-text-1">
         <Checkbox
           checked={enabled}
@@ -432,7 +533,7 @@ export function StorageConfigView({
       <header className="flex flex-col gap-1.5">
         <h1 className="font-heading text-[22px] font-bold text-text-1">存储配置</h1>
         <p className="text-[12px] text-text-3">
-          配置资产对象存储后端（本地磁盘 / S3 / 阿里云 OSS / 腾讯云 COS）。
+          配置资产对象存储后端（本地磁盘 / S3 / 阿里云 OSS / 腾讯云 COS / GitHub 仓库）。
           密钥仅写入、加密存储，不会回显。
         </p>
       </header>

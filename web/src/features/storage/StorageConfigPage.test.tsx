@@ -23,6 +23,22 @@ const CREATED: StorageConfig = {
   hasSecret: true,
 }
 
+// github 既有配置：owner=accessKeyId / repo=bucket / branch=region。
+const GH_CREATED: StorageConfig = {
+  id: "sc-org-gh",
+  scope: "org",
+  orgId: "acme",
+  mode: "github",
+  endpoint: "",
+  region: "main",
+  bucket: "my-assets",
+  accessKeyId: "acme-org",
+  publicPrefix: "assets",
+  useSsl: true,
+  enabled: true,
+  hasSecret: true,
+}
+
 describe("StorageConfigForm mode-conditional fields", () => {
   it("hides object-store fields for localfs (only publicPrefix)", () => {
     render(<StorageConfigForm initial={null} onSubmit={vi.fn()} isOrgScope />)
@@ -65,6 +81,32 @@ describe("StorageConfigForm mode-conditional fields", () => {
     expect(onSubmit).not.toHaveBeenCalled()
   })
 
+  it("shows Owner/Repo/Branch/Token and hides s3-only blocks for github", async () => {
+    const user = userEvent.setup()
+    render(<StorageConfigForm initial={null} onSubmit={vi.fn()} isOrgScope />)
+    await user.selectOptions(screen.getByLabelText("存储类型 (mode)"), "github")
+
+    expect(screen.getByLabelText(/Owner/)).toBeInTheDocument()
+    expect(screen.getByLabelText(/Repo/)).toBeInTheDocument()
+    expect(screen.getByLabelText(/Branch/)).toBeInTheDocument()
+    expect(screen.getByLabelText(/Token/)).toBeInTheDocument()
+    // 隐藏 s3-only 区块：Endpoint（必填/可空标签）与 useSsl 复选框。
+    expect(screen.queryByLabelText(/Endpoint/)).toBeNull()
+    expect(screen.queryByLabelText(/使用 SSL/)).toBeNull()
+  })
+
+  it("blocks submit when github owner/repo missing (zod superRefine)", async () => {
+    const onSubmit = vi.fn()
+    const user = userEvent.setup()
+    render(<StorageConfigForm initial={null} onSubmit={onSubmit} isOrgScope />)
+    await user.selectOptions(screen.getByLabelText("存储类型 (mode)"), "github")
+    await user.click(screen.getByRole("button", { name: "保存" }))
+
+    await waitFor(() => expect(screen.getByText(/请填写 Owner/)).toBeInTheDocument())
+    expect(screen.getByText(/请填写 Repo/)).toBeInTheDocument()
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
   it("submits localfs with an empty secret (no object fields required)", async () => {
     const onSubmit = vi.fn().mockResolvedValue(CREATED)
     const user = userEvent.setup()
@@ -103,6 +145,29 @@ describe("StorageConfigForm write-only secret", () => {
     expect(arg.secret).toBe("")
     expect(arg).toEqual(
       expect.objectContaining({ mode: "s3", bucket: "my-bucket", endpoint: "https://s3.amazonaws.com" }),
+    )
+  })
+
+  it("github Token is a password field and submits secret:'' when untouched (keep existing)", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(GH_CREATED)
+    const user = userEvent.setup()
+    render(<StorageConfigForm initial={GH_CREATED} onSubmit={onSubmit} isOrgScope />)
+    // initial.mode=github → Token 字段已渲染，password、留空、keep-blank 文案。
+    const token = screen.getByLabelText(/Token/)
+    expect(token).toHaveAttribute("type", "password")
+    expect(token).toHaveValue("")
+    expect(screen.getByText(/留空保持不变/)).toBeInTheDocument()
+
+    await user.click(screen.getByRole("button", { name: "保存" }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: "github",
+        secret: "",
+        accessKeyId: "acme-org",
+        bucket: "my-assets",
+        region: "main",
+      }),
     )
   })
 

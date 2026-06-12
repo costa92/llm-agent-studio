@@ -26,7 +26,7 @@ var ErrEncUnavailable = errors.New("storageconfig: secret storage requires STUDI
 var ErrNotFound = errors.New("storageconfig: config not found")
 
 // validModes 是支持的存储后端。
-var validModes = map[string]bool{"localfs": true, "s3": true, "oss": true, "cos": true}
+var validModes = map[string]bool{"localfs": true, "s3": true, "oss": true, "cos": true, "github": true}
 
 // StorageConfig 是 storage_configs 行返回给客户端的公开 DTO。永不暴露 secret：
 // 只回 HasSecret 布尔 (解密后的 secret 仅 ResolveForOrg 内部可见)。
@@ -91,7 +91,7 @@ func newID() string {
 // validate 校验 mode + 必填字段。校验先于任何 DB 访问。
 func validate(in UpsertInput) error {
 	if !validModes[in.Mode] {
-		return fmt.Errorf("storageconfig: invalid mode %q (want localfs|s3|oss|cos)", in.Mode)
+		return fmt.Errorf("storageconfig: invalid mode %q (want localfs|s3|oss|cos|github)", in.Mode)
 	}
 	switch in.Mode {
 	case "s3", "cos", "oss":
@@ -99,6 +99,12 @@ func validate(in UpsertInput) error {
 		// (COS endpoint 可后续在 router 由 region 派生，但 store 层先要求齐全。)
 		if in.Bucket == "" || in.Endpoint == "" {
 			return fmt.Errorf("storageconfig: mode %q requires bucket and endpoint", in.Mode)
+		}
+	case "github":
+		// 列复用：Bucket=repo, AccessKeyID=owner。store 层只校验这两项；token
+		// (Secret) 必填性留给 adapter New (keep-blank 编辑语义在 store 层成立)。
+		if in.Bucket == "" || in.AccessKeyID == "" {
+			return fmt.Errorf("storageconfig: mode %q requires repo (bucket) and owner (accessKeyId)", in.Mode)
 		}
 	case "localfs":
 		// 本地盘无需 bucket/endpoint。

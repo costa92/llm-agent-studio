@@ -243,6 +243,16 @@ func TestValidationBeforeDBAccess(t *testing.T) {
 	if _, err := st.UpsertForOrg(ctx, "o", noBucket); err == nil {
 		t.Fatalf("s3 without bucket must be rejected")
 	}
+	// github 列复用：缺 repo (bucket) 或 owner (accessKeyId) 必拒 (nil pool 证明
+	// 校验先于 DB 访问)。
+	ghMissingRepo := UpsertInput{Mode: "github", AccessKeyID: "octo", Enabled: true}
+	if _, err := st.UpsertGlobal(ctx, ghMissingRepo); err == nil {
+		t.Fatalf("github without repo (bucket) must be rejected")
+	}
+	ghMissingOwner := UpsertInput{Mode: "github", Bucket: "assets", Enabled: true}
+	if _, err := st.UpsertGlobal(ctx, ghMissingOwner); err == nil {
+		t.Fatalf("github without owner (accessKeyId) must be rejected")
+	}
 	// disabled box + 非空 secret → ErrEncUnavailable (校验/加密守卫先于 DB 访问，
 	// nil pool 证明顺序)。
 	disabledBoxStore := New(nil, mustDisabledBox(t))
@@ -276,5 +286,33 @@ func TestLocalfsModeNoBucketRequired(t *testing.T) {
 	rs, ok, err := st.ResolveForOrg(ctx, "org-lfs")
 	if err != nil || !ok || rs.Mode != "localfs" || rs.PublicPrefix != "/files" {
 		t.Fatalf("resolve localfs: ok=%v err=%v %+v", ok, err, rs)
+	}
+}
+
+// github 列复用 round-trip：AccessKeyID=owner, Bucket=repo, Region=branch,
+// PublicPrefix=path 前缀, Endpoint=GHE API 根, SecretKey=token (加密入库)。
+func TestGithubModeColumnOverload(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	in := UpsertInput{
+		Mode: "github", AccessKeyID: "octo", Bucket: "assets-repo", Region: "prod",
+		PublicPrefix: "media", Endpoint: "https://ghe.example.com/api/v3",
+		Secret: "ghp_token", Enabled: true,
+	}
+	sc, err := st.UpsertForOrg(ctx, "org-gh", in)
+	if err != nil {
+		t.Fatalf("github upsert: %v", err)
+	}
+	if sc.Mode != "github" || sc.AccessKeyID != "octo" || sc.Bucket != "assets-repo" || !sc.HasSecret {
+		t.Fatalf("github upsert result: %+v", sc)
+	}
+	rs, ok, err := st.ResolveForOrg(ctx, "org-gh")
+	if err != nil || !ok {
+		t.Fatalf("resolve github: ok=%v err=%v", ok, err)
+	}
+	if rs.AccessKeyID != "octo" || rs.Bucket != "assets-repo" || rs.Region != "prod" ||
+		rs.PublicPrefix != "media" || rs.Endpoint != "https://ghe.example.com/api/v3" || rs.SecretKey != "ghp_token" {
+		t.Fatalf("github resolve column overload mismatch: %+v", rs)
 	}
 }

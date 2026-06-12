@@ -170,8 +170,9 @@ export interface CreateModelConfigInput {
 
 // storageconfig/store.go StorageConfig。secret 写入即加密、永不回显——DTO 只报 hasSecret 布尔。
 // GET /api/orgs/{org}/storage-config、GET /api/storage-config/global → {config: StorageConfig | null}。
-// mode ∈ localfs/s3/oss/cos；localfs 为本地磁盘（开发/默认），其余为对象存储。
-export type StorageMode = "localfs" | "s3" | "oss" | "cos"
+// mode ∈ localfs/s3/oss/cos/github；localfs 为本地磁盘（开发/默认），s3/oss/cos 为对象存储，
+// github 为 GitHub 仓库（Contents API 写入 + raw.githubusercontent.com 直链取件）。
+export type StorageMode = "localfs" | "s3" | "oss" | "cos" | "github"
 
 export interface StorageConfig {
   id: string
