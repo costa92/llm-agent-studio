@@ -43,12 +43,14 @@ GOWORK=off go test ./...
 | `s3` | S3 兼容（MinIO / AWS） | `endpoint`、`bucket`、`accessKeyId`、`secret`（可选 `region`、`useSsl`） | minio-go presigned GET |
 | `oss` | 阿里云 OSS（官方 SDK） | `endpoint`（如 `oss-cn-hangzhou.aliyuncs.com`）、`bucket`、`accessKeyId`、`secret` | OSS `SignURL`（虚拟主机 https 直链） |
 | `cos` | 腾讯云 COS（复用 s3/minio-go） | `region`（如 `ap-guangzhou`）、`bucket`（`name-appid`）、`accessKeyId`(SecretId)、`secret`(SecretKey)（`endpoint` 可空，私有云覆盖） | minio-go presigned GET，端点派生 `cos.<region>.myqcloud.com` |
+| `github` | GitHub 仓库（Contents API，`internal/blob/github`，纯 stdlib） | `accessKeyId`(owner)、`bucket`(repo)、`secret`(GitHub Token PAT)（`region`=branch 缺省 `main`、`publicPrefix`=仓库内路径前缀可空、`endpoint`=GHE API base 可选） | **公开仓库** raw 永久直链 `raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}`（无签名/无 TTL；token 仅用于写）。单文件 ≤~100MB（图片适用、视频不适合） |
 
 要点：
 
 - **保留的存储 env 仅 3 个**（仅供内置 localfs 默认 + 回源服务）：`BLOB_DIR`（默认 `./blobdata`）、`BLOB_SECRET`（缺省回落 `JWT_SECRET`）、`BLOB_PUBLIC_PREFIX`（默认 `/api/blob/`）。`STUDIO_CONFIG_ENC_KEY`（base64 32B）用于加密 BYOK/存储密钥——未设则无法保存带密钥的配置（回退到 env-less 的内置 localfs 默认）。
 - **云后端 bucket 不自动创建** —— 运维在控制台/`mc` 预建。
 - **OSS 为何不并入 s3**：OSS 签名 ≠ AWS SigV4，minio-go presigned 对 OSS 验证不过 → 独立官方 SDK 适配器。**COS** 高度 S3 兼容 → 复用 minio-go，仅派生端点/强制 TLS/`SecretId→AccessKey`。
+- **GitHub 为对象存储的取舍**：无"桶"概念，资产作为文件经 Contents API 提交进仓库（`Put` 先取 sha 再 PUT 避免 422、`Delete` 取 sha 后删，幂等）；GitHub 无 presigned URL，故仅**公开仓库**可用——`SignedURL` 返回 `raw.githubusercontent.com` 永久直链（studiod 不代理、token 不进读 URL）。受 GitHub 单文件 ~100MB 上限约束，适合图片、不适合视频。
 - **已知限制**：改 org 存储**不迁移**旧桶已写资产（旧 key 将不可访问）；所有 localfs 配置共享单根/密钥/回源（per-org localfs 磁盘多路复用超范围）；`STUDIO_CONFIG_ENC_KEY` 轮换无 re-encrypt（同 BYOK 模型密钥）。
 
 ### M4 异步引擎机制
