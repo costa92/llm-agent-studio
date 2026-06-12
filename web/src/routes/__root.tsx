@@ -2,9 +2,15 @@ import { createRootRoute, Outlet, useLocation, useNavigate } from "@tanstack/rea
 import { Button } from "@/components/studio/Button"
 import { OrgLanding } from "@/app/OrgLanding"
 import { hasEmptyOrgPath } from "@/app/org"
+import { tryRestoreSession } from "@/lib/apiClient"
 import { Toaster } from "@/components/ui/sonner"
 
 export const Route = createRootRoute({
+  // 冷启动/硬刷新/深链：内存 token 丢失但刷新 cookie 仍有效时，
+  // 在子路由 _authed 守卫跑前先静默恢复一次会话（幂等，已有 token 不发请求）。
+  beforeLoad: async () => {
+    await tryRestoreSession()
+  },
   component: RootComponent,
   notFoundComponent: RootNotFound,
 })
