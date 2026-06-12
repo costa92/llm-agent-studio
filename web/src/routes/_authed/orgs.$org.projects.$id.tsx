@@ -14,7 +14,7 @@ import {
 import { useProductionTimeline } from "@/features/workflow/useProductionTimeline"
 
 // T10：项目工作台 + 制片轨道 + SSE 实时。
-export const Route = createFileRoute("/_authed/projects/$id")({
+export const Route = createFileRoute("/_authed/orgs/$org/projects/$id")({
   component: WorkbenchPage,
 })
 

@@ -3,7 +3,7 @@ import { useShots } from "@/features/workflow/api"
 import { StoryboardView } from "@/features/workflow/StoryboardView"
 
 // T10：分镜栅格。GET /api/projects/{id}/shots → {items}。
-export const Route = createFileRoute("/_authed/projects/$id/storyboard")({
+export const Route = createFileRoute("/_authed/orgs/$org/projects/$id/storyboard")({
   component: StoryboardPage,
 })
 
