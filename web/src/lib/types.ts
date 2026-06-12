@@ -205,6 +205,24 @@ export interface UpsertStorageConfigInput {
   enabled: boolean
 }
 
+// 平台超级管理员（studiosvc.Platform）。平台管理员 = 一条 authz membership
+// (org_id='', scope_kind='platform', role=admin)，与业务 org 角色解耦。
+
+// GET /api/platform/orgs → {items: PlatformOrg[]}（platformOrgsHandler）。
+// createdAt 为 RFC3339 字符串（pgx time.Time 序列化）；memberCount 为 org-scope 成员数。
+export interface PlatformOrg {
+  id: string
+  name: string
+  createdAt: string
+  memberCount: number
+}
+
+// GET /api/platform/admins → {items: PlatformAdmin[]}（platformListAdminsHandler）。
+export interface PlatformAdmin {
+  userId: string
+  email: string
+}
+
 // cost/store.go Aggregate。GET /api/orgs/{org}/cost、GET /api/projects/{id}/cost。
 export interface Aggregate {
   generations: number

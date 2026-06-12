@@ -185,7 +185,7 @@ describe("StorageConfigForm write-only secret", () => {
   })
 })
 
-// View：org 区删除确认（仅确认才调 onOrgDelete）+ 全局区渲染。
+// View：仅 org 区（全局默认存储已迁至平台管理页）。org 区删除确认（仅确认才调 onOrgDelete）。
 function renderView(overrides?: {
   orgConfig?: StorageConfig | null
   onOrgDelete?: () => Promise<void>
@@ -201,22 +201,16 @@ function renderView(overrides?: {
       onOrgRetry={vi.fn()}
       onOrgSubmit={vi.fn().mockResolvedValue(CREATED)}
       onOrgDelete={overrides?.onOrgDelete ?? vi.fn().mockResolvedValue(undefined)}
-      globalConfig={null}
-      globalLoading={false}
-      globalError={false}
-      onGlobalRetry={vi.fn()}
-      onGlobalSubmit={vi.fn().mockResolvedValue(CREATED)}
     />,
   )
 }
 
 describe("StorageConfigView", () => {
-  it("renders both org and global sections", () => {
+  it("renders only the org section, not the global section (moved to /platform)", () => {
     renderView()
     expect(screen.getByText("本组织存储")).toBeInTheDocument()
-    expect(screen.getByText("全局默认存储")).toBeInTheDocument()
-    // 全局区未配置 → 未配置徽标。
-    expect(screen.getByText("未配置")).toBeInTheDocument()
+    // 全局默认存储已迁至平台管理页，不再出现在 org 页。
+    expect(screen.queryByText("全局默认存储")).not.toBeInTheDocument()
   })
 
   it("deletes the org config only after confirming, not on cancel", async () => {

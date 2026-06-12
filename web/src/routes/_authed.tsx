@@ -11,6 +11,7 @@ import { AppShell } from "@/app/AppShell"
 import { useAuth } from "@/app/auth"
 import { cleanOrg } from "@/app/org"
 import { useRole } from "@/app/rbac"
+import { usePlatformWhoami } from "@/features/platform/api"
 
 // 受保护布局：无 access token → 重定向 /login（携 redirect 回跳）。
 // 登录流在 auth.login 里 setAccessToken；角色门禁（isAdmin）由 rbac.useRole 探针推断后注入 AppShell。
@@ -28,6 +29,8 @@ function AuthedLayout() {
   const params = useParams({ strict: false }) as { org?: string }
   const org = cleanOrg(params.org)
   const { isAdmin } = useRole(org)
+  // 平台超级管理员门禁（非 org-scoped）：whoami 任意登录用户可调，决定是否展示「平台」导航入口。
+  const platformWhoami = usePlatformWhoami()
   const { logout } = useAuth()
   const navigate = useNavigate()
 
@@ -35,6 +38,7 @@ function AuthedLayout() {
     <AppShell
       org={org}
       isAdmin={isAdmin}
+      isPlatformAdmin={platformWhoami.data ?? false}
       avatar={
         <button
           type="button"

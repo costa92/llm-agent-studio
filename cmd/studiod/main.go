@@ -114,6 +114,21 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		return nil, nil, err
 	}
 
+	// 平台超级管理员 (platform role)。哨兵 org (id='') 必须先于任何平台 membership 写入，
+	// 满足 auth_membership.org_id 的外键约束 (authz schema)。随后按 env 种子名单授予。
+	platformSvc := studiosvc.NewPlatform(az, st.Pool())
+	if err := platformSvc.EnsureSentinelOrg(ctx); err != nil {
+		st.Close()
+		return nil, nil, err
+	}
+	if err := platformSvc.SeedFromEmails(ctx, cfg.PlatformAdminEmails); err != nil {
+		st.Close()
+		return nil, nil, fmt.Errorf("studiod: seed platform admins: %w", err)
+	}
+	if n := len(cfg.PlatformAdminEmails); n > 0 {
+		log.Printf("studiod: platform admin seed: %d email(s) configured (already-registered users granted; others topped-up at register)", n)
+	}
+
 	model, err := buildModel(cfg)
 	if err != nil {
 		st.Close()
@@ -299,7 +314,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		AuthHandlers: authHandlers,
 		AuthService:  authService,
 		RoleResolver: az,
-		Register:     studiosvc.NewRegister(az),
+		Register:     studiosvc.NewRegister(az).WithPlatformTopUp(platformSvc, cfg.PlatformAdminEmails),
 		OrgBootstrap: studiosvc.NewOrg(az),
 		OrgList:      studiosvc.NewOrgList(st.Pool()),
 		Projects:     projectStore,
@@ -316,6 +331,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		BlobServer:     localfsDefault,
 		Models:         modelStore,
 		StorageConfig:  storageStore,
+		Platform:       platformSvc,
 		Cost:           costStore,
 		PromptBuilder:  promptBuilder,
 		GenQuota:       cfg.OrgDailyGenQuota,

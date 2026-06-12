@@ -13,10 +13,21 @@ import { AppShell } from "./AppShell"
 
 // AppShell 用 <Link>，需挂在 RouterProvider 下。建一个含 4 个 nav 目标的最小内存路由树，
 // 把待测的 AppShell 渲染进根布局，断言导航项与角色门禁。
-function renderShell(props: { isAdmin?: boolean; org?: string; initialEntry?: string } = {}) {
+function renderShell(
+  props: {
+    isAdmin?: boolean
+    isPlatformAdmin?: boolean
+    org?: string
+    initialEntry?: string
+  } = {},
+) {
   const rootRoute = createRootRoute({
     component: () => (
-      <AppShell org={props.org ?? "acme"} isAdmin={props.isAdmin}>
+      <AppShell
+        org={props.org ?? "acme"}
+        isAdmin={props.isAdmin}
+        isPlatformAdmin={props.isPlatformAdmin}
+      >
         <Outlet />
       </AppShell>
     ),
@@ -29,6 +40,7 @@ function renderShell(props: { isAdmin?: boolean; org?: string; initialEntry?: st
     makeLeaf("/orgs/$org/assets"),
     makeLeaf("/orgs/$org/cost"),
     makeLeaf("/orgs/$org/model-configs"),
+    makeLeaf("/platform"),
   ])
   const router = createRouter({
     routeTree,
@@ -93,5 +105,24 @@ describe("AppShell", () => {
     expect(within(drawer).getByText("资产")).toBeInTheDocument()
     expect(within(drawer).queryByText("审核")).not.toBeInTheDocument()
     expect(within(drawer).queryByText("成本")).not.toBeInTheDocument()
+  })
+
+  // 平台入口（非 org-scoped）：仅平台超级管理员可见，与 org admin 解耦。
+  it("shows the 平台 nav item when isPlatformAdmin", async () => {
+    renderShell({ isPlatformAdmin: true })
+    // 桌面轨道 + 移动抽屉触发处都渲染 → 至少出现一次。
+    expect(await screen.findAllByText("平台")).not.toHaveLength(0)
+  })
+
+  it("hides the 平台 nav item when not a platform admin (even if org admin)", async () => {
+    renderShell({ isAdmin: true, isPlatformAdmin: false })
+    expect(await screen.findByText("项目")).toBeInTheDocument()
+    expect(screen.queryByText("平台")).not.toBeInTheDocument()
+  })
+
+  it("shows the 平台 nav item for a platform admin even with no current org", async () => {
+    renderShell({ org: "", initialEntry: "/platform", isPlatformAdmin: true })
+    expect(await screen.findByLabelText("选择组织")).toBeInTheDocument()
+    expect(screen.getAllByText("平台").length).toBeGreaterThan(0)
   })
 })
