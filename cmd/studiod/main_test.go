@@ -102,6 +102,104 @@ func seedUser(t *testing.T, dsn, email string) {
 	}
 }
 
+// TestEndToEndRegister exercises the self-serve registration endpoint: a fresh
+// email + valid password → 200 with an access_token that authorizes a follow-up
+// request, and a refresh cookie that powers POST /api/auth/refresh; the same
+// email again → 409; bad inputs → 400.
+func TestEndToEndRegister(t *testing.T) {
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run the studio register e2e")
+	}
+	srv, done := newHarness(t, dsn) // no scripted LLM responses needed (no pipeline run)
+	defer done()
+
+	client := srv.Client()
+	do := func(method, path, bearer, body string) (int, map[string]any, *http.Response) {
+		req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		var m map[string]any
+		_ = json.Unmarshal(raw, &m)
+		if m == nil {
+			m = map[string]any{"_raw": string(raw)}
+		}
+		return resp.StatusCode, m, resp
+	}
+
+	email := "newuser@studio.com"
+	// 1. Register a brand-new email → 200 + access_token + refresh cookie.
+	code, body, resp := do("POST", "/api/auth/register", "", `{"email":"`+email+`","password":"password123"}`)
+	if code != http.StatusOK {
+		t.Fatalf("register code=%d body=%v", code, body)
+	}
+	token, _ := body["access_token"].(string)
+	if token == "" {
+		t.Fatalf("no access_token: %v", body)
+	}
+	// Capture the refresh cookie set by register (Secure cookie won't be auto-sent
+	// back over httptest's plain HTTP, so we replay it manually below).
+	var refreshCookie *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == "authz_refresh" {
+			refreshCookie = c
+		}
+	}
+	if refreshCookie == nil || refreshCookie.Value == "" {
+		t.Fatalf("register did not set the authz_refresh cookie: %v", resp.Cookies())
+	}
+
+	// 2. The access token authorizes a follow-up request (create an org).
+	code, ob, _ := do("POST", "/api/orgs", token, `{"name":"New Co"}`)
+	if code != http.StatusOK {
+		t.Fatalf("create org with register token code=%d body=%v", code, ob)
+	}
+
+	// 3. The refresh cookie powers POST /api/auth/refresh (needs the CSRF header).
+	refReq, _ := http.NewRequest("POST", srv.URL+"/api/auth/refresh", nil)
+	refReq.Header.Set("X-CSRF", "1")
+	refReq.AddCookie(refreshCookie)
+	refResp, err := client.Do(refReq)
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	raw, _ := io.ReadAll(refResp.Body)
+	refResp.Body.Close()
+	if refResp.StatusCode != http.StatusOK {
+		t.Fatalf("refresh code=%d body=%s", refResp.StatusCode, raw)
+	}
+	var refBody map[string]any
+	_ = json.Unmarshal(raw, &refBody)
+	if tok, _ := refBody["access_token"].(string); tok == "" {
+		t.Fatalf("refresh returned no access_token: %s", raw)
+	}
+
+	// 4. Same email again → 409.
+	code, body, _ = do("POST", "/api/auth/register", "", `{"email":"`+email+`","password":"password123"}`)
+	if code != http.StatusConflict {
+		t.Fatalf("duplicate register code=%d body=%v, want 409", code, body)
+	}
+
+	// 5. Bad email (no "@") → 400.
+	if code, body, _ := do("POST", "/api/auth/register", "", `{"email":"nope","password":"password123"}`); code != http.StatusBadRequest {
+		t.Fatalf("bad-email register code=%d body=%v, want 400", code, body)
+	}
+	// 6. Weak password (<8 chars) → 400.
+	if code, body, _ := do("POST", "/api/auth/register", "", `{"email":"short@studio.com","password":"short"}`); code != http.StatusBadRequest {
+		t.Fatalf("weak-password register code=%d body=%v, want 400", code, body)
+	}
+}
+
 func TestEndToEndTextPipeline(t *testing.T) {
 	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
 	if dsn == "" {

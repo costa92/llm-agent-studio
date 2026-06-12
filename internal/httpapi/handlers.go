@@ -6,13 +6,16 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	authzhttp "github.com/costa92/llm-agent-authz/httpapi"
 	authzrole "github.com/costa92/llm-agent-authz/role"
+	authzsvc "github.com/costa92/llm-agent-authz/service"
 
 	"github.com/costa92/llm-agent-studio/internal/planner"
 	"github.com/costa92/llm-agent-studio/internal/project"
+	"github.com/costa92/llm-agent-studio/internal/studiosvc"
 )
 
 // orgLookup resolves a project's org (satisfied by *project.Store).
@@ -24,6 +27,25 @@ type orgLookup interface {
 // orgkb.CreateOrg; implemented in this package over the authz store).
 type OrgBootstrapper interface {
 	CreateOrg(ctx context.Context, name, creatorUserID string) (string, error)
+}
+
+// OrgLister lists the orgs the current user belongs to (satisfied by
+// *studiosvc.OrgList). Returned maps carry {id,name,role}.
+type OrgLister interface {
+	OrgsForUser(ctx context.Context, userID string) ([]map[string]any, error)
+}
+
+// UserRegistrar creates a self-serve user (satisfied by *studiosvc.Register).
+// A duplicate email surfaces as studiosvc.ErrEmailExists → 409.
+type UserRegistrar interface {
+	Create(ctx context.Context, email, password string) (string, error)
+}
+
+// SessionIssuer mints a session right after registration (satisfied by the
+// authz *service.Service). register == create user + immediately log in, so the
+// success response mirrors login (access_token + refresh cookie).
+type SessionIssuer interface {
+	Login(ctx context.Context, email, password, userAgent string) (authzsvc.LoginResult, error)
 }
 
 // ProjectStore is the project surface the handlers need.
@@ -55,6 +77,62 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// refreshCookieName mirrors authz httpapi's const verbatim — register sets the
+// SAME cookie so /api/auth/refresh and /logout (which read it) work afterwards.
+const refreshCookieName = "authz_refresh"
+
+// setRefreshCookie replicates authz httpapi.setRefreshCookie EXACTLY (same name,
+// Path, HttpOnly, Secure, SameSite) so the session register issues is
+// indistinguishable from a login session.
+func setRefreshCookie(w http.ResponseWriter, value string) {
+	http.SetCookie(w, &http.Cookie{
+		Name: refreshCookieName, Value: value, Path: "/api/auth",
+		HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode,
+	})
+}
+
+// registerHandler (POST /api/auth/register): OPEN, unauthenticated account
+// creation. Validates input (400), creates the user (409 on existing email),
+// then immediately mints a session via the authz service so the response
+// mirrors login (access_token + expires_in + refresh cookie) — the user is
+// auto-logged-in.
+func registerHandler(reg UserRegistrar, iss SessionIssuer) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if !strings.Contains(req.Email, "@") {
+			http.Error(w, "bad request: invalid email", http.StatusBadRequest)
+			return
+		}
+		if len(req.Password) < 8 {
+			http.Error(w, "bad request: password too short (min 8)", http.StatusBadRequest)
+			return
+		}
+		if _, err := reg.Create(r.Context(), req.Email, req.Password); errors.Is(err, studiosvc.ErrEmailExists) {
+			http.Error(w, "email already exists", http.StatusConflict)
+			return
+		} else if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		// Immediately issue a session (we just set this password). Mirrors the
+		// authz login handler's success path exactly.
+		res, err := iss.Login(r.Context(), req.Email, req.Password, r.UserAgent())
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		setRefreshCookie(w, res.RefreshToken)
+		writeJSON(w, http.StatusOK, map[string]any{"access_token": res.AccessToken, "expires_in": res.ExpiresIn})
+	}
+}
+
 // createOrgHandler (POST /api/orgs): any authenticated user; creator becomes
 // org_admin. Mirrors kb's bootstrap seam.
 func createOrgHandler(boot OrgBootstrapper) http.HandlerFunc {
@@ -73,6 +151,22 @@ func createOrgHandler(boot OrgBootstrapper) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"id": orgID, "name": req.Name})
+	}
+}
+
+// listOrgsHandler (GET /api/orgs): any authenticated user; lists the orgs the
+// caller belongs to so the UI can offer a picker instead of a blind id entry.
+func listOrgsHandler(l OrgLister) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		items, err := l.OrgsForUser(r.Context(), authzhttp.UserID(r.Context()))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if items == nil {
+			items = []map[string]any{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	}
 }
 

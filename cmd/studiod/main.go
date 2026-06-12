@@ -264,8 +264,11 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	mux := httpapi.NewMux(httpapi.Deps{
 		Issuer:       issuer,
 		AuthHandlers: authHandlers,
+		AuthService:  authService,
 		RoleResolver: az,
+		Register:     studiosvc.NewRegister(az),
 		OrgBootstrap: studiosvc.NewOrg(az),
+		OrgList:      studiosvc.NewOrgList(st.Pool()),
 		Projects:     projectStore,
 		Planner:      plannerSvc,
 		Events:       eventStore,
