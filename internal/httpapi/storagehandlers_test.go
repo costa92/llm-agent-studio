@@ -164,6 +164,50 @@ func TestPutOrgStorageConfig400OnEncUnavailable(t *testing.T) {
 	}
 }
 
+// TestPutOrgStorageConfigRejectsLocalfs closes M8 §10 known limitation: per-org
+// localfs is silently ignored by buildStorageStore (which always returns
+// localfsDefault for mode=localfs to keep the single signing root). The handler
+// must REJECT per-org localfs at the request boundary so admins get immediate
+// feedback instead of the UX trap (write succeeds, factory ignores, all orgs
+// share one root). Global localfs remains valid (env-default semantics).
+func TestPutOrgStorageConfigRejectsLocalfs(t *testing.T) {
+	t.Run("per-org localfs is rejected", func(t *testing.T) {
+		st := &stubStorageStore{}
+		rr := httptest.NewRecorder()
+		req := storageReq("PUT", "/api/orgs/org-x/storage-config",
+			`{"mode":"localfs","publicPrefix":"/files","useSsl":true,"enabled":true}`)
+		req.SetPathValue("org", "org-x")
+		putOrgStorageConfigHandler(st)(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("per-org localfs must 400, got %d body=%s", rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "localfs") {
+			t.Fatalf("error must mention localfs for actionable UX, got %s", rr.Body.String())
+		}
+		// Critical: store must NOT be reached — fail-fast at handler boundary.
+		if st.lastUpsertOrg != "" || st.lastUpsert.Mode != "" {
+			t.Fatalf("store was reached despite handler precondition: lastOrg=%q lastMode=%q",
+				st.lastUpsertOrg, st.lastUpsert.Mode)
+		}
+	})
+	t.Run("global localfs still allowed", func(t *testing.T) {
+		// Regression guard: the precondition is per-org only. Global localfs is
+		// the env-default mode and must keep round-tripping the PUT.
+		st := &stubStorageStore{}
+		rr := httptest.NewRecorder()
+		req := storageReq("PUT", "/api/platform/storage-config/global",
+			`{"mode":"localfs","publicPrefix":"/files","useSsl":true,"enabled":true}`)
+		putGlobalStorageConfigHandler(st)(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("global localfs must remain 200 (env-default semantics), got %d body=%s",
+				rr.Code, rr.Body.String())
+		}
+		if st.lastUpsert.Mode != "localfs" {
+			t.Fatalf("global handler must forward mode=localfs to store, got %q", st.lastUpsert.Mode)
+		}
+	})
+}
+
 // TestDeleteOrgStorageConfig proves DELETE → 200 {ok:true}; missing → 404.
 func TestDeleteOrgStorageConfig(t *testing.T) {
 	rr := httptest.NewRecorder()
