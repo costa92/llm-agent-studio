@@ -58,13 +58,6 @@ func (s *stubStorageStore) DeleteForOrg(context.Context, string) error {
 	return nil
 }
 
-// fakeOrgList is a fake OrgLister: returns a fixed memberships slice for any user.
-type fakeOrgList struct{ orgs []map[string]any }
-
-func (f fakeOrgList) OrgsForUser(context.Context, string) ([]map[string]any, error) {
-	return f.orgs, nil
-}
-
 func storageReq(method, target, body string) *http.Request {
 	if body == "" {
 		return httptest.NewRequest(method, target, nil)
@@ -194,14 +187,14 @@ func TestDeleteOrgStorageConfig(t *testing.T) {
 // when present and {config:null} when absent.
 func TestGlobalStorageConfigGet(t *testing.T) {
 	rr := httptest.NewRecorder()
-	getGlobalStorageConfigHandler(&stubStorageStore{globalOK: false})(rr, storageReq("GET", "/api/storage-config/global", ""))
+	getGlobalStorageConfigHandler(&stubStorageStore{globalOK: false})(rr, storageReq("GET", "/api/platform/storage-config/global", ""))
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"config":null`) {
 		t.Fatalf("absent global want 200 {config:null}, got %d body=%s", rr.Code, rr.Body.String())
 	}
 
 	st := &stubStorageStore{globalOK: true, global: storageconfig.StorageConfig{Scope: "global", Mode: "s3", Bucket: "gb", HasSecret: true}}
 	rr2 := httptest.NewRecorder()
-	getGlobalStorageConfigHandler(st)(rr2, storageReq("GET", "/api/storage-config/global", ""))
+	getGlobalStorageConfigHandler(st)(rr2, storageReq("GET", "/api/platform/storage-config/global", ""))
 	if rr2.Code != http.StatusOK || !strings.Contains(rr2.Body.String(), `"bucket":"gb"`) {
 		t.Fatalf("present global want DTO, got %d body=%s", rr2.Code, rr2.Body.String())
 	}
@@ -213,7 +206,7 @@ func TestPutGlobalStorageConfigPassesSecret(t *testing.T) {
 	st := &stubStorageStore{}
 	const secret = "global-secret-key-abc"
 	rr := httptest.NewRecorder()
-	putGlobalStorageConfigHandler(st)(rr, storageReq("PUT", "/api/storage-config/global",
+	putGlobalStorageConfigHandler(st)(rr, storageReq("PUT", "/api/platform/storage-config/global",
 		`{"mode":"s3","endpoint":"https://s3.example.com","bucket":"gb","accessKeyId":"AK","secret":"`+secret+`","enabled":true}`))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d body=%s", rr.Code, rr.Body.String())
@@ -235,44 +228,6 @@ func mintToken(t *testing.T, iss *authztoken.Issuer, uid string) string {
 		t.Fatalf("issue token: %v", err)
 	}
 	return tok
-}
-
-// TestRequireAnyOrgAdminGate proves the global routes' gate: a user who is admin in
-// zero orgs → 403; a user who is org_admin in ≥1 org → admitted (reaches handler →
-// 200). Routed through the full mux so the real Authenticate→gate chain runs.
-func TestRequireAnyOrgAdminGate(t *testing.T) {
-	iss := authztoken.NewIssuer([]byte("gate-secret"), time.Minute)
-
-	// User admin in zero orgs (viewer only) → 403.
-	muxNo := NewMux(Deps{
-		Issuer: iss, RoleResolver: stubResolver{},
-		OrgList:       fakeOrgList{orgs: []map[string]any{{"id": "o1", "name": "n", "role": "viewer"}}},
-		StorageConfig: &stubStorageStore{globalOK: false},
-	})
-	reqNo := httptest.NewRequest("GET", "/api/storage-config/global", nil)
-	reqNo.Header.Set("Authorization", "Bearer "+mintToken(t, iss, "u-viewer"))
-	rrNo := httptest.NewRecorder()
-	muxNo.ServeHTTP(rrNo, reqNo)
-	if rrNo.Code != http.StatusForbidden {
-		t.Fatalf("admin-in-zero-orgs want 403, got %d body=%s", rrNo.Code, rrNo.Body.String())
-	}
-
-	// User org_admin in ≥1 org → admitted, handler returns 200 {config:null}.
-	muxYes := NewMux(Deps{
-		Issuer: iss, RoleResolver: stubResolver{},
-		OrgList:       fakeOrgList{orgs: []map[string]any{{"id": "o1", "name": "n", "role": "viewer"}, {"id": "o2", "name": "m", "role": "org_admin"}}},
-		StorageConfig: &stubStorageStore{globalOK: false},
-	})
-	reqYes := httptest.NewRequest("GET", "/api/storage-config/global", nil)
-	reqYes.Header.Set("Authorization", "Bearer "+mintToken(t, iss, "u-admin"))
-	rrYes := httptest.NewRecorder()
-	muxYes.ServeHTTP(rrYes, reqYes)
-	if rrYes.Code != http.StatusOK {
-		t.Fatalf("org_admin-in-one-org want 200, got %d body=%s", rrYes.Code, rrYes.Body.String())
-	}
-	if !strings.Contains(rrYes.Body.String(), `"config":null`) {
-		t.Fatalf("admitted handler body: %s", rrYes.Body.String())
-	}
 }
 
 // TestStorageGetResultShape pins the exact JSON envelope for absent/present so the

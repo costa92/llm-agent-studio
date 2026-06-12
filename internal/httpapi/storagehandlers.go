@@ -6,9 +6,6 @@ import (
 	"errors"
 	"net/http"
 
-	authzhttp "github.com/costa92/llm-agent-authz/httpapi"
-	authzrole "github.com/costa92/llm-agent-authz/role"
-
 	"github.com/costa92/llm-agent-studio/internal/storageconfig"
 )
 
@@ -119,7 +116,7 @@ func deleteOrgStorageConfigHandler(s StorageConfigStore) http.HandlerFunc {
 	}
 }
 
-// getGlobalStorageConfigHandler (GET /api/storage-config/global): any-org-admin.
+// getGlobalStorageConfigHandler (GET /api/platform/storage-config/global): 平台管理员。
 // 无配置 → 200 {config:null}。
 func getGlobalStorageConfigHandler(s StorageConfigStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -132,7 +129,7 @@ func getGlobalStorageConfigHandler(s StorageConfigStore) http.HandlerFunc {
 	}
 }
 
-// putGlobalStorageConfigHandler (PUT /api/storage-config/global): any-org-admin.
+// putGlobalStorageConfigHandler (PUT /api/platform/storage-config/global): 平台管理员。
 // 同 putOrg 的 body/错误映射，写 scope='global' 单例。
 func putGlobalStorageConfigHandler(s StorageConfigStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -146,37 +143,5 @@ func putGlobalStorageConfigHandler(s StorageConfigStore) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, sc)
-	}
-}
-
-// requireAnyOrgAdmin 守护 global storage-config 路由：global 配置不属于任何单一 org，
-// 故不能用 orgScope 的 RBAC。改为：取已认证 user id (Authenticate 已注入 ctx)，列出其
-// orgs，只要在 ≥1 个 org 的角色 ≥ admin (org_admin/admin) 即放行；否则 403。判定与
-// per-org 路由的 roleAdmin 最低门槛一致。须在 authOnly 之后包裹 (先认证)。
-func requireAnyOrgAdmin(orgList OrgLister, next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		uid := authzhttp.UserID(r.Context())
-		if uid == "" {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		orgs, err := orgList.OrgsForUser(r.Context(), uid)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		admin := false
-		for _, o := range orgs {
-			role, _ := o["role"].(string)
-			if authzrole.Role(role).AtLeast(roleAdmin) {
-				admin = true
-				break
-			}
-		}
-		if !admin {
-			http.Error(w, "forbidden: requires org admin in at least one org", http.StatusForbidden)
-			return
-		}
-		next(w, r)
 	}
 }

@@ -44,6 +44,7 @@ type Deps struct {
 	BlobServer    BlobServer // 内置 localfs回源 handler (始终非空)
 	Models        ModelStore
 	StorageConfig StorageConfigStore // per-org / global 对象存储后端配置 (secret write-only)
+	Platform      PlatformService    // 平台超级管理员: 系统级存储配置 + 所有 org 视图 + 平台管理员名册
 	Cost          CostStore
 	PromptBuilder *prompt.Builder
 	GenQuota      int // rolling-24h per-org generation quota; 0 = unlimited
@@ -113,6 +114,13 @@ func NewMux(d Deps) *http.ServeMux {
 	proj := func(min authzrole.Role, h http.HandlerFunc) http.Handler {
 		return scoped(min, projScope, h)
 	}
+	// platformAdmin 门禁：以 scope_kind="platform" 在固定 scope (orgID="", scopeID="")
+	// 上解析角色，要求 ≥ admin。镜像 scoped，但锚定 platform 维度而非 org。
+	platformAdmin := func(h http.HandlerFunc) http.Handler {
+		var handler http.Handler = withUserLimit(guard, h)
+		handler = authzhttp.RequireScopeRole(d.RoleResolver, "platform", roleAdmin, platformScope)(handler)
+		return authzhttp.Authenticate(d.Issuer)(handler)
+	}
 
 	// Org bootstrap + project create/list (org-scoped).
 	mux.Handle("POST /api/orgs", authOnly(createOrgHandler(d.OrgBootstrap)))
@@ -159,8 +167,16 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("GET /api/orgs/{org}/storage-config", scoped(roleAdmin, orgScope, getOrgStorageConfigHandler(d.StorageConfig)))
 	mux.Handle("PUT /api/orgs/{org}/storage-config", scoped(roleAdmin, orgScope, putOrgStorageConfigHandler(d.StorageConfig)))
 	mux.Handle("DELETE /api/orgs/{org}/storage-config", scoped(roleAdmin, orgScope, deleteOrgStorageConfigHandler(d.StorageConfig)))
-	mux.Handle("GET /api/storage-config/global", authOnly(requireAnyOrgAdmin(d.OrgList, getGlobalStorageConfigHandler(d.StorageConfig))))
-	mux.Handle("PUT /api/storage-config/global", authOnly(requireAnyOrgAdmin(d.OrgList, putGlobalStorageConfigHandler(d.StorageConfig))))
+	// 平台超级管理员 (spec: 平台角色). whoami 仅 authOnly（前端据此决定是否展示平台导航，
+	// 不必吃 403）；其余路由经 platformAdmin 门禁。系统级 global 存储配置从旧的
+	// any-org-admin 门禁迁到此处，由专属平台角色守护。
+	mux.Handle("GET /api/platform/whoami", authOnly(platformWhoamiHandler(d.Platform)))
+	mux.Handle("GET /api/platform/storage-config/global", platformAdmin(getGlobalStorageConfigHandler(d.StorageConfig)))
+	mux.Handle("PUT /api/platform/storage-config/global", platformAdmin(putGlobalStorageConfigHandler(d.StorageConfig)))
+	mux.Handle("GET /api/platform/orgs", platformAdmin(platformOrgsHandler(d.Platform)))
+	mux.Handle("GET /api/platform/admins", platformAdmin(platformListAdminsHandler(d.Platform)))
+	mux.Handle("POST /api/platform/admins", platformAdmin(platformGrantAdminHandler(d.Platform)))
+	mux.Handle("DELETE /api/platform/admins/{userId}", platformAdmin(platformRevokeAdminHandler(d.Platform)))
 	// Cost center (admin).
 	mux.Handle("GET /api/orgs/{org}/cost", scoped(roleAdmin, orgScope, orgCostHandler(d.Cost)))
 	mux.Handle("GET /api/projects/{id}/cost", proj(roleAdmin, projectCostHandler(d.Cost)))

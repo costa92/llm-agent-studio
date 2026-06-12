@@ -81,6 +81,11 @@ type Config struct {
 	OTLPInsecure bool
 
 	WebDir string // built SPA dir to serve (e.g. "web/dist"); "" = backend-only
+
+	// PlatformAdminEmails 是平台超级管理员的 env 种子名单（PLATFORM_ADMIN_EMAILS，
+	// 逗号分隔）。启动时对名单内已注册用户授予平台管理员 (SeedFromEmails)；尚未注册
+	// 的，注册时再 top-up (见 studiosvc.Register)。每项已 trim + 转小写以匹配落库形态。
+	PlatformAdminEmails []string
 }
 
 // Load reads from the process environment.
@@ -142,6 +147,8 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		OTLPProtocol: get("OTLP_PROTOCOL", ""),
 		OTLPInsecure: get("OTLP_INSECURE", "true") == "true",
 		WebDir:       get("WEB_DIR", ""),
+
+		PlatformAdminEmails: splitEmails(get("PLATFORM_ADMIN_EMAILS", "")),
 	}
 	if len(errs) > 0 {
 		return Config{}, fmt.Errorf("config: invalid values: %s", strings.Join(errs, "; "))
@@ -164,6 +171,21 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		cfg.BlobSecret = cfg.JWTSecret
 	}
 	return cfg, nil
+}
+
+// splitEmails 解析逗号分隔的邮箱名单：trim + 转小写，丢弃空项。空入参 → nil。
+func splitEmails(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		e := strings.ToLower(strings.TrimSpace(part))
+		if e != "" {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // durOf parses a duration, recording a load error naming the env key on
