@@ -50,15 +50,31 @@ vi.mock("@/features/storage/api", () => ({
   }),
 }))
 
-import { PlatformAdminPage } from "./PlatformAdminPage"
+import {
+  AllOrgsPage,
+  PlatformGate,
+  PlatformSettingsPage,
+} from "./PlatformAdminPage"
 
-function renderPage() {
+function renderGate() {
+  return render(
+    <PlatformGate>
+      <div>gate-child</div>
+    </PlatformGate>,
+  )
+}
+
+function renderSettings() {
   return render(
     <>
-      <PlatformAdminPage />
+      <PlatformSettingsPage />
       <Toaster />
     </>,
   )
+}
+
+function renderAllOrgs() {
+  return render(<AllOrgsPage />)
 }
 
 beforeEach(() => {
@@ -71,57 +87,39 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-describe("PlatformAdminPage guard", () => {
+describe("PlatformGate", () => {
   it("shows permission empty state for non platform admin", () => {
     whoami.value = { data: false, isLoading: false }
-    renderPage()
+    renderGate()
     expect(screen.getByText("需要平台管理员权限")).toBeInTheDocument()
-    // 三段标题不应渲染。
-    expect(screen.queryByText("全局存储配置")).not.toBeInTheDocument()
+    // 门禁未通过时不渲染子页。
+    expect(screen.queryByText("gate-child")).not.toBeInTheDocument()
   })
 
   it("shows a skeleton while whoami is loading", () => {
     whoami.value = { data: undefined, isLoading: true }
-    renderPage()
+    renderGate()
     expect(screen.queryByText("需要平台管理员权限")).not.toBeInTheDocument()
-    expect(screen.queryByText("全局存储配置")).not.toBeInTheDocument()
+    expect(screen.queryByText("gate-child")).not.toBeInTheDocument()
   })
 
-  it("renders the 3 sections for a platform admin", () => {
-    renderPage()
+  it("renders children for a platform admin", () => {
+    renderGate()
+    expect(screen.getByText("gate-child")).toBeInTheDocument()
+  })
+})
+
+describe("PlatformSettingsPage", () => {
+  it("renders 全局存储配置 + 平台管理员 but not 全部组织", () => {
+    renderSettings()
     expect(screen.getByText("全局存储配置")).toBeInTheDocument()
-    expect(screen.getByText("全部组织")).toBeInTheDocument()
     expect(screen.getByText("平台管理员")).toBeInTheDocument()
-  })
-})
-
-describe("PlatformAdminPage orgs table", () => {
-  it("renders org rows from usePlatformOrgs", () => {
-    orgs.value = {
-      data: [
-        { id: "acme", name: "Acme", createdAt: "2026-01-01T00:00:00Z", memberCount: 3 },
-        { id: "globex", name: "Globex", createdAt: "2026-02-01T00:00:00Z", memberCount: 1 },
-      ],
-      isLoading: false,
-      isError: false,
-      refetch: vi.fn(),
-    }
-    renderPage()
-    expect(screen.getByText("Acme")).toBeInTheDocument()
-    expect(screen.getByText("globex")).toBeInTheDocument()
-    expect(screen.getByText("3")).toBeInTheDocument()
+    expect(screen.queryByText("全部组织")).not.toBeInTheDocument()
   })
 
-  it("shows empty state when there are no orgs", () => {
-    renderPage()
-    expect(screen.getByText("暂无组织。")).toBeInTheDocument()
-  })
-})
-
-describe("PlatformAdminPage admins", () => {
   it("calls grant with the typed email on 添加", async () => {
     const user = userEvent.setup()
-    renderPage()
+    renderSettings()
     await user.type(screen.getByLabelText("按邮箱添加"), "new@example.com")
     await user.click(screen.getByRole("button", { name: "添加" }))
     expect(grantMutate).toHaveBeenCalledTimes(1)
@@ -136,7 +134,7 @@ describe("PlatformAdminPage admins", () => {
       refetch: vi.fn(),
     }
     const user = userEvent.setup()
-    renderPage()
+    renderSettings()
 
     await user.click(
       screen.getByRole("button", { name: "移除平台管理员 admin@example.com" }),
@@ -161,8 +159,32 @@ describe("PlatformAdminPage admins", () => {
       isError: false,
       refetch: vi.fn(),
     }
-    renderPage()
+    renderSettings()
     const section = screen.getByText("平台管理员").closest("section") as HTMLElement
     expect(within(section).getByText("admin@example.com")).toBeInTheDocument()
+  })
+})
+
+describe("AllOrgsPage", () => {
+  it("renders org rows from usePlatformOrgs with member counts", () => {
+    orgs.value = {
+      data: [
+        { id: "acme", name: "Acme", createdAt: "2026-01-01T00:00:00Z", memberCount: 3 },
+        { id: "globex", name: "Globex", createdAt: "2026-02-01T00:00:00Z", memberCount: 1 },
+      ],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    }
+    renderAllOrgs()
+    expect(screen.getByText("Acme")).toBeInTheDocument()
+    expect(screen.getByText("globex")).toBeInTheDocument()
+    expect(screen.getByText("3")).toBeInTheDocument()
+    expect(screen.getByText("1")).toBeInTheDocument()
+  })
+
+  it("shows empty state when there are no orgs", () => {
+    renderAllOrgs()
+    expect(screen.getByText("暂无组织。")).toBeInTheDocument()
   })
 })
