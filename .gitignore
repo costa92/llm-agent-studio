@@ -5,3 +5,4 @@
 blobdata/
 cmd/studiod/blobdata/
 bin
+.gstack/
