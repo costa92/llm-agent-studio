@@ -1,0 +1,280 @@
+package storageconfig
+
+import (
+	"context"
+	"errors"
+	"os"
+	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/costa92/llm-agent-studio/internal/secretbox"
+	"github.com/costa92/llm-agent-studio/internal/storage"
+)
+
+// testBox 用固定 base64 32 字节密钥构造 enabled box (与 BYOK 同一把)。
+func testBox(t *testing.T) *secretbox.Box {
+	t.Helper()
+	b, err := secretbox.New("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatalf("test box: %v", err)
+	}
+	return b
+}
+
+func testPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run storage config store tests")
+	}
+	ctx := context.Background()
+	st, err := storage.Open(ctx, storage.Config{PGURL: dsn})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(st.Close)
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return st.Pool()
+}
+
+func s3Input(secret string) UpsertInput {
+	return UpsertInput{
+		Mode: "s3", Endpoint: "https://s3.example.com", Region: "us-east-1",
+		Bucket: "assets", AccessKeyID: "AKID", UseSSL: true, Enabled: true, Secret: secret,
+	}
+}
+
+func TestUpsertGlobalRoundTrip(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	sc, err := st.UpsertGlobal(ctx, s3Input("topsecret"))
+	if err != nil {
+		t.Fatalf("upsert global: %v", err)
+	}
+	if sc.Scope != "global" || sc.Mode != "s3" || sc.Bucket != "assets" || !sc.HasSecret {
+		t.Fatalf("upsert result: %+v", sc)
+	}
+	got, ok, err := st.GetGlobal(ctx)
+	if err != nil || !ok {
+		t.Fatalf("get global: %v ok=%v", err, ok)
+	}
+	if got.AccessKeyID != "AKID" || got.Endpoint != "https://s3.example.com" || !got.HasSecret {
+		t.Fatalf("get global: %+v", got)
+	}
+}
+
+func TestUpsertGlobalIsSingleton(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	if _, err := st.UpsertGlobal(ctx, s3Input("s1")); err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	in := s3Input("s2")
+	in.Bucket = "assets2"
+	if _, err := st.UpsertGlobal(ctx, in); err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM storage_configs WHERE scope='global'`).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("global must be a singleton, got %d rows", n)
+	}
+	got, _, _ := st.GetGlobal(ctx)
+	if got.Bucket != "assets2" {
+		t.Fatalf("second upsert must update, bucket=%q", got.Bucket)
+	}
+}
+
+func TestUpsertForOrgRoundTrip(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	sc, err := st.UpsertForOrg(ctx, "org-a", s3Input("sek"))
+	if err != nil {
+		t.Fatalf("upsert org: %v", err)
+	}
+	if sc.Scope != "org" || sc.OrgID != "org-a" || !sc.HasSecret {
+		t.Fatalf("upsert org result: %+v", sc)
+	}
+	got, ok, err := st.GetForOrg(ctx, "org-a")
+	if err != nil || !ok || got.OrgID != "org-a" {
+		t.Fatalf("get org: %v ok=%v %+v", err, ok, got)
+	}
+	// 第二次 upsert 更新而非新增行。
+	in := s3Input("sek")
+	in.Region = "eu-west-1"
+	if _, err := st.UpsertForOrg(ctx, "org-a", in); err != nil {
+		t.Fatalf("second upsert org: %v", err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM storage_configs WHERE scope='org' AND org_id='org-a'`).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("per-org must be unique, got %d rows", n)
+	}
+	got, _, _ = st.GetForOrg(ctx, "org-a")
+	if got.Region != "eu-west-1" {
+		t.Fatalf("second org upsert must update, region=%q", got.Region)
+	}
+}
+
+func TestUpsertKeepOrReplaceSecret(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	if _, err := st.UpsertForOrg(ctx, "org-k", s3Input("orig-secret")); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// 空 Secret → 保留既有 secret_enc，改 region。
+	in := s3Input("")
+	in.Region = "ap-1"
+	if _, err := st.UpsertForOrg(ctx, "org-k", in); err != nil {
+		t.Fatalf("keep upsert: %v", err)
+	}
+	rs, ok, err := st.ResolveForOrg(ctx, "org-k")
+	if err != nil || !ok {
+		t.Fatalf("resolve after keep: %v ok=%v", err, ok)
+	}
+	if rs.SecretKey != "orig-secret" || rs.Region != "ap-1" {
+		t.Fatalf("keep: secret=%q region=%q", rs.SecretKey, rs.Region)
+	}
+	// 非空 Secret → 替换。
+	in2 := s3Input("new-secret")
+	if _, err := st.UpsertForOrg(ctx, "org-k", in2); err != nil {
+		t.Fatalf("replace upsert: %v", err)
+	}
+	rs, ok, err = st.ResolveForOrg(ctx, "org-k")
+	if err != nil || !ok || rs.SecretKey != "new-secret" {
+		t.Fatalf("replace: ok=%v err=%v secret=%q", ok, err, rs.SecretKey)
+	}
+}
+
+func TestGetMissing(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	if _, ok, err := st.GetForOrg(ctx, "org-nope-"+t.Name()); err != nil || ok {
+		t.Fatalf("missing org: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestResolvePrecedence(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	// global enabled.
+	gin := s3Input("global-secret")
+	gin.Bucket = "global-bucket"
+	if _, err := st.UpsertGlobal(ctx, gin); err != nil {
+		t.Fatalf("global: %v", err)
+	}
+	// org-p enabled → 取 org。
+	oin := s3Input("org-secret")
+	oin.Bucket = "org-bucket"
+	if _, err := st.UpsertForOrg(ctx, "org-p", oin); err != nil {
+		t.Fatalf("org: %v", err)
+	}
+	rs, ok, err := st.ResolveForOrg(ctx, "org-p")
+	if err != nil || !ok || rs.Bucket != "org-bucket" || rs.SecretKey != "org-secret" {
+		t.Fatalf("org-enabled should win: ok=%v err=%v %+v", ok, err, rs)
+	}
+	// org-p 禁用 → 回落 global。
+	din := oin
+	din.Enabled = false
+	din.Secret = "" // keep secret
+	if _, err := st.UpsertForOrg(ctx, "org-p", din); err != nil {
+		t.Fatalf("disable org: %v", err)
+	}
+	rs, ok, err = st.ResolveForOrg(ctx, "org-p")
+	if err != nil || !ok || rs.Bucket != "global-bucket" || rs.SecretKey != "global-secret" {
+		t.Fatalf("disabled org should fall to global: ok=%v err=%v %+v", ok, err, rs)
+	}
+	// 无 org 行且无 global → ok=false。先删 global。
+	if err := st.DeleteForOrg(ctx, "org-p"); err != nil {
+		t.Fatalf("delete org-p: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM storage_configs WHERE scope='global'`); err != nil {
+		t.Fatalf("drop global: %v", err)
+	}
+	if _, ok, err := st.ResolveForOrg(ctx, "org-p"); err != nil || ok {
+		t.Fatalf("no config should be ok=false: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestDeleteForOrg(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	if _, err := st.UpsertForOrg(ctx, "org-d", s3Input("s")); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := st.DeleteForOrg(ctx, "org-d"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, ok, _ := st.GetForOrg(ctx, "org-d"); ok {
+		t.Fatalf("row should be gone")
+	}
+	if err := st.DeleteForOrg(ctx, "org-d"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("re-delete must return ErrNotFound, got %v", err)
+	}
+}
+
+func TestValidationBeforeDBAccess(t *testing.T) {
+	// 校验先于任何 DB 访问 → nil pool 证明顺序。
+	st := New(nil, testBox(t))
+	ctx := context.Background()
+	// 非法 mode。
+	bad := s3Input("s")
+	bad.Mode = "ftp"
+	if _, err := st.UpsertGlobal(ctx, bad); err == nil {
+		t.Fatalf("invalid mode must be rejected")
+	}
+	// s3 缺 bucket。
+	noBucket := s3Input("s")
+	noBucket.Bucket = ""
+	if _, err := st.UpsertForOrg(ctx, "o", noBucket); err == nil {
+		t.Fatalf("s3 without bucket must be rejected")
+	}
+	// disabled box + 非空 secret → ErrEncUnavailable (校验/加密守卫先于 DB 访问，
+	// nil pool 证明顺序)。
+	disabledBoxStore := New(nil, mustDisabledBox(t))
+	if _, err := disabledBoxStore.UpsertGlobal(ctx, s3Input("secret")); !errors.Is(err, ErrEncUnavailable) {
+		t.Fatalf("disabled box with secret must return ErrEncUnavailable, got %v", err)
+	}
+}
+
+func mustDisabledBox(t *testing.T) *secretbox.Box {
+	t.Helper()
+	b, err := secretbox.New("")
+	if err != nil {
+		t.Fatalf("disabled box: %v", err)
+	}
+	return b
+}
+
+func TestLocalfsModeNoBucketRequired(t *testing.T) {
+	// localfs 不需要 bucket/endpoint，且无 secret → 入库成功 (round-trip via PG)。
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	in := UpsertInput{Mode: "localfs", PublicPrefix: "/files", UseSSL: true, Enabled: true}
+	sc, err := st.UpsertForOrg(ctx, "org-lfs", in)
+	if err != nil {
+		t.Fatalf("localfs upsert: %v", err)
+	}
+	if sc.Mode != "localfs" || sc.PublicPrefix != "/files" || sc.HasSecret {
+		t.Fatalf("localfs result: %+v", sc)
+	}
+	rs, ok, err := st.ResolveForOrg(ctx, "org-lfs")
+	if err != nil || !ok || rs.Mode != "localfs" || rs.PublicPrefix != "/files" {
+		t.Fatalf("resolve localfs: ok=%v err=%v %+v", ok, err, rs)
+	}
+}
