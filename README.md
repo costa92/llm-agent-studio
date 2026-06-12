@@ -2,6 +2,11 @@
 
 AI Studio — Multi-Agent 内容生产平台（生态 sibling 案例项目）。
 
+## 架构文档
+
+- [docs/architecture/run-flow.md](docs/architecture/run-flow.md) —— 单次 run 的完整调用链（PR 描述/故障排查用）
+- [docs/architecture/subsystem-map.md](docs/architecture/subsystem-map.md) —— 子系统全景图 + Keystones + 包索引（onboarding 用）
+
 ## 开发
 
 独立 sibling 仓，所有 Go 命令需 `GOWORK=off`：
