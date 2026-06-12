@@ -9,6 +9,7 @@ import {
   Menu,
   ShieldCheck,
   SlidersHorizontal,
+  Users,
   Wallet,
   Wand2,
 } from "lucide-react"
@@ -34,6 +35,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/orgs/$org/cost", params: {}, icon: <Wallet />, label: "成本", adminOnly: true },
   { to: "/orgs/$org/model-configs", params: {}, icon: <SlidersHorizontal />, label: "模型", adminOnly: true },
   { to: "/orgs/$org/storage-config", params: {}, icon: <HardDrive />, label: "存储", adminOnly: true },
+  { to: "/orgs/$org/members", params: {}, icon: <Users />, label: "成员", adminOnly: true },
 ]
 
 export interface AppShellProps {
@@ -161,6 +163,41 @@ function PlatformOrgsDrawerLink({ onNavigate }: { onNavigate: () => void }) {
   )
 }
 
+// 「用户管理」入口：非 org-scoped，仅平台超级管理员可见。桌面轨道竖排样式。
+function PlatformUsersRailLink() {
+  return (
+    <Link
+      to="/platform/users"
+      className="grid h-11 w-11 place-items-center rounded-[10px] text-[11px] leading-tight text-text-3 transition-colors hover:bg-bg-raised hover:text-text-2"
+      activeProps={{ className: "bg-amber/12 text-amber hover:bg-amber/12 hover:text-amber" }}
+    >
+      <span className="grid place-items-center gap-0.5">
+        <span className="[&>svg]:h-[18px] [&>svg]:w-[18px]">
+          <Users />
+        </span>
+        用户管理
+      </span>
+    </Link>
+  )
+}
+
+// 移动抽屉横排样式；选中后关闭抽屉。
+function PlatformUsersDrawerLink({ onNavigate }: { onNavigate: () => void }) {
+  return (
+    <Link
+      to="/platform/users"
+      onClick={onNavigate}
+      className="flex items-center gap-3 rounded-[10px] px-3 py-2.5 text-[14px] text-text-2 transition-colors hover:bg-bg-raised hover:text-text-1"
+      activeProps={{ className: "bg-amber/12 text-amber hover:bg-amber/12 hover:text-amber" }}
+    >
+      <span className="[&>svg]:h-[18px] [&>svg]:w-[18px]">
+        <Users />
+      </span>
+      用户管理
+    </Link>
+  )
+}
+
 export function AppShell({
   org,
   isAdmin = false,
@@ -233,6 +270,7 @@ export function AppShell({
                 <>
                   <PlatformDrawerLink onNavigate={() => setDrawerOpen(false)} />
                   <PlatformOrgsDrawerLink onNavigate={() => setDrawerOpen(false)} />
+                  <PlatformUsersDrawerLink onNavigate={() => setDrawerOpen(false)} />
                 </>
               )}
               <div className="flex-1" />
@@ -290,6 +328,7 @@ export function AppShell({
           <>
             <PlatformRailLink />
             <PlatformOrgsRailLink />
+            <PlatformUsersRailLink />
           </>
         )}
         <div className="flex-1" />

@@ -25,6 +25,7 @@ import { StorageConfigForm } from "@/features/storage/StorageConfigPage"
 import { storageConfigErrorMessage } from "@/features/storage/configError"
 import type {
   PlatformAdmin,
+  PlatformUser,
   StorageConfig,
   UpsertStorageConfigInput,
 } from "@/lib/types"
@@ -33,9 +34,12 @@ import {
   useUpsertGlobalStorageConfig,
 } from "@/features/storage/api"
 import {
+  useDeleteUser,
   useGrantPlatformAdmin,
   usePlatformAdmins,
   usePlatformOrgs,
+  usePlatformUserDetail,
+  usePlatformUsers,
   usePlatformWhoami,
   useRevokePlatformAdmin,
 } from "./api"
@@ -100,6 +104,23 @@ export function AllOrgsPage() {
       </header>
 
       <AllOrgsSection />
+    </div>
+  )
+}
+
+// 用户管理页（/platform/users）：平台内所有用户一览 + 平台管理员开关 / 查看 / 删除。
+// 门禁由路由布局的 PlatformGate 承担。
+export function AllUsersPage() {
+  return (
+    <div className="flex flex-col gap-6 p-6">
+      <header className="flex flex-col gap-1.5">
+        <h1 className="font-heading text-[22px] font-bold text-text-1">用户管理</h1>
+        <p className="text-[12px] text-text-3">
+          平台内所有用户一览（邮箱 / 创建时间 / 平台管理员 / 组织数）。
+        </p>
+      </header>
+
+      <AllUsersSection />
     </div>
   )
 }
@@ -377,5 +398,306 @@ function PlatformAdminsSection() {
         </DialogContent>
       </Dialog>
     </section>
+  )
+}
+
+// ── 用户管理 ────────────────────────────────────────────────────
+function AllUsersSection() {
+  const users = usePlatformUsers()
+  const grant = useGrantPlatformAdmin()
+  const revoke = useRevokePlatformAdmin()
+  const del = useDeleteUser()
+  // 详情弹窗：保存待查看用户（null = 关闭）。
+  const [detailUser, setDetailUser] = useState<PlatformUser | null>(null)
+  // 删除二次确认弹窗：保存待删除用户（null = 关闭）。
+  const [pendingDelete, setPendingDelete] = useState<PlatformUser | null>(null)
+
+  // 平台管理员开关：开 → grant（按邮箱）；关 → revoke（按 userId）。
+  function handleToggleAdmin(user: PlatformUser) {
+    if (user.isPlatformAdmin) {
+      revoke.mutate(user.userId, {
+        onSuccess: () => toast.success("已取消平台管理员"),
+        onError: (err: unknown) => {
+          if (err instanceof ApiError && err.status === 409) {
+            toast.error("不能移除最后一个平台管理员")
+          } else {
+            toast.error("操作失败，请重试")
+          }
+        },
+      })
+    } else {
+      grant.mutate(user.email, {
+        onSuccess: () => toast.success("已设为平台管理员"),
+        onError: (err: unknown) => {
+          if (err instanceof ApiError && err.status === 404) {
+            toast.error("用户不存在")
+          } else {
+            toast.error("操作失败，请重试")
+          }
+        },
+      })
+    }
+  }
+
+  function handleDelete(target: PlatformUser) {
+    setPendingDelete(null)
+    del.mutate(target.userId, {
+      onSuccess: () => toast.success("已删除用户"),
+      onError: (err: unknown) => {
+        if (err instanceof ApiError && err.status === 409) {
+          if (err.body.includes("yourself")) {
+            toast.error("不能删除自己")
+          } else {
+            toast.error("不能删除最后一个平台管理员")
+          }
+        } else {
+          toast.error("删除失败，请重试")
+        }
+      },
+    })
+  }
+
+  return (
+    <section className="flex flex-col gap-3 rounded-xl border border-line bg-bg-surface p-5">
+      <header className="flex flex-col gap-1">
+        <h2 className="font-heading text-[15px] font-semibold text-text-1">全部用户</h2>
+        <p className="text-[12px] text-text-3">
+          平台内所有用户；可切换平台管理员、查看所属组织或删除用户。
+        </p>
+      </header>
+
+      {users.isError ? (
+        <div className="flex flex-col items-center gap-3 py-10 text-center">
+          <p className="text-text-2">用户列表加载失败</p>
+          <Button variant="ghost" onClick={() => void users.refetch()}>
+            重试
+          </Button>
+        </div>
+      ) : users.isLoading ? (
+        <div className="flex flex-col gap-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} className="h-10 rounded-lg" />
+          ))}
+        </div>
+      ) : users.data && users.data.length > 0 ? (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>邮箱</TableHead>
+              <TableHead>创建时间</TableHead>
+              <TableHead>平台管理员</TableHead>
+              <TableHead className="text-right">组织数</TableHead>
+              <TableHead className="text-right">操作</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {users.data.map((u) => (
+              <TableRow key={u.userId}>
+                <TableCell className="text-text-1">{u.email}</TableCell>
+                <TableCell className="text-text-2">{formatCreatedAt(u.createdAt)}</TableCell>
+                <TableCell>
+                  <UiButton
+                    variant={u.isPlatformAdmin ? "outline" : "ghost"}
+                    size="sm"
+                    aria-label={
+                      u.isPlatformAdmin
+                        ? `取消管理员 ${u.email}`
+                        : `设为管理员 ${u.email}`
+                    }
+                    disabled={grant.isPending || revoke.isPending}
+                    onClick={() => handleToggleAdmin(u)}
+                  >
+                    {u.isPlatformAdmin ? "取消管理员" : "设为管理员"}
+                  </UiButton>
+                </TableCell>
+                <TableCell className="text-right text-text-2">{u.orgCount}</TableCell>
+                <TableCell className="text-right">
+                  <div className="flex justify-end gap-1">
+                    <UiButton
+                      variant="ghost"
+                      size="sm"
+                      aria-label={`查看 ${u.email}`}
+                      onClick={() => setDetailUser(u)}
+                    >
+                      查看
+                    </UiButton>
+                    <UiButton
+                      variant="ghost"
+                      size="sm"
+                      aria-label={`删除 ${u.email}`}
+                      onClick={() => setPendingDelete(u)}
+                    >
+                      删除
+                    </UiButton>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      ) : (
+        <p className="py-8 text-center text-[13px] text-text-3">暂无用户。</p>
+      )}
+
+      {/* 用户详情弹窗：按需拉取所属 org 列表。 */}
+      <UserDetailDialog
+        user={detailUser}
+        onClose={() => setDetailUser(null)}
+      />
+
+      {/* 删除二次确认弹窗：仅「确认删除」才调；「取消」零副作用。 */}
+      <UserDeleteDialog
+        user={pendingDelete}
+        onClose={() => setPendingDelete(null)}
+        onConfirm={handleDelete}
+      />
+    </section>
+  )
+}
+
+// 用户详情弹窗：展示邮箱 / 创建时间 / 是否平台管理员 + 所属 org 列表；
+// 若用户为某些 org 的唯一管理员，醒目提示这些 org（删除后将无管理员）。
+function UserDetailDialog({
+  user,
+  onClose,
+}: {
+  user: PlatformUser | null
+  onClose: () => void
+}) {
+  const detail = usePlatformUserDetail(user ? user.userId : null)
+  const soleOrgs = detail.data?.orgs.filter((o) => o.soleOrgAdmin) ?? []
+
+  return (
+    <Dialog
+      open={user != null}
+      onOpenChange={(open) => {
+        if (!open) onClose()
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>用户详情</DialogTitle>
+          <DialogDescription>{user ? user.email : ""}</DialogDescription>
+        </DialogHeader>
+
+        {detail.isLoading ? (
+          <div className="flex flex-col gap-3">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <Skeleton key={i} className="h-8 rounded-lg" />
+            ))}
+          </div>
+        ) : detail.isError ? (
+          <p className="py-4 text-center text-[13px] text-text-3">详情加载失败。</p>
+        ) : detail.data ? (
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-1 text-[13px]">
+              <div className="flex gap-2">
+                <span className="text-text-3">邮箱</span>
+                <span className="text-text-1">{detail.data.email}</span>
+              </div>
+              <div className="flex gap-2">
+                <span className="text-text-3">创建时间</span>
+                <span className="text-text-2">{formatCreatedAt(detail.data.createdAt)}</span>
+              </div>
+              <div className="flex gap-2">
+                <span className="text-text-3">平台管理员</span>
+                <span className="text-text-2">
+                  {detail.data.isPlatformAdmin ? "是" : "否"}
+                </span>
+              </div>
+            </div>
+
+            {soleOrgs.length > 0 && (
+              <p className="rounded-md border border-amber/40 bg-amber/10 px-3 py-2 text-[12.5px] text-amber">
+                此用户是以下组织的唯一管理员：
+                {soleOrgs.map((o) => o.orgName).join("、")}
+                ，删除后这些组织将无管理员。
+              </p>
+            )}
+
+            {detail.data.orgs.length > 0 ? (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>组织</TableHead>
+                    <TableHead className="text-right">角色</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {detail.data.orgs.map((o) => (
+                    <TableRow key={o.orgId}>
+                      <TableCell className="text-text-1">{o.orgName}</TableCell>
+                      <TableCell className="text-right text-text-2">{o.role}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : (
+              <p className="py-4 text-center text-[13px] text-text-3">未加入任何组织。</p>
+            )}
+          </div>
+        ) : null}
+
+        <DialogFooter>
+          <UiButton variant="outline" onClick={onClose}>
+            关闭
+          </UiButton>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// 删除二次确认弹窗：拉取详情以在确认体内提示 soleOrgAdmin 风险。
+function UserDeleteDialog({
+  user,
+  onClose,
+  onConfirm,
+}: {
+  user: PlatformUser | null
+  onClose: () => void
+  onConfirm: (user: PlatformUser) => void
+}) {
+  const detail = usePlatformUserDetail(user ? user.userId : null)
+  const soleOrgs = detail.data?.orgs.filter((o) => o.soleOrgAdmin) ?? []
+
+  return (
+    <Dialog
+      open={user != null}
+      onOpenChange={(open) => {
+        if (!open) onClose()
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>确认删除用户？</DialogTitle>
+          <DialogDescription>
+            {user ? `将永久删除用户 ${user.email}。此操作不可撤销。` : ""}
+          </DialogDescription>
+        </DialogHeader>
+
+        {soleOrgs.length > 0 && (
+          <p className="rounded-md border border-amber/40 bg-amber/10 px-3 py-2 text-[12.5px] text-amber">
+            此用户是以下组织的唯一管理员：
+            {soleOrgs.map((o) => o.orgName).join("、")}
+            ，删除后这些组织将无管理员。
+          </p>
+        )}
+
+        <DialogFooter>
+          <UiButton variant="outline" onClick={onClose}>
+            取消
+          </UiButton>
+          <UiButton
+            variant="destructive"
+            onClick={() => {
+              if (user) onConfirm(user)
+            }}
+          >
+            确认删除
+          </UiButton>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

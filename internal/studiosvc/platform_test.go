@@ -184,3 +184,134 @@ func TestPlatformListAllOrgs(t *testing.T) {
 		t.Fatalf("org2 memberCount=%d want 1", counts[id2])
 	}
 }
+
+// TestPlatformListUsers proves ListUsers returns all users with correct
+// isPlatformAdmin and orgCount.
+func TestPlatformListUsers(t *testing.T) {
+	ctx, p, az, done := platformFixture(t)
+	defer done()
+	org := NewOrg(az)
+
+	adminEmail := "lu_admin_" + randHexSvc() + "@x.com"
+	plainEmail := "lu_plain_" + randHexSvc() + "@x.com"
+	adminUID, _ := az.CreateUser(ctx, adminEmail, "h")
+	plainUID, _ := az.CreateUser(ctx, plainEmail, "h")
+
+	if err := p.Grant(ctx, adminUID); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	// adminUID owns two orgs (org_count 2); plainUID belongs to one (org_count 1).
+	id1, err := org.CreateOrg(ctx, "LU_OrgOne_"+randHexSvc(), adminUID)
+	if err != nil {
+		t.Fatalf("create org1: %v", err)
+	}
+	if _, err := org.CreateOrg(ctx, "LU_OrgTwo_"+randHexSvc(), adminUID); err != nil {
+		t.Fatalf("create org2: %v", err)
+	}
+	if err := az.UpsertMembership(ctx, id1, plainUID, "org", nil, authzrole.RoleViewer); err != nil {
+		t.Fatalf("add plain to org1: %v", err)
+	}
+
+	users, err := p.ListUsers(ctx)
+	if err != nil {
+		t.Fatalf("list users: %v", err)
+	}
+	byID := map[string]PlatformUser{}
+	for _, u := range users {
+		byID[u.UserID] = u
+	}
+	if got := byID[adminUID]; !got.IsAdmin || got.OrgCount != 2 || got.Email != normalizePlatformEmail(adminEmail) {
+		t.Fatalf("admin row wrong: %+v", got)
+	}
+	if got := byID[plainUID]; got.IsAdmin || got.OrgCount != 1 || got.Email != normalizePlatformEmail(plainEmail) {
+		t.Fatalf("plain row wrong: %+v", got)
+	}
+}
+
+// TestPlatformUserDetail proves UserDetail returns the user's orgs with
+// soleOrgAdmin true when they are the only org_admin and false when a second
+// org_admin exists; missing id → ErrUserNotFound.
+func TestPlatformUserDetail(t *testing.T) {
+	ctx, p, az, done := platformFixture(t)
+	defer done()
+	org := NewOrg(az)
+
+	ownerEmail := "ud_owner_" + randHexSvc() + "@x.com"
+	owner, _ := az.CreateUser(ctx, ownerEmail, "h")
+	coAdmin, _ := az.CreateUser(ctx, "ud_co_"+randHexSvc()+"@x.com", "h")
+
+	// soloOrg: owner is the only org_admin → soleOrgAdmin true.
+	soloOrg, err := org.CreateOrg(ctx, "UD_Solo_"+randHexSvc(), owner)
+	if err != nil {
+		t.Fatalf("create solo org: %v", err)
+	}
+	// sharedOrg: owner + coAdmin are both org_admin → soleOrgAdmin false.
+	sharedOrg, err := org.CreateOrg(ctx, "UD_Shared_"+randHexSvc(), owner)
+	if err != nil {
+		t.Fatalf("create shared org: %v", err)
+	}
+	if err := az.UpsertMembership(ctx, sharedOrg, coAdmin, "org", nil, authzrole.RoleOrgAdmin); err != nil {
+		t.Fatalf("add co-admin: %v", err)
+	}
+
+	d, err := p.UserDetail(ctx, owner)
+	if err != nil {
+		t.Fatalf("user detail: %v", err)
+	}
+	if d.UserID != owner || d.Email != normalizePlatformEmail(ownerEmail) {
+		t.Fatalf("detail identity wrong: %+v", d)
+	}
+	sole := map[string]bool{}
+	for _, o := range d.Orgs {
+		sole[o.OrgID] = o.SoleOrgAdmin
+	}
+	if !sole[soloOrg] {
+		t.Fatalf("solo org want soleOrgAdmin true: %+v", d.Orgs)
+	}
+	if sole[sharedOrg] {
+		t.Fatalf("shared org want soleOrgAdmin false: %+v", d.Orgs)
+	}
+
+	if _, err := p.UserDetail(ctx, "missing_"+randHexSvc()); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("missing user want ErrUserNotFound, got %v", err)
+	}
+}
+
+// TestPlatformDeleteUser proves DeleteUser removes the user AND cascades their
+// auth_membership rows; missing id → ErrUserNotFound.
+func TestPlatformDeleteUser(t *testing.T) {
+	ctx, p, az, done := platformFixture(t)
+	defer done()
+	org := NewOrg(az)
+
+	uid, _ := az.CreateUser(ctx, "del_"+randHexSvc()+"@x.com", "h")
+	if _, err := org.CreateOrg(ctx, "Del_Org_"+randHexSvc(), uid); err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	if err := p.Grant(ctx, uid); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+
+	if err := p.DeleteUser(ctx, uid); err != nil {
+		t.Fatalf("delete user: %v", err)
+	}
+	// User row gone.
+	var n int
+	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM auth_user WHERE id=$1`, uid).Scan(&n); err != nil {
+		t.Fatalf("count user: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("auth_user not deleted, count=%d", n)
+	}
+	// Membership rows cascaded.
+	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM auth_membership WHERE user_id=$1`, uid).Scan(&n); err != nil {
+		t.Fatalf("count memberships: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("auth_membership not cascaded, count=%d", n)
+	}
+
+	if err := p.DeleteUser(ctx, "missing_"+randHexSvc()); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("missing user want ErrUserNotFound, got %v", err)
+	}
+}

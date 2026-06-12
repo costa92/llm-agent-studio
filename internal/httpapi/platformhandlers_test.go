@@ -24,6 +24,12 @@ type stubPlatform struct {
 	lastGrant  string
 	lastRevoke string
 	revokeErr  error
+
+	users      []studiosvc.PlatformUser
+	detail     studiosvc.UserDetail
+	detailErr  error
+	deleteErr  error
+	lastDelete string
 }
 
 func (s *stubPlatform) IsPlatformAdmin(context.Context, string) (bool, error) { return s.isAdmin, nil }
@@ -39,6 +45,16 @@ func (s *stubPlatform) Revoke(_ context.Context, userID string) error {
 	return s.revokeErr
 }
 func (s *stubPlatform) ListAllOrgs(context.Context) ([]map[string]any, error) { return s.allOrgs, nil }
+func (s *stubPlatform) ListUsers(context.Context) ([]studiosvc.PlatformUser, error) {
+	return s.users, nil
+}
+func (s *stubPlatform) UserDetail(_ context.Context, userID string) (studiosvc.UserDetail, error) {
+	return s.detail, s.detailErr
+}
+func (s *stubPlatform) DeleteUser(_ context.Context, userID string) error {
+	s.lastDelete = userID
+	return s.deleteErr
+}
 
 // platformResolver is a fake RoleResolver: returns admin on scope_kind="platform"
 // for adminUID only; RoleNone otherwise. Lets the mux's RequireScopeRole gate run.
@@ -140,6 +156,125 @@ func TestPlatformOrgsAndAdminsHandlers(t *testing.T) {
 	}
 }
 
+// TestPlatformListUsersHandler proves GET wraps users in {items} (nil → []).
+func TestPlatformListUsersHandler(t *testing.T) {
+	st := &stubPlatform{users: []studiosvc.PlatformUser{{UserID: "u1", Email: "a@x.com", IsAdmin: true, OrgCount: 2}}}
+	rr := httptest.NewRecorder()
+	platformListUsersHandler(st)(rr, httptest.NewRequest("GET", "/api/platform/users", nil))
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"items"`) ||
+		!strings.Contains(rr.Body.String(), `"isPlatformAdmin":true`) || !strings.Contains(rr.Body.String(), `"orgCount":2`) {
+		t.Fatalf("list users body: %d %s", rr.Code, rr.Body.String())
+	}
+	// nil → [] (not null).
+	rr2 := httptest.NewRecorder()
+	platformListUsersHandler(&stubPlatform{})(rr2, httptest.NewRequest("GET", "/api/platform/users", nil))
+	if !strings.Contains(rr2.Body.String(), `"items":[]`) {
+		t.Fatalf("nil users want items:[], got %s", rr2.Body.String())
+	}
+}
+
+// TestPlatformUserDetailHandler proves GET → 200 detail object, missing → 404,
+// empty pathvalue → 400.
+func TestPlatformUserDetailHandler(t *testing.T) {
+	st := &stubPlatform{detail: studiosvc.UserDetail{
+		UserID: "u1", Email: "a@x.com", IsAdmin: true,
+		Orgs: []studiosvc.UserOrgMembership{{OrgID: "o1", OrgName: "Acme", Role: "org_admin", SoleOrgAdmin: true}},
+	}}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/platform/users/u1", nil)
+	req.SetPathValue("userId", "u1")
+	platformUserDetailHandler(st)(rr, req)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"userId":"u1"`) ||
+		!strings.Contains(rr.Body.String(), `"soleOrgAdmin":true`) {
+		t.Fatalf("detail body: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Missing user → 404.
+	rr2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest("GET", "/api/platform/users/nope", nil)
+	req2.SetPathValue("userId", "nope")
+	platformUserDetailHandler(&stubPlatform{detailErr: studiosvc.ErrUserNotFound})(rr2, req2)
+	if rr2.Code != http.StatusNotFound {
+		t.Fatalf("missing user want 404, got %d", rr2.Code)
+	}
+
+	// Empty pathvalue → 400.
+	rr3 := httptest.NewRecorder()
+	platformUserDetailHandler(st)(rr3, httptest.NewRequest("GET", "/api/platform/users/", nil))
+	if rr3.Code != http.StatusBadRequest {
+		t.Fatalf("empty userId want 400, got %d", rr3.Code)
+	}
+}
+
+// TestPlatformDeleteUserHandler proves DELETE happy → 200 {ok:true}, missing → 404,
+// last-platform-admin guard → 409.
+func TestPlatformDeleteUserHandler(t *testing.T) {
+	// Happy path: target is not an admin → deleted.
+	st := &stubPlatform{admins: []studiosvc.PlatformAdmin{{UserID: "admin1", Email: "x@x.com"}}}
+	rr := httptest.NewRecorder()
+	req := storageReq("DELETE", "/api/platform/users/u-target", "")
+	req.SetPathValue("userId", "u-target")
+	platformDeleteUserHandler(st)(rr, req)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"ok":true`) {
+		t.Fatalf("delete want 200 {ok:true}: %d %s", rr.Code, rr.Body.String())
+	}
+	if st.lastDelete != "u-target" {
+		t.Fatalf("delete target not passed: %q", st.lastDelete)
+	}
+
+	// Missing user → 404.
+	rr2 := httptest.NewRecorder()
+	req2 := storageReq("DELETE", "/api/platform/users/gone", "")
+	req2.SetPathValue("userId", "gone")
+	platformDeleteUserHandler(&stubPlatform{deleteErr: studiosvc.ErrUserNotFound})(rr2, req2)
+	if rr2.Code != http.StatusNotFound {
+		t.Fatalf("missing user want 404, got %d", rr2.Code)
+	}
+
+	// Empty pathvalue → 400.
+	rr3 := httptest.NewRecorder()
+	platformDeleteUserHandler(st)(rr3, storageReq("DELETE", "/api/platform/users/", ""))
+	if rr3.Code != http.StatusBadRequest {
+		t.Fatalf("empty userId want 400, got %d", rr3.Code)
+	}
+
+	// Last-platform-admin guard → 409 (target is the sole admin).
+	stLast := &stubPlatform{admins: []studiosvc.PlatformAdmin{{UserID: "only", Email: "o@x.com"}}}
+	rr4 := httptest.NewRecorder()
+	req4 := storageReq("DELETE", "/api/platform/users/only", "")
+	req4.SetPathValue("userId", "only")
+	platformDeleteUserHandler(stLast)(rr4, req4)
+	if rr4.Code != http.StatusConflict {
+		t.Fatalf("delete last admin want 409, got %d", rr4.Code)
+	}
+	if stLast.lastDelete != "" {
+		t.Fatalf("last-admin delete must not call DeleteUser, got %q", stLast.lastDelete)
+	}
+}
+
+// TestPlatformDeleteSelfHandler proves a platform admin cannot delete themselves
+// → 409. Routed through the full mux so the caller UserID is populated from the
+// token (the handler compares target against authzhttp.UserID).
+func TestPlatformDeleteSelfHandler(t *testing.T) {
+	iss := authztoken.NewIssuer([]byte("plat-secret"), time.Minute)
+	// Two admins so the last-admin guard does NOT fire — isolate the self guard.
+	st := &stubPlatform{admins: []studiosvc.PlatformAdmin{{UserID: "u-admin", Email: "a@x.com"}, {UserID: "u-other", Email: "b@x.com"}}}
+	mux := NewMux(Deps{
+		Issuer: iss, RoleResolver: platformResolver{adminUID: "u-admin"},
+		Platform: st,
+	})
+	req := httptest.NewRequest("DELETE", "/api/platform/users/u-admin", nil)
+	req.Header.Set("Authorization", "Bearer "+mintToken(t, iss, "u-admin"))
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("delete self want 409, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if st.lastDelete != "" {
+		t.Fatalf("self-delete must not call DeleteUser, got %q", st.lastDelete)
+	}
+}
+
 // TestPlatformGateRouting proves the platform-gated routes 403 for a non-platform
 // user and admit a platform admin — routed through the full mux so the real
 // Authenticate→RequireScopeRole(platform) chain runs. whoami is NOT gated.
@@ -151,13 +286,15 @@ func TestPlatformGateRouting(t *testing.T) {
 		StorageConfig: &stubStorageStore{globalOK: false},
 	})
 
-	// Non-platform user → 403 on a gated route.
-	reqNo := httptest.NewRequest("GET", "/api/platform/orgs", nil)
-	reqNo.Header.Set("Authorization", "Bearer "+mintToken(t, iss, "u-plain"))
-	rrNo := httptest.NewRecorder()
-	mux.ServeHTTP(rrNo, reqNo)
-	if rrNo.Code != http.StatusForbidden {
-		t.Fatalf("non-platform want 403, got %d body=%s", rrNo.Code, rrNo.Body.String())
+	// Non-platform user → 403 on gated routes (orgs + the new users route).
+	for _, path := range []string{"/api/platform/orgs", "/api/platform/users"} {
+		reqNo := httptest.NewRequest("GET", path, nil)
+		reqNo.Header.Set("Authorization", "Bearer "+mintToken(t, iss, "u-plain"))
+		rrNo := httptest.NewRecorder()
+		mux.ServeHTTP(rrNo, reqNo)
+		if rrNo.Code != http.StatusForbidden {
+			t.Fatalf("non-platform %s want 403, got %d body=%s", path, rrNo.Code, rrNo.Body.String())
+		}
 	}
 
 	// Platform admin → admitted (200).

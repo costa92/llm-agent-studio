@@ -116,6 +116,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 
 	// 平台超级管理员 (platform role)。哨兵 org (id='') 必须先于任何平台 membership 写入，
 	// 满足 auth_membership.org_id 的外键约束 (authz schema)。随后按 env 种子名单授予。
+	membersSvc := studiosvc.NewMembers(az, st.Pool())
 	platformSvc := studiosvc.NewPlatform(az, st.Pool())
 	if err := platformSvc.EnsureSentinelOrg(ctx); err != nil {
 		st.Close()
@@ -331,6 +332,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		BlobServer:     localfsDefault,
 		Models:         modelStore,
 		StorageConfig:  storageStore,
+		Members:        membersSvc,
 		Platform:       platformSvc,
 		Cost:           costStore,
 		PromptBuilder:  promptBuilder,
