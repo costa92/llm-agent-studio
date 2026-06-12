@@ -664,6 +664,58 @@ func TestEndToEndModelRoutingTakesEffect(t *testing.T) {
 	}
 }
 
+// TestEndToEndFakeModeKeylessPipeline proves FIX D end-to-end: with PROVIDER=fake
+// and NO provider/generator overrides and NO API keys, build() wires the fake
+// chat model + dev fake generator so the whole pipeline (Run → script/storyboard
+// → asset) completes to a pending_acceptance asset with stored bytes.
+func TestEndToEndFakeModeKeylessPipeline(t *testing.T) {
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run the studio fake-mode e2e")
+	}
+	// No providerOverride / generatorOverride: build() must construct the fake
+	// chat model + dev fake generator purely from PROVIDER=fake.
+	ctx := context.Background()
+	cfg := loadCfgWith(t, dsn, map[string]string{"PROVIDER": "fake"})
+	if !cfg.FakeGen {
+		t.Fatalf("PROVIDER=fake did not enable FakeGen")
+	}
+	handler, cleanup, err := build(ctx, cfg)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	srv := httptest.NewServer(handler)
+	defer func() { srv.Close(); cleanup() }()
+	do := newDoer(t, srv)
+	token, _, projID := setupOrgProject(t, do, "fake@studio.com", "国风")
+
+	if code, body := do("POST", "/api/projects/"+projID+"/run", token, ""); code != http.StatusAccepted {
+		t.Fatalf("run code=%d body=%v", code, body)
+	}
+	assetID := pollAssetWithStatus(do, token, projID, "pending_acceptance")
+	if assetID == "" {
+		t.Fatalf("keyless fake-mode pipeline produced no pending_acceptance asset")
+	}
+	_, av := do("GET", "/api/assets/"+assetID, token, "")
+	asset, _ := av["asset"].(map[string]any)
+	if provider, _ := asset["provider"].(string); provider != "fake" {
+		t.Fatalf("fake-mode asset provider = %q, want fake", provider)
+	}
+	// The asset content 302-redirects to a signed URL (stored bytes exist).
+	req, _ := http.NewRequest("GET", srv.URL+"/api/assets/"+assetID+"/content", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	client := srv.Client()
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	cr, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("content: %v", err)
+	}
+	cr.Body.Close()
+	if cr.StatusCode != http.StatusFound || cr.Header.Get("Location") == "" {
+		t.Fatalf("fake-mode asset content should 302 to a signed URL, got %d", cr.StatusCode)
+	}
+}
+
 // gatedGen blocks Generate until released — lets the e2e freeze an asset in
 // 'generating' to exercise the cancel path.
 type gatedGen struct{ release chan struct{} }

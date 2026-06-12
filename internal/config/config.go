@@ -20,10 +20,17 @@ type Config struct {
 	RefreshTTL      time.Duration
 	ShutdownTimeout time.Duration
 
-	Provider string // "deepseek" | "openai" | "ollama"
+	Provider string // "deepseek" | "openai" | "ollama" | "fake"
 	Model    string
 	APIKey   string
 	BaseURL  string
+
+	// FakeGen turns on keyless dev/demo mode: buildModel returns a deterministic
+	// fake ChatModel and buildGenerator returns a placeholder-PNG MediaGenerator,
+	// so a deployment with NO provider API keys still runs the whole pipeline
+	// (Run → asset → pending_acceptance → review → library). Enabled by
+	// PROVIDER=fake OR STUDIO_FAKE_GEN=1. Never use in production keyed runs.
+	FakeGen bool
 
 	Workers          int
 	WorkerLease      time.Duration
@@ -116,6 +123,7 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		Model:            get("MODEL", "deepseek-chat"),
 		APIKey:           get("API_KEY", ""),
 		BaseURL:          get("BASE_URL", ""),
+		FakeGen:          get("PROVIDER", "deepseek") == "fake" || get("STUDIO_FAKE_GEN", "") == "1",
 		Workers:          intOf("WORKERS", get("WORKERS", "2"), &errs),
 		WorkerLease:      durOf("WORKER_LEASE", get("WORKER_LEASE", "120s"), &errs),
 		WorkerPoll:       durOf("WORKER_POLL", get("WORKER_POLL", "1s"), &errs),

@@ -637,12 +637,26 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 type assetsRow struct{ id string }
 
 func (w *Worker) createAsset(ctx context.Context, c claimed, shotID, shotPrompt, style, typ string) (assetsRow, error) {
-	a, err := w.cfg.Assets.Create(ctx, assets.CreateInput{
+	// BUG #3: use the idempotent GetOrCreateForTodo (consistent with the async
+	// path) rather than the non-idempotent Create. A first dispatch whose
+	// generation failed left a 'failed' row tagged with this todo_id; a retry's
+	// second Create would violate assets_todo_uniq and loop forever. GetOrCreate
+	// reuses that row instead.
+	a, err := w.cfg.Assets.GetOrCreateForTodo(ctx, assets.CreateInput{
 		ProjectID: c.projectID, ShotID: shotID, TodoID: c.todoID, Type: typ,
 		Prompt: shotPrompt, Style: style, Status: "generating",
 	})
 	if err != nil {
 		return assetsRow{}, fmt.Errorf("worker: create asset: %w", err)
+	}
+	// A reused row from a prior failed/in-flight attempt is not 'generating', so
+	// the downstream SetBlob(...,'pending_acceptance') guard (status IN
+	// ('generating','submitted')) would no-op and strand the retry. Re-drive it to
+	// 'generating' before re-running generation so the success transition lands.
+	if a.Status != "generating" {
+		if _, err := w.cfg.Assets.TransitionStatus(ctx, a.ID, a.Status, "generating"); err != nil {
+			return assetsRow{}, fmt.Errorf("worker: reset asset for retry: %w", err)
+		}
 	}
 	return assetsRow{id: a.ID}, nil
 }
