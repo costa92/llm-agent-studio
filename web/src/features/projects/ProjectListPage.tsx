@@ -16,6 +16,10 @@ export interface ProjectListViewProps {
   onCreate: (input: CreateProjectInput) => Promise<Project>
   /** 点击卡片进工作台（路由在 T10 接入；T9 为可注入回调便于单测）。 */
   onOpenProject: (project: Project) => void
+  /** T5：org 尚无启用的生成模型配置 → 空态先引导去配置模型。 */
+  needsModelConfig?: boolean
+  /** T5：跳模型配置页（容器接路由）。 */
+  onConfigureModel?: () => void
 }
 
 // 纯展示视图（无路由/Query 依赖），便于单测 loading/empty/error/CTA 门禁。
@@ -28,6 +32,8 @@ export function ProjectListView({
   styles,
   onCreate,
   onOpenProject,
+  needsModelConfig = false,
+  onConfigureModel,
 }: ProjectListViewProps) {
   const newButton = (
     <Button variant="amber">新建项目</Button>
@@ -89,6 +95,17 @@ export function ProjectListView({
               </div>
             </button>
           ))}
+        </div>
+      ) : needsModelConfig ? (
+        // T5：尚无启用的生成模型 → 先引导配置模型再开始制作。
+        <div className="flex flex-col items-center gap-3 py-20 text-center">
+          <p className="text-text-1">先配置一个生成模型再开始制作</p>
+          <p className="text-[12.5px] text-text-3">
+            项目需要一个启用的生成模型来产出剧本与素材
+          </p>
+          <Button variant="amber" onClick={onConfigureModel}>
+            去配置模型
+          </Button>
         </div>
       ) : (
         <div className="flex flex-col items-center gap-3 py-20 text-center">

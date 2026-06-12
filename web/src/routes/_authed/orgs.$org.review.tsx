@@ -18,6 +18,8 @@ import { requireOrgParam } from "@/app/org"
 // ?asset= typed search param 控制 Drawer 开合（UI-spec §7.6 / 5.1）。
 const reviewSearchSchema = z.object({
   asset: z.string().optional(),
+  // Phase 2 工作台「去审核」CTA 携来的项目筛选参数（Phase 3 接消费；此处仅声明使其有效/可跳转）。
+  project: z.string().optional(),
 })
 
 export const Route = createFileRoute("/_authed/orgs/$org/review")({

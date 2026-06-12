@@ -134,6 +134,95 @@ describe("WorkbenchView (production timeline)", () => {
     await user.click(screen.getByRole("button", { name: /运行/ }))
     expect(onRun).toHaveBeenCalledTimes(1)
   })
+
+  // T3：S2/S3 阶段可点（按钮语义），点击回调 onSelectStage(stageId)；S1/S4/S5 不伪装可点。
+  it("makes S2/S3 stages clickable and fires onSelectStage; S1 stays non-interactive", async () => {
+    const onSelectStage = vi.fn()
+    const user = userEvent.setup()
+    const state = foldEvents(initialTimeline(), [
+      frame(1, "planner_started"),
+      frame(2, "todo_finished", "t-s", { type: "script" }),
+      frame(3, "todo_finished", "t-b", { type: "storyboard" }),
+    ])
+    render(
+      <WorkbenchView
+        {...baseWorkbenchProps()}
+        timeline={state}
+        onSelectStage={onSelectStage}
+      />,
+    )
+    // S2 剧本生成 渲染为按钮（可访问 / 键盘可达）。
+    const scriptStage = screen.getByRole("button", { name: /剧本生成/ })
+    await user.click(scriptStage)
+    expect(onSelectStage).toHaveBeenCalledWith("S2")
+
+    const boardStage = screen.getByRole("button", { name: /分镜拆解/ })
+    await user.click(boardStage)
+    expect(onSelectStage).toHaveBeenCalledWith("S3")
+
+    // S1 Planner 规划 不是按钮（不伪装可点）。
+    expect(
+      screen.queryByRole("button", { name: /Planner 规划/ }),
+    ).not.toBeInTheDocument()
+  })
+
+  // T3：点击已完成的 pip → onSelectPip(pip)。
+  it("fires onSelectPip when a done pip is clicked", async () => {
+    const onSelectPip = vi.fn()
+    const user = userEvent.setup()
+    const state = foldEvents(initialTimeline(), [
+      frame(1, "planner_started"),
+      frame(10, "todo_ready", "a1", { type: "asset" }),
+      frame(12, "todo_started", "a1", { type: "asset" }),
+      frame(13, "asset_generated", "a1", { assetId: "as1" }),
+    ])
+    render(
+      <WorkbenchView
+        {...baseWorkbenchProps()}
+        timeline={state}
+        onSelectPip={onSelectPip}
+      />,
+    )
+    const pip = screen.getByRole("button", { name: /a1/ })
+    await user.click(pip)
+    expect(onSelectPip).toHaveBeenCalledWith(
+      expect.objectContaining({ todoId: "a1", assetId: "as1", status: "done" }),
+    )
+  })
+
+  // T3：drawer slot 渲染在布局内（SSE/轨道保留挂载）。
+  it("renders the drawer slot content (in-workbench inspection)", () => {
+    render(
+      <WorkbenchView
+        {...baseWorkbenchProps()}
+        timeline={initialTimeline()}
+        drawer={<div>剧本抽屉内容</div>}
+      />,
+    )
+    expect(screen.getByText("剧本抽屉内容")).toBeInTheDocument()
+  })
+
+  // T2：run_done 后徽标旁出现「去审核」CTA，点击触发 onOpenReview（真正的 SPA 跳转由容器实现）。
+  it("renders a review CTA after run_done that fires onOpenReview", async () => {
+    const onOpenReview = vi.fn()
+    const user = userEvent.setup()
+    const state = foldEvents(initialTimeline(), [
+      frame(1, "planner_started"),
+      frame(10, "todo_ready", "a1", { type: "asset" }),
+      frame(12, "todo_started", "a1", { type: "asset" }),
+      frame(13, "asset_generated", "a1", { assetId: "as1" }),
+      frame(99, "run_done"),
+    ])
+    render(
+      <WorkbenchView
+        {...baseWorkbenchProps()}
+        timeline={state}
+        onOpenReview={onOpenReview}
+      />,
+    )
+    await user.click(screen.getByRole("button", { name: /去审核/ }))
+    expect(onOpenReview).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe("ScriptView", () => {

@@ -8,7 +8,7 @@ import { TimelineStage } from "@/components/studio/TimelineStage"
 import { PipGroup } from "@/components/studio/PipGroup"
 import { WarnStrip } from "@/components/studio/WarnStrip"
 import type { Project } from "@/lib/types"
-import type { TimelineState } from "@/lib/timeline"
+import type { Pip, StageId, TimelineState } from "@/lib/timeline"
 import type { SseConnState } from "./useProductionTimeline"
 import { statusLabel, statusVariant } from "@/features/projects/status"
 
@@ -19,6 +19,9 @@ const STAGE_SUB: Record<string, ReactNode> = {
   S3: "StoryboardAgent · 分镜拆解",
   S5: "采纳后入资产库 · admin 门禁",
 }
+
+// T3：仅 S2（剧本）/ S3（分镜）可点开抽屉检视产物（S1/S4/S5 无单一可检视文档）。
+const INSPECTABLE_STAGES: Record<string, boolean> = { S2: true, S3: true }
 
 // SseConnState → SseIndicator 的可视态。idle（完成态/未开流）也显"已断开"灰点。
 const CONN_TO_STATUS: Record<SseConnState, SseStatus> = {
@@ -43,6 +46,14 @@ export interface WorkbenchViewProps {
   isRunning: boolean
   // 右栏选中工件预览（缩略图等）；可空。
   preview?: ReactNode
+  // T3：点击可检视阶段（S2/S3）→ 容器打开抽屉。
+  onSelectStage?: (stageId: StageId) => void
+  // T3：点击已完成 pip → 容器把右栏预览切到该工件。
+  onSelectPip?: (pip: Pip) => void
+  // T3：抽屉插槽（容器组装 Sheet + ScriptView/StoryboardView，SSE/轨道保持挂载）。
+  drawer?: ReactNode
+  // T2：run_done（或 review 态）→「去审核」CTA，容器做 SPA 跳转携 ?project=。
+  onOpenReview?: () => void
   // 顶栏面包屑返回项目列表。
   onBack?: () => void
 }
@@ -59,12 +70,17 @@ export function WorkbenchView({
   onCancel,
   isRunning,
   preview,
+  onSelectStage,
+  onSelectPip,
+  drawer,
+  onOpenReview,
   onBack,
 }: WorkbenchViewProps) {
   const { stages, pips, doneAssetCount, pipCount, pendingAssetCount, slateVisible, runStatus } =
     timeline
 
-  // run_done 后徽标改「待审核 · N」；否则用项目状态。
+  // run_done（或项目 review 态）→ 进入待审核：徽标改「待审核 · N」+「去审核」CTA。
+  const readyForReview = runStatus === "done" || project.status === "review"
   const badge =
     runStatus === "done" ? (
       <Badge variant="pending">待审核 · {pendingAssetCount}</Badge>
@@ -85,6 +101,12 @@ export function WorkbenchView({
         </button>
         <span className="font-heading text-[16px] font-bold text-text-1">{project.name}</span>
         {badge}
+        {/* T2：进入待审核 → 跳审核台（容器携 ?project= 做 SPA 跳转）。 */}
+        {readyForReview && onOpenReview && (
+          <Button variant="ghost" onClick={onOpenReview}>
+            去审核 →
+          </Button>
+        )}
         <div className="ml-auto flex items-center gap-3">
           {live && <SseIndicator status={CONN_TO_STATUS[conn]} />}
           {canRun && (
@@ -148,13 +170,21 @@ export function WorkbenchView({
                 key={stage.id}
                 stage={stage}
                 last={i === stages.length - 1}
+                // 仅 S2/S3 可点开抽屉检视产物（容器 gated 拉 script/shots）。
+                onSelect={
+                  onSelectStage && INSPECTABLE_STAGES[stage.id]
+                    ? () => onSelectStage(stage.id)
+                    : undefined
+                }
                 sub={
                   stage.id === "S4"
                     ? `素材生成 · ${doneAssetCount}/${pipCount || "?"}`
                     : STAGE_SUB[stage.id]
                 }
               >
-                {stage.id === "S4" && pips.length > 0 && <PipGroup pips={pips} />}
+                {stage.id === "S4" && pips.length > 0 && (
+                  <PipGroup pips={pips} onSelectPip={onSelectPip} />
+                )}
               </TimelineStage>
             ))}
           </div>
@@ -168,6 +198,8 @@ export function WorkbenchView({
           {preview ?? <p className="text-[12px] text-text-3">选中节点以预览工件</p>}
         </aside>
       </div>
+      {/* T3：抽屉插槽（剧本/分镜检视）——容器组装，覆盖在轨道之上，SSE 仍挂载。 */}
+      {drawer}
     </div>
   )
 }

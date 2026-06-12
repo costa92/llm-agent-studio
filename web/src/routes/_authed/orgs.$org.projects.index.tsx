@@ -4,6 +4,7 @@ import {
   useProjects,
   usePromptStyles,
 } from "@/features/projects/api"
+import { useModelConfigs } from "@/features/cost/api"
 import { ProjectListView } from "@/features/projects/ProjectListPage"
 
 // T9：项目列表 + 建项目视图。org 校验由父段布局 orgs.$org.projects.tsx 的 beforeLoad 承担。
@@ -17,6 +18,13 @@ function ProjectsPage() {
   const projectsQuery = useProjects(org)
   const stylesQuery = usePromptStyles()
   const createProject = useCreateProject(org)
+  // T5：org 是否已有启用的生成模型配置（model-configs 列表里存在 enabled 项）。
+  // 仅在查询成功（非加载/错误）且确无启用项时引导配置——避免加载中误闪引导。
+  // admin-gated 端点；非 admin 拿不到列表 → 不引导（保持普通空态）。
+  const modelConfigsQuery = useModelConfigs(org)
+  const needsModelConfig =
+    modelConfigsQuery.isSuccess &&
+    !modelConfigsQuery.data.some((c) => c.enabled)
 
   return (
     <ProjectListView
@@ -24,6 +32,10 @@ function ProjectsPage() {
       isLoading={projectsQuery.isLoading}
       isError={projectsQuery.isError}
       onRetry={() => void projectsQuery.refetch()}
+      needsModelConfig={needsModelConfig}
+      onConfigureModel={() =>
+        navigate({ to: "/orgs/$org/model-configs", params: { org } })
+      }
       // 角色门禁：rbac 仅提供 admin 探针；editor 无可探测的只读端点（后端无 editor-gated GET）。
       // 故按 rbac 文档的"乐观显示 + 后端强制"策略乐观显示新建入口，editor+ 由后端 createProjectHandler 强制。
       canCreate
