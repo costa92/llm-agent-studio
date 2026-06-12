@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/costa92/llm-agent-studio/internal/assets"
+	"github.com/costa92/llm-agent-studio/internal/blob"
 	"github.com/costa92/llm-agent-studio/internal/cost"
 	"github.com/costa92/llm-agent-studio/internal/models"
 	"github.com/costa92/llm-agent-studio/internal/prompt"
@@ -34,9 +35,11 @@ type AssetLibrary interface {
 	OrgIDForAsset(ctx context.Context, assetID string) (string, error)
 }
 
-// BlobSigner mints signed blob URLs (satisfied by *localfs.Store or the s3 store).
-type BlobSigner interface {
-	SignedURL(ctx context.Context, key string, ttl time.Duration) (string, error)
+// BlobRouter resolves an org's对象存储 blob store (per-org → global → 内置默认)，供
+// assetContentHandler 按 asset 所属 org 取对应 store 再 SignedURL (satisfied by
+// *storagerouter.Router)。secret 永不进 handler——只取 store 句柄签 URL。
+type BlobRouter interface {
+	BlobStoreFor(ctx context.Context, orgID string) (blob.BlobStore, error)
 }
 
 // BlobServer additionally serves bytes for the localfs回源 handler.
@@ -50,6 +53,8 @@ type BlobServer interface {
 type ModelStore interface {
 	Create(ctx context.Context, in models.CreateInput) (models.ModelConfig, error)
 	ListByOrg(ctx context.Context, orgID string) ([]models.ModelConfig, error)
+	Update(ctx context.Context, id, orgID string, in models.UpdateInput) (models.ModelConfig, error)
+	Delete(ctx context.Context, id, orgID string) error
 }
 
 // CostStore is the cost aggregation surface (satisfied by *cost.Store).
@@ -227,9 +232,12 @@ func getAssetHandler(lib AssetLibrary) http.HandlerFunc {
 }
 
 // assetContentHandler (GET /api/assets/{id}/content): viewer+. 302 to signed URL.
-func assetContentHandler(lib AssetLibrary, signer BlobSigner) http.HandlerFunc {
+// 按 asset 所属 org 路由对象存储后再签名 (per-org → global → 内置默认)，多租户各自
+// 落在自己的 bucket/store 上。
+func assetContentHandler(lib AssetLibrary, router BlobRouter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		a, err := lib.Get(r.Context(), r.PathValue("id"))
+		id := r.PathValue("id")
+		a, err := lib.Get(r.Context(), id)
 		if errors.Is(err, assets.ErrNotFound) {
 			http.Error(w, "asset not found", http.StatusNotFound)
 			return
@@ -242,7 +250,17 @@ func assetContentHandler(lib AssetLibrary, signer BlobSigner) http.HandlerFunc {
 			http.Redirect(w, r, a.URL, http.StatusFound)
 			return
 		}
-		signed, err := signer.SignedURL(r.Context(), a.BlobKey, signedURLTTL)
+		orgID, err := lib.OrgIDForAsset(r.Context(), a.ID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		bs, err := router.BlobStoreFor(r.Context(), orgID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		signed, err := bs.SignedURL(r.Context(), a.BlobKey, signedURLTTL)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -312,6 +330,62 @@ func createModelConfigHandler(ms ModelStore) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, mc)
+	}
+}
+
+// updateModelConfigHandler (PUT /api/orgs/{org}/model-configs/{id}): admin.
+// body 同 create（含可选 baseUrl/apiKey；apiKey 空=保留既有 key、非空=替换）。
+// ErrNotFound→404，ErrSecretParam/ErrEncUnavailable→400，成功→200 ModelConfig（绝不回显 key）。
+func updateModelConfigHandler(ms ModelStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Kind      string          `json:"kind"`
+			Provider  string          `json:"provider"`
+			Model     string          `json:"model"`
+			BaseURL   string          `json:"baseUrl"` // 可选 per-config endpoint (openai-compatible)
+			APIKey    string          `json:"apiKey"`  // 空=保留既有 key；非空=重新加密替换，绝不回显
+			Enabled   bool            `json:"enabled"`
+			IsDefault bool            `json:"isDefault"`
+			Params    json.RawMessage `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Provider == "" || req.Model == "" {
+			http.Error(w, "bad request: provider+model required", http.StatusBadRequest)
+			return
+		}
+		mc, err := ms.Update(r.Context(), r.PathValue("id"), r.PathValue("org"), models.UpdateInput{
+			Kind: req.Kind, Provider: req.Provider, Model: req.Model,
+			Enabled: req.Enabled, IsDefault: req.IsDefault, BaseURL: req.BaseURL, APIKey: req.APIKey, Params: req.Params,
+		})
+		if err != nil {
+			if errors.Is(err, models.ErrNotFound) {
+				http.Error(w, "model config not found", http.StatusNotFound)
+				return
+			}
+			// ErrSecretParam / ErrEncUnavailable 是客户端可纠正的 400（同 create）。响应永不回显 apiKey。
+			if errors.Is(err, models.ErrSecretParam) || errors.Is(err, models.ErrEncUnavailable) {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, mc)
+	}
+}
+
+// deleteModelConfigHandler (DELETE /api/orgs/{org}/model-configs/{id}): admin.
+// ErrNotFound→404，成功→200 {ok:true}（匹配仓内 writeJSON 约定，无 204 先例）。
+func deleteModelConfigHandler(ms ModelStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := ms.Delete(r.Context(), r.PathValue("id"), r.PathValue("org")); err != nil {
+			if errors.Is(err, models.ErrNotFound) {
+				http.Error(w, "model config not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
 

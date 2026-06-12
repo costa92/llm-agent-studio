@@ -30,13 +30,13 @@ import (
 
 	studioagents "github.com/costa92/llm-agent-studio/internal/agents"
 	"github.com/costa92/llm-agent-studio/internal/assets"
-	"github.com/costa92/llm-agent-studio/internal/blob"
 	"github.com/costa92/llm-agent-studio/internal/cost"
 	"github.com/costa92/llm-agent-studio/internal/events"
 	"github.com/costa92/llm-agent-studio/internal/generate"
 	"github.com/costa92/llm-agent-studio/internal/modelrouter"
 	"github.com/costa92/llm-agent-studio/internal/models"
 	"github.com/costa92/llm-agent-studio/internal/project"
+	"github.com/costa92/llm-agent-studio/internal/storagerouter"
 	"github.com/costa92/llm-agent-studio/internal/todos"
 )
 
@@ -50,11 +50,11 @@ type Config struct {
 	Storyboard       *studioagents.StoryboardAgent
 	Asset            *studioagents.AssetAgent
 	Review           *studioagents.ReviewAgent // nil → prescreen disabled
-	Blob             blob.BlobStore
+	Storage          *storagerouter.Router     // per-org → global → 内置 localfs 默认 的对象存储路由
 	Assets           *assets.Store
 	Cost             *cost.Store
-	Models           *models.Store      // resolve org default provider+model; nil → registry default
-	Registry         *generate.Registry // nil → use Asset's bound generator directly
+	Models           *models.Store       // resolve org default provider+model; nil → registry default
+	Registry         *generate.Registry  // nil → use Asset's bound generator directly
 	Router           *modelrouter.Router // BYOK per-org 模型路由 (chat + media); nil → legacy Models/Registry path
 	WorkerID         string
 	GenQuota         int // rolling-24h per-org generation quota; 0 = unlimited (backstop for fan-out)
@@ -627,10 +627,18 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 		return "", gerr
 	}
 
-	// Store bytes (pull-to-blob already done by the image adapter).
+	// Store bytes (pull-to-blob already done by the image adapter). 按 asset 所属 org
+	// 路由对象存储 (per-org → global → 内置 localfs 默认)；router 出错也回落 Default，
+	// 故 BlobStoreFor 极少返回 err，真出错则当 Put 失败处理。
 	blobKey := "assets/" + c.projectID + "/" + created.id
 	if len(out.Bytes) > 0 {
-		if err := w.cfg.Blob.Put(ctx, blobKey, bytesReader(out.Bytes), out.MimeType); err != nil {
+		orgID, _ := w.cfg.Projects.OrgIDForProject(ctx, c.projectID)
+		bs, berr := w.cfg.Storage.BlobStoreFor(ctx, orgID)
+		if berr != nil {
+			_, _ = w.cfg.Assets.SetBlob(cctx, created.id, "", "", "", "", "failed")
+			return "", fmt.Errorf("worker: resolve blob store: %w", berr)
+		}
+		if err := bs.Put(ctx, blobKey, bytesReader(out.Bytes), out.MimeType); err != nil {
 			_, _ = w.cfg.Assets.SetBlob(cctx, created.id, "", "", "", "", "failed")
 			return "", fmt.Errorf("worker: blob put: %w", err)
 		}
@@ -1175,7 +1183,14 @@ func (w *Worker) completeAsync(cctx context.Context, c claimed, asset assets.Ass
 	}
 	blobKey := "assets/" + c.projectID + "/" + asset.ID
 	if len(data) > 0 {
-		if err := w.cfg.Blob.Put(cctx, blobKey, bytesReader(data), mime); err != nil {
+		// 按 asset 所属 org 路由对象存储 (per-org → global → 内置 localfs 默认)。
+		orgID, _ := w.cfg.Projects.OrgIDForProject(cctx, c.projectID)
+		bs, berr := w.cfg.Storage.BlobStoreFor(cctx, orgID)
+		if berr != nil {
+			_ = w.cfg.Assets.SetAsyncFailed(cctx, asset.ID)
+			return "", fmt.Errorf("worker: async resolve blob store: %w", berr)
+		}
+		if err := bs.Put(cctx, blobKey, bytesReader(data), mime); err != nil {
 			_ = w.cfg.Assets.SetAsyncFailed(cctx, asset.ID)
 			return "", fmt.Errorf("worker: async blob put: %w", err)
 		}

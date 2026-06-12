@@ -17,6 +17,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/studio/Button"
+import { Button as UiButton } from "@/components/ui/button"
 import { Badge } from "@/components/studio/Badge"
 import type {
   CatalogEntry,
@@ -49,6 +50,10 @@ export interface ModelConfigViewProps {
   onRetry: () => void
   // 创建（提交 → Promise<ModelConfig>；密钥型 param → 400 由调用方 toast）。
   onCreate: (input: CreateModelConfigInput) => Promise<ModelConfig>
+  // 编辑（按 id 更新 → Promise<ModelConfig>；apiKey 留空则后端保留既有密钥）。
+  onUpdate: (id: string, input: CreateModelConfigInput) => Promise<ModelConfig>
+  // 删除（按 id；确认后调用）。
+  onDelete: (id: string) => Promise<void>
 }
 
 // 模型配置（admin-only）：按 kind 分组配置表 + 创建表单。表单绝不含 API key 字段。
@@ -59,7 +64,11 @@ export function ModelConfigView({
   isError,
   onRetry,
   onCreate,
+  onUpdate,
+  onDelete,
 }: ModelConfigViewProps) {
+  // 删除确认弹窗：保存待删除配置；null = 弹窗关闭（mirror 退回确认模式）。
+  const [deleteTarget, setDeleteTarget] = useState<ModelConfig | null>(null)
   if (isError) {
     return (
       <div className="flex flex-col items-center gap-3 py-20 text-center">
@@ -145,6 +154,24 @@ export function ModelConfigView({
                     <Badge variant={c.enabled ? "running" : "pending"}>
                       {c.enabled ? "已启用" : "已停用"}
                     </Badge>
+                    <EditModelConfigDialog
+                      config={c}
+                      catalog={catalog ?? []}
+                      onUpdate={onUpdate}
+                      trigger={
+                        <UiButton variant="ghost" size="sm" aria-label={`编辑 ${c.provider} ${c.model}`}>
+                          编辑
+                        </UiButton>
+                      }
+                    />
+                    <UiButton
+                      variant="ghost"
+                      size="sm"
+                      aria-label={`删除 ${c.provider} ${c.model}`}
+                      onClick={() => setDeleteTarget(c)}
+                    >
+                      删除
+                    </UiButton>
                   </span>
                 </div>
               ))}
@@ -152,6 +179,40 @@ export function ModelConfigView({
           </section>
         ))
       )}
+
+      {/* 删除确认弹窗（mirror 退回确认）：仅「确认删除」才调 onDelete；「取消」零副作用。 */}
+      <Dialog
+        open={deleteTarget != null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null)
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>确认删除该模型配置？</DialogTitle>
+            <DialogDescription>
+              {deleteTarget
+                ? `删除 ${deleteTarget.provider} · ${deleteTarget.model} 后无法撤销。确认要删除吗？`
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <UiButton variant="outline" onClick={() => setDeleteTarget(null)}>
+              取消
+            </UiButton>
+            <UiButton
+              variant="destructive"
+              onClick={() => {
+                const id = deleteTarget?.id
+                setDeleteTarget(null)
+                if (id) void onDelete(id)
+              }}
+            >
+              确认删除
+            </UiButton>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -192,14 +253,19 @@ export interface CreateModelConfigFormProps {
   catalog: CatalogEntry[]
   onCreate: (input: CreateModelConfigInput) => Promise<ModelConfig>
   onSuccess?: (mc: ModelConfig) => void
+  // 编辑模式：传入既有配置 → 表单预填 provider/kind/model/baseUrl/params；
+  // API key 留空（hasApiKey 时提示「留空保持不变」），提交时空则后端保留既有密钥。
+  initial?: ModelConfig
 }
 
 export function CreateModelConfigForm({
   catalog,
   onCreate,
   onSuccess,
+  initial,
 }: CreateModelConfigFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null)
+  const isEdit = initial != null
   // catalog 里出现过的不重复 provider（保序）+ 末尾的 openai-compatible。
   const providers = [...new Set(catalog.map((e) => e.provider))]
   const {
@@ -211,14 +277,14 @@ export function CreateModelConfigForm({
   } = useForm<FormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      provider: providers[0] ?? COMPATIBLE_PROVIDER,
-      kind: "image",
-      model: "",
-      baseUrl: "",
-      apiKey: "",
-      enabled: true,
-      isDefault: false,
-      paramsText: "",
+      provider: initial?.provider ?? providers[0] ?? COMPATIBLE_PROVIDER,
+      kind: initial?.kind ?? "image",
+      model: initial?.model ?? "",
+      baseUrl: initial?.baseUrl ?? "",
+      apiKey: "", // 编辑模式始终留空：空 = 保留既有密钥。
+      enabled: initial?.enabled ?? true,
+      isDefault: initial?.isDefault ?? false,
+      paramsText: initial?.params ? JSON.stringify(initial.params) : "",
     },
   })
 
@@ -382,7 +448,9 @@ export function CreateModelConfigForm({
           className={selectClass}
         />
         <p className="text-[11.5px] text-text-3">
-          密钥仅写入、加密存储，不会回显；留空则回退服务端 env 密钥。
+          {isEdit && initial?.hasApiKey
+            ? "留空保持不变（已配置密钥）；填写则替换为新密钥。"
+            : "密钥仅写入、加密存储，不会回显；留空则回退服务端 env 密钥。"}
         </p>
       </div>
 
@@ -455,6 +523,48 @@ export function CreateModelConfigDialog({
         </DialogHeader>
         <CreateModelConfigForm
           {...formProps}
+          onSuccess={(mc) => {
+            setOpen(false)
+            onSuccess?.(mc)
+          }}
+        />
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+export interface EditModelConfigDialogProps {
+  config: ModelConfig
+  catalog: CatalogEntry[]
+  // 按 id 更新（apiKey 留空 → 后端保留既有密钥）。
+  onUpdate: (id: string, input: CreateModelConfigInput) => Promise<ModelConfig>
+  trigger: React.ReactNode
+  onSuccess?: (mc: ModelConfig) => void
+}
+
+// 编辑弹窗：复用创建表单，预填既有配置；提交走 onUpdate(id, input)。
+export function EditModelConfigDialog({
+  config,
+  catalog,
+  onUpdate,
+  trigger,
+  onSuccess,
+}: EditModelConfigDialogProps) {
+  const [open, setOpen] = useState(false)
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>{trigger}</DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>编辑模型配置</DialogTitle>
+          <DialogDescription>
+            修改 provider / 类型 / model / base_url 等；API key 留空保持不变，填写则替换。
+          </DialogDescription>
+        </DialogHeader>
+        <CreateModelConfigForm
+          catalog={catalog}
+          initial={config}
+          onCreate={(input) => onUpdate(config.id, input)}
           onSuccess={(mc) => {
             setOpen(false)
             onSuccess?.(mc)

@@ -126,3 +126,40 @@ export function useCreateModelConfig(
     },
   })
 }
+
+// 更新模型配置：PUT /api/orgs/{org}/model-configs/{id} body 同 create
+//   → 200 ModelConfig（admin，updateModelConfigHandler）。
+// apiKey 空 → 后端保留既有密钥；非空 → 重新加密替换。不存在/跨 org → 404。
+export function useUpdateModelConfig(
+  org: string,
+): UseMutationResult<ModelConfig, Error, { id: string; input: CreateModelConfigInput }> {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: CreateModelConfigInput }) =>
+      apiJSON<ModelConfig>(`/api/orgs/${org}/model-configs/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["model-configs", org] })
+    },
+  })
+}
+
+// 删除模型配置：DELETE /api/orgs/{org}/model-configs/{id} → 200 {ok:true}
+//（admin，deleteModelConfigHandler）。不存在/跨 org → 404。
+export function useDeleteModelConfig(
+  org: string,
+): UseMutationResult<{ ok: boolean }, Error, string> {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiJSON<{ ok: boolean }>(`/api/orgs/${org}/model-configs/${id}`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["model-configs", org] })
+    },
+  })
+}

@@ -16,8 +16,15 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/project"
 	"github.com/costa92/llm-agent-studio/internal/prompt"
 	"github.com/costa92/llm-agent-studio/internal/storage"
+	"github.com/costa92/llm-agent-studio/internal/storagerouter"
 	"github.com/costa92/llm-agent-studio/internal/todos"
 )
+
+// testStorage 是 worker 测试用的对象存储路由 shim：以一个内存 fake blob 作为 Default，
+// Configs/Build 留空 → BlobStoreFor 始终回落 Default (等价于旧的单一 Blob 依赖)。
+func testStorage() *storagerouter.Router {
+	return storagerouter.New(storagerouter.Config{Default: blob.NewFake()})
+}
 
 func TestWorkerRunsScriptThenStoryboard(t *testing.T) {
 	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
@@ -68,7 +75,7 @@ func TestWorkerRunsScriptThenStoryboard(t *testing.T) {
 		Script:     studioagents.NewScriptAgent(scriptModel),
 		Storyboard: studioagents.NewStoryboardAgent(storyboardModel),
 		Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fakeGen),
-		Blob:       blob.NewFake(),
+		Storage:    testStorage(),
 		Assets:     assets.New(pool),
 		Cost:       cost.New(pool),
 		WorkerID:   "test-0",

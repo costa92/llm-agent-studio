@@ -283,6 +283,137 @@ func TestCreateModelConfig400OnDisabledBox(t *testing.T) {
 	}
 }
 
+// stubModelStore is a fake ModelStore for non-gated handler mapping tests
+// (404 / delete-ok). Update/Delete return notFound when set.
+type stubModelStore struct {
+	notFound   bool
+	updated    models.ModelConfig
+	deletedID  string
+	deletedOrg string
+}
+
+func (s *stubModelStore) Create(context.Context, models.CreateInput) (models.ModelConfig, error) {
+	return models.ModelConfig{}, nil
+}
+func (s *stubModelStore) ListByOrg(context.Context, string) ([]models.ModelConfig, error) {
+	return nil, nil
+}
+func (s *stubModelStore) Update(_ context.Context, id, orgID string, _ models.UpdateInput) (models.ModelConfig, error) {
+	if s.notFound {
+		return models.ModelConfig{}, models.ErrNotFound
+	}
+	mc := s.updated
+	mc.ID, mc.OrgID = id, orgID
+	return mc, nil
+}
+func (s *stubModelStore) Delete(_ context.Context, id, orgID string) error {
+	if s.notFound {
+		return models.ErrNotFound
+	}
+	s.deletedID, s.deletedOrg = id, orgID
+	return nil
+}
+
+// modelConfigReq builds a {PUT,DELETE} request for org/id with path values set.
+func modelConfigReq(method, org, id, body string) *http.Request {
+	var r *http.Request
+	if body == "" {
+		r = httptest.NewRequest(method, "/api/orgs/"+org+"/model-configs/"+id, nil)
+	} else {
+		r = httptest.NewRequest(method, "/api/orgs/"+org+"/model-configs/"+id, strings.NewReader(body))
+	}
+	r.SetPathValue("org", org)
+	r.SetPathValue("id", id)
+	return r
+}
+
+// TestUpdateModelConfigHandler404 proves a missing/cross-org config → 404.
+func TestUpdateModelConfigHandler404(t *testing.T) {
+	rr := httptest.NewRecorder()
+	updateModelConfigHandler(&stubModelStore{notFound: true})(rr,
+		modelConfigReq("PUT", "org-x", "missing", `{"provider":"openai","model":"gpt-4o-mini","enabled":true}`))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("want 404, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestUpdateModelConfigHandlerBadRequest proves missing provider/model → 400.
+func TestUpdateModelConfigHandlerBadRequest(t *testing.T) {
+	rr := httptest.NewRecorder()
+	updateModelConfigHandler(&stubModelStore{})(rr, modelConfigReq("PUT", "org-x", "id1", `{"enabled":true}`))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", rr.Code)
+	}
+}
+
+// TestDeleteModelConfigHandler proves DELETE → 200 {ok:true}, scoped by (id,org),
+// and a missing config → 404.
+func TestDeleteModelConfigHandler(t *testing.T) {
+	st := &stubModelStore{}
+	rr := httptest.NewRecorder()
+	deleteModelConfigHandler(st)(rr, modelConfigReq("DELETE", "org-d", "cfg1", ""))
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"ok":true`) {
+		t.Fatalf("delete want 200 {ok:true}, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if st.deletedID != "cfg1" || st.deletedOrg != "org-d" {
+		t.Fatalf("delete must be scoped by (id,org): got id=%q org=%q", st.deletedID, st.deletedOrg)
+	}
+
+	rr2 := httptest.NewRecorder()
+	deleteModelConfigHandler(&stubModelStore{notFound: true})(rr2, modelConfigReq("DELETE", "org-d", "missing", ""))
+	if rr2.Code != http.StatusNotFound {
+		t.Fatalf("delete missing want 404, got %d", rr2.Code)
+	}
+}
+
+// TestUpdateModelConfigBYOKHidesKey proves the HTTP update layer (real
+// *models.Store + enabled box): a PUT with a blank apiKey keeps the existing key
+// (recoverable only via ResolveForOrg), a PUT with a new apiKey replaces it, and
+// NO response ever echoes a raw key.
+func TestUpdateModelConfigBYOKHidesKey(t *testing.T) {
+	pool := modelTestPool(t)
+	st := models.New(pool, modelTestBox(t))
+	const org = "org-update-http"
+	const origKey = "sk-http-orig-111"
+	const newKey = "sk-http-new-222"
+
+	mc, err := st.Create(context.Background(), models.CreateInput{
+		OrgID: org, Kind: "text", Provider: "openai-compatible", Model: "gpt-4o-mini",
+		Enabled: true, IsDefault: true, BaseURL: "https://a.example.com/v1", APIKey: origKey,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// PUT with blank apiKey → keeps the key; changes model/base_url.
+	rr := httptest.NewRecorder()
+	updateModelConfigHandler(st)(rr, modelConfigReq("PUT", org, mc.ID,
+		`{"kind":"text","provider":"openai-compatible","model":"gpt-4o","baseUrl":"https://b.example.com/v1","enabled":true,"isDefault":true}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update keep: code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if b := rr.Body.String(); strings.Contains(b, origKey) || strings.Contains(b, newKey) {
+		t.Fatalf("raw key leaked in update response: %s", b)
+	}
+	if !strings.Contains(rr.Body.String(), `"hasApiKey":true`) || !strings.Contains(rr.Body.String(), `"model":"gpt-4o"`) {
+		t.Fatalf("update response shape: %s", rr.Body.String())
+	}
+	if rm, ok, err := st.ResolveForOrg(context.Background(), org, "text"); err != nil || !ok || rm.APIKey != origKey {
+		t.Fatalf("keep: resolved key=%q (want %q) ok=%v err=%v", rm.APIKey, origKey, ok, err)
+	}
+
+	// PUT with a new apiKey → replaces it.
+	rr2 := httptest.NewRecorder()
+	updateModelConfigHandler(st)(rr2, modelConfigReq("PUT", org, mc.ID,
+		`{"kind":"text","provider":"openai-compatible","model":"gpt-4o","baseUrl":"https://b.example.com/v1","apiKey":"`+newKey+`","enabled":true,"isDefault":true}`))
+	if rr2.Code != http.StatusOK || strings.Contains(rr2.Body.String(), newKey) {
+		t.Fatalf("update replace: code=%d leaked=%v body=%s", rr2.Code, strings.Contains(rr2.Body.String(), newKey), rr2.Body.String())
+	}
+	if rm, ok, err := st.ResolveForOrg(context.Background(), org, "text"); err != nil || !ok || rm.APIKey != newKey {
+		t.Fatalf("replace: resolved key=%q (want %q) ok=%v err=%v", rm.APIKey, newKey, ok, err)
+	}
+}
+
 // TestModelCatalogHandlerTextAvailability proves the catalog includes text-kind
 // entries and the injected ModelAvailable func drives their `available` flag.
 func TestModelCatalogHandlerTextAvailability(t *testing.T) {

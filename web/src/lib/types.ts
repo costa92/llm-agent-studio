@@ -168,6 +168,42 @@ export interface CreateModelConfigInput {
   params?: Record<string, unknown>
 }
 
+// storageconfig/store.go StorageConfig。secret 写入即加密、永不回显——DTO 只报 hasSecret 布尔。
+// GET /api/orgs/{org}/storage-config、GET /api/storage-config/global → {config: StorageConfig | null}。
+// mode ∈ localfs/s3/oss/cos；localfs 为本地磁盘（开发/默认），其余为对象存储。
+export type StorageMode = "localfs" | "s3" | "oss" | "cos"
+
+export interface StorageConfig {
+  id: string
+  // scope='org' 表示 org 覆盖；'global' 表示全局默认。
+  scope: string
+  orgId: string
+  mode: StorageMode
+  endpoint: string
+  region: string
+  bucket: string
+  accessKeyId: string
+  publicPrefix: string
+  useSsl: boolean
+  enabled: boolean
+  // 是否已写入加密 secret；false → 未配置密钥。
+  hasSecret: boolean
+}
+
+// PUT 入参：PUT /api/orgs/{org}/storage-config、PUT /api/storage-config/global。
+// secret write-only：空串 = 保留既有 secret；非空 = 重新加密替换、绝不回显。
+export interface UpsertStorageConfigInput {
+  mode: StorageMode
+  endpoint: string
+  region: string
+  bucket: string
+  accessKeyId: string
+  secret: string
+  useSsl: boolean
+  publicPrefix: string
+  enabled: boolean
+}
+
 // cost/store.go Aggregate。GET /api/orgs/{org}/cost、GET /api/projects/{id}/cost。
 export interface Aggregate {
   generations: number

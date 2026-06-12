@@ -234,6 +234,149 @@ func TestCatalogIncludesVideoAndAudio(t *testing.T) {
 	}
 }
 
+func TestUpdateKeepsKeyWhenBlank(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	const rawKey = "sk-keep-me-111"
+	mc, err := st.Create(ctx, CreateInput{
+		OrgID: "org-keep", Kind: "text", Provider: "deepseek", Model: "deepseek-chat",
+		Enabled: true, IsDefault: true, BaseURL: "https://a.example.com", APIKey: rawKey,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// 空 APIKey → 保留既有 key；改 model+base_url。
+	upd, err := st.Update(ctx, mc.ID, "org-keep", UpdateInput{
+		Kind: "text", Provider: "deepseek", Model: "deepseek-coder",
+		Enabled: true, IsDefault: true, BaseURL: "https://b.example.com",
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if !upd.HasAPIKey || upd.Model != "deepseek-coder" || upd.BaseURL != "https://b.example.com" {
+		t.Fatalf("update result: hasKey=%v model=%q baseURL=%q", upd.HasAPIKey, upd.Model, upd.BaseURL)
+	}
+	// 解密仍是原 key (keep 未动 api_key_enc)。
+	rm, ok, err := st.ResolveForOrg(ctx, "org-keep", "text")
+	if err != nil || !ok || rm.APIKey != rawKey {
+		t.Fatalf("resolve after keep: ok=%v err=%v key=%q (want %q)", ok, err, rm.APIKey, rawKey)
+	}
+}
+
+func TestUpdateReplacesKeyWhenSet(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	mc, err := st.Create(ctx, CreateInput{
+		OrgID: "org-rep", Kind: "text", Provider: "deepseek", Model: "deepseek-chat",
+		Enabled: true, IsDefault: true, APIKey: "sk-old-000",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	const newKey = "sk-new-999"
+	upd, err := st.Update(ctx, mc.ID, "org-rep", UpdateInput{
+		Kind: "text", Provider: "deepseek", Model: "deepseek-chat",
+		Enabled: true, IsDefault: true, APIKey: newKey,
+	})
+	if err != nil || !upd.HasAPIKey {
+		t.Fatalf("update: %v hasKey=%v", err, upd.HasAPIKey)
+	}
+	rm, ok, err := st.ResolveForOrg(ctx, "org-rep", "text")
+	if err != nil || !ok || rm.APIKey != newKey {
+		t.Fatalf("resolve after replace: ok=%v err=%v key=%q (want %q)", ok, err, rm.APIKey, newKey)
+	}
+}
+
+func TestUpdateScopedByOrg(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	mc, err := st.Create(ctx, CreateInput{
+		OrgID: "org-owner", Kind: "text", Provider: "openai", Model: "gpt-4o-mini", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// 用另一个 org 的身份更新同一 id → ErrNotFound，且原行不变。
+	_, err = st.Update(ctx, mc.ID, "org-other", UpdateInput{
+		Kind: "text", Provider: "evil", Model: "evil-model", Enabled: true,
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-org update must return ErrNotFound, got %v", err)
+	}
+	list, _ := st.ListByOrg(ctx, "org-owner")
+	if len(list) != 1 || list[0].Provider != "openai" || list[0].Model != "gpt-4o-mini" {
+		t.Fatalf("cross-org update mutated the row: %+v", list)
+	}
+}
+
+func TestUpdateIsDefaultClearsSiblings(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	a, _ := st.Create(ctx, CreateInput{OrgID: "org-def", Kind: "text", Provider: "openai", Model: "gpt-4o-mini", Enabled: true, IsDefault: true})
+	b, _ := st.Create(ctx, CreateInput{OrgID: "org-def", Kind: "text", Provider: "deepseek", Model: "deepseek-chat", Enabled: true, IsDefault: false})
+	// 把 b 设为默认 → a 应被清掉默认。
+	if _, err := st.Update(ctx, b.ID, "org-def", UpdateInput{
+		Kind: "text", Provider: "deepseek", Model: "deepseek-chat", Enabled: true, IsDefault: true,
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	list, _ := st.ListByOrg(ctx, "org-def")
+	for _, c := range list {
+		switch c.ID {
+		case a.ID:
+			if c.IsDefault {
+				t.Fatalf("sibling %s should no longer be default", a.ID)
+			}
+		case b.ID:
+			if !c.IsDefault {
+				t.Fatalf("updated %s should be default", b.ID)
+			}
+		}
+	}
+}
+
+func TestDeleteScopedByOrg(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	mc, err := st.Create(ctx, CreateInput{OrgID: "org-del", Kind: "text", Provider: "openai", Model: "gpt-4o-mini", Enabled: true})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// 另一个 org 删不掉 → ErrNotFound，行仍在。
+	if err := st.Delete(ctx, mc.ID, "org-del-other"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-org delete must return ErrNotFound, got %v", err)
+	}
+	if list, _ := st.ListByOrg(ctx, "org-del"); len(list) != 1 {
+		t.Fatalf("cross-org delete removed the row: %+v", list)
+	}
+	// 正确 org 删除成功，再删 → ErrNotFound。
+	if err := st.Delete(ctx, mc.ID, "org-del"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if list, _ := st.ListByOrg(ctx, "org-del"); len(list) != 0 {
+		t.Fatalf("delete did not remove the row: %+v", list)
+	}
+	if err := st.Delete(ctx, mc.ID, "org-del"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("re-delete must return ErrNotFound, got %v", err)
+	}
+}
+
+func TestUpdateRejectsSecretParams(t *testing.T) {
+	// 校验先于任何 DB 访问，故 nil pool 证明顺序 (mirrors TestCreateRejectsSecretParams)。
+	s := New(nil, testBox(t))
+	_, err := s.Update(context.Background(), "some-id", "o", UpdateInput{
+		Provider: "p", Model: "m", Params: json.RawMessage(`{"api_key":"sk-123"}`),
+	})
+	if !errors.Is(err, ErrSecretParam) {
+		t.Fatalf("update with credential param must return ErrSecretParam, got %v", err)
+	}
+}
+
 func TestCatalogIncludesOllamaText(t *testing.T) {
 	var hasOllama bool
 	for _, e := range Catalog() {

@@ -2,7 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import type { CatalogEntry, ModelConfig } from "@/lib/types"
-import { CreateModelConfigForm } from "./ModelConfigPage"
+import {
+  CreateModelConfigForm,
+  EditModelConfigDialog,
+  ModelConfigView,
+} from "./ModelConfigPage"
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -153,5 +157,141 @@ describe("CreateModelConfigForm (BYO key)", () => {
     expect(key).toHaveAttribute("type", "password")
     expect(key).toHaveAttribute("autocomplete", "off")
     expect(screen.getByText(/仅写入、加密存储，不会回显/)).toBeInTheDocument()
+  })
+})
+
+// 编辑模式：CreateModelConfigForm 预填既有配置，apiKey 默认留空（空 = 后端保留密钥）。
+const EXISTING: ModelConfig = {
+  id: "mc-edit",
+  orgId: "acme",
+  kind: "text",
+  provider: "deepseek",
+  model: "deepseek-chat",
+  enabled: true,
+  isDefault: true,
+  baseUrl: "https://api.deepseek.com/v1",
+  hasApiKey: true,
+}
+
+describe("CreateModelConfigForm (edit mode)", () => {
+  it("prefills fields, omits the key by default, and submits a blank apiKey when untouched", async () => {
+    const onCreate = vi.fn().mockResolvedValue(EXISTING)
+    const user = userEvent.setup()
+
+    render(
+      <CreateModelConfigForm
+        catalog={CATALOG}
+        initial={EXISTING}
+        onCreate={onCreate}
+      />,
+    )
+
+    // 预填：model / base_url。
+    expect(screen.getByLabelText("模型 (model)")).toHaveValue("deepseek-chat")
+    expect(screen.getByLabelText(/Base URL/)).toHaveValue("https://api.deepseek.com/v1")
+    // 密钥字段留空，并显示「留空保持不变」提示。
+    expect(screen.getByLabelText(/API Key/)).toHaveValue("")
+    expect(screen.getByText(/留空保持不变/)).toBeInTheDocument()
+
+    await user.click(screen.getByRole("button", { name: "保存" }))
+
+    await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1))
+    const arg = onCreate.mock.calls[0][0] as Record<string, unknown>
+    // 未改密钥 → apiKey 省略（undefined），后端据此保留既有密钥。
+    expect(arg.apiKey).toBeUndefined()
+    expect(arg).toEqual(
+      expect.objectContaining({
+        provider: "deepseek",
+        model: "deepseek-chat",
+        kind: "text",
+        baseUrl: "https://api.deepseek.com/v1",
+        enabled: true,
+        isDefault: true,
+      }),
+    )
+  })
+
+  it("submits the new key when the API key field is filled", async () => {
+    const onCreate = vi.fn().mockResolvedValue(EXISTING)
+    const user = userEvent.setup()
+
+    render(
+      <CreateModelConfigForm
+        catalog={CATALOG}
+        initial={EXISTING}
+        onCreate={onCreate}
+      />,
+    )
+    await user.type(screen.getByLabelText(/API Key/), "sk-replacement")
+    await user.click(screen.getByRole("button", { name: "保存" }))
+
+    await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1))
+    expect(onCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKey: "sk-replacement" }),
+    )
+  })
+})
+
+describe("EditModelConfigDialog", () => {
+  it("calls onUpdate with the config id and a blank-key payload", async () => {
+    const onUpdate = vi.fn().mockResolvedValue(EXISTING)
+    const user = userEvent.setup()
+
+    render(
+      <EditModelConfigDialog
+        config={EXISTING}
+        catalog={CATALOG}
+        onUpdate={onUpdate}
+        trigger={<button>编辑</button>}
+      />,
+    )
+    await user.click(screen.getByRole("button", { name: "编辑" }))
+    // 弹窗内表单预填，直接保存（不动密钥）。
+    await user.click(screen.getByRole("button", { name: "保存" }))
+
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1))
+    expect(onUpdate.mock.calls[0][0]).toBe("mc-edit")
+    const input = onUpdate.mock.calls[0][1] as Record<string, unknown>
+    expect(input.apiKey).toBeUndefined()
+    expect(input.model).toBe("deepseek-chat")
+  })
+})
+
+// 删除：ModelConfigView 每行有删除按钮 → 确认弹窗；仅「确认删除」才调 onDelete。
+const VIEW_CONFIGS: ModelConfig[] = [EXISTING]
+const VIEW_CATALOG: CatalogEntry[] = CATALOG
+
+describe("ModelConfigView delete", () => {
+  function renderView(onDelete: () => Promise<void>) {
+    return render(
+      <ModelConfigView
+        configs={VIEW_CONFIGS}
+        catalog={VIEW_CATALOG}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+        onCreate={vi.fn()}
+        onUpdate={vi.fn()}
+        onDelete={onDelete}
+      />,
+    )
+  }
+
+  it("deletes only after confirming, not on cancel", async () => {
+    const onDelete = vi.fn().mockResolvedValue(undefined)
+    const user = userEvent.setup()
+    renderView(onDelete)
+
+    // 打开确认弹窗后点「取消」→ 不删除。
+    await user.click(screen.getByRole("button", { name: /删除 deepseek/ }))
+    expect(screen.getByText("确认删除该模型配置？")).toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "取消" }))
+    expect(onDelete).not.toHaveBeenCalled()
+
+    // 再次打开 → 点「确认删除」→ 才删除（按 id）。
+    await user.click(screen.getByRole("button", { name: /删除 deepseek/ }))
+    await user.click(screen.getByRole("button", { name: "确认删除" }))
+    await waitFor(() => expect(onDelete).toHaveBeenCalledTimes(1))
+    expect(onDelete).toHaveBeenCalledWith("mc-edit")
   })
 })

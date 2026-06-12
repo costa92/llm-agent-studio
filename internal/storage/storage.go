@@ -239,10 +239,34 @@ var m5Migrations = []string{
 	`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS api_key_enc BYTEA`,
 }
 
-// Migrate applies the M1 + M2 + M3 + M4 + M5 migrations in order. Idempotent.
+// m6Migrations 建 storage_configs (per-org / global 对象存储配置)。secret 半段静态
+// 加密 (secret_enc BYTEA)，与 BYOK 同一把 box。两条 partial unique index 保证
+// global 唯一 + 每 org 唯一。additive only。
+var m6Migrations = []string{
+	`CREATE TABLE IF NOT EXISTS storage_configs (
+		id TEXT PRIMARY KEY,
+		scope TEXT NOT NULL,
+		org_id TEXT NOT NULL DEFAULT '',
+		mode TEXT NOT NULL,
+		endpoint TEXT NOT NULL DEFAULT '',
+		region TEXT NOT NULL DEFAULT '',
+		bucket TEXT NOT NULL DEFAULT '',
+		access_key_id TEXT NOT NULL DEFAULT '',
+		secret_enc BYTEA,
+		use_ssl BOOLEAN NOT NULL DEFAULT true,
+		public_prefix TEXT NOT NULL DEFAULT '',
+		enabled BOOLEAN NOT NULL DEFAULT true,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+	)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS storage_configs_global_uniq ON storage_configs (scope) WHERE scope='global'`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS storage_configs_org_uniq ON storage_configs (org_id) WHERE scope='org'`,
+}
+
+// Migrate applies the M1 + M2 + M3 + M4 + M5 + M6 migrations in order. Idempotent.
 func (s *Storage) Migrate(ctx context.Context) error {
-	all := append(append(append(append(append([]string{},
-		m1Migrations...), m2Migrations...), m3Migrations...), m4Migrations...), m5Migrations...)
+	all := append(append(append(append(append(append([]string{},
+		m1Migrations...), m2Migrations...), m3Migrations...), m4Migrations...), m5Migrations...), m6Migrations...)
 	for _, stmt := range all {
 		if _, err := s.pool.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("storage: migrate: %w", err)
