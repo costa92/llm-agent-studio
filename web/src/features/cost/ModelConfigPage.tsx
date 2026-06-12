@@ -231,6 +231,8 @@ export function CreateModelConfigForm({
   // 当前 provider+kind 的建议里是否有「服务端未配置密钥」的条目（仅信息提示，不阻塞）。
   const hasUnavailableSuggestion = suggestions.some((e) => !e.available)
   const isCompatible = provider === COMPATIBLE_PROVIDER
+  // 本地 Ollama：base_url 缺省 http://localhost:11434，无需 API key。
+  const isOllama = provider === "ollama"
 
   const submit = handleSubmit(async (values) => {
     setSubmitError(null)
@@ -355,10 +357,15 @@ export function CreateModelConfigForm({
         <input
           id="mc-baseurl"
           aria-invalid={errors.baseUrl != null}
-          placeholder="https://api.example.com/v1"
+          placeholder={isOllama ? "http://localhost:11434（缺省）" : "https://api.example.com/v1"}
           {...register("baseUrl")}
           className={selectClass}
         />
+        {isOllama && (
+          <p className="text-[11.5px] text-text-3">
+            本地 Ollama：留空则用 http://localhost:11434，无需 API key。
+          </p>
+        )}
         {errors.baseUrl && (
           <p className="text-[12px] text-danger">{errors.baseUrl.message}</p>
         )}

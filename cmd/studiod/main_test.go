@@ -848,6 +848,24 @@ func TestBuildGeneratorNeverUsesChatModel(t *testing.T) {
 	}
 }
 
+// TestOllamaProviderWired proves Ollama is a first-class chat provider: the env
+// default (PROVIDER=ollama) and the per-org chat factory both construct a usable
+// ChatModel with no API key (Ollama is local/keyless; base_url缺省 localhost:11434).
+// Construction is lazy (no network), so this is a pure unit test.
+func TestOllamaProviderWired(t *testing.T) {
+	// Env default chat model.
+	m, err := buildModel(config.Config{Provider: "ollama", Model: "llama3"})
+	if err != nil || m == nil {
+		t.Fatalf("buildModel(ollama) = (%v, %v), want non-nil model, nil err", m, err)
+	}
+	// Per-org chat factory (BYOK path): no apiKey required; custom base_url honored.
+	f := buildChatFactory(sdktrace.NewTracerProvider())
+	cm, err := f("ollama", "qwen2.5", "", "http://localhost:11434")
+	if err != nil || cm == nil {
+		t.Fatalf("buildChatFactory(ollama) = (%v, %v), want non-nil model, nil err", cm, err)
+	}
+}
+
 // gatedGen blocks Generate until released — lets the e2e freeze an asset in
 // 'generating' to exercise the cancel path.
 type gatedGen struct{ release chan struct{} }

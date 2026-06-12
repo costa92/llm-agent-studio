@@ -90,6 +90,9 @@ func Catalog() []CatalogEntry {
 		// "openai-compatible" 伪 provider 自定义 base_url + model — 后续任务)。
 		{Provider: "deepseek", Model: "deepseek-chat", Kind: "text", Label: "DeepSeek Chat"},
 		{Provider: "openai", Model: "gpt-4o-mini", Kind: "text", Label: "OpenAI GPT-4o mini"},
+		// 本地 Ollama 文本模型（无需 key，base_url 缺省 http://localhost:11434；模型名可自由改）。
+		{Provider: "ollama", Model: "llama3", Kind: "text", Label: "Ollama Llama 3 (本地)"},
+		{Provider: "ollama", Model: "qwen2.5", Kind: "text", Label: "Ollama Qwen2.5 (本地)"},
 	}
 }
 
