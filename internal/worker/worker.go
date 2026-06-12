@@ -54,8 +54,8 @@ type Config struct {
 	Models           *models.Store      // resolve org default provider+model; nil → registry default
 	Registry         *generate.Registry // nil → use Asset's bound generator directly
 	WorkerID         string
-	GenQuota         int              // rolling-24h per-org generation quota; 0 = unlimited (backstop for fan-out)
-	MaxConcurrentGen int              // global concurrent asset-todo cap; 0 = unlimited
+	GenQuota         int // rolling-24h per-org generation quota; 0 = unlimited (backstop for fan-out)
+	MaxConcurrentGen int // global concurrent asset-todo cap; 0 = unlimited
 
 	// M4 async engine knobs (spec §5.6/§9.4).
 	MaxConcurrentVideo int           // video submit-admission + fetch cap; 0 = unlimited
@@ -66,13 +66,13 @@ type Config struct {
 	LeaseRenewInterval time.Duration // heartbeat renewLease period; 0 = disabled
 	VideoFetcher       Puller        // SSRF-safe video/audio result puller; nil → required at poll-done with URL-only result (T8)
 
-	Lease            time.Duration    // default 120s
-	MaxAttempts      int              // default 3
-	BaseBackoff      time.Duration    // default 2s
-	CallTimeout      time.Duration    // per-dispatch ctx timeout; MUST be < Lease (0 = no bound)
-	Clock            func() time.Time // nil → time.Now
-	Logger           *slog.Logger     // nil → slog.Default()
-	Tracer           trace.Tracer     // nil → noop
+	Lease       time.Duration    // default 120s
+	MaxAttempts int              // default 3
+	BaseBackoff time.Duration    // default 2s
+	CallTimeout time.Duration    // per-dispatch ctx timeout; MUST be < Lease (0 = no bound)
+	Clock       func() time.Time // nil → time.Now
+	Logger      *slog.Logger     // nil → slog.Default()
+	Tracer      trace.Tracer     // nil → noop
 }
 
 // Worker drains the todos queue.
@@ -530,6 +530,13 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 			if provider, model, ok, derr := w.cfg.Models.DefaultForOrg(ctx, orgID, kind); derr == nil && ok {
 				if g, rerr := w.cfg.Registry.Resolve(provider, model); rerr == nil {
 					routed = g
+				} else {
+					// The org selected this model but no adapter is registered for it
+					// (likely the provider's API key is not configured). Non-fatal:
+					// fall back to the registry default generator. Log so the
+					// misconfiguration is visible — one line per occurrence.
+					w.cfg.Logger.Warn("worker: org-selected model has no registered adapter; falling back to default generator (provider API key likely missing)",
+						"org", orgID, "provider", provider, "model", model, "err", rerr)
 				}
 			}
 		}
@@ -801,7 +808,7 @@ type Puller interface {
 // renewLease extends the lease on a todo this worker still holds (heartbeat).
 // Double-guarded (locked_by + status='running') so it never resurrects a
 // rescheduled/canceled/reclaimed row (spec §5.2b I4): after a self-reschedule
-// the row is ready + locked_by='' → 0 rows → no-op.
+// the row is ready + locked_by=” → 0 rows → no-op.
 func (w *Worker) renewLease(ctx context.Context, todoID string) {
 	lease := int(w.cfg.Lease / time.Second)
 	if lease <= 0 {

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -40,11 +41,55 @@ func TestPromptBuildHandler(t *testing.T) {
 }
 
 func TestModelCatalogHandler(t *testing.T) {
-	h := modelCatalogHandler()
+	h := modelCatalogHandler(nil) // nil avail → every entry available
 	rec := httptest.NewRecorder()
 	h(rec, httptest.NewRequest("GET", "/api/model-catalog", nil))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "minimax") {
 		t.Fatalf("catalog: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"available":true`) {
+		t.Fatalf("nil avail should mark every entry available: %s", rec.Body.String())
+	}
+}
+
+// TestModelCatalogHandlerAvailability proves the injected ModelAvailable func
+// drives the per-entry `available` flag: only volcengine image is keyed here, so
+// that entry is available:true while openai image is available:false; fake
+// entries are always available:true.
+func TestModelCatalogHandlerAvailability(t *testing.T) {
+	avail := func(provider, kind string) bool {
+		if provider == "fake" {
+			return true
+		}
+		return provider == "volcengine" && kind == "image"
+	}
+	h := modelCatalogHandler(avail)
+	rec := httptest.NewRecorder()
+	h(rec, httptest.NewRequest("GET", "/api/model-catalog", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Catalog []struct {
+			Provider, Model, Kind, Label string
+			Available                    bool
+		} `json:"catalog"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v body=%s", err, rec.Body.String())
+	}
+	seen := map[string]bool{} // "provider/model" → available
+	for _, e := range got.Catalog {
+		seen[e.Provider+"/"+e.Model] = e.Available
+	}
+	if !seen["volcengine/doubao-seedream-3-0-t2i"] {
+		t.Errorf("volcengine image should be available:true")
+	}
+	if seen["openai/gpt-image-1"] {
+		t.Errorf("openai image (unkeyed) should be available:false")
+	}
+	if !seen["fake/fake-video-async"] {
+		t.Errorf("fake entries should always be available:true")
 	}
 }
 
