@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/costa92/llm-agent-contract/llm"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel/attribute"
@@ -33,6 +34,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/cost"
 	"github.com/costa92/llm-agent-studio/internal/events"
 	"github.com/costa92/llm-agent-studio/internal/generate"
+	"github.com/costa92/llm-agent-studio/internal/modelrouter"
 	"github.com/costa92/llm-agent-studio/internal/models"
 	"github.com/costa92/llm-agent-studio/internal/project"
 	"github.com/costa92/llm-agent-studio/internal/todos"
@@ -53,6 +55,7 @@ type Config struct {
 	Cost             *cost.Store
 	Models           *models.Store      // resolve org default provider+model; nil → registry default
 	Registry         *generate.Registry // nil → use Asset's bound generator directly
+	Router           *modelrouter.Router // BYOK per-org 模型路由 (chat + media); nil → legacy Models/Registry path
 	WorkerID         string
 	GenQuota         int // rolling-24h per-org generation quota; 0 = unlimited (backstop for fan-out)
 	MaxConcurrentGen int // global concurrent asset-todo cap; 0 = unlimited
@@ -355,9 +358,16 @@ func (w *Worker) runScript(ctx context.Context, c claimed) (string, error) {
 		Style          string `json:"style"`
 	}
 	_ = json.Unmarshal(c.input, &in)
-	out, err := w.cfg.Script.Run(ctx, studioagents.ScriptInput{
+	scriptIn := studioagents.ScriptInput{
 		Brief: in.Brief, ContentType: in.ContentType, Platform: in.TargetPlatform, Style: in.Style,
-	})
+	}
+	var out studioagents.ScriptOutput
+	var err error
+	if m, ok := w.routedChatModel(ctx, c.projectID); ok {
+		out, err = w.cfg.Script.RunWith(ctx, m, scriptIn)
+	} else {
+		out, err = w.cfg.Script.Run(ctx, scriptIn)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -410,9 +420,16 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 		`SELECT style FROM projects WHERE id=$1`, c.projectID).Scan(&projectStyle); err != nil {
 		return "", fmt.Errorf("worker: load project style: %w", err)
 	}
-	out, err := w.cfg.Storyboard.Run(ctx, studioagents.StoryboardInput{
+	storyboardIn := studioagents.StoryboardInput{
 		ScriptJSON: string(contentJSON), Style: projectStyle,
-	})
+	}
+	var out studioagents.StoryboardOutput
+	var err error
+	if m, ok := w.routedChatModel(ctx, c.projectID); ok {
+		out, err = w.cfg.Storyboard.RunWith(ctx, m, storyboardIn)
+	} else {
+		out, err = w.cfg.Storyboard.Run(ctx, storyboardIn)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -525,7 +542,14 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 	// BEFORE the fork so the AsyncGenerator type-assertion below can route
 	// video/audio to submit→poll while image stays single-pass synchronous.
 	var routed generate.MediaGenerator
-	if w.cfg.Models != nil && w.cfg.Registry != nil {
+	if w.cfg.Router != nil {
+		// BYOK 路由: resolve the org's per-config generator (own provider/model/
+		// base_url/api_key) with env-keyed registry + registry-default fallbacks.
+		// Resolution is non-fatal (the router logs + falls back internally).
+		if orgID, oerr := w.cfg.Projects.OrgIDForProject(ctx, c.projectID); oerr == nil {
+			routed = w.cfg.Router.MediaGeneratorFor(ctx, orgID, kind)
+		}
+	} else if w.cfg.Models != nil && w.cfg.Registry != nil {
 		if orgID, oerr := w.cfg.Projects.OrgIDForProject(ctx, c.projectID); oerr == nil {
 			if provider, model, ok, derr := w.cfg.Models.DefaultForOrg(ctx, orgID, kind); derr == nil && ok {
 				if g, rerr := w.cfg.Registry.Resolve(provider, model); rerr == nil {
@@ -756,6 +780,23 @@ func (w *Worker) fail(ctx context.Context, c claimed, cause error) {
 
 func bytesReader(b []byte) *bytes.Reader { return bytes.NewReader(b) }
 
+// routedChatModel resolves the org's BYOK chat model via the ModelRouter. ok is
+// false when no router is wired (callers then use the agent's bound .Run). The
+// router never returns a nil-meaningful model (it falls back to the env default
+// chat model), so a non-nil result is always usable. orgID lookup failure also
+// yields ok=false (caller falls back to the bound model — routing must never
+// break the pipeline).
+func (w *Worker) routedChatModel(ctx context.Context, projectID string) (llm.ChatModel, bool) {
+	if w.cfg.Router == nil {
+		return nil, false
+	}
+	orgID, err := w.cfg.Projects.OrgIDForProject(ctx, projectID)
+	if err != nil {
+		return nil, false
+	}
+	return w.cfg.Router.ChatModelFor(ctx, orgID), true
+}
+
 // prescreen runs the ReviewAgent over the generation metadata and records the
 // verdict on the asset + an asset_prescreened timeline event. Errors degrade
 // to a prescreen_error flag with score -1 (unscreened).
@@ -763,9 +804,16 @@ func (w *Worker) prescreen(ctx context.Context, c claimed, assetID, style string
 	if w.cfg.Review == nil {
 		return
 	}
-	res, err := w.cfg.Review.Run(ctx, studioagents.ReviewInput{
+	reviewIn := studioagents.ReviewInput{
 		Prompt: out.Prompt, Style: style, Provider: out.Provider, Model: out.Model, MimeType: out.MimeType,
-	})
+	}
+	var res studioagents.ReviewOutput
+	var err error
+	if m, ok := w.routedChatModel(ctx, c.projectID); ok {
+		res, err = w.cfg.Review.RunWith(ctx, m, reviewIn)
+	} else {
+		res, err = w.cfg.Review.Run(ctx, reviewIn)
+	}
 	if err != nil {
 		w.cfg.Logger.Warn("worker: prescreen failed", "asset", assetID, "err", err)
 		_ = w.cfg.Assets.SetPrescreen(ctx, assetID, -1, []string{"prescreen_error"}, err.Error())

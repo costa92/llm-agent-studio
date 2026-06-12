@@ -32,7 +32,7 @@ type StoryboardOutput struct {
 
 // StoryboardAgent turns a script into a shot list via a single LLM call.
 type StoryboardAgent struct {
-	agent coreagents.Agent
+	model llm.ChatModel // bound default for Run; RunWith routes per-org (BYOK)
 }
 
 const storyboardSystemPrompt = `You are a storyboard artist. Given a script (JSON), break it into shots. Produce a JSON object with EXACTLY this shape and nothing else:
@@ -41,18 +41,18 @@ const storyboardSystemPrompt = `You are a storyboard artist. Given a script (JSO
 
 // NewStoryboardAgent builds a StoryboardAgent over the given model.
 func NewStoryboardAgent(model llm.ChatModel) *StoryboardAgent {
-	return &StoryboardAgent{
-		agent: coreagents.NewSimpleAgent(model, coreagents.SimpleOptions{
-			Name:         "storyboard",
-			SystemPrompt: storyboardSystemPrompt,
-		}),
-	}
+	return &StoryboardAgent{model: model}
 }
 
-// Run produces a StoryboardOutput. Empty/unparseable returns an error.
-func (a *StoryboardAgent) Run(ctx context.Context, in StoryboardInput) (StoryboardOutput, error) {
+// RunWith is Run with an explicit model (BYOK 模型路由): the worker resolves the
+// org's text model through the ModelRouter and passes it here. Run keeps the
+// bound default for un-routed callers.
+func (a *StoryboardAgent) RunWith(ctx context.Context, model llm.ChatModel, in StoryboardInput) (StoryboardOutput, error) {
+	agent := coreagents.NewSimpleAgent(model, coreagents.SimpleOptions{
+		Name: "storyboard", SystemPrompt: storyboardSystemPrompt,
+	})
 	prompt := fmt.Sprintf("Script JSON:\n%s\n\nStyle: %s", in.ScriptJSON, in.Style)
-	res, err := a.agent.Run(ctx, prompt)
+	res, err := agent.Run(ctx, prompt)
 	if err != nil {
 		return StoryboardOutput{}, fmt.Errorf("storyboard: generate: %w", err)
 	}
@@ -68,4 +68,9 @@ func (a *StoryboardAgent) Run(ctx context.Context, in StoryboardInput) (Storyboa
 		return StoryboardOutput{}, fmt.Errorf("storyboard: no shots produced")
 	}
 	return out, nil
+}
+
+// Run produces a StoryboardOutput. Empty/unparseable returns an error.
+func (a *StoryboardAgent) Run(ctx context.Context, in StoryboardInput) (StoryboardOutput, error) {
+	return a.RunWith(ctx, a.model, in)
 }

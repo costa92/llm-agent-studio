@@ -12,6 +12,7 @@ import (
 	authzhttp "github.com/costa92/llm-agent-authz/httpapi"
 	authzrole "github.com/costa92/llm-agent-authz/role"
 	authzsvc "github.com/costa92/llm-agent-authz/service"
+	"github.com/costa92/llm-agent-contract/llm"
 
 	"github.com/costa92/llm-agent-studio/internal/planner"
 	"github.com/costa92/llm-agent-studio/internal/project"
@@ -58,9 +59,18 @@ type ProjectStore interface {
 	OrgIDForProject(ctx context.Context, projectID string) (string, error)
 }
 
-// PlannerPort kicks off planning (satisfied by *planner.Planner).
+// PlannerPort kicks off planning (satisfied by *planner.Planner). PlanWith
+// accepts an explicit chat model (BYOK 模型路由 via the ChatRouter); Plan uses
+// the planner's bound default.
 type PlannerPort interface {
 	Plan(ctx context.Context, projectID string, b planner.Brief) (planner.Result, error)
+	PlanWith(ctx context.Context, projectID string, model llm.ChatModel, b planner.Brief) (planner.Result, error)
+}
+
+// ChatRouter resolves an org's BYOK chat model (satisfied by *modelrouter.Router).
+// nil in Deps → the run handler uses PlannerPort.Plan (the bound default).
+type ChatRouter interface {
+	ChatModelFor(ctx context.Context, orgID string) llm.ChatModel
 }
 
 // ArtifactReader reads todos/script/shots for the artifact endpoints.
@@ -248,7 +258,7 @@ func quotaExceeded(ctx context.Context, cs CostStore, quota int, orgID string) (
 
 // runHandler (POST /api/projects/{id}/run): editor+. Sets status=planning, runs
 // the planner (synchronously enqueues todos), emits planner_started.
-func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore, quota int) http.HandlerFunc {
+func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore, quota int, cr ChatRouter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		p, err := ps.Get(r.Context(), id)
@@ -271,10 +281,18 @@ func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore,
 			return
 		}
 		_, _ = ev.Append(r.Context(), id, "planner_started", "", nil)
-		res, err := pl.Plan(r.Context(), id, planner.Brief{
+		brief := planner.Brief{
 			Brief: p.Description, ContentType: p.ContentType,
 			TargetPlatform: p.TargetPlatform, Style: p.Style,
-		})
+		}
+		var res planner.Result
+		if cr != nil {
+			// BYOK 路由: plan with the org's resolved chat model (falls back to the
+			// planner's bound default inside the router when the org has no config).
+			res, err = pl.PlanWith(r.Context(), id, cr.ChatModelFor(r.Context(), p.OrgID), brief)
+		} else {
+			res, err = pl.Plan(r.Context(), id, brief)
+		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

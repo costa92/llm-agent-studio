@@ -104,6 +104,29 @@ func TestMigrateCreatesM3Surfaces(t *testing.T) {
 	}
 }
 
+func TestMigrateCreatesM5ByokColumns(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, Config{PGURL: testDSN(t)})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	// BYOK per-config credential columns on model_configs.
+	for _, col := range []string{"base_url", "api_key_enc"} {
+		var exists bool
+		if err := st.Pool().QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='model_configs' AND column_name=$1)`, col).Scan(&exists); err != nil {
+			t.Fatalf("check model_configs.%s: %v", col, err)
+		}
+		if !exists {
+			t.Fatalf("model_configs.%s missing", col)
+		}
+	}
+}
+
 func TestMigrateCreatesM4Surfaces(t *testing.T) {
 	ctx := context.Background()
 	st, err := Open(ctx, Config{PGURL: testDSN(t)})

@@ -41,7 +41,7 @@ type ReadyTodo struct {
 
 // Planner turns a brief into a persisted todo graph via one LLM call.
 type Planner struct {
-	agent coreagents.Agent
+	model llm.ChatModel // bound default for Plan; PlanWith routes per-org (BYOK)
 	todos *todos.Store
 	pool  *pgxpool.Pool
 }
@@ -50,15 +50,9 @@ const plannerSystemPrompt = `You are a content-production planner. Given a brief
 {"nodes":[{"id":string,"type":string,"dependsOn":[string]}]}
 Allowed node types: "script", "storyboard". The graph MUST contain a "script" node, must be acyclic, and "storyboard" should depend on "script". Output ONLY the JSON object.`
 
-// New builds a Planner. model is wrapped in a SimpleAgent (one Generate call).
+// New builds a Planner over the bound default model (used by Plan).
 func New(model llm.ChatModel, todoStore *todos.Store, pool *pgxpool.Pool) *Planner {
-	return &Planner{
-		agent: coreagents.NewSimpleAgent(model, coreagents.SimpleOptions{
-			Name: "planner", SystemPrompt: plannerSystemPrompt,
-		}),
-		todos: todoStore,
-		pool:  pool,
-	}
+	return &Planner{model: model, todos: todoStore, pool: pool}
 }
 
 func newID() string {
@@ -69,8 +63,18 @@ func newID() string {
 
 // Plan asks the LLM for a graph, validates it, and persists plans + todos. On
 // a malformed/invalid plan it falls back to the default pipeline (spec §7.1)
-// and records fallback_used=true. The plans row stores the raw LLM text.
+// and records fallback_used=true. The plans row stores the raw LLM text. Uses
+// the bound default model; PlanWith routes per-org (BYOK).
 func (p *Planner) Plan(ctx context.Context, projectID string, b Brief) (Result, error) {
+	return p.PlanWith(ctx, projectID, p.model, b)
+}
+
+// PlanWith is Plan with an explicit chat model (BYOK 模型路由): the run handler
+// resolves the org's text model through the ModelRouter and passes it here.
+func (p *Planner) PlanWith(ctx context.Context, projectID string, model llm.ChatModel, b Brief) (Result, error) {
+	agent := coreagents.NewSimpleAgent(model, coreagents.SimpleOptions{
+		Name: "planner", SystemPrompt: plannerSystemPrompt,
+	})
 	planID := newID()
 	prompt := fmt.Sprintf("Brief: %s\nContent type: %s\nTarget platform: %s\nStyle: %s",
 		b.Brief, b.ContentType, b.TargetPlatform, b.Style)
@@ -80,7 +84,7 @@ func (p *Planner) Plan(ctx context.Context, projectID string, b Brief) (Result, 
 	fallback := false
 	graph := DefaultPipeline()
 
-	res, err := p.agent.Run(ctx, prompt)
+	res, err := agent.Run(ctx, prompt)
 	if err != nil {
 		// LLM failed → fallback (still produce a runnable pipeline).
 		fallback = true

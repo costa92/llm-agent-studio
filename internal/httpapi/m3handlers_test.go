@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/costa92/llm-agent-contract/llm"
+
 	"github.com/costa92/llm-agent-studio/internal/cost"
 	"github.com/costa92/llm-agent-studio/internal/models"
 	"github.com/costa92/llm-agent-studio/internal/planner"
@@ -122,6 +124,9 @@ type stubPlanner struct{}
 func (stubPlanner) Plan(_ context.Context, _ string, _ planner.Brief) (planner.Result, error) {
 	return planner.Result{PlanID: "pl", Valid: true}, nil
 }
+func (stubPlanner) PlanWith(_ context.Context, _ string, _ llm.ChatModel, _ planner.Brief) (planner.Result, error) {
+	return planner.Result{PlanID: "pl", Valid: true}, nil
+}
 
 type stubAppender struct{}
 
@@ -129,7 +134,7 @@ func (stubAppender) Append(_ context.Context, _, _, _ string, _ any) (int64, err
 
 func TestRunHandler429WhenQuotaExhausted(t *testing.T) {
 	cs := &stubCost{count: 5} // org already used 5 generations in the window
-	h := runHandler(stubProjects{orgID: "o1"}, stubPlanner{}, stubAppender{}, cs, 5)
+	h := runHandler(stubProjects{orgID: "o1"}, stubPlanner{}, stubAppender{}, cs, 5, nil)
 	req := httptest.NewRequest("POST", "/api/projects/p1/run", nil)
 	req.SetPathValue("id", "p1")
 	rr := httptest.NewRecorder()
@@ -141,7 +146,7 @@ func TestRunHandler429WhenQuotaExhausted(t *testing.T) {
 
 func TestRunHandlerPassesUnderQuota(t *testing.T) {
 	cs := &stubCost{count: 4}
-	h := runHandler(stubProjects{orgID: "o1"}, stubPlanner{}, stubAppender{}, cs, 5)
+	h := runHandler(stubProjects{orgID: "o1"}, stubPlanner{}, stubAppender{}, cs, 5, nil)
 	req := httptest.NewRequest("POST", "/api/projects/p1/run", nil)
 	req.SetPathValue("id", "p1")
 	rr := httptest.NewRecorder()
@@ -153,7 +158,7 @@ func TestRunHandlerPassesUnderQuota(t *testing.T) {
 
 func TestRunHandlerQuotaZeroDisabled(t *testing.T) {
 	cs := &stubCost{count: 1000}
-	h := runHandler(stubProjects{orgID: "o1"}, stubPlanner{}, stubAppender{}, cs, 0)
+	h := runHandler(stubProjects{orgID: "o1"}, stubPlanner{}, stubAppender{}, cs, 0, nil)
 	req := httptest.NewRequest("POST", "/api/projects/p1/run", nil)
 	req.SetPathValue("id", "p1")
 	rr := httptest.NewRecorder()

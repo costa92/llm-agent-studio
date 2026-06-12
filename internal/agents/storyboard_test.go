@@ -21,6 +21,23 @@ func TestStoryboardAgentParsesShots(t *testing.T) {
 	}
 }
 
+func TestStoryboardAgentRunWithUsesPassedModel(t *testing.T) {
+	bound := llm.NewScriptedLLM(llm.WithResponses(llm.Response{
+		Text: `{"shots":[{"shotNo":1,"camera":"BOUND","scene":"s","action":"a","prompt":"p","duration":2}]}`,
+	}))
+	routed := llm.NewScriptedLLM(llm.WithResponses(llm.Response{
+		Text: `{"shots":[{"shotNo":1,"camera":"ROUTED","scene":"s","action":"a","prompt":"p","duration":2}]}`,
+	}))
+	sb := NewStoryboardAgent(bound)
+	out, err := sb.RunWith(context.Background(), routed, StoryboardInput{ScriptJSON: "{}"})
+	if err != nil {
+		t.Fatalf("runWith: %v", err)
+	}
+	if out.Shots[0].Camera != "ROUTED" {
+		t.Fatalf("RunWith ignored the passed model: camera=%q", out.Shots[0].Camera)
+	}
+}
+
 func TestStoryboardAgentEmptyShotsErrors(t *testing.T) {
 	model := llm.NewScriptedLLM(llm.WithResponses(llm.Response{Text: `{"shots":[]}`}))
 	sb := NewStoryboardAgent(model)

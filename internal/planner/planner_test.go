@@ -59,6 +59,22 @@ func TestPlanValidGraph(t *testing.T) {
 	}
 }
 
+func TestPlanWithUsesPassedModel(t *testing.T) {
+	// Bound model would FALL BACK (refusal); the passed model returns a valid graph.
+	bound := llm.NewScriptedLLM(llm.WithResponses(llm.Response{Text: "I refuse to plan."}))
+	routed := llm.NewScriptedLLM(llm.WithResponses(llm.Response{
+		Text: `{"nodes":[{"id":"s","type":"script","dependsOn":[]},{"id":"b","type":"storyboard","dependsOn":["s"]}]}`,
+	}))
+	p, _, projID := newPlanner(t, bound)
+	res, err := p.PlanWith(context.Background(), projID, routed, Brief{Brief: "ad"})
+	if err != nil {
+		t.Fatalf("planWith: %v", err)
+	}
+	if !res.Valid || res.FallbackUsed {
+		t.Fatalf("PlanWith ignored the passed model: %+v", res)
+	}
+}
+
 func TestPlanFallbackOnMalformed(t *testing.T) {
 	model := llm.NewScriptedLLM(llm.WithResponses(llm.Response{Text: "I refuse to plan."}))
 	p, st, projID := newPlanner(t, model)

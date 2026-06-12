@@ -195,7 +195,7 @@ func TestRunAssetRoutesViaOrgDefaultModelConfig(t *testing.T) {
 	reg.SetDefault(defGen)
 	reg.Register("fakeB", "mB", orgGen)
 
-	ms := models.New(pool)
+	ms := models.New(pool, nil)
 	if _, err := ms.Create(ctx, models.CreateInput{
 		OrgID: orgID, Kind: "image", Provider: "fakeB", Model: "mB", Enabled: true, IsDefault: true,
 	}); err != nil {
@@ -762,7 +762,7 @@ func asyncWorkerSetup(t *testing.T, pool *pgxpool.Pool, pollsToDone int) (*Worke
 	// Seed video per-second pricing so the ledger asserts a real amount.
 	_, _ = pool.Exec(ctx, `INSERT INTO pricing (provider, model, kind, micros_per_second)
 		VALUES ('fake','fake-video-async','video',500000) ON CONFLICT (provider, model) DO NOTHING`)
-	ms := models.New(pool)
+	ms := models.New(pool, nil)
 	_, _ = ms.Create(ctx, models.CreateInput{OrgID: orgID, Kind: "video", Provider: "fake", Model: "fake-video-async", Enabled: true, IsDefault: true})
 
 	fakeAsync := generate.NewFakeAsync("video", pollsToDone, generate.GenResult{

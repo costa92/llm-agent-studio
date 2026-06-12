@@ -232,10 +232,17 @@ var m4Migrations = []string{
 	 ON CONFLICT (provider, model) DO NOTHING`,
 }
 
-// Migrate applies the M1 + M2 + M3 + M4 migrations in order. Idempotent.
+// m5Migrations are the BYOK per-config credential columns on model_configs
+// (base_url + 静态加密的 api_key_enc)。additive only — 不破坏既有 model_configs。
+var m5Migrations = []string{
+	`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS base_url TEXT`,
+	`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS api_key_enc BYTEA`,
+}
+
+// Migrate applies the M1 + M2 + M3 + M4 + M5 migrations in order. Idempotent.
 func (s *Storage) Migrate(ctx context.Context) error {
-	all := append(append(append(append([]string{},
-		m1Migrations...), m2Migrations...), m3Migrations...), m4Migrations...)
+	all := append(append(append(append(append([]string{},
+		m1Migrations...), m2Migrations...), m3Migrations...), m4Migrations...), m5Migrations...)
 	for _, stmt := range all {
 		if _, err := s.pool.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("storage: migrate: %w", err)

@@ -41,12 +41,14 @@ import (
 	genimage "github.com/costa92/llm-agent-studio/internal/generate/image"
 	genvideo "github.com/costa92/llm-agent-studio/internal/generate/video"
 	"github.com/costa92/llm-agent-studio/internal/httpapi"
+	"github.com/costa92/llm-agent-studio/internal/modelrouter"
 	"github.com/costa92/llm-agent-studio/internal/models"
 	"github.com/costa92/llm-agent-studio/internal/obs"
 	"github.com/costa92/llm-agent-studio/internal/planner"
 	"github.com/costa92/llm-agent-studio/internal/project"
 	"github.com/costa92/llm-agent-studio/internal/prompt"
 	"github.com/costa92/llm-agent-studio/internal/review"
+	"github.com/costa92/llm-agent-studio/internal/secretbox"
 	"github.com/costa92/llm-agent-studio/internal/storage"
 	"github.com/costa92/llm-agent-studio/internal/studiosvc"
 	"github.com/costa92/llm-agent-studio/internal/todos"
@@ -197,7 +199,26 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	promptBuilder := prompt.NewBuilder()
 	assetStore := assets.New(st.Pool())
 	costStore := cost.New(st.Pool())
-	modelStore := models.New(st.Pool())
+	// BYOK: per-config api key 静态加密 box (env STUDIO_CONFIG_ENC_KEY)。未配置时
+	// 返回 disabled box——存 key 会被拒，但服务仍可启动 (env-only key 老路径不受影响)。
+	encBox, err := secretbox.NewBoxFromEnv()
+	if err != nil {
+		st.Close()
+		return nil, nil, fmt.Errorf("studiod: secretbox: %w", err)
+	}
+	modelStore := models.New(st.Pool(), encBox)
+
+	// BYOK 模型路由 (ModelRouter): resolves an org's stored model_config and builds
+	// the matching chat model / media generator via the factories below; falls
+	// back to the env-default chat model + the registry for orgs with no config.
+	router := modelrouter.New(modelrouter.Config{
+		Models:      modelStore,
+		Registry:    registry,
+		DefaultChat: model, // env-default chat model (already otel-wrapped)
+		BuildChat:   buildChatFactory(tp),
+		BuildMedia:  buildMediaFactory(tp),
+	})
+
 	assetAgent := studioagents.NewAssetAgent(promptBuilder, gen)
 	var reviewAgent *studioagents.ReviewAgent
 	if cfg.ReviewPrescreen {
@@ -221,7 +242,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 			Pool: st.Pool(), Todos: todoStore, Projects: projectStore, Events: eventStore,
 			Script: scriptAgent, Storyboard: storyboardAgent,
 			Asset: assetAgent, Review: reviewAgent, Blob: blobStore, Assets: assetStore, Cost: costStore,
-			Models: modelStore, Registry: registry,
+			Models: modelStore, Registry: registry, Router: router,
 			WorkerID:           fmt.Sprintf("studiod-%d", i),
 			GenQuota:           cfg.OrgDailyGenQuota,
 			MaxConcurrentGen:   cfg.MaxConcurrentGen,
@@ -271,6 +292,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		OrgList:      studiosvc.NewOrgList(st.Pool()),
 		Projects:     projectStore,
 		Planner:      plannerSvc,
+		ChatRouter:   router,
 		Events:       eventStore,
 		EventReader:  eventStore,
 		Artifacts:    studiosvc.NewArtifacts(st.Pool()),
@@ -414,6 +436,15 @@ func modelAvailable(cfg config.Config) func(provider, kind string) bool {
 			case "openai":
 				return cfg.TTSAPIKey != ""
 			}
+		case "text":
+			// BYOK: text 模型可在表单自带 key，available:false 仅表示"无服务端 env key"
+			// (UI 视为"可自带 key"，非硬阻断)。deepseek 是默认 chat provider (env API_KEY)。
+			switch provider {
+			case "openai":
+				return cfg.OpenAIAPIKey != "" || cfg.APIKey != ""
+			case "deepseek":
+				return cfg.APIKey != ""
+			}
 		}
 		return false
 	}
@@ -517,6 +548,106 @@ func registerAudioGenerators(reg *generate.Registry, cfg config.Config, tp trace
 		}
 	}
 	return nil
+}
+
+// buildChatFactory returns the ModelRouter BuildChat func: it constructs a chat
+// model for an org's stored config (own provider/model/api_key/base_url), otel-
+// wrapped. "openai-compatible" routes through the OpenAI adapter pointed at the
+// config's base_url (deepseek/siliconflow/local/etc.). Unknown provider → error
+// (the router logs + falls back to the env-default chat model).
+func buildChatFactory(tp trace.TracerProvider) func(provider, model, apiKey, baseURL string) (llm.ChatModel, error) {
+	return func(provider, model, apiKey, baseURL string) (llm.ChatModel, error) {
+		var (
+			m   llm.ChatModel
+			err error
+		)
+		switch provider {
+		case "openai", "openai-compatible":
+			opts := []openaiprovider.Option{openaiprovider.WithModel(model), openaiprovider.WithAPIKey(apiKey)}
+			if baseURL != "" {
+				opts = append(opts, openaiprovider.WithBaseURL(baseURL))
+			}
+			m, err = openaiprovider.New(opts...)
+		case "deepseek":
+			opts := []deepseekprovider.Option{deepseekprovider.WithModel(model), deepseekprovider.WithAPIKey(apiKey)}
+			if baseURL != "" {
+				opts = append(opts, deepseekprovider.WithBaseURL(baseURL))
+			}
+			m, err = deepseekprovider.New(opts...)
+		case "google":
+			opts := []googleprovider.Option{googleprovider.WithModel(model), googleprovider.WithAPIKey(apiKey)}
+			if baseURL != "" {
+				opts = append(opts, googleprovider.WithBaseURL(baseURL))
+			}
+			m, err = googleprovider.New(opts...)
+		default:
+			return nil, fmt.Errorf("studiod: unknown chat provider %q", provider)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("studiod: build %s/%s chat model: %w", provider, model, err)
+		}
+		return obs.WrapModel(m, tp), nil
+	}
+}
+
+// buildMediaFactory returns the ModelRouter BuildMedia func: it constructs a
+// MediaGenerator for an org's stored config using its OWN api_key (and base_url
+// for image where the SDK supports it). image → the provider's llm.ImageGenerator
+// wrapped in genimage; "openai-compatible" → OpenAI image at base_url. video/audio
+// → the known async adapter for the provider (fixed-endpoint SDKs ignore baseURL).
+// Result is otel-wrapped. Unknown provider/kind → error (router falls back).
+func buildMediaFactory(tp trace.TracerProvider) func(kind, provider, model, apiKey, baseURL string) (generate.MediaGenerator, error) {
+	return func(kind, provider, model, apiKey, baseURL string) (generate.MediaGenerator, error) {
+		switch kind {
+		case "image":
+			var (
+				ig  llm.ImageGenerator
+				err error
+			)
+			switch provider {
+			case "openai", "openai-compatible":
+				opts := []openaiprovider.Option{openaiprovider.WithModel(model), openaiprovider.WithAPIKey(apiKey)}
+				if baseURL != "" {
+					opts = append(opts, openaiprovider.WithBaseURL(baseURL))
+				}
+				ig, err = openaiprovider.New(opts...)
+			case "google":
+				ig, err = googleprovider.New(googleprovider.WithModel(model), googleprovider.WithAPIKey(apiKey))
+			case "minimax":
+				ig, err = minimaxprovider.New(minimaxprovider.WithModel(model), minimaxprovider.WithAPIKey(apiKey))
+			case "volcengine":
+				ig, err = volcengineprovider.New(volcengineprovider.WithModel(model), volcengineprovider.WithAPIKey(apiKey))
+			default:
+				return nil, fmt.Errorf("studiod: unknown image provider %q", provider)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("studiod: build %s/%s image generator: %w", provider, model, err)
+			}
+			return obs.WrapGenerator(genimage.New(ig, nil), tp), nil
+		case "video":
+			var ag generate.MediaGenerator
+			switch provider {
+			case "runway":
+				ag = genvideo.NewRunway(apiKey)
+			case "kling":
+				ag = genvideo.NewKling(apiKey)
+			case "google":
+				ag = genvideo.NewVeo(apiKey)
+			default:
+				return nil, fmt.Errorf("studiod: unknown video provider %q", provider)
+			}
+			return obs.WrapGenerator(ag, tp), nil
+		case "audio":
+			switch provider {
+			case "openai":
+				return obs.WrapGenerator(genaudio.NewOpenAITTS(apiKey), tp), nil
+			default:
+				return nil, fmt.Errorf("studiod: unknown audio provider %q", provider)
+			}
+		default:
+			return nil, fmt.Errorf("studiod: unknown media kind %q", kind)
+		}
+	}
 }
 
 // blobServerOrNil avoids handing NewMux a typed-nil *localfs.Store wrapped in the

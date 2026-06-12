@@ -36,7 +36,7 @@ type ScriptOutput struct {
 // (SimpleAgent = one Generate, see llm-agent/simple.go). JSON via prompt + R1
 // tolerant parsing — providers have no native structured output.
 type ScriptAgent struct {
-	agent coreagents.Agent
+	model llm.ChatModel // bound default for Run; RunWith routes per-org (BYOK)
 }
 
 const scriptSystemPrompt = `You are a screenwriter. Given a creative brief, produce a JSON object with EXACTLY this shape and nothing else:
@@ -45,21 +45,20 @@ Output ONLY the JSON object. No prose, no markdown fences.`
 
 // NewScriptAgent builds a ScriptAgent over the given model.
 func NewScriptAgent(model llm.ChatModel) *ScriptAgent {
-	return &ScriptAgent{
-		agent: coreagents.NewSimpleAgent(model, coreagents.SimpleOptions{
-			Name:         "script",
-			SystemPrompt: scriptSystemPrompt,
-		}),
-	}
+	return &ScriptAgent{model: model}
 }
 
-// Run produces a ScriptOutput. Malformed/unparseable JSON returns an error so
-// the worker can mark the todo failed (spec §7.3 step 4).
-func (a *ScriptAgent) Run(ctx context.Context, in ScriptInput) (ScriptOutput, error) {
+// RunWith is Run with an explicit model (BYOK 模型路由): the worker resolves the
+// org's text model through the ModelRouter and passes it here. Run keeps the
+// bound default for un-routed callers.
+func (a *ScriptAgent) RunWith(ctx context.Context, model llm.ChatModel, in ScriptInput) (ScriptOutput, error) {
+	agent := coreagents.NewSimpleAgent(model, coreagents.SimpleOptions{
+		Name: "script", SystemPrompt: scriptSystemPrompt,
+	})
 	prompt := fmt.Sprintf(
 		"Brief: %s\nContent type: %s\nTarget platform: %s\nStyle: %s",
 		in.Brief, in.ContentType, in.Platform, in.Style)
-	res, err := a.agent.Run(ctx, prompt)
+	res, err := agent.Run(ctx, prompt)
 	if err != nil {
 		return ScriptOutput{}, fmt.Errorf("script: generate: %w", err)
 	}
@@ -75,4 +74,10 @@ func (a *ScriptAgent) Run(ctx context.Context, in ScriptInput) (ScriptOutput, er
 		return ScriptOutput{}, fmt.Errorf("script: empty script (title or scenes missing)")
 	}
 	return out, nil
+}
+
+// Run produces a ScriptOutput. Malformed/unparseable JSON returns an error so
+// the worker can mark the todo failed (spec §7.3 step 4).
+func (a *ScriptAgent) Run(ctx context.Context, in ScriptInput) (ScriptOutput, error) {
+	return a.RunWith(ctx, a.model, in)
 }
