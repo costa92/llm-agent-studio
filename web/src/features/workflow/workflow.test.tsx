@@ -59,9 +59,10 @@ describe("WorkbenchView (production timeline)", () => {
     expect(screen.getByText("素材生成")).toBeInTheDocument()
     expect(screen.getByText("人工审核")).toBeInTheDocument()
 
-    // S1 running（planner_started）、S2 done（todo_finished script）。
+    // S1 done（B1：首个 todo_ready 到达即收尾 planner，不再永久卡 running）、
+    // S2 done（todo_finished script）。
     const stages = document.querySelectorAll('[data-slot="stage"]')
-    expect(stages[0].getAttribute("data-status")).toBe("running")
+    expect(stages[0].getAttribute("data-status")).toBe("done")
     expect(stages[1].getAttribute("data-status")).toBe("done")
     // SSE 指示器在线。
     expect(screen.getByText("实时连接")).toBeInTheDocument()

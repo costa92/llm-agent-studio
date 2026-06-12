@@ -216,6 +216,11 @@ export function reduceTimeline(state: TimelineState, frame: SseFrame): TimelineS
     }
 
     case "todo_ready": {
+      // B1：首个 todo_ready 意味 planner 已产出 todo 图 → S1 收尾 done（planner 无自身 todo，
+      //     否则 planner_started 置的 running 永无收尾、节点永久转圈）。
+      if (next.stages.find((s) => s.id === "S1")?.status !== "done") {
+        next = { ...next, stages: patchStage(next.stages, "S1", { status: "done", linked: true }) }
+      }
       if (t === "asset") {
         // 每 shot 一个 asset todo → seed pip（idle）、N+1、S4 pending。
         next = {
@@ -239,14 +244,18 @@ export function reduceTimeline(state: TimelineState, frame: SseFrame): TimelineS
 
     case "todo_started": {
       if (t === "asset") {
-        // pip → running（失败重试时也走这里，pip 从 failed 回 running）。
-        next = {
-          ...next,
-          pips: patchPip(next.pips, frame.todoId, { status: "running" }),
-          stages:
-            next.stages.find((s) => s.id === "S4")?.status !== "done"
-              ? patchStage(next.stages, "S4", { status: "running" })
-              : next.stages,
+        // B2：只更新**已由 todo_ready 播种**的 pip（含失败重试，同 todoId 从 failed 回 running）。
+        //     run_done 后审核台「重生成」会处理一个新 todoId 的 asset todo（无前置 todo_ready），
+        //     它不是原始 fan-out 的 shot —— 工作台时间线不得凭空建 pip（否则 N 计数错乱）。仅记日志。
+        if (next.pips.some((p) => p.todoId === frame.todoId)) {
+          next = {
+            ...next,
+            pips: patchPip(next.pips, frame.todoId, { status: "running" }),
+            stages:
+              next.stages.find((s) => s.id === "S4")?.status !== "done"
+                ? patchStage(next.stages, "S4", { status: "running" })
+                : next.stages,
+          }
         }
       } else if (t && TYPE_TO_STAGE[t]) {
         next = {
@@ -273,17 +282,22 @@ export function reduceTimeline(state: TimelineState, frame: SseFrame): TimelineS
     }
 
     case "asset_generated": {
-      // 对应 pip → done（asset 色）；done/N +1；pendingAssetCount +1（待审）。
-      next = {
-        ...next,
-        pips: patchPip(next.pips, frame.todoId, {
-          status: "done",
-          assetId: payloadStr(frame, "assetId"),
-        }),
-        doneAssetCount: next.doneAssetCount + 1,
-        pendingAssetCount: next.pendingAssetCount + 1,
+      // B2：仅对**已知 pip**（原始 fan-out 播种）落地完成态与计数。run_done 后审核台
+      //     「重生成」的新 todoId 不属于本次 run 的 shot —— 不建幽灵 pip、不虚增
+      //     done/N 与「待审核」徽标（重生成的版本在审核台查看，工作台只反映原始 run）。仅记日志。
+      if (next.pips.some((p) => p.todoId === frame.todoId)) {
+        // 对应 pip → done（asset 色）；done/N +1；pendingAssetCount +1（待审）。
+        next = {
+          ...next,
+          pips: patchPip(next.pips, frame.todoId, {
+            status: "done",
+            assetId: payloadStr(frame, "assetId"),
+          }),
+          doneAssetCount: next.doneAssetCount + 1,
+          pendingAssetCount: next.pendingAssetCount + 1,
+        }
+        next = settleAssetStage(next)
       }
-      next = settleAssetStage(next)
       break
     }
 

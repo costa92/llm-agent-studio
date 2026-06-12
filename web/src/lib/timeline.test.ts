@@ -321,3 +321,91 @@ describe("timeline reducer — replay → live continuity (the core invariant)",
     expect(replay.log).toEqual(live.log)
   })
 })
+
+describe("timeline reducer — S1 Planner settles (B1: never stuck running)", () => {
+  // planner 没有自身 todo；plan 一旦产出（首个 todo_ready 到达）planner 即完成。
+  // 旧 reducer 只在 planner_started 把 S1 置 running，无任何事件收尾 → S1 永久转圈。
+  it("first todo_ready settles S1 → done + linked", () => {
+    const s = run([
+      f(1, "planner_started"),
+      f(2, "todo_ready", "t-s", { type: "script" }),
+    ])
+    expect(stage(s, "S1").status).toBe("done")
+    expect(stage(s, "S1").linked).toBe(true)
+    // 下游照常推进。
+    expect(stage(s, "S2").status).toBe("pending")
+  })
+
+  it("after a full run S1 is done, not stuck running", () => {
+    const s = run([
+      f(1, "planner_started"),
+      f(2, "todo_ready", "t-s", { type: "script" }),
+      f(3, "todo_started", "t-s", { type: "script" }),
+      f(4, "todo_finished", "t-s", { type: "script", outputRef: "sc1" }),
+      f(5, "todo_ready", "a1", { type: "asset" }),
+      f(6, "todo_started", "a1", { type: "asset" }),
+      f(7, "asset_generated", "a1", { assetId: "img1" }),
+      f(8, "run_done"),
+    ])
+    expect(stage(s, "S1").status).toBe("done")
+    expect(stage(s, "S1").status).not.toBe("running")
+    expect(s.runStatus).toBe("done")
+  })
+})
+
+describe("timeline reducer — regenerate after run_done is ignored (B2)", () => {
+  // 真实场景（项目 123123 seq 66-69）：run_done 后，审核台「拒绝→重生成」让 worker
+  // 处理一个**新 todoId** 的 asset todo，发 todo_started/asset_generated（**无前置
+  // todo_ready{asset}**、**无收尾 run_done**）。工作台回放全量 run_events 时不得把它
+  // 当成原始 fan-out 的新 pip——否则 N 计数错乱（"2/1"）、徽标「待审核」虚高。
+  function completedRun(): TimelineState {
+    return run([
+      f(1, "planner_started"),
+      f(2, "todo_ready", "t-s", { type: "script" }),
+      f(3, "todo_finished", "t-s", { type: "script", outputRef: "sc1" }),
+      f(4, "todo_ready", "a1", { type: "asset" }),
+      f(5, "todo_started", "a1", { type: "asset" }),
+      f(6, "asset_generated", "a1", { assetId: "img1", status: "pending_acceptance" }),
+      f(7, "run_done"),
+    ])
+  }
+
+  it("regenerate todo_started (NEW todoId, no prior todo_ready) seeds NO pip", () => {
+    let s = completedRun()
+    expect(s.pipCount).toBe(1)
+    s = reduceTimeline(s, f(8, "todo_started", "regen-1", { type: "asset" }))
+    expect(s.pips.map((p) => p.todoId)).toEqual(["a1"]) // 无幽灵 pip
+    expect(s.pipCount).toBe(1)
+    // S4 已 done，不应被重新拉回 running。
+    expect(stage(s, "S4").status).toBe("done")
+    // 仍记日志。
+    expect(s.log.at(-1)?.kind).toBe("todo_started")
+  })
+
+  it("regenerate asset_generated (NEW todoId) does NOT inflate counts → S4 stays 1/1, badge 待审 1", () => {
+    let s = completedRun()
+    s = reduceTimeline(s, f(8, "todo_started", "regen-1", { type: "asset" }))
+    s = reduceTimeline(s, f(9, "asset_generated", "regen-1", { assetId: "img2", status: "pending_acceptance" }))
+    expect(s.pips.map((p) => p.todoId)).toEqual(["a1"])
+    expect(s.doneAssetCount).toBe(1) // 不是 2
+    expect(s.pipCount).toBe(1) // S4 子标题 = doneAssetCount/pipCount = "1/1"
+    expect(s.pendingAssetCount).toBe(1) // 徽标「待审核 · 1」，不是 2
+    expect(s.log.at(-1)?.kind).toBe("asset_generated")
+  })
+
+  it("normal retry (existing pip todoId) still works — guard only blocks unknown todoIds", () => {
+    // 防回归：失败重试用的是已播种的同一 todoId，不受 B2 守卫影响。
+    let s = run([
+      f(1, "planner_started"),
+      f(2, "todo_ready", "a1", { type: "asset" }),
+      f(3, "todo_started", "a1", { type: "asset" }),
+      f(4, "todo_failed", "a1", { error: "boom" }),
+    ])
+    expect(s.pips.find((p) => p.todoId === "a1")?.status).toBe("failed")
+    s = reduceTimeline(s, f(5, "todo_started", "a1", { type: "asset" }))
+    expect(s.pips.find((p) => p.todoId === "a1")?.status).toBe("running")
+    s = reduceTimeline(s, f(6, "asset_generated", "a1", { assetId: "img1" }))
+    expect(s.pips.find((p) => p.todoId === "a1")?.status).toBe("done")
+    expect(s.doneAssetCount).toBe(1)
+  })
+})
