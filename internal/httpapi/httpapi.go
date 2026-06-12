@@ -152,6 +152,8 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("GET /api/model-catalog", authOnly(modelCatalogHandler(d.ModelAvailable)))
 	mux.Handle("POST /api/orgs/{org}/model-configs", scoped(roleAdmin, orgScope, createModelConfigHandler(d.Models)))
 	mux.Handle("GET /api/orgs/{org}/model-configs", scoped(roleAdmin, orgScope, listModelConfigsHandler(d.Models)))
+	mux.Handle("PUT /api/orgs/{org}/model-configs/{id}", scoped(roleAdmin, orgScope, updateModelConfigHandler(d.Models)))
+	mux.Handle("DELETE /api/orgs/{org}/model-configs/{id}", scoped(roleAdmin, orgScope, deleteModelConfigHandler(d.Models)))
 	// Cost center (admin).
 	mux.Handle("GET /api/orgs/{org}/cost", scoped(roleAdmin, orgScope, orgCostHandler(d.Cost)))
 	mux.Handle("GET /api/projects/{id}/cost", proj(roleAdmin, projectCostHandler(d.Cost)))

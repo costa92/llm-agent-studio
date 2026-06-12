@@ -176,6 +176,10 @@ func (secretRejectingModels) Create(_ context.Context, _ models.CreateInput) (mo
 func (secretRejectingModels) ListByOrg(_ context.Context, _ string) ([]models.ModelConfig, error) {
 	return nil, nil
 }
+func (secretRejectingModels) Update(_ context.Context, _, _ string, _ models.UpdateInput) (models.ModelConfig, error) {
+	return models.ModelConfig{}, models.ErrSecretParam
+}
+func (secretRejectingModels) Delete(_ context.Context, _, _ string) error { return nil }
 
 func TestCreateModelConfig400OnSecretParams(t *testing.T) {
 	h := createModelConfigHandler(secretRejectingModels{})

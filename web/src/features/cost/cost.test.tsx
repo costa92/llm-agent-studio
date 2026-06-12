@@ -276,6 +276,8 @@ describe("ModelConfigView", () => {
         isError={false}
         onRetry={vi.fn()}
         onCreate={vi.fn()}
+        onUpdate={vi.fn()}
+        onDelete={vi.fn()}
       />,
     )
     expect(screen.getByText("图像")).toBeInTheDocument()
@@ -293,6 +295,8 @@ describe("ModelConfigView", () => {
         isError={false}
         onRetry={vi.fn()}
         onCreate={vi.fn()}
+        onUpdate={vi.fn()}
+        onDelete={vi.fn()}
       />,
     )
     expect(screen.getByText("用服务端密钥")).toBeInTheDocument()
@@ -321,6 +325,8 @@ describe("ModelConfigView", () => {
         isError={false}
         onRetry={vi.fn()}
         onCreate={vi.fn()}
+        onUpdate={vi.fn()}
+        onDelete={vi.fn()}
       />,
     )
     expect(screen.getByText("已配置密钥")).toBeInTheDocument()
@@ -336,6 +342,8 @@ describe("ModelConfigView", () => {
         isError={false}
         onRetry={vi.fn()}
         onCreate={vi.fn()}
+        onUpdate={vi.fn()}
+        onDelete={vi.fn()}
       />,
     )
     expect(screen.getByText("尚未配置模型")).toBeInTheDocument()

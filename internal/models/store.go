@@ -27,6 +27,10 @@ var ErrSecretParam = errors.New("models: params must not contain credentials (us
 // STUDIO_CONFIG_ENC_KEY)，无法静态加密，故拒绝。
 var ErrEncUnavailable = errors.New("models: api key storage requires STUDIO_CONFIG_ENC_KEY")
 
+// ErrNotFound 表示按 (id AND org_id) 定位的配置不存在 (含跨 org 误访问)。
+// Update/Delete 影响 0 行时返回它，handler 映射 404。
+var ErrNotFound = errors.New("models: config not found")
+
 // forbiddenParamKeys flag anywhere inside a (lowercased) key name. NOTE
 // (评审修复 M2): bare "token" is deliberately NOT in this substring list — it
 // false-positives on legitimate count/config fields (max_tokens, token_budget).
@@ -134,6 +138,20 @@ type CreateInput struct {
 	Params    json.RawMessage
 }
 
+// UpdateInput is the input to Update. 不含 OrgID（由 Update 的 orgID 参数传入，
+// 永远按 (id AND org_id) 定位，禁止跨 org 编辑）。APIKey 走 keep-or-replace 语义：
+// 空 → 保留既有 api_key_enc 不动；非空 → 重新加密替换。
+type UpdateInput struct {
+	Kind      string
+	Provider  string
+	Model     string
+	Enabled   bool
+	IsDefault bool
+	BaseURL   string
+	APIKey    string // 空=保留既有 key；非空=重新加密替换 (同 Create 的 box 守卫)
+	Params    json.RawMessage
+}
+
 // Store persists model_configs.
 type Store struct {
 	pool *pgxpool.Pool
@@ -207,6 +225,96 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (ModelConfig, error)
 		return ModelConfig{}, err
 	}
 	return mc, nil
+}
+
+// Update updates an existing config scoped by (id AND org_id) — 禁止跨 org 编辑。
+// 0 行受影响 → ErrNotFound。APIKey 走 keep-or-replace：空则保留既有 api_key_enc，
+// 非空则重新加密替换 (box 未启用时同 Create 返回 ErrEncUnavailable)。新默认会清掉
+// 同 org+kind 的其它默认 (与 Create 一致)。返回更新后的 ModelConfig (绝不含明文 key)。
+func (s *Store) Update(ctx context.Context, id, orgID string, in UpdateInput) (ModelConfig, error) {
+	if id == "" || orgID == "" || in.Provider == "" || in.Model == "" {
+		return ModelConfig{}, fmt.Errorf("models: ID, OrgID, Provider, Model required")
+	}
+	kind := in.Kind
+	if kind == "" {
+		kind = "image"
+	}
+	// 守卫仍只扫 params_json (params 不得夹带凭据)。校验先于任何 DB 访问。
+	if len(in.Params) > 0 {
+		var m map[string]any
+		if err := json.Unmarshal(in.Params, &m); err == nil {
+			if key, found := secretKeyIn(m); found {
+				return ModelConfig{}, fmt.Errorf("%w (field %q)", ErrSecretParam, key)
+			}
+		}
+	}
+	// keep-or-replace：APIKey 非空则静态加密 (无可用 box 则拒绝，不静默丢弃 key)。
+	var keyEnc []byte
+	replaceKey := in.APIKey != ""
+	if replaceKey {
+		if !s.box.Enabled() {
+			return ModelConfig{}, ErrEncUnavailable
+		}
+		enc, err := s.box.Encrypt([]byte(in.APIKey))
+		if err != nil {
+			return ModelConfig{}, fmt.Errorf("models: encrypt api key: %w", err)
+		}
+		keyEnc = enc
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return ModelConfig{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if in.IsDefault {
+		// 清掉同 org+kind 的其它默认 (排除自己，避免随后把自己又设回 false 的竞态)。
+		if _, err := tx.Exec(ctx,
+			`UPDATE model_configs SET is_default=false WHERE org_id=$1 AND kind=$2 AND id<>$3`, orgID, kind, id); err != nil {
+			return ModelConfig{}, fmt.Errorf("models: clear default: %w", err)
+		}
+	}
+	// api_key_enc 仅在 replaceKey 时写 ($8)，否则用 COALESCE 保留既有值。
+	tag, err := tx.Exec(ctx,
+		`UPDATE model_configs
+		 SET kind=$3, provider=$4, model=$5, enabled=$6, is_default=$7,
+		     base_url=$8, api_key_enc=CASE WHEN $9 THEN $10 ELSE api_key_enc END, params_json=$11
+		 WHERE id=$1 AND org_id=$2`,
+		id, orgID, kind, in.Provider, in.Model, in.Enabled, in.IsDefault, in.BaseURL, replaceKey, keyEnc, in.Params)
+	if err != nil {
+		return ModelConfig{}, fmt.Errorf("models: update: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ModelConfig{}, ErrNotFound
+	}
+	// 重新读出以拿到准确的 has_api_key (keep 时无法从入参推断)。
+	var mc ModelConfig
+	if err := tx.QueryRow(ctx,
+		`SELECT id, org_id, kind, provider, model, enabled, is_default,
+		        COALESCE(base_url,''), (api_key_enc IS NOT NULL) AS has_api_key, params_json
+		 FROM model_configs WHERE id=$1 AND org_id=$2`, id, orgID).
+		Scan(&mc.ID, &mc.OrgID, &mc.Kind, &mc.Provider, &mc.Model, &mc.Enabled, &mc.IsDefault,
+			&mc.BaseURL, &mc.HasAPIKey, &mc.Params); err != nil {
+		return ModelConfig{}, fmt.Errorf("models: reload: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ModelConfig{}, err
+	}
+	return mc, nil
+}
+
+// Delete removes a config scoped by (id AND org_id). 0 行受影响 → ErrNotFound。
+func (s *Store) Delete(ctx context.Context, id, orgID string) error {
+	if id == "" || orgID == "" {
+		return fmt.Errorf("models: ID, OrgID required")
+	}
+	tag, err := s.pool.Exec(ctx, `DELETE FROM model_configs WHERE id=$1 AND org_id=$2`, id, orgID)
+	if err != nil {
+		return fmt.Errorf("models: delete: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // ListByOrg lists an org's model configs, newest first.
