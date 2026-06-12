@@ -248,8 +248,8 @@ describe("CostCenterView", () => {
 
 // ── ModelConfigView + 创建表单（400 密钥拒绝处理）─────────────────────
 const CATALOG: CatalogEntry[] = [
-  { provider: "openai", model: "gpt-image-1", kind: "image", label: "OpenAI GPT-Image-1" },
-  { provider: "runway", model: "gen-3", kind: "video", label: "Runway Gen-3" },
+  { provider: "openai", model: "gpt-image-1", kind: "image", label: "OpenAI GPT-Image-1", available: true },
+  { provider: "runway", model: "gen-3", kind: "video", label: "Runway Gen-3", available: true },
 ]
 const CONFIGS: ModelConfig[] = [
   {
@@ -369,6 +369,60 @@ describe("CreateModelConfigForm", () => {
     await user.click(screen.getByRole("button", { name: "保存" }))
 
     expect(await screen.findByText("参数不是合法 JSON")).toBeInTheDocument()
+    expect(onCreate).not.toHaveBeenCalled()
+  })
+})
+
+// ── 模型可用性（provider 未配置密钥 → available:false 不可选）─────────
+// 第一条不可用、第二条可用：默认选中应跳过不可用条，落到首个可用条。
+const MIXED_CATALOG: CatalogEntry[] = [
+  { provider: "openai", model: "gpt-image-1", kind: "image", label: "OpenAI GPT-Image-1", available: false },
+  { provider: "runway", model: "gen-3", kind: "video", label: "Runway Gen-3", available: true },
+]
+
+describe("CreateModelConfigForm 可用性", () => {
+  it("disables unavailable options and marks them with （未配置密钥）", () => {
+    render(<CreateModelConfigForm catalog={MIXED_CATALOG} onCreate={vi.fn()} />)
+    const unavailable = screen.getByRole("option", { name: /未配置密钥/ })
+    expect(unavailable).toBeDisabled()
+    expect(unavailable).toHaveTextContent(/OpenAI GPT-Image-1/)
+    // 可用条不带标记、可选。
+    const available = screen.getByRole("option", { name: /Runway Gen-3/ })
+    expect(available).not.toBeDisabled()
+    expect(available).not.toHaveTextContent(/未配置密钥/)
+  })
+
+  it("defaults the selection to the first AVAILABLE entry and submits it", async () => {
+    const created: ModelConfig = { ...CONFIGS[0], id: "new2" }
+    const onCreate = vi.fn().mockResolvedValue(created)
+    const user = userEvent.setup()
+
+    render(<CreateModelConfigForm catalog={MIXED_CATALOG} onCreate={onCreate} />)
+    // 默认值 = 首个可用条（runway/gen-3），不是 catalog[0]（不可用的 openai）。
+    expect(screen.getByLabelText("模型")).toHaveValue("runway/gen-3")
+
+    await user.click(screen.getByRole("button", { name: "保存" }))
+    await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1))
+    expect(onCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "runway", model: "gen-3", kind: "video" }),
+    )
+  })
+
+  it("blocks submit with an inline error when the selected model is unavailable, without calling onCreate", async () => {
+    const onCreate = vi.fn()
+    const user = userEvent.setup()
+
+    // 全部不可用 → 默认兜底到 catalog[0]（不可用），提交应被拦下。
+    const allUnavailable: CatalogEntry[] = [
+      { provider: "openai", model: "gpt-image-1", kind: "image", label: "OpenAI GPT-Image-1", available: false },
+    ]
+    render(<CreateModelConfigForm catalog={allUnavailable} onCreate={onCreate} />)
+    // 无可用模型的内联提示。
+    expect(screen.getByText(/当前没有可用模型/)).toBeInTheDocument()
+
+    await user.click(screen.getByRole("button", { name: "保存" }))
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/未配置/)
     expect(onCreate).not.toHaveBeenCalled()
   })
 })

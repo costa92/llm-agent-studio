@@ -133,6 +133,8 @@ export interface CatalogEntry {
   model: string
   kind: string
   label: string
+  // available:false 表示该 model 的 provider API key 未在服务端配置，暂不可用。
+  available: boolean
 }
 
 // models/store.go ModelConfig。无 API key 字段——密钥服务端管理，永不下发。

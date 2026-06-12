@@ -72,6 +72,12 @@ export function ModelConfigView({
     groups.set(c.kind, arr)
   }
 
+  // catalog 里 provider/model 当前是否可用（密钥已配置）。缺失则视为可用，不误标已存配置。
+  const isConfigUnavailable = (c: ModelConfig): boolean => {
+    const e = catalog?.find((x) => x.provider === c.provider && x.model === c.model)
+    return e != null && !e.available
+  }
+
   const addButton = (
     <CreateModelConfigDialog
       catalog={catalog ?? []}
@@ -125,6 +131,9 @@ export function ModelConfigView({
                     {c.provider} · {c.model}
                   </span>
                   <span className="flex items-center gap-2">
+                    {isConfigUnavailable(c) && (
+                      <Badge variant="pending">需配置密钥</Badge>
+                    )}
                     {c.isDefault && <Badge variant="done">默认</Badge>}
                     <Badge variant={c.enabled ? "running" : "pending"}>
                       {c.enabled ? "已启用" : "已停用"}
@@ -169,6 +178,10 @@ export function CreateModelConfigForm({
   onSuccess,
 }: CreateModelConfigFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null)
+  // 默认选中首个「可用」条目（provider 密钥已配置）；无可用条目时兜底到 catalog[0]
+  // （仍会被 select 禁用 + 提交拦截 + 内联提示挡住），避免默认就指向不可用模型。
+  const firstAvailable = catalog.find((e) => e.available) ?? catalog[0]
+  const hasAvailable = catalog.some((e) => e.available)
   const {
     register,
     handleSubmit,
@@ -178,7 +191,7 @@ export function CreateModelConfigForm({
   } = useForm<FormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      catalogKey: catalog[0] ? catalogKey(catalog[0]) : "",
+      catalogKey: firstAvailable ? catalogKey(firstAvailable) : "",
       enabled: true,
       isDefault: false,
       paramsText: "",
@@ -193,6 +206,11 @@ export function CreateModelConfigForm({
     const entry = catalog.find((e) => catalogKey(e) === values.catalogKey)
     if (entry == null) {
       setSubmitError("请选择有效的模型")
+      return
+    }
+    // 该 model 的 provider 密钥未在服务端配置 → 本地拦下，不打后端（否则生成会静默回退）。
+    if (!entry.available) {
+      setSubmitError("该模型对应 provider 的 API key 未配置，暂不可用")
       return
     }
 
@@ -240,11 +258,20 @@ export function CreateModelConfigForm({
           className="rounded-md border border-line bg-bg-base px-2.5 py-2 text-[13px] text-text-1 focus-visible:outline-2 focus-visible:outline-amber"
         >
           {catalog.map((e) => (
-            <option key={catalogKey(e)} value={catalogKey(e)}>
+            <option key={catalogKey(e)} value={catalogKey(e)} disabled={!e.available}>
               {e.label}（{e.provider} · {e.model}）
+              {!e.available && "（未配置密钥）"}
             </option>
           ))}
         </select>
+        <p className="text-[11.5px] text-text-3">
+          灰显（未配置密钥）的模型需先在服务端配置对应 provider 的 API key 后方可使用。
+        </p>
+        {!hasAvailable && (
+          <p className="text-[12px] text-danger">
+            当前没有可用模型：请在服务端配置对应 provider 的 API key。
+          </p>
+        )}
         {errors.catalogKey && (
           <p className="text-[12px] text-danger">{errors.catalogKey.message}</p>
         )}
