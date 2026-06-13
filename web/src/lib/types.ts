@@ -24,6 +24,7 @@ export interface Project {
   style: string
   status: ProjectStatus
   createdBy: string
+  fallbackUsed?: boolean
 }
 
 // UI-spec §7.2。

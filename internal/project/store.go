@@ -28,6 +28,7 @@ type Project struct {
 	Style          string `json:"style"`
 	Status         string `json:"status"`
 	CreatedBy      string `json:"createdBy"`
+	FallbackUsed   bool   `json:"fallbackUsed"`
 }
 
 // CreateInput is the input to Create. Brief maps to the description column
@@ -79,9 +80,16 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Project, error) {
 func (s *Store) Get(ctx context.Context, id string) (Project, error) {
 	var p Project
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, org_id, name, description, content_type, target_platform, style, status, created_by
-		 FROM projects WHERE id=$1`, id).
-		Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy)
+		`SELECT p.id, p.org_id, p.name, p.description, p.content_type, p.target_platform, p.style, p.status, p.created_by,
+		        COALESCE(pl.fallback_used, false)
+		 FROM projects p
+		 LEFT JOIN (
+		     SELECT DISTINCT ON (project_id) project_id, fallback_used
+		     FROM plans
+		     ORDER BY project_id, created_at DESC
+		 ) pl ON p.id = pl.project_id
+		 WHERE p.id=$1`, id).
+		Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy, &p.FallbackUsed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Project{}, ErrNotFound
 	}

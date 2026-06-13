@@ -50,6 +50,7 @@ function WorkbenchPage() {
 
   // run 返回的 fallbackUsed 常驻 WarnStrip。
   const [fallbackUsed, setFallbackUsed] = useState(false)
+  const showFallback = fallbackUsed || (project?.fallbackUsed ?? false)
   const run = useRun(id)
   const cancel = useCancel(id)
 
@@ -181,7 +182,7 @@ function WorkbenchPage() {
       timeline={state}
       conn={conn}
       live={!isTerminal(project.status)}
-      fallbackUsed={fallbackUsed || undefined}
+      fallbackUsed={showFallback || undefined}
       canRun={canRun}
       onRun={handleRun}
       onCancel={handleCancel}
