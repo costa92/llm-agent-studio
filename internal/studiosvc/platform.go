@@ -126,7 +126,7 @@ func (p *Platform) ListAdmins(ctx context.Context) ([]PlatformAdmin, error) {
 		`SELECT m.user_id, u.email
 		   FROM auth_membership m
 		   JOIN auth_user u ON u.id = m.user_id
-		  WHERE m.scope_kind = $1 AND m.org_id = $2
+		  WHERE m.scope_kind = $1 AND m.org_id = $2 AND u.deleted_at IS NULL
 		  ORDER BY u.email ASC`, platformScopeKind, platformOrgID)
 	if err != nil {
 		return nil, fmt.Errorf("studiosvc: list platform admins: %w", err)
@@ -217,7 +217,7 @@ func (p *Platform) ListUsers(ctx context.Context) ([]PlatformUser, error) {
 		               WHERE pa.user_id=u.id AND pa.scope_kind='platform' AND pa.org_id='' AND pa.role='admin') AS is_admin,
 		        (SELECT count(DISTINCT m.org_id) FROM auth_membership m
 		           WHERE m.user_id=u.id AND m.scope_kind='org') AS org_count
-		   FROM auth_user u ORDER BY u.email ASC`)
+		   FROM auth_user u WHERE u.deleted_at IS NULL ORDER BY u.email ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("studiosvc: list users: %w", err)
 	}
@@ -239,7 +239,7 @@ func (p *Platform) UserDetail(ctx context.Context, userID string) (UserDetail, e
 	var d UserDetail
 	d.Orgs = make([]UserOrgMembership, 0)
 	err := p.pool.QueryRow(ctx,
-		`SELECT id, email, created_at FROM auth_user WHERE id=$1`, userID).
+		`SELECT id, email, created_at FROM auth_user WHERE id=$1 AND deleted_at IS NULL`, userID).
 		Scan(&d.UserID, &d.Email, &d.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return UserDetail{}, ErrUserNotFound
@@ -278,15 +278,21 @@ func (p *Platform) UserDetail(ctx context.Context, userID string) (UserDetail, e
 	return d, nil
 }
 
-// DeleteUser 删除 auth_user（其 auth_membership 经 FK ON DELETE CASCADE 一并清除）。
-// 无对应行 → ErrUserNotFound。自删/最后一名平台管理员的守护在 handler 层。
+// DeleteUser 软删 auth_user（issue #23 方案 B）：经 authz 的 SoftDeleteUser stamp
+// deleted_at + 撤销该用户全部 refresh session。软删后该用户无法再登录（authz
+// GetUserByEmail 过滤 deleted_at）、在途 refresh cookie 失效；其行与 FK 子表
+// （membership / session）保留，故审计可追溯、projects.created_by 等血缘仍可解析。
+// 已签发的 access token 在 ≤AccessTTL 内仍有效（无状态 JWT 固有残留窗口）。
+//
+// 无对应行 / 已软删 → ErrUserNotFound。自删 / 最后一名平台管理员的守护在 handler 层。
+// 选 B 而非硬删：删后唯一会悬空的是 projects.created_by（assets/generations 无 user
+// 列、不受影响）；软删保留该指针的可解析性，且为合规审计留痕。
 func (p *Platform) DeleteUser(ctx context.Context, userID string) error {
-	tag, err := p.pool.Exec(ctx, `DELETE FROM auth_user WHERE id=$1`, userID)
-	if err != nil {
-		return fmt.Errorf("studiosvc: delete user: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrUserNotFound
+	if err := p.authz.SoftDeleteUser(ctx, userID); err != nil {
+		if errors.Is(err, authzstore.ErrNotFound) {
+			return ErrUserNotFound
+		}
+		return fmt.Errorf("studiosvc: soft-delete user: %w", err)
 	}
 	return nil
 }
@@ -296,7 +302,7 @@ func (p *Platform) DeleteUser(ctx context.Context, userID string) error {
 func (p *Platform) userIDByEmail(ctx context.Context, email string) (string, error) {
 	var uid string
 	err := p.pool.QueryRow(ctx,
-		`SELECT id FROM auth_user WHERE email = $1`, normalizePlatformEmail(email)).Scan(&uid)
+		`SELECT id FROM auth_user WHERE email = $1 AND deleted_at IS NULL`, normalizePlatformEmail(email)).Scan(&uid)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrUserNotFound
 	}
