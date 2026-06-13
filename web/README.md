@@ -33,6 +33,18 @@ pnpm preview        # 本地预览 dist/
 
 本地联调时先起活后端（PG + `JWT_SECRET` + `HTTP_ADDR=:8083`），再 `pnpm dev`，浏览器访问 dev server 即可登录联调。
 
+## 测试 / 演示账号（本地开发）
+
+> ⚠️ 仅用于**本地开发 / 演示**。下列账号**不会自动种子**到全新数据库——它们是开发实例里手工建/引导出来的。正式获取账号的方式是 **自助注册**（前端 `/register` 或 `POST /api/auth/register`）。密码是非机密的演示值，**切勿用于生产**。
+
+| 账号 | 密码 | 角色 | 说明 |
+|---|---|---|---|
+| `demo@studio.com` | `demo12345` | 普通组织管理员 | 走 组织→模型配置→项目→生成→审核→存储 全流程 |
+| `pfadmin@s.com` | `pfpass1234` | **平台超级管理员** | 登录后见「平台」入口（全局存储 + 全部组织 + 平台管理员管理） |
+
+- **自定义普通账号**：在 `/register` 用任意邮箱注册即自动登录，并可新建组织。
+- **自定义平台管理员**：把邮箱加入 `studiod` 的 `PLATFORM_ADMIN_EMAILS`（逗号分隔）环境变量后，用该邮箱注册即自动获授平台管理员。
+
 ## Auth 机制（与 `llm-agent-authz` 对齐）
 
 - **access token**：登录返回的 `access_token` 存在**内存**（模块级变量，**不进 localStorage，防 XSS**），每个 API 请求注入 `Authorization: Bearer <token>` 头。
