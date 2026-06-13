@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react"
+import { Eye, EyeOff } from "lucide-react"
 import { toast } from "sonner"
 import {
   Dialog,
@@ -199,6 +200,7 @@ function GlobalMailSection() {
   const [enabled, setEnabled] = useState(true)
 
   const [initialized, setInitialized] = useState(false)
+  const [showSmtpPass, setShowSmtpPass] = useState(false)
 
   // Initialize form when config data is loaded
   if (mailConfig.data && !initialized) {
@@ -316,14 +318,23 @@ function GlobalMailSection() {
                   <span className="ml-2 text-[11px] text-amber">(已配置加密密码)</span>
                 )}
               </Label>
-              <input
-                id="smtp-pass"
-                type="password"
-                placeholder={mailConfig.data?.hasSecret ? "•••••••• (留空保留原密码)" : "SMTP 密码"}
-                value={smtpPass}
-                onChange={(e) => setSmtpPass(e.target.value)}
-                className={fieldClass}
-              />
+              <div className="relative flex items-center w-full">
+                <input
+                  id="smtp-pass"
+                  type={showSmtpPass ? "text" : "password"}
+                  placeholder={mailConfig.data?.hasSecret ? "•••••••• (留空保留原密码)" : "SMTP 密码"}
+                  value={smtpPass}
+                  onChange={(e) => setSmtpPass(e.target.value)}
+                  className={`${fieldClass} w-full pr-10`}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowSmtpPass(!showSmtpPass)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-text-3 hover:text-text-1 focus:outline-none"
+                >
+                  {showSmtpPass ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
             </div>
           </div>
 
@@ -942,12 +953,16 @@ function UserResetPasswordDialog({
 }) {
   const [pwd, setPwd] = useState("")
   const [confirm, setConfirm] = useState("")
+  const [showNewPwd, setShowNewPwd] = useState(false)
+  const [showConfirmPwd, setShowConfirmPwd] = useState(false)
 
   // 关闭弹窗（取消或 outside-click）时清空两个 input，避免残留密文。
   function handleOpenChange(open: boolean) {
     if (!open) {
       setPwd("")
       setConfirm("")
+      setShowNewPwd(false)
+      setShowConfirmPwd(false)
       onClose()
     }
   }
@@ -969,26 +984,46 @@ function UserResetPasswordDialog({
         <div className="flex flex-col gap-3">
           <div className="flex flex-col gap-1">
             <Label htmlFor="reset-pwd-new">新密码（≥8 字符）</Label>
-            <Input
-              id="reset-pwd-new"
-              type="password"
-              autoComplete="new-password"
-              value={pwd}
-              onChange={(e) => setPwd(e.target.value)}
-            />
+            <div className="relative w-full">
+              <Input
+                id="reset-pwd-new"
+                type={showNewPwd ? "text" : "password"}
+                autoComplete="new-password"
+                value={pwd}
+                onChange={(e) => setPwd(e.target.value)}
+                className="pr-10"
+              />
+              <button
+                type="button"
+                onClick={() => setShowNewPwd(!showNewPwd)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-text-3 hover:text-text-1 focus:outline-none"
+              >
+                {showNewPwd ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
             {tooShort && (
               <p className="text-[12px] text-red-500">至少 8 个字符</p>
             )}
           </div>
           <div className="flex flex-col gap-1">
             <Label htmlFor="reset-pwd-confirm">确认新密码</Label>
-            <Input
-              id="reset-pwd-confirm"
-              type="password"
-              autoComplete="new-password"
-              value={confirm}
-              onChange={(e) => setConfirm(e.target.value)}
-            />
+            <div className="relative w-full">
+              <Input
+                id="reset-pwd-confirm"
+                type={showConfirmPwd ? "text" : "password"}
+                autoComplete="new-password"
+                value={confirm}
+                onChange={(e) => setConfirm(e.target.value)}
+                className="pr-10"
+              />
+              <button
+                type="button"
+                onClick={() => setShowConfirmPwd(!showConfirmPwd)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-text-3 hover:text-text-1 focus:outline-none"
+              >
+                {showConfirmPwd ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
             {mismatch && (
               <p className="text-[12px] text-red-500">两次输入不一致</p>
             )}
