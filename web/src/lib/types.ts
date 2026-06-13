@@ -151,6 +151,7 @@ export interface ModelConfig {
   baseUrl: string
   // 是否已为本配置写入 per-config API key；false → 回退服务端 env 密钥。
   hasApiKey: boolean
+  apiKey?: string
   params?: Record<string, unknown>
 }
 
@@ -333,6 +334,7 @@ export interface MailConfig {
   smtpHost: string
   smtpPort: number
   smtpUser: string
+  smtpPass?: string
   smtpFrom: string
   enabled: boolean
   hasSecret: boolean

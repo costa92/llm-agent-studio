@@ -207,7 +207,7 @@ function GlobalMailSection() {
     setSmtpUser(mailConfig.data.smtpUser || "")
     setSmtpFrom(mailConfig.data.smtpFrom || "")
     setEnabled(mailConfig.data.enabled ?? true)
-    setSmtpPass("")
+    setSmtpPass(mailConfig.data.smtpPass || "")
     setInitialized(true)
   }
 

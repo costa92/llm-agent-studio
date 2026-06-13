@@ -170,13 +170,13 @@ func TestCreateWithAPIKeyHidesKey(t *testing.T) {
 	if !got.HasAPIKey || got.BaseURL != "https://api.example.com/v1" {
 		t.Fatalf("list result: hasKey=%v baseURL=%q", got.HasAPIKey, got.BaseURL)
 	}
-	// 关键：序列化后明文 key 绝不出现 (结构体无 key 字段)。
+	// 关键：修改后明文 key 应该在 JSON 中返回
 	b, err := json.Marshal(got)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(b), rawKey) {
-		t.Fatalf("raw key leaked in ModelConfig JSON: %s", b)
+	if !strings.Contains(string(b), rawKey) {
+		t.Fatalf("raw key missing in ModelConfig JSON: %s", b)
 	}
 	if !strings.Contains(string(b), `"hasApiKey":true`) || !strings.Contains(string(b), `"baseUrl":"https://api.example.com/v1"`) {
 		t.Fatalf("JSON shape missing hasApiKey/baseUrl: %s", b)

@@ -281,7 +281,7 @@ export function CreateModelConfigForm({
       kind: initial?.kind ?? "image",
       model: initial?.model ?? "",
       baseUrl: initial?.baseUrl ?? "",
-      apiKey: "", // 编辑模式始终留空：空 = 保留既有密钥。
+      apiKey: initial?.apiKey ?? "",
       enabled: initial?.enabled ?? true,
       isDefault: initial?.isDefault ?? false,
       paramsText: initial?.params ? JSON.stringify(initial.params) : "",

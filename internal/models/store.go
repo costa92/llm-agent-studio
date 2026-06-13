@@ -100,8 +100,7 @@ func Catalog() []CatalogEntry {
 	}
 }
 
-// ModelConfig is a model_configs row returned to clients. 永不暴露 api key：只回
-// BaseURL + HasAPIKey 布尔标记 (解密后的 key 仅 ResolveForOrg 内部可见)。
+// ModelConfig is a model_configs row returned to clients.
 type ModelConfig struct {
 	ID        string          `json:"id"`
 	OrgID     string          `json:"orgId"`
@@ -112,6 +111,7 @@ type ModelConfig struct {
 	IsDefault bool            `json:"isDefault"`
 	BaseURL   string          `json:"baseUrl"`
 	HasAPIKey bool            `json:"hasApiKey"`
+	APIKey    string          `json:"apiKey,omitempty"`
 	Params    json.RawMessage `json:"params,omitempty"`
 }
 
@@ -213,7 +213,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (ModelConfig, error)
 	mc := ModelConfig{
 		ID: newID(), OrgID: in.OrgID, Kind: kind, Provider: in.Provider, Model: in.Model,
 		Enabled: in.Enabled, IsDefault: in.IsDefault, BaseURL: in.BaseURL,
-		HasAPIKey: keyEnc != nil, Params: in.Params,
+		HasAPIKey: keyEnc != nil, APIKey: in.APIKey, Params: in.Params,
 	}
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO model_configs (id, org_id, kind, provider, model, enabled, is_default, base_url, api_key_enc, params_json)
@@ -286,15 +286,23 @@ func (s *Store) Update(ctx context.Context, id, orgID string, in UpdateInput) (M
 	if tag.RowsAffected() == 0 {
 		return ModelConfig{}, ErrNotFound
 	}
-	// 重新读出以拿到准确的 has_api_key (keep 时无法从入参推断)。
+	// 重新读出以拿到准确的 has_api_key 以及明文 apiKey。
 	var mc ModelConfig
+	var keyEncReload []byte
 	if err := tx.QueryRow(ctx,
 		`SELECT id, org_id, kind, provider, model, enabled, is_default,
-		        COALESCE(base_url,''), (api_key_enc IS NOT NULL) AS has_api_key, params_json
+		        COALESCE(base_url,''), api_key_enc, params_json
 		 FROM model_configs WHERE id=$1 AND org_id=$2`, id, orgID).
 		Scan(&mc.ID, &mc.OrgID, &mc.Kind, &mc.Provider, &mc.Model, &mc.Enabled, &mc.IsDefault,
-			&mc.BaseURL, &mc.HasAPIKey, &mc.Params); err != nil {
+			&mc.BaseURL, &keyEncReload, &mc.Params); err != nil {
 		return ModelConfig{}, fmt.Errorf("models: reload: %w", err)
+	}
+	mc.HasAPIKey = len(keyEncReload) > 0
+	if len(keyEncReload) > 0 && s.box.Enabled() {
+		dec, err := s.box.Decrypt(keyEncReload)
+		if err == nil {
+			mc.APIKey = string(dec)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return ModelConfig{}, err
@@ -321,7 +329,7 @@ func (s *Store) Delete(ctx context.Context, id, orgID string) error {
 func (s *Store) ListByOrg(ctx context.Context, orgID string) ([]ModelConfig, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, org_id, kind, provider, model, enabled, is_default,
-		        COALESCE(base_url,''), (api_key_enc IS NOT NULL) AS has_api_key, params_json
+		        COALESCE(base_url,''), api_key_enc, params_json
 		 FROM model_configs WHERE org_id=$1 ORDER BY created_at DESC`, orgID)
 	if err != nil {
 		return nil, err
@@ -330,9 +338,17 @@ func (s *Store) ListByOrg(ctx context.Context, orgID string) ([]ModelConfig, err
 	out := make([]ModelConfig, 0)
 	for rows.Next() {
 		var mc ModelConfig
+		var keyEnc []byte
 		if err := rows.Scan(&mc.ID, &mc.OrgID, &mc.Kind, &mc.Provider, &mc.Model, &mc.Enabled, &mc.IsDefault,
-			&mc.BaseURL, &mc.HasAPIKey, &mc.Params); err != nil {
+			&mc.BaseURL, &keyEnc, &mc.Params); err != nil {
 			return nil, err
+		}
+		mc.HasAPIKey = len(keyEnc) > 0
+		if len(keyEnc) > 0 && s.box.Enabled() {
+			dec, err := s.box.Decrypt(keyEnc)
+			if err == nil {
+				mc.APIKey = string(dec)
+			}
 		}
 		out = append(out, mc)
 	}
