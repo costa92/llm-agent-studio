@@ -224,6 +224,61 @@ describe("WorkbenchView (production timeline)", () => {
     await user.click(screen.getByRole("button", { name: /去审核/ }))
     expect(onOpenReview).toHaveBeenCalledTimes(1)
   })
+
+  // 失败态徽标：project.status='failed' + run_done 到达时，绝不能继续显示「待审核 · 0」
+  // ——会误导用户以为有 0 个待审资产。必须显示项目态的「失败」徽标 + danger 变体。
+  it("shows the 失败 badge (rejected) when project.status is failed, NOT 待审核 · 0", () => {
+    const state = foldEvents(initialTimeline(), [
+      frame(1, "planner_started"),
+      frame(10, "todo_ready", "a1", { type: "asset" }),
+      frame(11, "todo_started", "a1", { type: "asset" }),
+      frame(12, "todo_failed", "a1", { error: "boom" }),
+      frame(99, "run_done"),
+    ])
+    render(
+      <WorkbenchView
+        project={makeProject({ status: "failed" })}
+        timeline={state}
+        conn="connected"
+        live={false}
+        canRun={false}
+        onRun={vi.fn()}
+        onCancel={vi.fn()}
+        isRunning={false}
+      />,
+    )
+    expect(screen.getByText("失败")).toBeInTheDocument()
+    // 错误徽标绝不能再说「待审核」。
+    expect(screen.queryByText(/待审核/)).not.toBeInTheDocument()
+  })
+
+  // 错误条：任一 todo_failed 帧的 payload.error 必须在工作台显眼位置（红色条）出现，
+  // 而不是只埋在左侧事件日志里——用户报告的「看不到错误原因」就是缺这个。
+  it("renders an error strip with the last payload.error when any todo failed", () => {
+    const errMsg = "worker: blob put: blob.github: get sha: Get ...: EOF"
+    const state = foldEvents(initialTimeline(), [
+      frame(1, "planner_started"),
+      frame(10, "todo_ready", "a1", { type: "asset" }),
+      frame(11, "todo_started", "a1", { type: "asset" }),
+      frame(12, "todo_failed", "a1", { error: errMsg }),
+      frame(99, "run_done"),
+    ])
+    render(
+      <WorkbenchView
+        project={makeProject({ status: "failed" })}
+        timeline={state}
+        conn="connected"
+        live={false}
+        canRun={false}
+        onRun={vi.fn()}
+        onCancel={vi.fn()}
+        isRunning={false}
+      />,
+    )
+    // 红色错误条（role=alert，区别于 amber 的 WarnStrip role=status）。
+    const alert = screen.getByRole("alert")
+    expect(alert).toHaveTextContent(errMsg)
+  })
 })
 
 describe("ScriptView", () => {

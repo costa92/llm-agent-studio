@@ -375,6 +375,12 @@ export function StorageConfigForm({ initial, onSubmit, isOrgScope }: StorageConf
               {...register("endpoint")}
               className={fieldClass}
             />
+            <p className="text-[11.5px] text-text-3">
+              这是 <b>GitHub API 根</b>（默认 https://api.github.com ；GHE 用
+              https://&lt;host&gt;[/&lt;subpath&gt;]/api/v3）。<b>不要填</b>{" "}
+              jsDelivr（cdn.jsdelivr.net）或 raw.githubusercontent.com
+              等 CDN / 直链主机——它们不是 API，写入会立刻 EOF，asset 6/6 跑挂。
+            </p>
           </div>
 
           <p className="text-[11.5px] text-text-3">

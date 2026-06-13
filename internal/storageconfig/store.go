@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	blobgithub "github.com/costa92/llm-agent-studio/internal/blob/github"
 	"github.com/costa92/llm-agent-studio/internal/secretbox"
 )
 
@@ -105,6 +106,14 @@ func validate(in UpsertInput) error {
 		// (Secret) 必填性留给 adapter New (keep-blank 编辑语义在 store 层成立)。
 		if in.Bucket == "" || in.AccessKeyID == "" {
 			return fmt.Errorf("storageconfig: mode %q requires repo (bucket) and owner (accessKeyId)", in.Mode)
+		}
+		// Endpoint 在 github 模式下被映射为 GitHub API 根（adapter New 的 APIBase）。
+		// 真实生产事故：把 jsDelivr CDN / raw.githubusercontent 误填进 Endpoint，blob
+		// Put 前 getSHA 直接 EOF——挡在 save 之前比静默 fallback 到 localfs 默认好。
+		if in.Endpoint != "" {
+			if err := blobgithub.ValidateAPIBase(in.Endpoint); err != nil {
+				return fmt.Errorf("storageconfig: %w", err)
+			}
 		}
 	case "localfs":
 		// 本地盘无需 bucket/endpoint。

@@ -107,6 +107,24 @@ describe("StorageConfigForm mode-conditional fields", () => {
     expect(onSubmit).not.toHaveBeenCalled()
   })
 
+  // 真实生产事故：把 jsDelivr CDN / raw.githubusercontent 直链误填进 github 模式的「API base」
+  // ——后端在它后面拼 /repos/.../contents/...，URL 形态错位 + CDN 不可写，asset 6/6 失败。
+  // helperText 必须把"这是 GitHub API 根，不是 CDN/直链"显式说清，且接受/拒绝模式要可预期。
+  it("renders the github API-base helper text calling out GitHub API root (not CDN/raw)", async () => {
+    const user = userEvent.setup()
+    render(<StorageConfigForm initial={null} onSubmit={vi.fn()} isOrgScope />)
+    await user.selectOptions(screen.getByLabelText("存储类型 (mode)"), "github")
+    // 在 API base input 之后那一条 helper 提示，必须同时含 "API 根" 与
+    // "jsDelivr / raw.githubusercontent" 三个明确信号——单点关键词拼写错了都能抓到。
+    const apiInput = screen.getByLabelText(/API base/)
+    const hint = apiInput.parentElement?.querySelector("p")
+    expect(hint).not.toBeNull()
+    const text = hint?.textContent ?? ""
+    expect(text).toMatch(/API 根/)
+    expect(text).toMatch(/jsDelivr/)
+    expect(text).toMatch(/raw\.githubusercontent/)
+  })
+
   it("submits localfs with an empty secret (no object fields required)", async () => {
     const onSubmit = vi.fn().mockResolvedValue(CREATED)
     const user = userEvent.setup()

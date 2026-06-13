@@ -156,10 +156,14 @@ function logFor(frame: SseFrame): LogLine {
       text = "asset_prescreened · 预筛"
       emphasis = "S4"
       break
-    case "todo_failed":
-      text = `失败：${t ?? frame.todoId} · 退避重试`
+    case "todo_failed": {
+      // 真实后端 payload 只含 {error}，不带 type——但错误文本必须透给用户：
+      // 工作台常驻错误条 + 日志都用它，否则 EOF/401/配额 等真实原因藏起来。
+      const err = payloadStr(frame, "error")
+      text = err ? `失败：${err}` : `失败：${frame.todoId} · 退避重试`
       emphasis = t ? (TYPE_TO_STAGE[t] ?? (t === "asset" ? "S4" : undefined)) : undefined
       break
+    }
     case "run_done":
       text = "运行结束"
       break
@@ -171,10 +175,12 @@ function logFor(frame: SseFrame): LogLine {
   return { seq: frame.seq, kind: frame.kind, text, emphasis }
 }
 
-// 全部 asset pip done → S4 done、S5 pending。
+// 全部 asset pip done → S4 done、S5 pending；全部 failed → S4/S5 failed。
+// 漏掉 all-failed 会让失败 run 与徽标「待审核 · 0」自相矛盾（用户在生产环境撞过）。
 function settleAssetStage(state: TimelineState): TimelineState {
   if (state.pipCount === 0) return state
-  const allDone = state.pips.length === state.pipCount && state.pips.every((p) => p.status === "done")
+  const allDone =
+    state.pips.length === state.pipCount && state.pips.every((p) => p.status === "done")
   if (allDone) {
     return {
       ...state,
@@ -182,6 +188,18 @@ function settleAssetStage(state: TimelineState): TimelineState {
         patchStage(state.stages, "S4", { status: "done", linked: true }),
         "S5",
         { status: "pending" },
+      ),
+    }
+  }
+  const allFailed =
+    state.pips.length === state.pipCount && state.pips.every((p) => p.status === "failed")
+  if (allFailed) {
+    return {
+      ...state,
+      stages: patchStage(
+        patchStage(state.stages, "S4", { status: "failed" }),
+        "S5",
+        { status: "failed" },
       ),
     }
   }
@@ -316,6 +334,8 @@ export function reduceTimeline(state: TimelineState, frame: SseFrame): TimelineS
           ...next,
           pips: patchPip(next.pips, frame.todoId, { status: "failed" }),
         }
+        // all-failed settle：所有 asset pip 都失败时让 S4/S5 落 failed（见 settleAssetStage 注释）。
+        next = settleAssetStage(next)
       } else {
         const failedStage = next.stages.find((s) => s.todoId === frame.todoId)
         if (failedStage) {

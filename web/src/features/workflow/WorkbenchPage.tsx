@@ -7,6 +7,7 @@ import { SlateBar } from "@/components/studio/SlateBar"
 import { TimelineStage } from "@/components/studio/TimelineStage"
 import { PipGroup } from "@/components/studio/PipGroup"
 import { WarnStrip } from "@/components/studio/WarnStrip"
+import { ErrorStrip } from "@/components/studio/ErrorStrip"
 import type { Project } from "@/lib/types"
 import type { Pip, StageId, TimelineState } from "@/lib/timeline"
 import type { SseConnState } from "./useProductionTimeline"
@@ -80,13 +81,22 @@ export function WorkbenchView({
     timeline
 
   // run_done（或项目 review 态）→ 进入待审核：徽标改「待审核 · N」+「去审核」CTA。
+  // 终止失败态（failed/canceled）必须以项目态徽标优先覆盖——run_done 后徽标原本会改口说
+  // 「待审核 · 0」，误导用户以为有 0 个待审资产（实际是 6/6 跑挂、没东西可审）。
   const readyForReview = runStatus === "done" || project.status === "review"
-  const badge =
-    runStatus === "done" ? (
-      <Badge variant="pending">待审核 · {pendingAssetCount}</Badge>
-    ) : (
-      <Badge variant={statusVariant(project.status)}>{statusLabel(project.status)}</Badge>
-    )
+  const showReviewBadge =
+    runStatus === "done" && project.status !== "failed" && project.status !== "canceled"
+  const badge = showReviewBadge ? (
+    <Badge variant="pending">待审核 · {pendingAssetCount}</Badge>
+  ) : (
+    <Badge variant={statusVariant(project.status)}>{statusLabel(project.status)}</Badge>
+  )
+
+  // 错误条：从 timeline.log 取最后一条 todo_failed（reducer 已在文案里嵌入 payload.error），
+  // 红色常驻——把真实原因从「埋在日志里」抬到「工作台一眼可见」。
+  const lastFailedLine = [...timeline.log]
+    .reverse()
+    .find((l) => l.kind === "todo_failed")
 
   return (
     <div className="flex h-full flex-col">
@@ -147,6 +157,14 @@ export function WorkbenchView({
           {fallbackUsed && (
             <section className="mb-5">
               <WarnStrip>⚠ Planner 输出畸形，已回落默认管线（fallback_used）</WarnStrip>
+            </section>
+          )}
+          {lastFailedLine && (
+            <section className="mb-5">
+              <ErrorStrip>
+                <b className="mr-1">运行出错：</b>
+                {lastFailedLine.text}
+              </ErrorStrip>
             </section>
           )}
           <section className="mb-5">

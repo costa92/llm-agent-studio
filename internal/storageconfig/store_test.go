@@ -261,6 +261,42 @@ func TestValidationBeforeDBAccess(t *testing.T) {
 	}
 }
 
+// 真实生产事故：用户把 jsDelivr CDN 链接（costa92/article-images 的缓存前缀）填进
+// github 模式的 Endpoint 字段——后端在它后面拼 /repos/.../contents/...，URL 形态错位 +
+// CDN 不可写，asset 6/6 失败。save 校验必须早期拒绝（而不是落库后等 worker 默默 fallback）。
+func TestGithubEndpointMustLookLikeAPIRoot(t *testing.T) {
+	gh := func(endpoint string) UpsertInput {
+		return UpsertInput{
+			Mode: "github", AccessKeyID: "octo", Bucket: "assets",
+			Endpoint: endpoint, Enabled: true,
+		}
+	}
+	// 这些必拒（生产已知错值 + 明显不是 API 根的形态）。
+	for _, bad := range []string{
+		"https://cdn.jsdelivr.net/gh/costa92/article-images",
+		"https://raw.githubusercontent.com",
+		"https://cdn.example.com",
+		"http://api.github.com",
+		"not-a-url",
+	} {
+		if err := validate(gh(bad)); err == nil {
+			t.Fatalf("github endpoint=%q must be rejected", bad)
+		}
+	}
+	// 这些必过：默认空（走 api.github.com）+ 显式默认 + GHE 形态。
+	for _, ok := range []string{
+		"",
+		"https://api.github.com",
+		"https://api.github.com/",
+		"https://ghe.example.com/api/v3",
+		"https://ghe.example.com/github/api/v3",
+	} {
+		if err := validate(gh(ok)); err != nil {
+			t.Fatalf("github endpoint=%q should pass validation, got: %v", ok, err)
+		}
+	}
+}
+
 func mustDisabledBox(t *testing.T) *secretbox.Box {
 	t.Helper()
 	b, err := secretbox.New("")
