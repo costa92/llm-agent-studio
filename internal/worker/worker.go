@@ -61,13 +61,17 @@ type Config struct {
 	MaxConcurrentGen int // global concurrent asset-todo cap; 0 = unlimited
 
 	// M4 async engine knobs (spec §5.6/§9.4).
-	MaxConcurrentVideo int           // video submit-admission + fetch cap; 0 = unlimited
-	MaxConcurrentAudio int           // audio submit-admission + fetch cap; 0 = unlimited
-	PollBackoff        time.Duration // async poll base backoff (default 5s)
-	MaxPollBackoff     time.Duration // poll backoff cap (default 30s)
-	MaxPollAttempts    int           // per-asset poll budget (default 60)
-	LeaseRenewInterval time.Duration // heartbeat renewLease period; 0 = disabled
-	VideoFetcher       Puller        // SSRF-safe video/audio result puller; nil → required at poll-done with URL-only result (T8)
+	MaxConcurrentVideo int // global video submit-admission + fetch cap; 0 = unlimited
+	MaxConcurrentAudio int // global audio submit-admission + fetch cap; 0 = unlimited
+	// per-org submit-admission 层 (issue #21)：叠加在全局 MaxConcurrentVideo/Audio 之上的
+	// per-org 软上限。两层任一达限即 hold submit。0 = 该层不限。
+	MaxConcurrentVideoPerOrg int           // per-org video submit-admission cap; 0 = unlimited
+	MaxConcurrentAudioPerOrg int           // per-org audio submit-admission cap; 0 = unlimited
+	PollBackoff              time.Duration // async poll base backoff (default 5s)
+	MaxPollBackoff           time.Duration // poll backoff cap (default 30s)
+	MaxPollAttempts          int           // per-asset poll budget (default 60)
+	LeaseRenewInterval       time.Duration // heartbeat renewLease period; 0 = disabled
+	VideoFetcher             Puller        // SSRF-safe video/audio result puller; nil → required at poll-done with URL-only result (T8)
 
 	Lease       time.Duration    // default 120s
 	MaxAttempts int              // default 3
@@ -963,17 +967,17 @@ func (w *Worker) runAssetAsync(ctx, cctx context.Context, c claimed, regenAssetI
 	}
 
 	// SUBMIT phase. Admission cap (B2): hold a NEW submit when in-flight jobs for
-	// this kind are at the cap (poll re-claims never reach here — they short-
-	// circuited above). Held submits reschedule WITHOUT spending attempts AND
-	// WITHOUT burning poll budget (I3): a cap-hold is not a poll, so pass
-	// bumpPoll=false — poll_attempts stays put (spec §5.3).
-	if limit := w.kindCap(kind); limit > 0 {
-		if n, cerr := w.cfg.Assets.CountInFlightByKind(ctx, kind); cerr == nil && n >= limit {
-			if _, rerr := w.reschedulePoll(ctx, c.todoID, false, w.cfg.PollBackoff); rerr != nil {
-				return "", rerr
-			}
-			return "", errRescheduled
+	// this kind are at a cap (poll re-claims never reach here — they short-
+	// circuited above). Two layers (issue #21, 双层): a GLOBAL per-kind cap
+	// (process/OOM-capacity soft floor) AND a per-ORG per-kind cap (noisy-neighbor
+	// fairness). Either layer at its limit holds the submit. Held submits reschedule
+	// WITHOUT spending attempts AND WITHOUT burning poll budget (I3): a cap-hold is
+	// not a poll, so pass bumpPoll=false — poll_attempts stays put (spec §5.3).
+	if w.submitCapHeld(ctx, c.projectID, kind) {
+		if _, rerr := w.reschedulePoll(ctx, c.todoID, false, w.cfg.PollBackoff); rerr != nil {
+			return "", rerr
 		}
+		return "", errRescheduled
 	}
 
 	// Build the prompt + submit with a deterministic idempotency key (B1).
@@ -999,7 +1003,8 @@ func (w *Worker) runAssetAsync(ctx, cctx context.Context, c claimed, regenAssetI
 	return "", errRescheduled
 }
 
-// kindCap returns the configured submit-admission cap for a kind (0 = unlimited).
+// kindCap returns the configured GLOBAL submit-admission cap for a kind
+// (0 = unlimited).
 func (w *Worker) kindCap(kind string) int {
 	switch kind {
 	case "video":
@@ -1008,6 +1013,42 @@ func (w *Worker) kindCap(kind string) int {
 		return w.cfg.MaxConcurrentAudio
 	}
 	return 0
+}
+
+// kindCapPerOrg returns the configured per-ORG submit-admission cap for a kind
+// (0 = unlimited). Layered ON TOP OF kindCap (global) — issue #21.
+func (w *Worker) kindCapPerOrg(kind string) int {
+	switch kind {
+	case "video":
+		return w.cfg.MaxConcurrentVideoPerOrg
+	case "audio":
+		return w.cfg.MaxConcurrentAudioPerOrg
+	}
+	return 0
+}
+
+// submitCapHeld reports whether a NEW submit for kind must be held because either
+// the GLOBAL per-kind in-flight cap OR the per-ORG per-kind in-flight cap is at
+// its limit (issue #21 dual-layer admission). Both layers are SOFT (count-then-act
+// TOCTOU, same as before); the org 24h quota advisory-lock remains the only HARD,
+// billing-sensitive cap. Count errors fail OPEN (return false): a transient count
+// failure must not wedge the queue — letting the submit through at worst overshoots
+// a soft cap by one.
+func (w *Worker) submitCapHeld(ctx context.Context, projectID, kind string) bool {
+	if limit := w.kindCap(kind); limit > 0 {
+		if n, err := w.cfg.Assets.CountInFlightByKind(ctx, kind); err == nil && n >= limit {
+			return true
+		}
+	}
+	if limit := w.kindCapPerOrg(kind); limit > 0 {
+		// Resolve org lazily — only the per-org layer needs it, and only when enabled.
+		if orgID, oerr := w.cfg.Projects.OrgIDForProject(ctx, projectID); oerr == nil {
+			if n, err := w.cfg.Assets.CountInFlightByKindOrg(ctx, kind, orgID); err == nil && n >= limit {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // submitTx commits {advisory-lock quota + SetSubmitted + ledger upsert +

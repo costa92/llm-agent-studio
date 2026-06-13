@@ -311,7 +311,7 @@ func (s *Store) SetPrescreen(ctx context.Context, id string, score int, flags []
 // rather than creating a duplicate). Relies on the assets_todo_uniq partial
 // unique index; the ON CONFLICT + re-read closes the concurrent-insert window.
 // TodoID MUST be non-empty (fan-out/async submit only — regenerate carries
-// todo_id='' and uses the fill-in-place path, never this).
+// todo_id=” and uses the fill-in-place path, never this).
 func (s *Store) GetOrCreateForTodo(ctx context.Context, in CreateInput) (Asset, error) {
 	if in.TodoID == "" {
 		return Asset{}, fmt.Errorf("assets: GetOrCreateForTodo requires a non-empty todo_id")
@@ -371,6 +371,20 @@ func (s *Store) CountInFlightByKind(ctx context.Context, kind string) (int, erro
 	if err := s.pool.QueryRow(ctx,
 		`SELECT count(*) FROM assets WHERE status='submitted' AND type=$1`, kind).Scan(&n); err != nil {
 		return 0, fmt.Errorf("assets: count in-flight: %w", err)
+	}
+	return n, nil
+}
+
+// CountInFlightByKindOrg is CountInFlightByKind scoped to one org (issue #21
+// per-org admission layer): counts submitted assets of a kind whose project
+// belongs to orgID. Joins projects for org_id (assets carry org only transitively
+// via project_id). Reuses assets_status_idx + projects_org_idx.
+func (s *Store) CountInFlightByKindOrg(ctx context.Context, kind, orgID string) (int, error) {
+	var n int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM assets a JOIN projects p ON a.project_id=p.id
+		 WHERE a.status='submitted' AND a.type=$1 AND p.org_id=$2`, kind, orgID).Scan(&n); err != nil {
+		return 0, fmt.Errorf("assets: count in-flight by org: %w", err)
 	}
 	return n, nil
 }

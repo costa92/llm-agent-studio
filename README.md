@@ -101,8 +101,10 @@ GOWORK=off go test ./...
 | `POLL_BACKOFF` | `5s` | 异步轮询基础退避 |
 | `MAX_POLL_BACKOFF` | `30s` | 轮询退避上限 |
 | `MAX_POLL_ATTEMPTS` | `60` | 单资产轮询预算（独立于失败重试 `MaxAttempts`） |
-| `MAX_CONCURRENT_VIDEO` | `0`（不限） | 本地 video 拉回并发软上限（OOM 天花板维度） |
-| `MAX_CONCURRENT_AUDIO` | `0`（不限） | 本地 audio 拉回并发软上限 |
+| `MAX_CONCURRENT_VIDEO` | `0`（不限） | **跨 org 全局** video 软上限（兼作本地拉回 OOM 天花板 + submit-admission 在途上限） |
+| `MAX_CONCURRENT_AUDIO` | `0`（不限） | **跨 org 全局** audio 软上限（同上） |
+| `MAX_CONCURRENT_VIDEO_PER_ORG` | `0`（不限） | **per-org** video submit-admission 软上限（issue #21 双层：叠加在全局之上，两道都过才允许 submit） |
+| `MAX_CONCURRENT_AUDIO_PER_ORG` | `0`（不限） | **per-org** audio submit-admission 软上限（同上） |
 | `LEASE_RENEW_INTERVAL` | `40s` | 租约续约心跳间隔（强制 < `WORKER_LEASE`） |
 | `VIDEO_FETCH_MAX_BYTES` | `536870912`（512MB） | video/audio 结果拉回硬上限（全量入内存） |
 | `RUNWAY_API_KEY` / `KLING_API_KEY` / `TTS_API_KEY` | 空 | key-gated 真实适配器；未配 key → 不注册 → 不被解析（Veo 复用 `GOOGLE_API_KEY`） |
@@ -113,7 +115,7 @@ GOWORK=off go test ./...
 - **取消保留 pending_acceptance 资产**（决策）：已花真实成本的待审资产在项目取消后仍可 accept/reject；只有在途 `generating` 资产被终态化为 `canceled`。
 - **取消竞态已知窗口**（决策，worker discard 路径代码内有注释）：cancel 恰落在 `SetBlob` 与 `MarkDone` 之间时，`runAsset` 已完整跑完——该次生成成本已入账（有意：钱已实际花出），且 `asset_generated` SSE 事件（status=pending_acceptance）可能先于资产被翻转为 `canceled` 发出，订阅端可能短暂看到随后即被取消的资产。
 - **run 内资产状态与账本的顺序窗口**（已知顺序约束，T15 执行中浮现）：`runAsset` 先 `SetBlob` 把资产行写到 `pending_acceptance`，**再** `RecordPriced` 提交 generation 账本行。因此观察到 `pending_acceptance` 的调用方不能假设该次生成的成本/配额账本已更新——配额/成本相对资产状态是**最终一致**的（窗口仅一次 runAsset 内的两步之间）。M3 不改代码，仅记为已知约束。
-- **org 级并发 run 上限**：spec §12 提及 org 级并发 run 上限；M3 交付的全局 `MAX_CONCURRENT_GENERATIONS` + org 24h 生成配额已覆盖 M3 的滥用面。M4 补充了 submit-admission 在途上限（按 kind 数 `submitted` 资产）+ 按 kind 本地并发软上限；真正的「per-org 并发 run」按 org 计数记账仍未做（现有 org 24h 硬配额 + advisory-lock submit 串行已覆盖 billing 滥用面）。
+- **org 级并发 run 上限**：spec §12 提及 org 级并发 run 上限；M3 交付的全局 `MAX_CONCURRENT_GENERATIONS` + org 24h 生成配额已覆盖 M3 的滥用面。M4 补充了 submit-admission 在途上限（按 kind 数 `submitted` 资产）+ 按 kind 本地并发软上限；真正的「per-org 并发 run」按 org 计数记账仍未做（现有 org 24h 硬配额 + advisory-lock submit 串行已覆盖 billing 滥用面）。**issue #21 已补 per-org submit-admission 软上限**（`MAX_CONCURRENT_VIDEO/AUDIO_PER_ORG`，与全局软上限双层叠加），缓解 noisy-neighbor 抢占 provider 在途槽位的公平性问题；仍是软上限（TOCTOU 不变），billing 维度依旧由 org 24h 硬配额兜底。
 - **pricing 无 admin CRUD**（决策）：单价由迁移种子写入，运维经 SQL 调整；成本中心是只读聚合面。
 - **blob 生命周期清扫未做**（spec R8）：被拒/孤儿资产与版本增长依赖后续保留策略 + 后台清扫。
 - **otel metrics 计数器未做**（决策）：spec §12 范围是 trace wrap + span 属性 + 账本双写，traces-only；metrics SDK 是新依赖、留待真实需求。

@@ -199,6 +199,34 @@ func TestSetSubmittedAndAsyncFailedAndInFlightCount(t *testing.T) {
 	}
 }
 
+// TestCountInFlightByKindOrg verifies the per-org admission count (issue #21)
+// isolates orgs: org A's submitted video does NOT inflate org B's per-org count,
+// while the global CountInFlightByKind still sees both.
+func TestCountInFlightByKindOrg(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	s := New(pool)
+	pidA := seedProject(t, pool, "org_perorg_A")
+	pidB := seedProject(t, pool, "org_perorg_B")
+	for _, pid := range []string{pidA, pidB} {
+		a, err := s.GetOrCreateForTodo(ctx, CreateInput{ProjectID: pid, TodoID: "t_" + pid, Type: "video", Status: "generating"})
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if err := s.SetSubmitted(ctx, a.ID, "ext-"+pid); err != nil {
+			t.Fatalf("set submitted: %v", err)
+		}
+	}
+	nA, err := s.CountInFlightByKindOrg(ctx, "video", "org_perorg_A")
+	if err != nil || nA != 1 {
+		t.Fatalf("CountInFlightByKindOrg(video, A) = %d err=%v, want 1", nA, err)
+	}
+	// audio for org A is unaffected by the video submit.
+	if nAudio, err := s.CountInFlightByKindOrg(ctx, "audio", "org_perorg_A"); err != nil || nAudio != 0 {
+		t.Fatalf("CountInFlightByKindOrg(audio, A) = %d err=%v, want 0", nAudio, err)
+	}
+}
+
 func TestSetBlobAdvancesFromSubmitted(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
