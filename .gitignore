@@ -6,3 +6,6 @@ blobdata/
 cmd/studiod/blobdata/
 bin
 .gstack/
+logs/
+mails/
+cmd/studiod/mails/

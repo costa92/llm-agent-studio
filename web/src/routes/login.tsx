@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label"
 import { Button } from "@/components/studio/Button"
 import { useAuth } from "@/app/auth"
 import { sanitizeLoginRedirect } from "@/app/org"
+import { ApiError } from "@/lib/apiClient"
 
 // T6：rhf+zod 登录表单 + AuthProvider 接入。
 // 登录请求体 {email,password}（与 authz 自带测试一致；Go JSON 大小写不敏感）。
@@ -33,6 +34,7 @@ type FormValues = z.infer<typeof formSchema>
 export function LoginForm({ onSuccess }: { onSuccess: () => void }) {
   const { login } = useAuth()
   const [submitError, setSubmitError] = useState<string | null>(null)
+  const navigate = useNavigate()
   const {
     register,
     handleSubmit,
@@ -47,9 +49,16 @@ export function LoginForm({ onSuccess }: { onSuccess: () => void }) {
     try {
       await login(values.email, values.password)
       onSuccess()
-    } catch {
-      // 凭据错（401）或其余失败统一映射为该文案（不区分，避免泄露账号是否存在）。
-      setSubmitError("邮箱或密码错误，请重试")
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 403) {
+        void navigate({
+          to: "/register",
+          search: { email: values.email, verify: true },
+        })
+      } else {
+        // 凭据错（401）或其余失败统一映射为该文案（不区分，避免泄露账号是否存在）。
+        setSubmitError("邮箱或密码错误，请重试")
+      }
     }
   })
 

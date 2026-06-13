@@ -18,9 +18,11 @@ function wrap(node: ReactNode) {
 }
 
 describe("RegisterForm", () => {
-  it("on successful register calls onSuccess", async () => {
+  it("on successful register, verify code, and then calls onSuccess", async () => {
     installFetchRoutes({
       "/api/auth/register": () =>
+        jsonResponse({ verified: false, email: "a@b.com" }),
+      "/api/auth/verify": () =>
         jsonResponse({ access_token: "tok", expires_in: 900 }),
     })
     const onSuccess = vi.fn()
@@ -32,6 +34,13 @@ describe("RegisterForm", () => {
     await user.type(screen.getByLabelText("密码"), "password1")
     await user.type(screen.getByLabelText("确认密码"), "password1")
     await user.click(screen.getByRole("button", { name: /注册/ }))
+
+    // Now it should show the verification screen.
+    expect(await screen.findByText("我们已向您的邮箱发送了验证码：")).toBeInTheDocument()
+
+    // Type the verification code
+    await user.type(screen.getByLabelText("6 位数字验证码"), "123456")
+    await user.click(screen.getByRole("button", { name: /激活并登录/ }))
 
     await waitFor(() => expect(onSuccess).toHaveBeenCalledTimes(1))
   })

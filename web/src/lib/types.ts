@@ -325,3 +325,24 @@ export interface TaskBoardResponse {
   items: TaskRow[]
   counts: Record<string, number>
 }
+
+// Global SMTP Mail configuration
+export interface MailConfig {
+  id: string
+  scope: string
+  smtpHost: string
+  smtpPort: number
+  smtpUser: string
+  smtpFrom: string
+  enabled: boolean
+  hasSecret: boolean
+}
+
+export interface UpsertMailConfigInput {
+  smtpHost: string
+  smtpPort: number
+  smtpUser: string
+  smtpPass?: string
+  smtpFrom: string
+  enabled: boolean
+}

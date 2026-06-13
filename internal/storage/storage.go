@@ -263,10 +263,28 @@ var m6Migrations = []string{
 	`CREATE UNIQUE INDEX IF NOT EXISTS storage_configs_org_uniq ON storage_configs (org_id) WHERE scope='org'`,
 }
 
-// Migrate applies the M1 + M2 + M3 + M4 + M5 + M6 migrations in order. Idempotent.
+// m7Migrations 建 mail_configs (global SMTP 邮件发送配置)。secret_enc BYTEA
+// 存放加密后的 SMTP 密码，scope='global' 局部唯一索引保证系统仅一份全局设置。
+var m7Migrations = []string{
+	`CREATE TABLE IF NOT EXISTS mail_configs (
+		id TEXT PRIMARY KEY,
+		scope TEXT NOT NULL,
+		smtp_host TEXT NOT NULL DEFAULT '',
+		smtp_port INT NOT NULL DEFAULT 587,
+		smtp_user TEXT NOT NULL DEFAULT '',
+		smtp_pass_enc BYTEA,
+		smtp_from TEXT NOT NULL DEFAULT '',
+		enabled BOOLEAN NOT NULL DEFAULT true,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+	)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS mail_configs_global_uniq ON mail_configs (scope) WHERE scope='global'`,
+}
+
+// Migrate applies the M1 + M2 + M3 + M4 + M5 + M6 + M7 migrations in order. Idempotent.
 func (s *Storage) Migrate(ctx context.Context) error {
-	all := append(append(append(append(append(append([]string{},
-		m1Migrations...), m2Migrations...), m3Migrations...), m4Migrations...), m5Migrations...), m6Migrations...)
+	all := append(append(append(append(append(append(append([]string{},
+		m1Migrations...), m2Migrations...), m3Migrations...), m4Migrations...), m5Migrations...), m6Migrations...), m7Migrations...)
 	for _, stmt := range all {
 		if _, err := s.pool.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("storage: migrate: %w", err)

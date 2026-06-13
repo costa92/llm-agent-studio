@@ -36,6 +36,8 @@ import (
 	blobs3 "github.com/costa92/llm-agent-studio/internal/blob/s3"
 	"github.com/costa92/llm-agent-studio/internal/config"
 	"github.com/costa92/llm-agent-studio/internal/cost"
+	"github.com/costa92/llm-agent-studio/internal/mail"
+	"github.com/costa92/llm-agent-studio/internal/mailconfig"
 	"github.com/costa92/llm-agent-studio/internal/events"
 	"github.com/costa92/llm-agent-studio/internal/fetch"
 	"github.com/costa92/llm-agent-studio/internal/generate"
@@ -191,6 +193,16 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		return nil, nil, fmt.Errorf("studiod: secretbox: %w", err)
 	}
 	modelStore := models.New(st.Pool(), encBox)
+	mailConfigStore := mailconfig.New(st.Pool(), encBox)
+	envMailCfg := mail.EnvConfig{
+		SMTPHost: cfg.SMTPHost,
+		SMTPPort: cfg.SMTPPort,
+		SMTPUser: cfg.SMTPUser,
+		SMTPPass: cfg.SMTPPass,
+		SMTPFrom: cfg.SMTPFrom,
+	}
+	wd, _ := os.Getwd()
+	mailClient := mail.New(mailConfigStore, envMailCfg, nil, wd)
 
 	// StorageRouter (Phase 3): per-org → global → 内置 localfs 默认 的对象存储路由。
 	// storageStore 复用 BYOK 同一把加密 box 解密 secret。buildStorageStore 复用 main 里
@@ -316,7 +328,8 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		AuthHandlers: authHandlers,
 		AuthService:  authService,
 		RoleResolver: az,
-		Register:     studiosvc.NewRegister(az).WithPlatformTopUp(platformSvc, cfg.PlatformAdminEmails),
+		Register:     studiosvc.NewRegister(az).WithMail(mailClient).WithPlatformTopUp(platformSvc, cfg.PlatformAdminEmails),
+		MailConfig:   mailConfigStore,
 		OrgBootstrap: studiosvc.NewOrg(az),
 		OrgList:      studiosvc.NewOrgList(st.Pool()),
 		Projects:     projectStore,

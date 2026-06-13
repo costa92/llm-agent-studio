@@ -86,6 +86,13 @@ type Config struct {
 	// 逗号分隔）。启动时对名单内已注册用户授予平台管理员 (SeedFromEmails)；尚未注册
 	// 的，注册时再 top-up (见 studiosvc.Register)。每项已 trim + 转小写以匹配落库形态。
 	PlatformAdminEmails []string
+
+	// SMTP settings for email verification
+	SMTPHost string
+	SMTPPort int
+	SMTPUser string
+	SMTPPass string
+	SMTPFrom string
 }
 
 // Load reads from the process environment.
@@ -149,6 +156,12 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		WebDir:       get("WEB_DIR", ""),
 
 		PlatformAdminEmails: splitEmails(get("PLATFORM_ADMIN_EMAILS", "")),
+
+		SMTPHost: get("SMTP_HOST", ""),
+		SMTPPort: intOf("SMTP_PORT", get("SMTP_PORT", "587"), &errs),
+		SMTPUser: get("SMTP_USER", ""),
+		SMTPPass: get("SMTP_PASS", ""),
+		SMTPFrom: get("SMTP_FROM", "no-reply@studio.com"),
 	}
 	if len(errs) > 0 {
 		return Config{}, fmt.Errorf("config: invalid values: %s", strings.Join(errs, "; "))

@@ -40,6 +40,8 @@ vi.mock("./api", () => ({
   useGrantPlatformAdmin: () => ({ mutate: grantMutate, isPending: false }),
   useRevokePlatformAdmin: () => ({ mutate: revokeMutate, isPending: false }),
   useDeleteUser: () => ({ mutate: deleteMutate, isPending: false }),
+  useGlobalMailConfig: () => ({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() }),
+  useUpsertGlobalMailConfig: () => ({ mutate: vi.fn(), isPending: false }),
 }))
 
 // 全局存储钩子 mock（GlobalStorageSection 用）：返回已配置 config，不发请求。
