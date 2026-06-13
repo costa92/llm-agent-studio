@@ -43,7 +43,7 @@ func (m *Members) ListMembers(ctx context.Context, orgID string) ([]OrgMember, e
 	rows, err := m.pool.Query(ctx,
 		`SELECT m.user_id, u.email, m.role
 		   FROM auth_membership m JOIN auth_user u ON u.id=m.user_id
-		  WHERE m.org_id=$1 AND m.scope_kind='org' AND m.scope_id IS NULL
+		  WHERE m.org_id=$1 AND m.scope_kind='org' AND m.scope_id IS NULL AND u.deleted_at IS NULL
 		  ORDER BY u.email ASC`, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("studiosvc: list members: %w", err)
@@ -162,7 +162,7 @@ func (m *Members) currentOrgRole(ctx context.Context, orgID, userID string) (aut
 func (m *Members) userIDByEmail(ctx context.Context, email string) (string, string, error) {
 	normalized := normalizePlatformEmail(email)
 	var uid string
-	err := m.pool.QueryRow(ctx, `SELECT id FROM auth_user WHERE email = $1`, normalized).Scan(&uid)
+	err := m.pool.QueryRow(ctx, `SELECT id FROM auth_user WHERE email = $1 AND deleted_at IS NULL`, normalized).Scan(&uid)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", ErrUserNotFound
 	}

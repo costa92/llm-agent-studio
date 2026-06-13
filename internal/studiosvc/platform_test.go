@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 
 	authzrole "github.com/costa92/llm-agent-authz/role"
 	authzstore "github.com/costa92/llm-agent-authz/store"
@@ -277,14 +278,17 @@ func TestPlatformUserDetail(t *testing.T) {
 	}
 }
 
-// TestPlatformDeleteUser proves DeleteUser removes the user AND cascades their
-// auth_membership rows; missing id → ErrUserNotFound.
+// TestPlatformDeleteUser proves DeleteUser SOFT-deletes (issue #23 方案 B): the
+// auth_user row survives with deleted_at stamped, the account can no longer log in
+// (authz GetUserByEmail filters it) and vanishes from ListUsers, while its
+// membership rows are retained for audit. Missing/already-deleted → ErrUserNotFound.
 func TestPlatformDeleteUser(t *testing.T) {
 	ctx, p, az, done := platformFixture(t)
 	defer done()
 	org := NewOrg(az)
 
-	uid, _ := az.CreateUser(ctx, "del_"+randHexSvc()+"@x.com", "h")
+	email := "del_" + randHexSvc() + "@x.com"
+	uid, _ := az.CreateUser(ctx, email, "h")
 	if _, err := org.CreateOrg(ctx, "Del_Org_"+randHexSvc(), uid); err != nil {
 		t.Fatalf("create org: %v", err)
 	}
@@ -295,22 +299,41 @@ func TestPlatformDeleteUser(t *testing.T) {
 	if err := p.DeleteUser(ctx, uid); err != nil {
 		t.Fatalf("delete user: %v", err)
 	}
-	// User row gone.
+	// Row survives with deleted_at stamped (audit / created-by lineage).
 	var n int
-	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM auth_user WHERE id=$1`, uid).Scan(&n); err != nil {
+	var deletedAt *time.Time
+	if err := p.pool.QueryRow(ctx, `SELECT count(*), max(deleted_at) FROM auth_user WHERE id=$1`, uid).Scan(&n, &deletedAt); err != nil {
 		t.Fatalf("count user: %v", err)
 	}
-	if n != 0 {
-		t.Fatalf("auth_user not deleted, count=%d", n)
+	if n != 1 || deletedAt == nil {
+		t.Fatalf("soft-delete should keep row with deleted_at set: count=%d deleted_at=%v", n, deletedAt)
 	}
-	// Membership rows cascaded.
+	// Login lookup no longer finds the user (re-login blocked).
+	if _, err := az.GetUserByEmail(ctx, email); !errors.Is(err, authzstore.ErrNotFound) {
+		t.Fatalf("GetUserByEmail after soft-delete = %v, want ErrNotFound", err)
+	}
+	// Excluded from the platform user list.
+	users, err := p.ListUsers(ctx)
+	if err != nil {
+		t.Fatalf("list users: %v", err)
+	}
+	for _, u := range users {
+		if u.UserID == uid {
+			t.Fatalf("soft-deleted user must not appear in ListUsers")
+		}
+	}
+	// Membership rows retained for audit (NOT cascade-deleted).
 	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM auth_membership WHERE user_id=$1`, uid).Scan(&n); err != nil {
 		t.Fatalf("count memberships: %v", err)
 	}
-	if n != 0 {
-		t.Fatalf("auth_membership not cascaded, count=%d", n)
+	if n == 0 {
+		t.Fatalf("soft-delete should retain membership rows for audit, got 0")
 	}
 
+	// Already soft-deleted → ErrUserNotFound.
+	if err := p.DeleteUser(ctx, uid); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("double delete want ErrUserNotFound, got %v", err)
+	}
 	if err := p.DeleteUser(ctx, "missing_"+randHexSvc()); !errors.Is(err, ErrUserNotFound) {
 		t.Fatalf("missing user want ErrUserNotFound, got %v", err)
 	}
