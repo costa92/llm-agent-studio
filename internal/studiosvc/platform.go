@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/costa92/llm-agent-authz/password"
 	authzrole "github.com/costa92/llm-agent-authz/role"
 	authzstore "github.com/costa92/llm-agent-authz/store"
 	"github.com/jackc/pgx/v5"
@@ -315,3 +316,26 @@ func (p *Platform) userIDByEmail(ctx context.Context, email string) (string, err
 // normalizePlatformEmail 与 authz store 的 normalizeEmail 行为一致（小写 + trim），
 // 保证按邮箱查 auth_user 时与建用户时落库的形态匹配。
 func normalizePlatformEmail(e string) string { return strings.ToLower(strings.TrimSpace(e)) }
+
+// ResetUserPassword resets the password for the specified user ID using the new plaintext password.
+// The password is hashed using argon2id.
+func (p *Platform) ResetUserPassword(ctx context.Context, userID, newPassword string) error {
+	if userID == "" {
+		return fmt.Errorf("studiosvc: userID required")
+	}
+	if len(newPassword) < 8 {
+		return fmt.Errorf("studiosvc: password must be at least 8 characters")
+	}
+	hash, err := password.Hash(newPassword)
+	if err != nil {
+		return fmt.Errorf("studiosvc: hash password: %w", err)
+	}
+	if err := p.authz.SetPassword(ctx, userID, hash); err != nil {
+		if errors.Is(err, authzstore.ErrNotFound) {
+			return ErrUserNotFound
+		}
+		return fmt.Errorf("studiosvc: reset password: %w", err)
+	}
+	return nil
+}
+

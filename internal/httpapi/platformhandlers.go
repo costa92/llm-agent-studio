@@ -22,6 +22,7 @@ type PlatformService interface {
 	ListUsers(ctx context.Context) ([]studiosvc.PlatformUser, error)
 	UserDetail(ctx context.Context, userID string) (studiosvc.UserDetail, error)
 	DeleteUser(ctx context.Context, userID string) error
+	ResetUserPassword(ctx context.Context, userID, newPassword string) error
 }
 
 // platformScope 把请求映射到平台 scope (orgID="", scopeID="")，供 RequireScopeRole

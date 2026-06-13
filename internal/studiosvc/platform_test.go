@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/costa92/llm-agent-authz/password"
 	authzrole "github.com/costa92/llm-agent-authz/role"
 	authzstore "github.com/costa92/llm-agent-authz/store"
 
@@ -338,3 +339,47 @@ func TestPlatformDeleteUser(t *testing.T) {
 		t.Fatalf("missing user want ErrUserNotFound, got %v", err)
 	}
 }
+
+func TestPlatformResetUserPassword(t *testing.T) {
+	ctx, p, az, done := platformFixture(t)
+	defer done()
+
+	email := "resetpw_" + randHexSvc() + "@x.com"
+	uid, err := az.CreateUser(ctx, email, "old-hash")
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	// Password too short should error
+	err = p.ResetUserPassword(ctx, uid, "short")
+	if err == nil {
+		t.Fatalf("expected error for short password")
+	}
+
+	// Valid password reset
+	err = p.ResetUserPassword(ctx, uid, "new-strong-password")
+	if err != nil {
+		t.Fatalf("ResetUserPassword: %v", err)
+	}
+
+	// Verify password hash in db is valid
+	u, err := az.GetUserByEmail(ctx, email)
+	if err != nil {
+		t.Fatalf("GetUserByEmail: %v", err)
+	}
+
+	ok, err := password.Verify("new-strong-password", u.PasswordHash)
+	if err != nil {
+		t.Fatalf("password.Verify error: %v", err)
+	}
+	if !ok {
+		t.Fatalf("password hash verification failed")
+	}
+
+	// Test non-existent user
+	err = p.ResetUserPassword(ctx, "missing_"+randHexSvc(), "new-strong-password")
+	if !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("expected ErrUserNotFound, got %v", err)
+	}
+}
+
