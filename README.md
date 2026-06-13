@@ -74,7 +74,30 @@ GOWORK=off go test ./...
 - **云后端 bucket 不自动创建** —— 运维在控制台/`mc` 预建。
 - **OSS 为何不并入 s3**：OSS 签名 ≠ AWS SigV4，minio-go presigned 对 OSS 验证不过 → 独立官方 SDK 适配器。**COS** 高度 S3 兼容 → 复用 minio-go，仅派生端点/强制 TLS/`SecretId→AccessKey`。
 - **GitHub 为对象存储的取舍**：无"桶"概念，资产作为文件经 Contents API 提交进仓库（`Put` 先取 sha 再 PUT 避免 422、`Delete` 取 sha 后删，幂等）；GitHub 无 presigned URL，故仅**公开仓库**可用——`SignedURL` 返回 `raw.githubusercontent.com` 永久直链（studiod 不代理、token 不进读 URL）。受 GitHub 单文件 ~100MB 上限约束，适合图片、不适合视频。
-- **已知限制**：改 org 存储**不迁移**旧桶已写资产（旧 key 将不可访问）；所有 localfs 配置共享单根/密钥/回源（per-org localfs 磁盘多路复用超范围）；`STUDIO_CONFIG_ENC_KEY` 轮换无 re-encrypt（同 BYOK 模型密钥）。
+- **已知限制**：改 org 存储**不迁移**旧桶已写资产（旧 key 将不可访问）；所有 localfs 配置共享单根/密钥/回源（per-org localfs 磁盘多路复用超范围）；`STUDIO_CONFIG_ENC_KEY` **无在线轮换**（密文格式无 version/key-id 头，无法增量过渡，issue #22）——轮换走下方"密钥轮换"离线流程。
+
+#### 密钥轮换（`STUDIO_CONFIG_ENC_KEY`，issue #22 方案 A）
+
+secretbox 密文格式 `nonce‖ciphertext‖tag` 没有 version/key-id 头，无法在线/增量轮换（无从判断某行是旧 key 还是新 key 加密）。轮换是**停机 + 一次性全表 re-encrypt**：
+
+1. **停机**：停掉所有 studiod 进程（确保轮换期间无新行以旧 key 写入）。
+2. **演练（dry-run，默认）**：`cmd/secretbox-rotate` 用旧 key 解、新 key 加，覆盖全部三处加密列（`model_configs.api_key_enc` / `storage_configs.secret_enc` / `mail_configs.smtp_pass_enc`），但**回滚不落盘**，仅报告将改的行数——同时验证旧 key 确实能解开所有行（旧 key 错则中止，零改动）：
+
+   ```bash
+   PG_URL=postgres://… GOWORK=off go run ./cmd/secretbox-rotate \
+     -old-key "$OLD_KEY_B64" -new-key "$NEW_KEY_B64"
+   ```
+
+3. **执行（commit）**：加 `-commit`，在**单事务**内 re-encrypt 全部行（任一行解密失败 → 整体回滚，无半轮换态）：
+
+   ```bash
+   PG_URL=postgres://… GOWORK=off go run ./cmd/secretbox-rotate \
+     -old-key "$OLD_KEY_B64" -new-key "$NEW_KEY_B64" -commit
+   ```
+
+4. **切 key + 起服**：把 `STUDIO_CONFIG_ENC_KEY` 设为新 key，重启 studiod。
+
+> v2 方向（未做）：密文升级为 `version‖key_id‖nonce‖ct‖tag` + Box 多 key 路由，支持在线增量轮换；属 breaking format change，需显式 migration 回写老行。见 issue #22 方案 B。
 
 ### 平台管理员（platform super-admin）
 
