@@ -40,6 +40,7 @@ vi.mock("./api", () => ({
   useGrantPlatformAdmin: () => ({ mutate: grantMutate, isPending: false }),
   useRevokePlatformAdmin: () => ({ mutate: revokeMutate, isPending: false }),
   useDeleteUser: () => ({ mutate: deleteMutate, isPending: false }),
+  useResetUserPassword: () => ({ mutate: vi.fn(), isPending: false }),
   useGlobalMailConfig: () => ({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() }),
   useUpsertGlobalMailConfig: () => ({ mutate: vi.fn(), isPending: false }),
 }))

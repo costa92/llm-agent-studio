@@ -198,6 +198,7 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("GET /api/platform/users", platformAdmin(platformListUsersHandler(d.Platform)))
 	mux.Handle("GET /api/platform/users/{userId}", platformAdmin(platformUserDetailHandler(d.Platform)))
 	mux.Handle("DELETE /api/platform/users/{userId}", platformAdmin(platformDeleteUserHandler(d.Platform)))
+	mux.Handle("POST /api/platform/users/{userId}/reset-password", platformAdmin(platformResetPasswordHandler(d.Platform)))
 	// Cost center (admin).
 	mux.Handle("GET /api/orgs/{org}/cost", scoped(roleAdmin, orgScope, orgCostHandler(d.Cost)))
 	mux.Handle("GET /api/projects/{id}/cost", proj(roleAdmin, projectCostHandler(d.Cost)))

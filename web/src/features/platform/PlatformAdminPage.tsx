@@ -19,6 +19,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/studio/Button"
 import { Button as UiButton } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ApiError } from "@/lib/apiClient"
 import { StorageConfigForm } from "@/features/storage/StorageConfigPage"
@@ -41,6 +42,7 @@ import {
   usePlatformUserDetail,
   usePlatformUsers,
   usePlatformWhoami,
+  useResetUserPassword,
   useRevokePlatformAdmin,
   useGlobalMailConfig,
   useUpsertGlobalMailConfig,
@@ -590,10 +592,13 @@ function AllUsersSection() {
   const grant = useGrantPlatformAdmin()
   const revoke = useRevokePlatformAdmin()
   const del = useDeleteUser()
+  const resetPwd = useResetUserPassword()
   // 详情弹窗：保存待查看用户（null = 关闭）。
   const [detailUser, setDetailUser] = useState<PlatformUser | null>(null)
   // 删除二次确认弹窗：保存待删除用户（null = 关闭）。
   const [pendingDelete, setPendingDelete] = useState<PlatformUser | null>(null)
+  // 重置密码弹窗：保存待重置用户（null = 关闭）。
+  const [pendingReset, setPendingReset] = useState<PlatformUser | null>(null)
 
   // 平台管理员开关：开 → grant（按邮箱）；关 → revoke（按 userId）。
   function handleToggleAdmin(user: PlatformUser) {
@@ -638,6 +643,26 @@ function AllUsersSection() {
         }
       },
     })
+  }
+
+  // 重置密码：admin 强重置任意用户密码。成功后 toast；密码弱 → 400 toast；不存在 → 404。
+  function handleResetPassword(target: PlatformUser, newPassword: string) {
+    setPendingReset(null)
+    resetPwd.mutate(
+      { userId: target.userId, newPassword },
+      {
+        onSuccess: () => toast.success(`已为 ${target.email} 重置密码`),
+        onError: (err: unknown) => {
+          if (err instanceof ApiError && err.status === 400) {
+            toast.error(err.body.includes("password") ? "密码不符合要求（至少 8 个字符）" : "请求无效")
+          } else if (err instanceof ApiError && err.status === 404) {
+            toast.error("用户不存在")
+          } else {
+            toast.error("重置失败，请重试")
+          }
+        },
+      },
+    )
   }
 
   return (
@@ -709,6 +734,14 @@ function AllUsersSection() {
                     <UiButton
                       variant="ghost"
                       size="sm"
+                      aria-label={`重置密码 ${u.email}`}
+                      onClick={() => setPendingReset(u)}
+                    >
+                      重置密码
+                    </UiButton>
+                    <UiButton
+                      variant="ghost"
+                      size="sm"
                       aria-label={`删除 ${u.email}`}
                       onClick={() => setPendingDelete(u)}
                     >
@@ -735,6 +768,13 @@ function AllUsersSection() {
         user={pendingDelete}
         onClose={() => setPendingDelete(null)}
         onConfirm={handleDelete}
+      />
+
+      {/* 重置密码弹窗：输新密码 + 确认密码；只在两者一致且 ≥8 字符时启用确认按钮。 */}
+      <UserResetPasswordDialog
+        user={pendingReset}
+        onClose={() => setPendingReset(null)}
+        onConfirm={handleResetPassword}
       />
     </section>
   )
@@ -880,6 +920,96 @@ function UserDeleteDialog({
             }}
           >
             确认删除
+          </UiButton>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// 重置密码弹窗：admin 输入新密码（≥8 字符）+ 确认密码（一致）→ 调 POST
+// /api/platform/users/{userId}/reset-password。两条都满足前才启用确认按钮，
+// 关闭弹窗时清空状态。被重置用户的现有 session 由后端 ResetUserPassword
+// 主动吊销（如已加 RevokeAllForUser 联动），重新登录需用新密码。
+function UserResetPasswordDialog({
+  user,
+  onClose,
+  onConfirm,
+}: {
+  user: PlatformUser | null
+  onClose: () => void
+  onConfirm: (user: PlatformUser, newPassword: string) => void
+}) {
+  const [pwd, setPwd] = useState("")
+  const [confirm, setConfirm] = useState("")
+
+  // 关闭弹窗（取消或 outside-click）时清空两个 input，避免残留密文。
+  function handleOpenChange(open: boolean) {
+    if (!open) {
+      setPwd("")
+      setConfirm("")
+      onClose()
+    }
+  }
+
+  const tooShort = pwd.length > 0 && pwd.length < 8
+  const mismatch = confirm.length > 0 && pwd !== confirm
+  const canConfirm = pwd.length >= 8 && pwd === confirm
+
+  return (
+    <Dialog open={user != null} onOpenChange={handleOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>重置用户密码</DialogTitle>
+          <DialogDescription>
+            {user ? `为 ${user.email} 设置新密码。用户当前会话将被吊销，需用新密码重新登录。` : ""}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1">
+            <Label htmlFor="reset-pwd-new">新密码（≥8 字符）</Label>
+            <Input
+              id="reset-pwd-new"
+              type="password"
+              autoComplete="new-password"
+              value={pwd}
+              onChange={(e) => setPwd(e.target.value)}
+            />
+            {tooShort && (
+              <p className="text-[12px] text-red-500">至少 8 个字符</p>
+            )}
+          </div>
+          <div className="flex flex-col gap-1">
+            <Label htmlFor="reset-pwd-confirm">确认新密码</Label>
+            <Input
+              id="reset-pwd-confirm"
+              type="password"
+              autoComplete="new-password"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+            />
+            {mismatch && (
+              <p className="text-[12px] text-red-500">两次输入不一致</p>
+            )}
+          </div>
+        </div>
+
+        <DialogFooter>
+          <UiButton variant="outline" onClick={() => handleOpenChange(false)}>
+            取消
+          </UiButton>
+          <UiButton
+            disabled={!canConfirm}
+            onClick={() => {
+              if (user && canConfirm) {
+                onConfirm(user, pwd)
+                setPwd("")
+                setConfirm("")
+              }
+            }}
+          >
+            确认重置
           </UiButton>
         </DialogFooter>
       </DialogContent>

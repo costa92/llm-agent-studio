@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -30,6 +31,10 @@ type stubPlatform struct {
 	detailErr  error
 	deleteErr  error
 	lastDelete string
+
+	lastResetUID string
+	lastResetPwd string
+	resetErr     error
 }
 
 func (s *stubPlatform) IsPlatformAdmin(context.Context, string) (bool, error) { return s.isAdmin, nil }
@@ -54,6 +59,12 @@ func (s *stubPlatform) UserDetail(_ context.Context, userID string) (studiosvc.U
 func (s *stubPlatform) DeleteUser(_ context.Context, userID string) error {
 	s.lastDelete = userID
 	return s.deleteErr
+}
+
+func (s *stubPlatform) ResetUserPassword(_ context.Context, userID, newPassword string) error {
+	s.lastResetUID = userID
+	s.lastResetPwd = newPassword
+	return s.resetErr
 }
 
 // platformResolver is a fake RoleResolver: returns admin on scope_kind="platform"
@@ -318,4 +329,72 @@ func TestPlatformGateRouting(t *testing.T) {
 	if rrWho.Code != http.StatusOK {
 		t.Fatalf("whoami must not be gated, want 200, got %d", rrWho.Code)
 	}
+}
+
+func TestPlatformResetPasswordHandler(t *testing.T) {
+	t.Run("成功：admin 重置任意用户密码", func(t *testing.T) {
+		st := &stubPlatform{}
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/api/platform/users/u-target/reset-password",
+			strings.NewReader(`{"newPassword":"newSecure1234"}`))
+		req.SetPathValue("userId", "u-target")
+		platformResetPasswordHandler(st)(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d body=%s", rr.Code, rr.Body.String())
+		}
+		if st.lastResetUID != "u-target" {
+			t.Fatalf("target=%q want u-target", st.lastResetUID)
+		}
+		if st.lastResetPwd != "newSecure1234" {
+			t.Fatalf("password not forwarded: %q", st.lastResetPwd)
+		}
+		if !strings.Contains(rr.Body.String(), `"ok":true`) {
+			t.Fatalf("response missing ok:true: %s", rr.Body.String())
+		}
+	})
+	t.Run("400 缺 newPassword", func(t *testing.T) {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/api/platform/users/u/reset-password",
+			strings.NewReader(`{}`))
+		req.SetPathValue("userId", "u")
+		platformResetPasswordHandler(&stubPlatform{})(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("want 400, got %d", rr.Code)
+		}
+	})
+	t.Run("400 invalid body", func(t *testing.T) {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/api/platform/users/u/reset-password",
+			strings.NewReader(`not-json`))
+		req.SetPathValue("userId", "u")
+		platformResetPasswordHandler(&stubPlatform{})(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("want 400, got %d", rr.Code)
+		}
+	})
+	t.Run("404 user 不存在", func(t *testing.T) {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/api/platform/users/ghost/reset-password",
+			strings.NewReader(`{"newPassword":"newSecure1234"}`))
+		req.SetPathValue("userId", "ghost")
+		platformResetPasswordHandler(&stubPlatform{resetErr: studiosvc.ErrUserNotFound})(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("want 404, got %d", rr.Code)
+		}
+	})
+	t.Run("400 密码弱（studiosvc: password 前缀）", func(t *testing.T) {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/api/platform/users/u/reset-password",
+			strings.NewReader(`{"newPassword":"weak"}`))
+		req.SetPathValue("userId", "u")
+		platformResetPasswordHandler(&stubPlatform{
+			resetErr: errors.New("studiosvc: password must be at least 8 characters"),
+		})(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("weak-password must 400, got %d", rr.Code)
+		}
+		if !strings.Contains(rr.Body.String(), "password") {
+			t.Fatalf("error must mention password: %s", rr.Body.String())
+		}
+	})
 }
