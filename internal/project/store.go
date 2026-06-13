@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -144,11 +145,33 @@ func (s *Store) SetStatus(ctx context.Context, id, status string) error {
 	return err
 }
 
-// RefreshStatus recomputes the project status from its todo tally and persists
-// it. Called by the worker after each todo transition (spec §7.3 step 5).
+// RefreshStatus recomputes the project status from its LATEST plan's todo
+// tally and persists it. Called by the worker after each todo transition
+// (spec §7.3 step 5).
+//
+// 关键不变式：项目 status 必须按"最新 plan 维度"算。历史失败 run 不该污染当前
+// 重跑——计划 A 6/6 跑挂后再重跑成功（计划 B 5/5 done + 2 待审），项目应
+// 解析为 "review"，旧实现因为累加 todos（Failed=1）会卡在 "failed"（生产
+// 真实事故）。todos 表带 plan_id，SELECT 加 WHERE plan_id=<最新> 即可。
+//
+// 无 plan 的项目（draft 初始态 / 还没跑过）保持现状：DeriveStatus 对空
+// TodoCounts 返 "planning"，但项目初始就是 "draft"，硬改写会误导。
 func (s *Store) RefreshStatus(ctx context.Context, projectID string) (string, error) {
+	var latestPlanID string
+	err := s.pool.QueryRow(ctx,
+		`SELECT id FROM plans WHERE project_id=$1 ORDER BY created_at DESC LIMIT 1`,
+		projectID).Scan(&latestPlanID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// 无 plan：不改写 project.status（保持 create 时的 draft）。返回
+		// Get 出来的当前值，便于 caller 行为对称。
+		return s.currentStatus(ctx, projectID)
+	}
+	if err != nil {
+		return "", fmt.Errorf("project: find latest plan: %w", err)
+	}
+
 	var c TodoCounts
-	err := s.pool.QueryRow(ctx, `
+	err = s.pool.QueryRow(ctx, `
 		SELECT count(*),
 		       count(*) FILTER (WHERE status='ready'),
 		       count(*) FILTER (WHERE status='running'),
@@ -156,21 +179,35 @@ func (s *Store) RefreshStatus(ctx context.Context, projectID string) (string, er
 		       count(*) FILTER (WHERE status='done'),
 		       count(*) FILTER (WHERE status='failed'),
 		       count(*) FILTER (WHERE status='canceled')
-		FROM todos WHERE project_id=$1`, projectID).
+		FROM todos WHERE plan_id=$1`, latestPlanID).
 		Scan(&c.Total, &c.Ready, &c.Running, &c.Blocked, &c.Done, &c.Failed, &c.Canceled)
 	if err != nil {
-		return "", fmt.Errorf("project: tally todos: %w", err)
+		return "", fmt.Errorf("project: tally latest plan todos: %w", err)
 	}
+	// 资产通过 todos 关联到 plan（assets.todo_id → todos.plan_id）；这样
+	// pending_acceptance 也只计最新 plan 的，与 ListPlans 的关联方式一致。
 	if err := s.pool.QueryRow(ctx,
-		`SELECT count(*) FROM assets WHERE project_id=$1 AND status='pending_acceptance'`,
-		projectID).Scan(&c.PendingAssets); err != nil {
-		return "", fmt.Errorf("project: tally pending assets: %w", err)
+		`SELECT count(*) FROM assets a
+		 JOIN todos t ON a.todo_id = t.id
+		 WHERE t.plan_id = $1 AND a.status = 'pending_acceptance'`,
+		latestPlanID).Scan(&c.PendingAssets); err != nil {
+		return "", fmt.Errorf("project: tally latest plan pending assets: %w", err)
 	}
 	status := DeriveStatus(c)
 	if err := s.SetStatus(ctx, projectID, status); err != nil {
 		return "", err
 	}
 	return status, nil
+}
+
+// currentStatus returns the project's status column without modification.
+// Used by RefreshStatus to return the un-touched value when there are no
+// plans yet (so the function's return semantics stay uniform for callers).
+func (s *Store) currentStatus(ctx context.Context, projectID string) (string, error) {
+	var status string
+	err := s.pool.QueryRow(ctx,
+		`SELECT status FROM projects WHERE id=$1`, projectID).Scan(&status)
+	return status, err
 }
 
 // Cancel marks all non-terminal todos canceled, sweeps in-flight assets
@@ -195,4 +232,74 @@ func (s *Store) Cancel(ctx context.Context, projectID string) error {
 		return fmt.Errorf("project: cancel assets: %w", err)
 	}
 	return s.SetStatus(ctx, projectID, "canceled")
+}
+
+// Plan represents a run/plan for a project.
+type Plan struct {
+	ID           string    `json:"id"`
+	ProjectID    string    `json:"projectId"`
+	Status       string    `json:"status"`
+	Valid        bool      `json:"valid"`
+	FallbackUsed bool      `json:"fallbackUsed"`
+	CreatedAt    time.Time `json:"createdAt"`
+}
+
+// ListPlans lists all plans/runs for a specific project.
+func (s *Store) ListPlans(ctx context.Context, projectID string) ([]Plan, error) {
+	q := `
+		SELECT p.id, p.project_id, p.valid, p.fallback_used, p.created_at,
+		       COALESCE(t.total, 0),
+		       COALESCE(t.ready, 0),
+		       COALESCE(t.running, 0),
+		       COALESCE(t.blocked, 0),
+		       COALESCE(t.done, 0),
+		       COALESCE(t.failed, 0),
+		       COALESCE(t.canceled, 0),
+		       COALESCE(a.pending_assets, 0)
+		FROM plans p
+		LEFT JOIN (
+		    SELECT plan_id,
+		           count(*) as total,
+		           count(*) FILTER (WHERE status='ready') as ready,
+		           count(*) FILTER (WHERE status='running') as running,
+		           count(*) FILTER (WHERE status='blocked') as blocked,
+		           count(*) FILTER (WHERE status='done') as done,
+		           count(*) FILTER (WHERE status='failed') as failed,
+		           count(*) FILTER (WHERE status='canceled') as canceled
+		    FROM todos
+		    GROUP BY plan_id
+		) t ON p.id = t.plan_id
+		LEFT JOIN (
+		    SELECT t.plan_id, count(*) as pending_assets
+		    FROM assets a
+		    JOIN todos t ON a.todo_id = t.id
+		    WHERE a.status = 'pending_acceptance'
+		    GROUP BY t.plan_id
+		) a ON p.id = a.plan_id
+		WHERE p.project_id = $1
+		ORDER BY p.created_at DESC`
+
+	rows, err := s.pool.Query(ctx, q, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("project: list plans: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Plan
+	for rows.Next() {
+		var p Plan
+		var c TodoCounts
+		if err := rows.Scan(
+			&p.ID, &p.ProjectID, &p.Valid, &p.FallbackUsed, &p.CreatedAt,
+			&c.Total, &c.Ready, &c.Running, &c.Blocked, &c.Done, &c.Failed, &c.Canceled, &c.PendingAssets,
+		); err != nil {
+			return nil, fmt.Errorf("project: list plans: scan: %w", err)
+		}
+		p.Status = DeriveStatus(c)
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("project: list plans: rows: %w", err)
+	}
+	return out, nil
 }

@@ -670,8 +670,11 @@ func TestRunAssetQuotaBackstopFailsOverQuotaTodo(t *testing.T) {
 		`INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),$1,'p','u') RETURNING id`,
 		orgID).Scan(&pid)
 	cs := cost.New(pool)
+	// 用 unique 后缀避免共享测试池里硬编码 "a0" / "t0" 撞 generations_asset_todo_uniq。
+	seedAssetID := "as_seed_" + randHex3()
+	seedTodoID := "td_seed_" + randHex3()
 	if err := cs.Record(ctx, cost.Generation{
-		ProjectID: pid, AssetID: "a0", TodoID: "t0", Kind: "image",
+		ProjectID: pid, AssetID: seedAssetID, TodoID: seedTodoID, Kind: "image",
 		Provider: "fake", Model: "m", ImageCount: 1,
 	}); err != nil {
 		t.Fatalf("seed generation: %v", err)

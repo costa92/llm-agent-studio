@@ -143,7 +143,15 @@ func TestWorkerFailsTodoOnAgentError(t *testing.T) {
 	// both the cancel-dependents path AND the run_done-on-terminal-failure path
 	// (done>0 because the script finished, so allDone is satisfied once the
 	// storyboard exhausts attempts).
-	ids, _ := todoStore.CreateGraph(ctx, projID, "pl1", []todos.NodeSpec{
+	// RefreshStatus scopes to latest plan — 模拟真实 planner 在 create graph 之前
+	// 必先 INSERT plans 行（planner.go:106），所以测试也要先建 plan。plan id 用
+	// projID 派生避免共享测试池里硬编码 "pl1" 撞唯一约束。
+	planID := "pl_" + projID[len("wf_"):]
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO plans (id, project_id, status, valid, fallback_used) VALUES ($1, $2, 'created', false, false)`, planID, projID); err != nil {
+		t.Fatalf("insert plan: %v", err)
+	}
+	ids, _ := todoStore.CreateGraph(ctx, projID, planID, []todos.NodeSpec{
 		{LocalID: "s", Type: "script", DependsOn: nil, InputJSON: []byte(`{"brief":"x"}`)},
 		{LocalID: "b", Type: "storyboard", DependsOn: []string{"s"}, InputJSON: []byte(`{}`)},
 	})
