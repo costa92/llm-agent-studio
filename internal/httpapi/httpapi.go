@@ -28,6 +28,7 @@ type Deps struct {
 	AuthService  SessionIssuer       // authz service for register's auto-login; nil in focused unit tests
 	RoleResolver authzhttp.RoleResolver
 	Register     UserRegistrar // self-serve registration; nil in focused unit tests
+	MailConfig   MailConfigStore
 	OrgBootstrap OrgBootstrapper
 	OrgList      OrgLister
 	Projects     ProjectStore
@@ -98,8 +99,12 @@ func NewMux(d Deps) *http.ServeMux {
 	}
 	// Self-serve registration: OPEN (unauthenticated), an ADDITIONAL route on the
 	// same mux as authz's login/refresh/logout (no pattern collision).
-	if d.Register != nil && d.AuthService != nil {
-		mux.Handle("POST /api/auth/register", registerHandler(d.Register, d.AuthService))
+	if d.Register != nil {
+		mux.Handle("POST /api/auth/register", registerHandler(d.Register))
+		if d.AuthService != nil {
+			mux.Handle("POST /api/auth/verify", verifyHandler(d.Register, d.AuthService))
+			mux.Handle("POST /api/auth/resend-verification", resendVerificationHandler(d.Register))
+		}
 	}
 	guard := limits.New(d.PerUserLimit)
 
@@ -182,6 +187,10 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("GET /api/platform/whoami", authOnly(platformWhoamiHandler(d.Platform)))
 	mux.Handle("GET /api/platform/storage-config/global", platformAdmin(getGlobalStorageConfigHandler(d.StorageConfig)))
 	mux.Handle("PUT /api/platform/storage-config/global", platformAdmin(putGlobalStorageConfigHandler(d.StorageConfig)))
+	if d.MailConfig != nil {
+		mux.Handle("GET /api/platform/mail-config/global", platformAdmin(getGlobalMailConfigHandler(d.MailConfig)))
+		mux.Handle("PUT /api/platform/mail-config/global", platformAdmin(putGlobalMailConfigHandler(d.MailConfig)))
+	}
 	mux.Handle("GET /api/platform/orgs", platformAdmin(platformOrgsHandler(d.Platform)))
 	mux.Handle("GET /api/platform/admins", platformAdmin(platformListAdminsHandler(d.Platform)))
 	mux.Handle("POST /api/platform/admins", platformAdmin(platformGrantAdminHandler(d.Platform)))

@@ -11,6 +11,8 @@ import type {
   PlatformOrg,
   PlatformUser,
   UserDetail,
+  MailConfig,
+  UpsertMailConfigInput,
 } from "@/lib/types"
 
 // 平台超级管理员的前端 API 钩子（/api/platform/*）。除 whoami 外都经平台门禁（非平台管理员 → 403）。
@@ -136,6 +138,37 @@ export function useDeleteUser(): UseMutationResult<
       ),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["platform", "users"] })
+    },
+  })
+}
+
+// GET /api/platform/mail-config/global -> {config}
+export function useGlobalMailConfig(): UseQueryResult<MailConfig | null> {
+  return useQuery({
+    queryKey: ["platform", "mail-config", "global"],
+    queryFn: () =>
+      apiJSON<{ config: MailConfig | null }>(`/api/platform/mail-config/global`).then(
+        (r) => r.config,
+      ),
+  })
+}
+
+// PUT /api/platform/mail-config/global -> MailConfig
+export function useUpsertGlobalMailConfig(): UseMutationResult<
+  MailConfig,
+  Error,
+  UpsertMailConfigInput
+> {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: UpsertMailConfigInput) =>
+      apiJSON<MailConfig>(`/api/platform/mail-config/global`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["platform", "mail-config", "global"] })
     },
   })
 }

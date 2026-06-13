@@ -137,11 +137,36 @@ func TestEndToEndRegister(t *testing.T) {
 		return resp.StatusCode, m, resp
 	}
 
-	email := "newuser@studio.com"
-	// 1. Register a brand-new email → 200 + access_token + refresh cookie.
+	email := "newuser_" + time.Now().Format("20060102150405000000000") + "@studio.com"
+	// 1. Register a brand-new email → 200 + {"verified":false,"email":"..."}
 	code, body, resp := do("POST", "/api/auth/register", "", `{"email":"`+email+`","password":"password123"}`)
 	if code != http.StatusOK {
 		t.Fatalf("register code=%d body=%v", code, body)
+	}
+	verified, _ := body["verified"].(bool)
+	if verified {
+		t.Fatalf("expected user to be unverified initially")
+	}
+
+	// 1b. Retrieve verification code from DB
+	db, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("connect DB: %v", err)
+	}
+	defer db.Close()
+	var codeStr string
+	err = db.QueryRow(context.Background(), `SELECT verification_code FROM auth_user WHERE email=$1`, email).Scan(&codeStr)
+	if err != nil {
+		t.Fatalf("query verification code: %v", err)
+	}
+	if codeStr == "" {
+		t.Fatalf("verification code not generated in DB")
+	}
+
+	// 1c. Submit correct code to verify → 200 + access_token + refresh cookie.
+	code, body, resp = do("POST", "/api/auth/verify", "", `{"email":"`+email+`","code":"`+codeStr+`"}`)
+	if code != http.StatusOK {
+		t.Fatalf("verify code=%d body=%v", code, body)
 	}
 	token, _ := body["access_token"].(string)
 	if token == "" {

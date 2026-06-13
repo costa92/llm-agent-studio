@@ -42,6 +42,8 @@ import {
   usePlatformUsers,
   usePlatformWhoami,
   useRevokePlatformAdmin,
+  useGlobalMailConfig,
+  useUpsertGlobalMailConfig,
 } from "./api"
 
 // 平台管理网关（平台超级管理员专属，/platform 段共用）。由路由布局承载，门禁通过后透传子页。
@@ -82,11 +84,12 @@ export function PlatformSettingsPage() {
       <header className="flex flex-col gap-1.5">
         <h1 className="font-heading text-[22px] font-bold text-text-1">平台设置</h1>
         <p className="text-[12px] text-text-3">
-          服务端级设置：全局默认存储、平台管理员管理。
+          服务端级设置：全局默认存储、邮件验证配置、平台管理员管理。
         </p>
       </header>
 
       <GlobalStorageSection />
+      <GlobalMailSection />
       <PlatformAdminsSection />
     </div>
   )
@@ -176,6 +179,185 @@ function GlobalStorageSection() {
           onSubmit={handleSubmit}
           isOrgScope={false}
         />
+      )}
+    </section>
+  )
+}
+
+// ── 全局邮件配置 ────────────────────────────────────────────────
+function GlobalMailSection() {
+  const mailConfig = useGlobalMailConfig()
+  const upsertMail = useUpsertGlobalMailConfig()
+
+  const [smtpHost, setSmtpHost] = useState("")
+  const [smtpPort, setSmtpPort] = useState(587)
+  const [smtpUser, setSmtpUser] = useState("")
+  const [smtpPass, setSmtpPass] = useState("")
+  const [smtpFrom, setSmtpFrom] = useState("")
+  const [enabled, setEnabled] = useState(true)
+
+  const [initialized, setInitialized] = useState(false)
+
+  // Initialize form when config data is loaded
+  if (mailConfig.data && !initialized) {
+    setSmtpHost(mailConfig.data.smtpHost || "")
+    setSmtpPort(mailConfig.data.smtpPort || 587)
+    setSmtpUser(mailConfig.data.smtpUser || "")
+    setSmtpFrom(mailConfig.data.smtpFrom || "")
+    setEnabled(mailConfig.data.enabled ?? true)
+    setSmtpPass("")
+    setInitialized(true)
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!smtpHost.trim()) {
+      toast.error("SMTP 主机不能为空")
+      return
+    }
+
+    const payload = {
+      smtpHost: smtpHost.trim(),
+      smtpPort,
+      smtpUser: smtpUser.trim(),
+      smtpFrom: smtpFrom.trim(),
+      enabled,
+      ...(smtpPass ? { smtpPass } : {}),
+    }
+
+    upsertMail.mutate(payload, {
+      onSuccess: () => {
+        toast.success("全局邮件配置已保存")
+        setSmtpPass("")
+        void mailConfig.refetch()
+      },
+      onError: (err: unknown) => {
+        if (err instanceof ApiError && err.status === 412) {
+          toast.error("保存失败，配置 SMTP 密码需要 JWT_SECRET")
+        } else {
+          toast.error("保存失败，请检查参数或重试")
+        }
+      },
+    })
+  }
+
+  const fieldClass =
+    "rounded-md border border-line bg-bg-base px-2.5 py-2 text-[13px] text-text-1 focus-visible:outline-2 focus-visible:outline-amber"
+
+  return (
+    <section className="flex flex-col gap-3 rounded-xl border border-line bg-bg-surface p-5">
+      <header className="flex flex-col gap-1">
+        <h2 className="font-heading text-[15px] font-semibold text-text-1">全局邮件配置</h2>
+        <p className="text-[12px] text-text-3">
+          配置平台用户注册验证码发送的全局 SMTP 邮件服务器。留空密码表示保留原配置。
+        </p>
+      </header>
+
+      {mailConfig.isError ? (
+        <div className="flex flex-col items-center gap-3 py-10 text-center">
+          <p className="text-text-2">全局邮件配置加载失败</p>
+          <Button variant="ghost" onClick={() => { setInitialized(false); void mailConfig.refetch() }}>
+            重试
+          </Button>
+        </div>
+      ) : mailConfig.isLoading ? (
+        <div className="flex flex-col gap-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} className="h-10 rounded-lg" />
+          ))}
+        </div>
+      ) : (
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="smtp-host">SMTP 主机 (Host)</Label>
+              <input
+                id="smtp-host"
+                placeholder="如 smtp.example.com"
+                value={smtpHost}
+                onChange={(e) => setSmtpHost(e.target.value)}
+                className={fieldClass}
+                required
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="smtp-port">SMTP 端口 (Port)</Label>
+              <input
+                id="smtp-port"
+                type="number"
+                placeholder="如 587"
+                value={smtpPort}
+                onChange={(e) => setSmtpPort(parseInt(e.target.value) || 587)}
+                className={fieldClass}
+                required
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="smtp-user">SMTP 用户 (User)</Label>
+              <input
+                id="smtp-user"
+                placeholder="如 user@example.com"
+                value={smtpUser}
+                onChange={(e) => setSmtpUser(e.target.value)}
+                className={fieldClass}
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="smtp-pass">
+                SMTP 密码 (Password)
+                {mailConfig.data?.hasSecret && (
+                  <span className="ml-2 text-[11px] text-amber">(已配置加密密码)</span>
+                )}
+              </Label>
+              <input
+                id="smtp-pass"
+                type="password"
+                placeholder={mailConfig.data?.hasSecret ? "•••••••• (留空保留原密码)" : "SMTP 密码"}
+                value={smtpPass}
+                onChange={(e) => setSmtpPass(e.target.value)}
+                className={fieldClass}
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="smtp-from">发送人邮箱 (From)</Label>
+            <input
+              id="smtp-from"
+              placeholder="如 no-reply@example.com"
+              value={smtpFrom}
+              onChange={(e) => setSmtpFrom(e.target.value)}
+              className={fieldClass}
+              required
+            />
+          </div>
+
+          <div className="flex items-center gap-2 mt-1">
+            <input
+              id="smtp-enabled"
+              type="checkbox"
+              checked={enabled}
+              onChange={(e) => setEnabled(e.target.checked)}
+              className="h-4 w-4 rounded border-line bg-bg-base text-amber focus:ring-amber"
+            />
+            <Label htmlFor="smtp-enabled" className="cursor-pointer">启用邮件验证码发送</Label>
+          </div>
+
+          <div className="flex justify-end gap-2 mt-2">
+            <Button
+              type="submit"
+              variant="amber"
+              disabled={upsertMail.isPending}
+            >
+              {upsertMail.isPending ? "保存中..." : "保存邮件配置"}
+            </Button>
+          </div>
+        </form>
       )}
     </section>
   )

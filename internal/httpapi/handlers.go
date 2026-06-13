@@ -36,17 +36,18 @@ type OrgLister interface {
 	OrgsForUser(ctx context.Context, userID string) ([]map[string]any, error)
 }
 
-// UserRegistrar creates a self-serve user (satisfied by *studiosvc.Register).
+// UserRegistrar creates and verifies self-serve user accounts (satisfied by *studiosvc.Register).
 // A duplicate email surfaces as studiosvc.ErrEmailExists → 409.
 type UserRegistrar interface {
 	Create(ctx context.Context, email, password string) (string, error)
+	Verify(ctx context.Context, email, code string) (bool, string, error)
+	Resend(ctx context.Context, email string) error
 }
 
-// SessionIssuer mints a session right after registration (satisfied by the
-// authz *service.Service). register == create user + immediately log in, so the
-// success response mirrors login (access_token + refresh cookie).
+// SessionIssuer mints a session (satisfied by the authz *service.Service).
 type SessionIssuer interface {
 	Login(ctx context.Context, email, password, userAgent string) (authzsvc.LoginResult, error)
+	IssueSession(ctx context.Context, userID, userAgent string) (authzsvc.LoginResult, error)
 }
 
 // ProjectStore is the project surface the handlers need.
@@ -102,11 +103,9 @@ func setRefreshCookie(w http.ResponseWriter, value string) {
 }
 
 // registerHandler (POST /api/auth/register): OPEN, unauthenticated account
-// creation. Validates input (400), creates the user (409 on existing email),
-// then immediately mints a session via the authz service so the response
-// mirrors login (access_token + expires_in + refresh cookie) — the user is
-// auto-logged-in.
-func registerHandler(reg UserRegistrar, iss SessionIssuer) http.HandlerFunc {
+// creation. Validates input (400), creates the user (409 on existing email).
+// Under email verification mode, returns {"verified": false, "email": req.Email}.
+func registerHandler(reg UserRegistrar) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Email    string `json:"email"`
@@ -131,15 +130,69 @@ func registerHandler(reg UserRegistrar, iss SessionIssuer) http.HandlerFunc {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		// Immediately issue a session (we just set this password). Mirrors the
-		// authz login handler's success path exactly.
-		res, err := iss.Login(r.Context(), req.Email, req.Password, r.UserAgent())
+		writeJSON(w, http.StatusOK, map[string]any{"verified": false, "email": req.Email})
+	}
+}
+
+// verifyHandler (POST /api/auth/verify): checks the 6-digit code.
+// On success, sets the user as verified, issues a session, and logs in.
+func verifyHandler(ver UserRegistrar, iss SessionIssuer) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Email string `json:"email"`
+			Code  string `json:"code"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if req.Email == "" || req.Code == "" {
+			http.Error(w, "bad request: email and code required", http.StatusBadRequest)
+			return
+		}
+		ok, userID, err := ver.Verify(r.Context(), req.Email, req.Code)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.Error(w, "invalid or expired verification code", http.StatusForbidden)
+			return
+		}
+
+		res, err := iss.IssueSession(r.Context(), userID, r.UserAgent())
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
 		setRefreshCookie(w, res.RefreshToken)
 		writeJSON(w, http.StatusOK, map[string]any{"access_token": res.AccessToken, "expires_in": res.ExpiresIn})
+	}
+}
+
+// resendVerificationHandler (POST /api/auth/resend-verification): resends code.
+func resendVerificationHandler(ver UserRegistrar) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Email string `json:"email"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if req.Email == "" {
+			http.Error(w, "bad request: email required", http.StatusBadRequest)
+			return
+		}
+		if err := ver.Resend(r.Context(), req.Email); err != nil {
+			if err.Error() == "studiosvc: user not found" {
+				http.Error(w, "user not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 	}
 }
 
