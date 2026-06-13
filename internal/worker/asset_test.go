@@ -899,6 +899,34 @@ func TestSubmitAdmissionCapBlocksNewSubmitButNotPoll(t *testing.T) {
 	}
 }
 
+// TestPerOrgSubmitAdmissionCapHolds proves the issue #21 per-org layer: with the
+// GLOBAL cap unlimited (0) but the per-org cap at 1, an org already at 1 in-flight
+// video has its NEW submit held (errRescheduled, no attempts spent) — same hold
+// semantics as the global cap, gated on the per-org count instead.
+func TestPerOrgSubmitAdmissionCapHolds(t *testing.T) {
+	pool := assetTestPool(t)
+	ctx := context.Background()
+	w, pid, _, _ := asyncWorkerSetup(t, pool, 5)
+	w.cfg.MaxConcurrentVideo = 0       // global unlimited — only the per-org layer can hold
+	w.cfg.MaxConcurrentVideoPerOrg = 1 // this org may have at most 1 video in flight
+	// Pre-load one in-flight submitted video for this org's project (occupies the
+	// slot). Random todo_id avoids the assets_todo_uniq collision across reruns of a
+	// reused test DB (a fixed literal would fail the insert on the 2nd run).
+	if _, err := pool.Exec(ctx, `INSERT INTO assets (id,project_id,todo_id,type,status,submitted_at) VALUES (md5(random()::text),$1,md5(random()::text),'video','submitted',now())`, pid); err != nil {
+		t.Fatalf("seed occupy asset: %v", err)
+	}
+	todoID := seedVideoAssetTodo(t, pool, pid)
+	if _, err := w.runAsset(ctx, claimed{todoID: todoID, projectID: pid, typ: "asset", attempts: 1,
+		input: []byte(`{"shotId":"s1","shotPrompt":"a city","style":"","kind":"video","duration":6}`)}); !errorsIsRescheduled(err) {
+		t.Fatalf("over-per-org-cap submit must be held (errRescheduled), got %v", err)
+	}
+	var n int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM assets WHERE todo_id=$1 AND status='submitted'`, todoID).Scan(&n)
+	if n != 0 {
+		t.Fatalf("over-per-org-cap todo must not submit, got %d submitted", n)
+	}
+}
+
 // TestDiscardCanceledAssetSweepsSubmitted proves F2: the cancel-race discard
 // from-list must include 'submitted' (async in-flight) — else a submitted asset
 // caught in the MarkDone-no-op race falls through and strands.

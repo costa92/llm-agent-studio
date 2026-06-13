@@ -60,8 +60,13 @@ type Config struct {
 	MaxPollAttempts    int           // per-asset poll budget (env MAX_POLL_ATTEMPTS, 60)
 	MaxConcurrentVideo int           // video submit-admission + fetch cap; 0 = unlimited
 	MaxConcurrentAudio int           // audio submit-admission + fetch cap; 0 = unlimited
-	LeaseRenewInterval time.Duration // heartbeat renewLease period; MUST be < WorkerLease
-	VideoFetchMaxBytes int64         // hard cap on a pulled video/audio body (default 512MB)
+	// 双层 submit-admission 上限 (issue #21)：MaxConcurrentVideo/Audio 是跨 org 全局软
+	// 兜底 (OOM/容量维度)；下面两个是叠加其上的 per-org 软上限 (noisy-neighbor 公平性)。
+	// 任一层达限即 hold submit。0 = 该层不限。
+	MaxConcurrentVideoPerOrg int           // per-org video submit-admission cap; 0 = unlimited
+	MaxConcurrentAudioPerOrg int           // per-org audio submit-admission cap; 0 = unlimited
+	LeaseRenewInterval       time.Duration // heartbeat renewLease period; MUST be < WorkerLease
+	VideoFetchMaxBytes       int64         // hard cap on a pulled video/audio body (default 512MB)
 
 	// M4 video/audio provider keys (key-gated real-adapter skeletons, spec §8).
 	RunwayAPIKey string
@@ -140,11 +145,14 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		MaxPollAttempts:    intOf("MAX_POLL_ATTEMPTS", get("MAX_POLL_ATTEMPTS", "60"), &errs),
 		MaxConcurrentVideo: intOf("MAX_CONCURRENT_VIDEO", get("MAX_CONCURRENT_VIDEO", "0"), &errs),
 		MaxConcurrentAudio: intOf("MAX_CONCURRENT_AUDIO", get("MAX_CONCURRENT_AUDIO", "0"), &errs),
-		LeaseRenewInterval: durOf("LEASE_RENEW_INTERVAL", get("LEASE_RENEW_INTERVAL", "40s"), &errs),
-		VideoFetchMaxBytes: int64(intOf("VIDEO_FETCH_MAX_BYTES", get("VIDEO_FETCH_MAX_BYTES", "536870912"), &errs)),
-		RunwayAPIKey:       get("RUNWAY_API_KEY", ""),
-		KlingAPIKey:        get("KLING_API_KEY", ""),
-		TTSAPIKey:          get("TTS_API_KEY", ""),
+
+		MaxConcurrentVideoPerOrg: intOf("MAX_CONCURRENT_VIDEO_PER_ORG", get("MAX_CONCURRENT_VIDEO_PER_ORG", "0"), &errs),
+		MaxConcurrentAudioPerOrg: intOf("MAX_CONCURRENT_AUDIO_PER_ORG", get("MAX_CONCURRENT_AUDIO_PER_ORG", "0"), &errs),
+		LeaseRenewInterval:       durOf("LEASE_RENEW_INTERVAL", get("LEASE_RENEW_INTERVAL", "40s"), &errs),
+		VideoFetchMaxBytes:       int64(intOf("VIDEO_FETCH_MAX_BYTES", get("VIDEO_FETCH_MAX_BYTES", "536870912"), &errs)),
+		RunwayAPIKey:             get("RUNWAY_API_KEY", ""),
+		KlingAPIKey:              get("KLING_API_KEY", ""),
+		TTSAPIKey:                get("TTS_API_KEY", ""),
 
 		BlobDir:    get("BLOB_DIR", "./blobdata"),
 		BlobSecret: get("BLOB_SECRET", ""),

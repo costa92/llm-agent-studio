@@ -202,6 +202,9 @@ func TestLoadM4Defaults(t *testing.T) {
 	if cfg.MaxConcurrentVideo != 0 || cfg.MaxConcurrentAudio != 0 {
 		t.Fatalf("concurrency caps should default 0 (disabled): %+v", cfg)
 	}
+	if cfg.MaxConcurrentVideoPerOrg != 0 || cfg.MaxConcurrentAudioPerOrg != 0 {
+		t.Fatalf("per-org concurrency caps should default 0 (disabled): %+v", cfg)
+	}
 	if cfg.LeaseRenewInterval <= 0 || cfg.LeaseRenewInterval >= cfg.WorkerLease {
 		t.Fatalf("LeaseRenewInterval = %v must be >0 and < WorkerLease %v", cfg.LeaseRenewInterval, cfg.WorkerLease)
 	}
@@ -224,5 +227,33 @@ func TestLoadM4RejectsMalformedPollKnob(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "MAX_POLL_ATTEMPTS") {
 		t.Fatalf("want MAX_POLL_ATTEMPTS parse error, got %v", err)
+	}
+}
+
+// TestLoadPerOrgConcurrencyCaps verifies the issue #21 dual-layer knobs parse
+// independently of the global caps.
+func TestLoadPerOrgConcurrencyCaps(t *testing.T) {
+	cfg, err := LoadFromLookup(func(k string) (string, bool) {
+		switch k {
+		case "PG_URL":
+			return "postgres://x", true
+		case "JWT_SECRET":
+			return "s", true
+		case "MAX_CONCURRENT_VIDEO_PER_ORG":
+			return "2", true
+		case "MAX_CONCURRENT_AUDIO_PER_ORG":
+			return "3", true
+		}
+		return "", false
+	})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.MaxConcurrentVideoPerOrg != 2 || cfg.MaxConcurrentAudioPerOrg != 3 {
+		t.Fatalf("per-org caps = %d/%d, want 2/3", cfg.MaxConcurrentVideoPerOrg, cfg.MaxConcurrentAudioPerOrg)
+	}
+	// Global caps stay at their default (0) — the layers are independent.
+	if cfg.MaxConcurrentVideo != 0 || cfg.MaxConcurrentAudio != 0 {
+		t.Fatalf("global caps should remain 0 when only per-org set: %d/%d", cfg.MaxConcurrentVideo, cfg.MaxConcurrentAudio)
 	}
 }
