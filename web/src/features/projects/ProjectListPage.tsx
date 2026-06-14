@@ -1,7 +1,7 @@
 import { Skeleton } from "@/components/ui/skeleton"
 import { Badge } from "@/components/studio/Badge"
 import { Button } from "@/components/studio/Button"
-import type { CreateProjectInput, Project, Style } from "@/lib/types"
+import type { CreateProjectInput, ModelConfig, Project, Style } from "@/lib/types"
 import { statusLabel, statusVariant } from "./status"
 import { CreateProjectDialog } from "./CreateProjectDialog"
 
@@ -13,6 +13,8 @@ export interface ProjectListViewProps {
   /** editor+ 才显示"新建项目"（viewer 隐藏）。 */
   canCreate: boolean
   styles: Style[]
+  /** M5.1：org 下 kind=text 的启用模型，供"新建项目"对话框的规划模型下拉。 */
+  textModels?: ModelConfig[]
   onCreate: (input: CreateProjectInput) => Promise<Project>
   /** 点击卡片进工作台（路由在 T10 接入；T9 为可注入回调便于单测）。 */
   onOpenProject: (project: Project) => void
@@ -30,6 +32,7 @@ export function ProjectListView({
   onRetry,
   canCreate,
   styles,
+  textModels,
   onCreate,
   onOpenProject,
   needsModelConfig = false,
@@ -47,6 +50,7 @@ export function ProjectListView({
           <CreateProjectDialog
             trigger={newButton}
             styles={styles}
+            textModels={textModels}
             onSubmit={onCreate}
             onSuccess={onOpenProject}
           />
@@ -117,6 +121,7 @@ export function ProjectListView({
             <CreateProjectDialog
               trigger={<Button variant="amber">新建项目</Button>}
               styles={styles}
+              textModels={textModels}
               onSubmit={onCreate}
               onSuccess={onOpenProject}
             />

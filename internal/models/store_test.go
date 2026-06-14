@@ -2,6 +2,8 @@ package models
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -14,6 +16,14 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/secretbox"
 	"github.com/costa92/llm-agent-studio/internal/storage"
 )
+
+// uniqueSuffix 让 org_id / plan_id 等硬编码 ID 在共享测试池里每次跑都不同，
+// 避免撞唯一约束。
+func uniqueSuffix() string {
+	var b [3]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
 
 // testBox 用固定 base64 32 字节密钥构造 enabled box (BYOK 加密)。
 func testBox(t *testing.T) *secretbox.Box {
@@ -204,6 +214,52 @@ func TestResolveForOrgDecryptsKey(t *testing.T) {
 	// 无启用默认 → ok=false。
 	if _, ok, err := st.ResolveForOrg(ctx, "org-none", "text"); err != nil || ok {
 		t.Fatalf("no default: ok=%v err=%v", ok, err)
+	}
+}
+
+// M5.1: ResolveForOrgNamed 按 (kind, provider, model) 精准查 org 下的启用配置。
+// 多个 (provider, model) 同 kind 共存时也能精确命中（不必是默认）。
+func TestResolveForOrgNamedHitsExactProviderModel(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	orgID := "org_named_" + uniqueSuffix()
+	const wantKey = "sk-named-hit-999"
+	// 同 kind 同时建 3 个：两个非默认 + 一个默认。
+	for _, spec := range []CreateInput{
+		{OrgID: orgID, Kind: "text", Provider: "ollama", Model: "gemma4:26b", Enabled: true, IsDefault: false, APIKey: "sk-nm-1"},
+		{OrgID: orgID, Kind: "text", Provider: "minimax", Model: "minimax-text-01", Enabled: true, IsDefault: true, APIKey: "sk-nm-2"},
+		{OrgID: orgID, Kind: "text", Provider: "openai-compatible", Model: "llama3", Enabled: true, IsDefault: false, APIKey: wantKey, BaseURL: "https://llama.local"},
+	} {
+		if _, err := st.Create(ctx, spec); err != nil {
+			t.Fatalf("create %s/%s: %v", spec.Provider, spec.Model, err)
+		}
+	}
+	// 命中非默认 + 非 first-created 的那个（按 (is_default DESC, created_at DESC) → 默认排第一，
+	// 其他按创建时间；同 provider/model 唯一性由 unique 约束保证）。
+	rm, ok, err := st.ResolveForOrgNamed(ctx, orgID, "text", "openai-compatible", "llama3")
+	if err != nil || !ok {
+		t.Fatalf("named resolve: ok=%v err=%v", ok, err)
+	}
+	if rm.APIKey != wantKey || rm.BaseURL != "https://llama.local" {
+		t.Fatalf("named resolve returned wrong config: %+v", rm)
+	}
+	// 不存在的 provider → ok=false。
+	if _, ok, err := st.ResolveForOrgNamed(ctx, orgID, "text", "nope", "nope"); err != nil || ok {
+		t.Fatalf("missing model: ok=%v err=%v", ok, err)
+	}
+	// 禁用 (enabled=false) 的 model_config 也不应命中——insert 一个 disabled 的查。
+	if _, err := st.Create(ctx, CreateInput{
+		OrgID: orgID, Kind: "text", Provider: "disabled-prov", Model: "x", Enabled: false, APIKey: "sk",
+	}); err != nil {
+		t.Fatalf("create disabled: %v", err)
+	}
+	if _, ok, err := st.ResolveForOrgNamed(ctx, orgID, "text", "disabled-prov", "x"); err != nil || ok {
+		t.Fatalf("disabled model must not resolve: ok=%v err=%v", ok, err)
+	}
+	// 空 provider/model 直接 ok=false，0 行 SQL。
+	if _, ok, err := st.ResolveForOrgNamed(ctx, orgID, "text", "", ""); err != nil || ok {
+		t.Fatalf("empty args: ok=%v err=%v", ok, err)
 	}
 }
 

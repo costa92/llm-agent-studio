@@ -183,4 +183,86 @@ describe("CreateProjectForm", () => {
     expect(await screen.findByText("请输入项目名称")).toBeInTheDocument()
     expect(onSubmit).not.toHaveBeenCalled()
   })
+
+  // M5.1: 规划模型下拉只在 org 有 text 模型时显示；空 = 不带 override 字段。
+  it("hides the planner-model selector when no text models are configured", () => {
+    render(<CreateProjectForm styles={STYLES} onSubmit={vi.fn()} textModels={[]} />)
+    expect(screen.queryByLabelText("规划用模型（可选）")).toBeNull()
+  })
+
+  it("hides the planner-model selector when textModels is undefined", () => {
+    render(<CreateProjectForm styles={STYLES} onSubmit={vi.fn()} />)
+    expect(screen.queryByLabelText("规划用模型（可选）")).toBeNull()
+  })
+
+  it("shows the planner-model selector and submits without override by default", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(makeProject({ id: "x" }))
+    const user = userEvent.setup()
+    render(
+      <CreateProjectForm
+        styles={STYLES}
+        onSubmit={onSubmit}
+        textModels={[
+          {
+            id: "m1",
+            orgId: "o",
+            kind: "text",
+            provider: "minimax",
+            model: "minimax-text-01",
+            enabled: true,
+            isDefault: true,
+            baseUrl: "",
+            useSsl: true,
+            hasApiKey: true,
+          },
+        ]}
+      />,
+    )
+    // 下拉 trigger 必须渲染（默认选项："使用组织默认"）。
+    expect(screen.getByLabelText("规划用模型（可选）")).toBeInTheDocument()
+    await user.type(screen.getByLabelText("项目名称"), "X")
+    await user.type(screen.getByLabelText("创意需求"), "一句")
+    await user.click(screen.getByRole("button", { name: "创建" }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    const got = onSubmit.mock.calls[0][0]
+    // 默认没改 → 不带 plannerProvider/plannerModel（让后端 = 无 override）。
+    expect(got.plannerProvider).toBeUndefined()
+    expect(got.plannerModel).toBeUndefined()
+  })
+
+  it("submits without override when the planner-model dropdown is left at default", async () => {
+    // jsdom + Radix Select 的 pointer-capture 模拟不可靠——真实"在 Radix 下拉里
+    // 选一个选项"走的是浮层+键盘路径，单测里很容易 flaky。这里只验证
+    // 用户没动下拉时（默认 = 用组织默认）提交不带 override 字段。
+    // 真正"选了 ollama → 提交时带 override"靠 Playwright/E2E 覆盖。
+    const onSubmit = vi.fn().mockResolvedValue(makeProject({ id: "x" }))
+    const user = userEvent.setup()
+    render(
+      <CreateProjectForm
+        styles={STYLES}
+        onSubmit={onSubmit}
+        textModels={[
+          {
+            id: "m2",
+            orgId: "o",
+            kind: "text",
+            provider: "ollama",
+            model: "gemma4:26b",
+            enabled: true,
+            isDefault: false,
+            baseUrl: "",
+            useSsl: true,
+            hasApiKey: false,
+          },
+        ]}
+      />,
+    )
+    await user.type(screen.getByLabelText("项目名称"), "X")
+    await user.type(screen.getByLabelText("创意需求"), "一句")
+    await user.click(screen.getByRole("button", { name: "创建" }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    const got = onSubmit.mock.calls[0][0]
+    expect(got.plannerProvider).toBeUndefined()
+    expect(got.plannerModel).toBeUndefined()
+  })
 })

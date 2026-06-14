@@ -23,25 +23,30 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Button } from "@/components/studio/Button"
-import type { CreateProjectInput, Project, Style } from "@/lib/types"
+import type { CreateProjectInput, ModelConfig, Project, Style } from "@/lib/types"
 
 // 内容类型 / 目标平台为前端枚举（后端只存字符串，无白名单约束）；风格取自 GET /api/prompt-styles 的 name。
 const CONTENT_TYPES = ["短视频", "广告片", "动画", "宣传片"] as const
 const TARGET_PLATFORMS = ["抖音", "视频号", "B 站", "小红书", "通用"] as const
 
 // name 必填（后端缺则 400）；brief 必填（创意需求驱动 planner）；其余给默认值。
+// M5.1: plannerProvider / plannerModel 可选（空 = 走 org 默认）。
 const formSchema = z.object({
   name: z.string().min(1, "请输入项目名称"),
   brief: z.string().min(1, "请输入创意需求"),
   contentType: z.string().min(1, "请选择内容类型"),
   targetPlatform: z.string().min(1, "请选择目标平台"),
   style: z.string().min(1, "请选择风格"),
+  plannerProvider: z.string(),
+  plannerModel: z.string(),
 })
 
 type FormValues = z.infer<typeof formSchema>
 
 export interface CreateProjectFormProps {
   styles: Style[]
+  /** M5.1: org 下 kind=text 的启用模型列表（供规划模型下拉）。空 = 不显示该下拉。 */
+  textModels?: ModelConfig[]
   /** 提交表单——返回 Promise<Project>（成功）或 reject（失败）。 */
   onSubmit: (input: CreateProjectInput) => Promise<Project>
   /** 创建成功后回调（关闭 Dialog / 跳工作台）。 */
@@ -51,6 +56,7 @@ export interface CreateProjectFormProps {
 // 无 Dialog 壳的纯表单，便于单测。提交调 onSubmit，成功调 onSuccess。
 export function CreateProjectForm({
   styles,
+  textModels,
   onSubmit,
   onSuccess,
 }: CreateProjectFormProps) {
@@ -69,13 +75,27 @@ export function CreateProjectForm({
       targetPlatform: TARGET_PLATFORMS[0],
       // 默认选中首个风格（若已加载）——免去必填空态，且为合理 UX。
       style: styles[0]?.name ?? "",
+      // M5.1: 规划模型默认空 = 走 org 默认。下拉只显示 org 启用的 text 模型。
+      plannerProvider: "",
+      plannerModel: "",
     },
   })
 
   const submit = handleSubmit(async (values) => {
     setSubmitError(null)
     try {
-      const project = await onSubmit(values)
+      // 空 = 走 org 默认 → 不传给后端（让后端语义上 = "无 override"）。
+      const input: CreateProjectInput = {
+        name: values.name,
+        brief: values.brief,
+        contentType: values.contentType,
+        targetPlatform: values.targetPlatform,
+        style: values.style,
+        ...(values.plannerProvider && values.plannerModel
+          ? { plannerProvider: values.plannerProvider, plannerModel: values.plannerModel }
+          : {}),
+      }
+      const project = await onSubmit(input)
       onSuccess?.(project)
     } catch {
       setSubmitError("创建失败，请重试")
@@ -174,6 +194,64 @@ export function CreateProjectForm({
           <p className="text-[12px] text-danger">{errors.style.message}</p>
         )}
       </div>
+
+      {/* M5.1: per-project 规划模型。空 = org 默认；下拉只显示 org 真启用的
+          text 模型。org 还没配 text 模型时整个区段隐藏（避免无意义空下拉）。
+          Radix Select.Item 不允许空字符串 value，所以用 "__default__" 哨兵。 */}
+      {textModels && textModels.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="plannerModel">规划用模型（可选）</Label>
+          <Controller
+            control={control}
+            name="plannerProvider"
+            render={({ field: provField }) => (
+              <Controller
+                control={control}
+                name="plannerModel"
+                render={({ field: modField }) => (
+                  <Select
+                    value={
+                      provField.value && modField.value
+                        ? `${provField.value}::${modField.value}`
+                        : "__default__"
+                    }
+                    onValueChange={(v) => {
+                      if (v === "__default__") {
+                        provField.onChange("")
+                        modField.onChange("")
+                        return
+                      }
+                      const sep = v.indexOf("::")
+                      if (sep < 0) return
+                      provField.onChange(v.slice(0, sep))
+                      modField.onChange(v.slice(sep + 2))
+                    }}
+                  >
+                    <SelectTrigger id="plannerModel" aria-invalid={false}>
+                      <SelectValue placeholder="使用组织默认" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__default__">使用组织默认</SelectItem>
+                      {textModels.map((m) => {
+                        const key = `${m.provider}::${m.model}`
+                        return (
+                          <SelectItem key={key} value={key}>
+                            {m.provider} · {m.model}
+                            {m.isDefault ? "（默认）" : ""}
+                          </SelectItem>
+                        )
+                      })}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+            )}
+          />
+          <p className="text-[11.5px] text-text-3">
+            留空 = 走组织默认；选某个模型则本次及后续 run 都用该模型。
+          </p>
+        </div>
+      )}
 
       {submitError && (
         <p role="alert" className="text-[12px] text-danger">

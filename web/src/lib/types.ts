@@ -25,6 +25,10 @@ export interface Project {
   status: ProjectStatus
   createdBy: string
   fallbackUsed?: boolean
+  // M5.1: per-project 规划模型 override。空 = 走 org 默认；非空时 run 时
+  // 后端 router 用 (provider, model) 查 org 的对应 model_config 拿 key。
+  plannerProvider?: string
+  plannerModel?: string
 }
 
 // UI-spec §7.2。
@@ -44,6 +48,10 @@ export interface CreateProjectInput {
   contentType: string
   targetPlatform: string
   style: string
+  // M5.1: per-project 规划模型 override。空 = 走 org 默认；非空时 run 时
+  // router 用 (provider, model) 查 org 的对应 model_config 拿 key。
+  plannerProvider?: string
+  plannerModel?: string
 }
 
 // runHandler 返回：POST /api/projects/{id}/run → 202。

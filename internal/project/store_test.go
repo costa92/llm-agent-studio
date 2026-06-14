@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"os"
 	"testing"
 
@@ -47,12 +48,16 @@ func TestCreateGetListProject(t *testing.T) {
 	p, err := s.Create(ctx, CreateInput{
 		OrgID: orgID, Name: "Promo", Brief: "a promo", ContentType: "ad",
 		TargetPlatform: "tiktok", Style: "cyberpunk", CreatedBy: "u1",
+		PlannerProvider: "minimax", PlannerModel: "minimax-text-01",
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	if p.Status != "draft" {
 		t.Fatalf("new project status=%q want draft", p.Status)
+	}
+	if p.PlannerProvider != "minimax" || p.PlannerModel != "minimax-text-01" {
+		t.Fatalf("planner override not persisted: %+v", p)
 	}
 	got, err := s.Get(ctx, p.ID)
 	if err != nil {
@@ -61,12 +66,58 @@ func TestCreateGetListProject(t *testing.T) {
 	if got.Name != "Promo" || got.OrgID != orgID {
 		t.Fatalf("get mismatch: %+v", got)
 	}
+	if got.PlannerProvider != "minimax" || got.PlannerModel != "minimax-text-01" {
+		t.Fatalf("get: planner override not round-tripped: %+v", got)
+	}
 	items, _, err := s.ListByOrg(ctx, orgID, 50, "")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
 	if len(items) != 1 {
 		t.Fatalf("list len=%d want 1", len(items))
+	}
+	if items[0].PlannerProvider != "minimax" {
+		t.Fatalf("list: planner override missing in projection: %+v", items[0])
+	}
+}
+
+// M5.1: Update 改 planner_provider/planner_model，其他字段不动；找不到 id → 404。
+func TestUpdatePlannerOverride(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	orgID := "org_upd_" + uniqueSuffix()
+	p, err := s.Create(ctx, CreateInput{
+		OrgID: orgID, Name: "X", CreatedBy: "u",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// 初值空 → 改 → 拿到新值。
+	upd, err := s.Update(ctx, p.ID, UpdateInput{
+		PlannerProvider: "ollama", PlannerModel: "gemma4:26b",
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if upd.PlannerProvider != "ollama" || upd.PlannerModel != "gemma4:26b" {
+		t.Fatalf("update did not persist: %+v", upd)
+	}
+	// Get 拿到的也是新值。
+	got, _ := s.Get(ctx, p.ID)
+	if got.PlannerProvider != "ollama" {
+		t.Fatalf("get after update: %+v", got)
+	}
+	// 清回空。
+	cleared, err := s.Update(ctx, p.ID, UpdateInput{PlannerProvider: "", PlannerModel: ""})
+	if err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if cleared.PlannerProvider != "" || cleared.PlannerModel != "" {
+		t.Fatalf("clear did not reset: %+v", cleared)
+	}
+	// 找不到 → ErrNotFound。
+	if _, err := s.Update(ctx, "nope", UpdateInput{PlannerProvider: "x"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing id: want ErrNotFound, got %v", err)
 	}
 }
 

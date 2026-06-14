@@ -385,6 +385,41 @@ func (s *Store) ResolveForOrg(ctx context.Context, orgID, kind string) (Resolved
 	return rm, true, nil
 }
 
+// ResolveForOrgNamed 查某 org 下指定 (kind, provider, model) 的启用配置（不必是默认）。
+// 供 per-project 规划模型 override 走（M5.1：project.planner_provider+planner_model →
+// 拿到 org 的对应 model_config → 用其 api_key 调 buildChat）。同样唯一暴露明文 key。
+// 找不到匹配 = (zero, false, nil)，caller 走默认。空串 provider/modelName 直接返
+// 0 行（避免无谓的 SQL）。
+func (s *Store) ResolveForOrgNamed(ctx context.Context, orgID, kind, provider, modelName string) (ResolvedModel, bool, error) {
+	if provider == "" || modelName == "" {
+		return ResolvedModel{}, false, nil
+	}
+	row := s.pool.QueryRow(ctx,
+		`SELECT provider, model, COALESCE(base_url,''), api_key_enc, params_json
+			 FROM model_configs
+			 WHERE org_id=$1 AND kind=$2 AND provider=$3 AND model=$4 AND enabled=true
+			 ORDER BY is_default DESC, created_at DESC LIMIT 1`, orgID, kind, provider, modelName)
+	var rm ResolvedModel
+	var keyEnc []byte
+	if err := row.Scan(&rm.Provider, &rm.Model, &rm.BaseURL, &keyEnc, &rm.Params); err != nil {
+		if err == pgx.ErrNoRows {
+			return ResolvedModel{}, false, nil
+		}
+		return ResolvedModel{}, false, fmt.Errorf("models: resolve named: %w", err)
+	}
+	if len(keyEnc) > 0 {
+		if !s.box.Enabled() {
+			return ResolvedModel{}, false, ErrEncUnavailable
+		}
+		pt, err := s.box.Decrypt(keyEnc)
+		if err != nil {
+			return ResolvedModel{}, false, fmt.Errorf("models: decrypt api key: %w", err)
+		}
+		rm.APIKey = string(pt)
+	}
+	return rm, true, nil
+}
+
 // DefaultForOrg returns the org's default provider+model for a kind. ok=false
 // when no enabled default exists (caller falls back to the registry default).
 func (s *Store) DefaultForOrg(ctx context.Context, orgID, kind string) (provider, model string, ok bool, err error) {

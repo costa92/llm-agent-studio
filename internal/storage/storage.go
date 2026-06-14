@@ -53,6 +53,12 @@ var m1Migrations = []string{
 		created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
 		updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 	)`,
+	// M5.1 增量：per-project 规划模型 override。空串 = 走 org 默认；
+	// 非空时 runHandler 经 modelrouter.ChatModelForNamed 查 model_configs
+	// 拿对应 provider/model 的 key 来组装 chat model，planner 拿到后用这个。
+	// ADD COLUMN IF NOT EXISTS 让旧库升上来也不报错。
+	`ALTER TABLE projects ADD COLUMN IF NOT EXISTS planner_provider TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE projects ADD COLUMN IF NOT EXISTS planner_model TEXT NOT NULL DEFAULT ''`,
 	`CREATE INDEX IF NOT EXISTS projects_org_idx ON projects (org_id)`,
 	`CREATE TABLE IF NOT EXISTS plans (
 		id            TEXT PRIMARY KEY,

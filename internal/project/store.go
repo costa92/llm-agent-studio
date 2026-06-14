@@ -30,18 +30,35 @@ type Project struct {
 	Status         string `json:"status"`
 	CreatedBy      string `json:"createdBy"`
 	FallbackUsed   bool   `json:"fallbackUsed"`
+	// M5.1: per-project 规划模型 override。空 = 走 org 默认；非空时 runHandler
+	// 经 modelrouter.ChatModelForNamed 查 org model_configs 拿 provider/model 对应
+	// 的 key，再交给 planner.PlanWith 使用。
+	PlannerProvider string `json:"plannerProvider"`
+	PlannerModel    string `json:"plannerModel"`
 }
 
 // CreateInput is the input to Create. Brief maps to the description column
 // (the creative brief the planner/ScriptAgent consume).
 type CreateInput struct {
-	OrgID          string
-	Name           string
-	Brief          string
-	ContentType    string
-	TargetPlatform string
-	Style          string
-	CreatedBy      string
+	OrgID           string
+	Name            string
+	Brief           string
+	ContentType     string
+	TargetPlatform  string
+	Style           string
+	CreatedBy       string
+	// Per-project 规划模型 override（空 = 走 org 默认）。
+	PlannerProvider string
+	PlannerModel    string
+}
+
+// UpdateInput 用于后期修改项目元数据（M5.1 edit 入口）。
+// 当前只暴露 PlannerProvider/PlannerModel 两个字段；其他字段走 create + 新建。
+// Style / 内容类型 / brief 一旦项目跑了就不该改（会污染 run 事件 history），
+// 想改只能删了重建。
+type UpdateInput struct {
+	PlannerProvider string
+	PlannerModel    string
 }
 
 // Store persists projects.
@@ -67,11 +84,12 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Project, error) {
 		ID: newID(), OrgID: in.OrgID, Name: in.Name, Description: in.Brief,
 		ContentType: in.ContentType, TargetPlatform: in.TargetPlatform,
 		Style: in.Style, Status: "draft", CreatedBy: in.CreatedBy,
+		PlannerProvider: in.PlannerProvider, PlannerModel: in.PlannerModel,
 	}
 	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO projects (id, org_id, name, description, content_type, target_platform, style, status, created_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-		p.ID, p.OrgID, p.Name, p.Description, p.ContentType, p.TargetPlatform, p.Style, p.Status, p.CreatedBy); err != nil {
+		`INSERT INTO projects (id, org_id, name, description, content_type, target_platform, style, status, created_by, planner_provider, planner_model)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		p.ID, p.OrgID, p.Name, p.Description, p.ContentType, p.TargetPlatform, p.Style, p.Status, p.CreatedBy, p.PlannerProvider, p.PlannerModel); err != nil {
 		return Project{}, fmt.Errorf("project: insert: %w", err)
 	}
 	return p, nil
@@ -82,7 +100,8 @@ func (s *Store) Get(ctx context.Context, id string) (Project, error) {
 	var p Project
 	err := s.pool.QueryRow(ctx,
 		`SELECT p.id, p.org_id, p.name, p.description, p.content_type, p.target_platform, p.style, p.status, p.created_by,
-		        COALESCE(pl.fallback_used, false)
+		        COALESCE(pl.fallback_used, false),
+		        p.planner_provider, p.planner_model
 		 FROM projects p
 		 LEFT JOIN (
 		     SELECT DISTINCT ON (project_id) project_id, fallback_used
@@ -90,7 +109,7 @@ func (s *Store) Get(ctx context.Context, id string) (Project, error) {
 		     ORDER BY project_id, created_at DESC
 		 ) pl ON p.id = pl.project_id
 		 WHERE p.id=$1`, id).
-		Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy, &p.FallbackUsed)
+		Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy, &p.FallbackUsed, &p.PlannerProvider, &p.PlannerModel)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Project{}, ErrNotFound
 	}
@@ -114,7 +133,7 @@ func (s *Store) ListByOrg(ctx context.Context, orgID string, limit int, cursor s
 		limit = 50
 	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, org_id, name, description, content_type, target_platform, style, status, created_by
+		`SELECT id, org_id, name, description, content_type, target_platform, style, status, created_by, planner_provider, planner_model
 		 FROM projects WHERE org_id=$1 AND id>$2 ORDER BY id ASC LIMIT $3`,
 		orgID, cursor, limit)
 	if err != nil {
@@ -124,7 +143,7 @@ func (s *Store) ListByOrg(ctx context.Context, orgID string, limit int, cursor s
 	var out []Project
 	for rows.Next() {
 		var p Project
-		if err := rows.Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy); err != nil {
+		if err := rows.Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy, &p.PlannerProvider, &p.PlannerModel); err != nil {
 			return nil, "", err
 		}
 		out = append(out, p)
@@ -143,6 +162,24 @@ func (s *Store) ListByOrg(ctx context.Context, orgID string, limit int, cursor s
 func (s *Store) SetStatus(ctx context.Context, id, status string) error {
 	_, err := s.pool.Exec(ctx, `UPDATE projects SET status=$2, updated_at=now() WHERE id=$1`, id, status)
 	return err
+}
+
+// Update 修改项目的 planner_provider / planner_model（其他字段不允许改 — 想改
+// brief / style / 内容类型只能删了重建，避免污染已有 run 事件 history）。
+// 现状只支持改两个模型字段；后续要加可以照同样的 model 扩 UpdateInput。
+// 0 行影响 = 找不到该 id（POST 一致返 404 而非 200）。
+func (s *Store) Update(ctx context.Context, id string, in UpdateInput) (Project, error) {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE projects
+		 SET planner_provider=$2, planner_model=$3, updated_at=now()
+		 WHERE id=$1`, id, in.PlannerProvider, in.PlannerModel)
+	if err != nil {
+		return Project{}, fmt.Errorf("project: update: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return Project{}, ErrNotFound
+	}
+	return s.Get(ctx, id)
 }
 
 // RefreshStatus recomputes the project status from its LATEST plan's todo

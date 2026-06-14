@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -55,9 +56,11 @@ type ProjectStore interface {
 	Create(ctx context.Context, in project.CreateInput) (project.Project, error)
 	Get(ctx context.Context, id string) (project.Project, error)
 	ListByOrg(ctx context.Context, orgID string, limit int, cursor string) ([]project.Project, string, error)
+	Update(ctx context.Context, id string, in project.UpdateInput) (project.Project, error)
 	SetStatus(ctx context.Context, id, status string) error
 	Cancel(ctx context.Context, projectID string) error
 	OrgIDForProject(ctx context.Context, projectID string) (string, error)
+	ListPlans(ctx context.Context, projectID string) ([]project.Plan, error)
 }
 
 // PlannerPort kicks off planning (satisfied by *planner.Planner). PlanWith
@@ -72,14 +75,17 @@ type PlannerPort interface {
 // nil in Deps → the run handler uses PlannerPort.Plan (the bound default).
 type ChatRouter interface {
 	ChatModelFor(ctx context.Context, orgID string) llm.ChatModel
+	// M5.1: per-project 规划模型 override 解析；caller 在 ChatModelForNamed
+	// 返 nil 时退回 ChatModelFor。
+	ChatModelForNamed(ctx context.Context, orgID, provider, modelName string) llm.ChatModel
 }
 
 // ArtifactReader reads todos/script/shots for the artifact endpoints.
 type ArtifactReader interface {
-	Todos(ctx context.Context, projectID string) ([]map[string]any, error)
-	Script(ctx context.Context, projectID string) (json.RawMessage, bool, error)
-	Shots(ctx context.Context, projectID string) ([]map[string]any, error)
-	Assets(ctx context.Context, projectID, status string) ([]map[string]any, error)
+	Todos(ctx context.Context, projectID string, planID string) ([]map[string]any, error)
+	Script(ctx context.Context, projectID string, planID string) (json.RawMessage, bool, error)
+	Shots(ctx context.Context, projectID string, planID string) ([]map[string]any, error)
+	Assets(ctx context.Context, projectID, planID, status string) ([]map[string]any, error)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -238,11 +244,13 @@ func createProjectHandler(ps ProjectStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		uid := authzhttp.UserID(r.Context())
 		var req struct {
-			Name           string `json:"name"`
-			Brief          string `json:"brief"`
-			ContentType    string `json:"contentType"`
-			TargetPlatform string `json:"targetPlatform"`
-			Style          string `json:"style"`
+			Name            string `json:"name"`
+			Brief           string `json:"brief"`
+			ContentType     string `json:"contentType"`
+			TargetPlatform  string `json:"targetPlatform"`
+			Style           string `json:"style"`
+			PlannerProvider string `json:"plannerProvider"`
+			PlannerModel    string `json:"plannerModel"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
 			http.Error(w, "bad request: name required", http.StatusBadRequest)
@@ -252,6 +260,7 @@ func createProjectHandler(ps ProjectStore) http.HandlerFunc {
 			OrgID: r.PathValue("org"), Name: req.Name, Brief: req.Brief,
 			ContentType: req.ContentType, TargetPlatform: req.TargetPlatform,
 			Style: req.Style, CreatedBy: uid,
+			PlannerProvider: req.PlannerProvider, PlannerModel: req.PlannerModel,
 		})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -290,6 +299,28 @@ func getProjectHandler(ps ProjectStore) http.HandlerFunc {
 			return
 		} else if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, p)
+	}
+}
+
+// updateProjectHandler (PUT /api/projects/{id}): editor+. M5.1：现在只允许改
+// planner_provider / planner_model 两个字段（想改 brief / style 删了重建），
+// body=project.UpdateInput 形式，返 200 + 更新后的 Project DTO。找不到 → 404。
+func updateProjectHandler(ps ProjectStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var in project.UpdateInput
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, "bad request: invalid body", http.StatusBadRequest)
+			return
+		}
+		p, err := ps.Update(r.Context(), r.PathValue("id"), in)
+		if errors.Is(err, project.ErrNotFound) {
+			http.Error(w, "project not found", http.StatusNotFound)
+			return
+		} else if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, http.StatusOK, p)
@@ -339,10 +370,13 @@ func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore,
 			TargetPlatform: p.TargetPlatform, Style: p.Style,
 		}
 		var res planner.Result
-		if cr != nil {
-			// BYOK 路由: plan with the org's resolved chat model (falls back to the
-			// planner's bound default inside the router when the org has no config).
-			res, err = pl.PlanWith(r.Context(), id, cr.ChatModelFor(r.Context(), p.OrgID), brief)
+		// M5.1: per-project 规划模型 override 优先于 org 默认。如果 project 上
+		// 配了 planner_provider+planner_model，runHandler 拿这个去 modelrouter
+		// 查 org 的对应 model_config（可能也是默认之一），拿其 key 走 buildChat。
+		// 查不到 / build 失败 → 退回 org 默认 chat。空 = 走完全默认。
+		plannerModel := chatModelForPlan(r.Context(), cr, p)
+		if plannerModel != nil {
+			res, err = pl.PlanWith(r.Context(), id, plannerModel, brief)
 		} else {
 			res, err = pl.Plan(r.Context(), id, brief)
 		}
@@ -361,6 +395,32 @@ func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore,
 			"planId": res.PlanID, "valid": res.Valid, "fallbackUsed": res.FallbackUsed,
 		})
 	}
+}
+
+// chatModelForPlan 决定本次 run 用哪个 chat model 给 planner。优先级：
+//  1. project.PlannerProvider + PlannerModel 显式指定（per-project override），
+//     经 router.ChatModelForNamed 查 org 的对应 model_config 拿其 key 复用。
+//  2. 退到 router.ChatModelFor(org) 的 org 默认。
+//  3. cr==nil（无 router）= 返 nil，caller 走 pl.Plan 走 planner 自绑默认。
+//
+// 返 nil = "caller 用 pl.Plan / planner bound default"。这条路径在没有 org
+// 任何 chat model 配置时也会命中——planner.go:54 的 model: llm.NewScriptedLLM
+// 是 dev 兜底。
+func chatModelForPlan(ctx context.Context, cr ChatRouter, p project.Project) llm.ChatModel {
+	if cr == nil {
+		return nil
+	}
+	if p.PlannerProvider != "" && p.PlannerModel != "" {
+		if m := cr.ChatModelForNamed(ctx, p.OrgID, p.PlannerProvider, p.PlannerModel); m != nil {
+			return m
+		}
+		// override 解析不出来：不静默改用 org 默认——记日志（router 内部已 warn，
+		// 这里补一条带 project 上下文的，方便 trace）。
+		slog.Default().Warn("runHandler: project planner override not resolvable; using org default chat",
+			"org", p.OrgID, "project", p.ID,
+			"provider", p.PlannerProvider, "model", p.PlannerModel)
+	}
+	return cr.ChatModelFor(ctx, p.OrgID)
 }
 
 // cancelHandler (POST /api/projects/{id}/cancel): editor+.
@@ -383,7 +443,8 @@ func listEventsHandler(reader EventReader) http.HandlerFunc {
 				after = n
 			}
 		}
-		evs, err := reader.List(r.Context(), r.PathValue("id"), after, 200)
+		planID := r.URL.Query().Get("planId")
+		evs, err := reader.List(r.Context(), r.PathValue("id"), planID, after, 200)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -392,10 +453,24 @@ func listEventsHandler(reader EventReader) http.HandlerFunc {
 	}
 }
 
+// listPlansHandler (GET /api/projects/{id}/plans): viewer+.
+func listPlansHandler(ps ProjectStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		plans, err := ps.ListPlans(r.Context(), id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": plans})
+	}
+}
+
 // artifactHandlers (GET .../todos|script|shots): viewer+.
 func todosHandler(ar ArtifactReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		items, err := ar.Todos(r.Context(), r.PathValue("id"))
+		planID := r.URL.Query().Get("planId")
+		items, err := ar.Todos(r.Context(), r.PathValue("id"), planID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -406,7 +481,8 @@ func todosHandler(ar ArtifactReader) http.HandlerFunc {
 
 func scriptHandler(ar ArtifactReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		content, ok, err := ar.Script(r.Context(), r.PathValue("id"))
+		planID := r.URL.Query().Get("planId")
+		content, ok, err := ar.Script(r.Context(), r.PathValue("id"), planID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -422,7 +498,8 @@ func scriptHandler(ar ArtifactReader) http.HandlerFunc {
 
 func shotsHandler(ar ArtifactReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		items, err := ar.Shots(r.Context(), r.PathValue("id"))
+		planID := r.URL.Query().Get("planId")
+		items, err := ar.Shots(r.Context(), r.PathValue("id"), planID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -434,7 +511,8 @@ func shotsHandler(ar ArtifactReader) http.HandlerFunc {
 // projectAssetsHandler (GET /api/projects/{id}/assets?status=): viewer+.
 func projectAssetsHandler(ar ArtifactReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		items, err := ar.Assets(r.Context(), r.PathValue("id"), r.URL.Query().Get("status"))
+		planID := r.URL.Query().Get("planId")
+		items, err := ar.Assets(r.Context(), r.PathValue("id"), planID, r.URL.Query().Get("status"))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

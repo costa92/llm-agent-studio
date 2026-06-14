@@ -107,6 +107,24 @@ export function useModelConfigs(org: string): UseQueryResult<ModelConfig[]> {
   })
 }
 
+// M5.1: 项目规划模型下拉的源数据。返回 org 下 kind='text' 且 enabled=true 的模型，
+// 让"per-project 选规划模型"那个下拉只显示 org 真有 key 的可选模型（避免选了
+// 跑起来还得 4xx/查不到）。
+export function useOrgTextModels(
+  org: string,
+): UseQueryResult<ModelConfig[]> {
+  return useQuery({
+    queryKey: ["org-text-models", org],
+    queryFn: () =>
+      apiJSON<ItemsEnvelope<ModelConfig>>(
+        `/api/orgs/${org}/model-configs`,
+      ).then((env) =>
+        env.items.filter((m) => m.kind === "text" && m.enabled),
+      ),
+    enabled: org !== "",
+  })
+}
+
 // 创建模型配置：POST /api/orgs/{org}/model-configs body {kind,provider,model,enabled,isDefault,params}
 //   → 200 ModelConfig（admin，createModelConfigHandler）。
 // provider/model 缺失 → 400；含密钥型 param → 400 ErrSecretParam（见 configError.ts）。

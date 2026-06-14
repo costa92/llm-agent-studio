@@ -26,7 +26,7 @@ export function useProjects(org: string): UseQueryResult<Project[]> {
   })
 }
 
-// POST /api/orgs/{org}/projects body {name,brief,contentType,targetPlatform,style} → Project（editor+）。
+// POST /api/orgs/{org}/projects body {name,brief,contentType,targetPlatform,style,plannerProvider?,plannerModel?} → Project（editor+）。
 // 成功后失效项目列表 Query。
 export function useCreateProject(
   org: string,
@@ -41,6 +41,26 @@ export function useCreateProject(
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["projects", org] })
+    },
+  })
+}
+
+// PUT /api/projects/{id} body {plannerProvider,plannerModel} → Project（editor+）。
+// M5.1: 现在只允许改规划模型；成功后失效 project + run-history Query。
+export function useUpdateProject(
+  org: string,
+): UseMutationResult<Project, Error, { id: string; plannerProvider: string; plannerModel: string }> {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, plannerProvider, plannerModel }) =>
+      apiJSON<Project>(`/api/projects/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plannerProvider, plannerModel }),
+      }),
+    onSuccess: (_data, vars) => {
+      void queryClient.invalidateQueries({ queryKey: ["projects", org] })
+      void queryClient.invalidateQueries({ queryKey: ["project", vars.id] })
     },
   })
 }
