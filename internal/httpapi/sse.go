@@ -13,7 +13,7 @@ import (
 
 // EventReader is the events surface the SSE + paged-list handlers need.
 type EventReader interface {
-	List(ctx context.Context, projectID string, afterSeq int64, limit int) ([]events.Event, error)
+	List(ctx context.Context, projectID string, planID string, afterSeq int64, limit int) ([]events.Event, error)
 }
 
 // sseEventNames whitelists DB-sourced kinds before they are interpolated into
@@ -40,6 +40,7 @@ var sseEventNames = map[string]bool{
 func streamEventsHandler(reader EventReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		projectID := r.PathValue("id")
+		planID := r.URL.Query().Get("planId")
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -60,7 +61,7 @@ func streamEventsHandler(reader EventReader) http.HandlerFunc {
 			}
 		}
 		emit := func() (done bool, err error) {
-			evs, lerr := reader.List(r.Context(), projectID, after, 200)
+			evs, lerr := reader.List(r.Context(), projectID, planID, after, 200)
 			if lerr != nil {
 				return false, lerr
 			}

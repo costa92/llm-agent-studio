@@ -4,7 +4,7 @@ import {
   useProjects,
   usePromptStyles,
 } from "@/features/projects/api"
-import { useModelConfigs } from "@/features/cost/api"
+import { useModelConfigs, useOrgTextModels } from "@/features/cost/api"
 import { ProjectListView } from "@/features/projects/ProjectListPage"
 
 // T9：项目列表 + 建项目视图。org 校验由父段布局 orgs.$org.projects.tsx 的 beforeLoad 承担。
@@ -25,6 +25,8 @@ function ProjectsPage() {
   const needsModelConfig =
     modelConfigsQuery.isSuccess &&
     !modelConfigsQuery.data.some((c) => c.enabled)
+  // M5.1: "新建项目"对话框的规划模型下拉的源数据。
+  const textModelsQuery = useOrgTextModels(org)
 
   return (
     <ProjectListView
@@ -40,6 +42,7 @@ function ProjectsPage() {
       // 故按 rbac 文档的"乐观显示 + 后端强制"策略乐观显示新建入口，editor+ 由后端 createProjectHandler 强制。
       canCreate
       styles={stylesQuery.data ?? []}
+      textModels={textModelsQuery.data}
       onCreate={(input) => createProject.mutateAsync(input)}
       onOpenProject={(project) =>
         // T10：进项目工作台（制片轨道）——org-scoped 路径，org param 透传以保住导航轨。

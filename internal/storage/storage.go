@@ -53,6 +53,12 @@ var m1Migrations = []string{
 		created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
 		updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 	)`,
+	// M5.1 增量：per-project 规划模型 override。空串 = 走 org 默认；
+	// 非空时 runHandler 经 modelrouter.ChatModelForNamed 查 model_configs
+	// 拿对应 provider/model 的 key 来组装 chat model，planner 拿到后用这个。
+	// ADD COLUMN IF NOT EXISTS 让旧库升上来也不报错。
+	`ALTER TABLE projects ADD COLUMN IF NOT EXISTS planner_provider TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE projects ADD COLUMN IF NOT EXISTS planner_model TEXT NOT NULL DEFAULT ''`,
 	`CREATE INDEX IF NOT EXISTS projects_org_idx ON projects (org_id)`,
 	`CREATE TABLE IF NOT EXISTS plans (
 		id            TEXT PRIMARY KEY,
@@ -260,7 +266,7 @@ var m6Migrations = []string{
 		updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 	)`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS storage_configs_global_uniq ON storage_configs (scope) WHERE scope='global'`,
-	`CREATE UNIQUE INDEX IF NOT EXISTS storage_configs_org_uniq ON storage_configs (org_id) WHERE scope='org'`,
+	`SELECT 1`,
 }
 
 // m7Migrations 建 mail_configs (global SMTP 邮件发送配置)。secret_enc BYTEA
@@ -281,10 +287,43 @@ var m7Migrations = []string{
 	`CREATE UNIQUE INDEX IF NOT EXISTS mail_configs_global_uniq ON mail_configs (scope) WHERE scope='global'`,
 }
 
-// Migrate applies the M1 + M2 + M3 + M4 + M5 + M6 + M7 migrations in order. Idempotent.
+// m8Migrations 建 prompts 表 (提示词管理)。
+var m8Migrations = []string{
+	`CREATE TABLE IF NOT EXISTS prompts (
+		id TEXT PRIMARY KEY,
+		org_id TEXT NOT NULL,
+		name TEXT NOT NULL,
+		content TEXT NOT NULL,
+		style TEXT NOT NULL DEFAULT '',
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+	)`,
+	`CREATE INDEX IF NOT EXISTS prompts_org_idx ON prompts (org_id)`,
+}
+
+// m9Migrations are the studio M9 migrations (adding image_provider and image_model to projects).
+var m9Migrations = []string{
+	`ALTER TABLE projects ADD COLUMN IF NOT EXISTS image_provider TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE projects ADD COLUMN IF NOT EXISTS image_model TEXT NOT NULL DEFAULT ''`,
+}
+
+// m10Migrations are the studio M10 migrations (adding storage_mode and updating storage_configs unique constraints).
+var m10Migrations = []string{
+	`ALTER TABLE projects ADD COLUMN IF NOT EXISTS storage_mode TEXT NOT NULL DEFAULT ''`,
+	`DROP INDEX IF EXISTS storage_configs_org_uniq`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS storage_configs_org_mode_uniq ON storage_configs (org_id, mode) WHERE scope='org'`,
+}
+
+// m11Migrations add custom workflow support.
+var m11Migrations = []string{
+	`ALTER TABLE projects ADD COLUMN IF NOT EXISTS custom_workflow_enabled BOOLEAN NOT NULL DEFAULT false`,
+	`ALTER TABLE projects ADD COLUMN IF NOT EXISTS workflow_nodes JSONB`,
+}
+
+// Migrate applies the M1 + M2 + M3 + M4 + M5 + M6 + M7 + M8 + M9 + M10 + M11 migrations in order. Idempotent.
 func (s *Storage) Migrate(ctx context.Context) error {
-	all := append(append(append(append(append(append(append([]string{},
-		m1Migrations...), m2Migrations...), m3Migrations...), m4Migrations...), m5Migrations...), m6Migrations...), m7Migrations...)
+	all := append(append(append(append(append(append(append(append(append(append(append([]string{},
+		m1Migrations...), m2Migrations...), m3Migrations...), m4Migrations...), m5Migrations...), m6Migrations...), m7Migrations...), m8Migrations...), m9Migrations...), m10Migrations...), m11Migrations...)
 	for _, stmt := range all {
 		if _, err := s.pool.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("storage: migrate: %w", err)

@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	blobgithub "github.com/costa92/llm-agent-studio/internal/blob/github"
 	"github.com/costa92/llm-agent-studio/internal/secretbox"
 )
 
@@ -106,6 +107,14 @@ func validate(in UpsertInput) error {
 		if in.Bucket == "" || in.AccessKeyID == "" {
 			return fmt.Errorf("storageconfig: mode %q requires repo (bucket) and owner (accessKeyId)", in.Mode)
 		}
+		// Endpoint 在 github 模式下被映射为 GitHub API 根（adapter New 的 APIBase）。
+		// 真实生产事故：把 jsDelivr CDN / raw.githubusercontent 误填进 Endpoint，blob
+		// Put 前 getSHA 直接 EOF——挡在 save 之前比静默 fallback 到 localfs 默认好。
+		if in.Endpoint != "" {
+			if err := blobgithub.ValidateAPIBase(in.Endpoint); err != nil {
+				return fmt.Errorf("storageconfig: %w", err)
+			}
+		}
 	case "localfs":
 		// 本地盘无需 bucket/endpoint。
 	}
@@ -172,7 +181,7 @@ func (s *Store) UpsertForOrg(ctx context.Context, orgID string, in UpsertInput) 
 		INSERT INTO storage_configs
 			(id, scope, org_id, mode, endpoint, region, bucket, access_key_id, secret_enc, use_ssl, public_prefix, enabled)
 		VALUES ($1, 'org', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-		ON CONFLICT (org_id) WHERE scope='org' DO UPDATE SET
+		ON CONFLICT (org_id, mode) WHERE scope='org' DO UPDATE SET
 			mode=EXCLUDED.mode, endpoint=EXCLUDED.endpoint, region=EXCLUDED.region,
 			bucket=EXCLUDED.bucket, access_key_id=EXCLUDED.access_key_id,
 			secret_enc=CASE WHEN $12 THEN EXCLUDED.secret_enc ELSE storage_configs.secret_enc END,
@@ -211,12 +220,20 @@ func (s *Store) GetGlobal(ctx context.Context) (StorageConfig, bool, error) {
 	return sc, true, nil
 }
 
-// GetForOrg 读某 org 配置。无行 → ok=false。
-func (s *Store) GetForOrg(ctx context.Context, orgID string) (StorageConfig, bool, error) {
-	row := s.pool.QueryRow(ctx,
-		`SELECT id, scope, org_id, mode, endpoint, region, bucket, access_key_id,
-			(secret_enc IS NOT NULL) AS has_secret, use_ssl, public_prefix, enabled
-		 FROM storage_configs WHERE scope='org' AND org_id=$1 LIMIT 1`, orgID)
+// GetForOrg 读某 org 的指定 mode 配置。如果 mode 为空，则返回该 org 的任意一个配置。无行 → ok=false。
+func (s *Store) GetForOrg(ctx context.Context, orgID string, mode string) (StorageConfig, bool, error) {
+	var row pgx.Row
+	if mode != "" {
+		row = s.pool.QueryRow(ctx,
+			`SELECT id, scope, org_id, mode, endpoint, region, bucket, access_key_id,
+				(secret_enc IS NOT NULL) AS has_secret, use_ssl, public_prefix, enabled
+			 FROM storage_configs WHERE scope='org' AND org_id=$1 AND mode=$2 LIMIT 1`, orgID, mode)
+	} else {
+		row = s.pool.QueryRow(ctx,
+			`SELECT id, scope, org_id, mode, endpoint, region, bucket, access_key_id,
+				(secret_enc IS NOT NULL) AS has_secret, use_ssl, public_prefix, enabled
+			 FROM storage_configs WHERE scope='org' AND org_id=$1 LIMIT 1`, orgID)
+	}
 	sc, err := scanConfig(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -227,26 +244,55 @@ func (s *Store) GetForOrg(ctx context.Context, orgID string) (StorageConfig, boo
 	return sc, true, nil
 }
 
-// DeleteForOrg 删某 org 配置。0 行受影响 → ErrNotFound。
-func (s *Store) DeleteForOrg(ctx context.Context, orgID string) error {
+// DeleteForOrg 删某 org 的指定 mode 配置。如果 mode 为空，则删除该 org 的所有配置。
+// 0 行受影响 → ErrNotFound。
+func (s *Store) DeleteForOrg(ctx context.Context, orgID string, mode string) error {
 	if orgID == "" {
 		return fmt.Errorf("storageconfig: orgID required")
 	}
-	tag, err := s.pool.Exec(ctx, `DELETE FROM storage_configs WHERE scope='org' AND org_id=$1`, orgID)
+	var rowsAffected int64
+	var err error
+	if mode != "" {
+		tag, terr := s.pool.Exec(ctx, `DELETE FROM storage_configs WHERE scope='org' AND org_id=$1 AND mode=$2`, orgID, mode)
+		err = terr
+		if terr == nil {
+			rowsAffected = tag.RowsAffected()
+		}
+	} else {
+		tag, terr := s.pool.Exec(ctx, `DELETE FROM storage_configs WHERE scope='org' AND org_id=$1`, orgID)
+		err = terr
+		if terr == nil {
+			rowsAffected = tag.RowsAffected()
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("storageconfig: delete: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
+	if rowsAffected == 0 {
 		return ErrNotFound
 	}
 	return nil
 }
 
-// ResolveForOrg 解析某 org 生效的存储配置 (含解密后的 SecretKey)，供 StorageRouter
-// 使用。优先 per-org enabled 行；否则 global enabled 行；都无 → ok=false。这是唯一
-// 暴露明文 secret 的路径，仅服务端内部调用 (绝不进 HTTP handler)。
-func (s *Store) ResolveForOrg(ctx context.Context, orgID string) (ResolvedStorage, bool, error) {
-	// per-org enabled 优先。
+// ResolveForOrgAndMode 解析某 org 在指定 mode 下生效的存储配置 (含解密后的 SecretKey)，供 StorageRouter
+// 使用。如果指定了 mode，则按 mode 查找：优先该 org 启用的对应 mode 配置，其次全局启用的对应 mode 配置。
+// 如果 mode 为空，则回退到该 org 的任意启用配置（即原本默认配置）。都无 → ok=false。
+func (s *Store) ResolveForOrgAndMode(ctx context.Context, orgID string, mode string) (ResolvedStorage, bool, error) {
+	if mode != "" {
+		if orgID != "" {
+			rs, ok, err := s.resolveOne(ctx, `WHERE scope='org' AND org_id=$1 AND mode=$2 AND enabled=true`, orgID, mode)
+			if err != nil {
+				return ResolvedStorage{}, false, err
+			}
+			if ok {
+				return rs, true, nil
+			}
+		}
+		// 回落 global 对应的 mode.
+		return s.resolveOne(ctx, `WHERE scope='global' AND mode=$1 AND enabled=true`, mode)
+	}
+
+	// mode == ""，保持 ResolveForOrg 逻辑
 	if orgID != "" {
 		rs, ok, err := s.resolveOne(ctx, `WHERE scope='org' AND org_id=$1 AND enabled=true`, orgID)
 		if err != nil {
@@ -256,8 +302,14 @@ func (s *Store) ResolveForOrg(ctx context.Context, orgID string) (ResolvedStorag
 			return rs, true, nil
 		}
 	}
-	// 回落 global enabled。
 	return s.resolveOne(ctx, `WHERE scope='global' AND enabled=true`)
+}
+
+// ResolveForOrg 解析某 org 生效的存储配置 (含解密后的 SecretKey)，供 StorageRouter
+// 使用。优先 per-org enabled 行；否则 global enabled 行；都无 → ok=false。这是唯一
+// 暴露明文 secret 的路径，仅服务端内部调用 (绝不进 HTTP handler)。
+func (s *Store) ResolveForOrg(ctx context.Context, orgID string) (ResolvedStorage, bool, error) {
+	return s.ResolveForOrgAndMode(ctx, orgID, "")
 }
 
 // resolveOne 跑一条 WHERE 子句的 SELECT 并解密 secret。无行 → ok=false。

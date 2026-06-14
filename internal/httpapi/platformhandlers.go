@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	authzhttp "github.com/costa92/llm-agent-authz/httpapi"
 
@@ -22,6 +23,7 @@ type PlatformService interface {
 	ListUsers(ctx context.Context) ([]studiosvc.PlatformUser, error)
 	UserDetail(ctx context.Context, userID string) (studiosvc.UserDetail, error)
 	DeleteUser(ctx context.Context, userID string) error
+	ResetUserPassword(ctx context.Context, userID, newPassword string) error
 }
 
 // platformScope 把请求映射到平台 scope (orgID="", scopeID="")，供 RequireScopeRole
@@ -199,6 +201,49 @@ func platformDeleteUserHandler(p PlatformService) http.HandlerFunc {
 			return
 		} else if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	}
+}
+
+// platformResetPasswordHandler (POST /api/platform/users/{userId}/reset-password):
+// 平台管理员强重置任意用户密码（用户管理页"重置密码"按钮）。
+// body: {newPassword: string}（最少 8 字符，由 studiosvc 校验）。
+// 不存在用户 → 404；密码弱/缺 → 400；成功 → 200 {ok:true}。
+// 自重置允许：平台管理员忘了自己密码也可以用这个端点改（前端可选择限制）。
+func platformResetPasswordHandler(p PlatformService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		target := r.PathValue("userId")
+		if target == "" {
+			http.Error(w, "bad request: userId required", http.StatusBadRequest)
+			return
+		}
+		var body struct {
+			NewPassword string `json:"newPassword"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad request: invalid body", http.StatusBadRequest)
+			return
+		}
+		if body.NewPassword == "" {
+			http.Error(w, "bad request: newPassword required", http.StatusBadRequest)
+			return
+		}
+		err := p.ResetUserPassword(r.Context(), target, body.NewPassword)
+		if errors.Is(err, studiosvc.ErrUserNotFound) {
+			http.Error(w, "user not found", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			// studiosvc 业务错误（如密码强度不足）以 "studiosvc:" 前缀返回，
+			// 客户端可纠正 → 400。其它走 500。
+			msg := err.Error()
+			if strings.HasPrefix(msg, "studiosvc: password") {
+				http.Error(w, msg, http.StatusBadRequest)
+				return
+			}
+			http.Error(w, msg, http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})

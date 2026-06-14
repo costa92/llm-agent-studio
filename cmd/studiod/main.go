@@ -193,6 +193,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		return nil, nil, fmt.Errorf("studiod: secretbox: %w", err)
 	}
 	modelStore := models.New(st.Pool(), encBox)
+	promptStore := prompt.NewStore(st.Pool())
 	mailConfigStore := mailconfig.New(st.Pool(), encBox)
 	envMailCfg := mail.EnvConfig{
 		SMTPHost: cfg.SMTPHost,
@@ -353,6 +354,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		TaskBoard:      taskBoard,
 		Cost:           costStore,
 		PromptBuilder:  promptBuilder,
+		PromptStore:    promptStore,
 		GenQuota:       cfg.OrgDailyGenQuota,
 		ModelAvailable: modelAvailable(cfg),
 		WebFS:          webFS,
@@ -670,6 +672,8 @@ func buildMediaFactory(tp trace.TracerProvider) func(kind, provider, model, apiK
 				err error
 			)
 			switch provider {
+			case "fake":
+				return obs.WrapGenerator(generate.NewDevFakeGenerator(), tp), nil
 			case "openai", "openai-compatible":
 				opts := []openaiprovider.Option{openaiprovider.WithModel(model), openaiprovider.WithAPIKey(apiKey)}
 				if baseURL != "" {

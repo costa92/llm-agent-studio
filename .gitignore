@@ -9,3 +9,5 @@ bin
 logs/
 mails/
 cmd/studiod/mails/
+/studiod
+/placeholder.png

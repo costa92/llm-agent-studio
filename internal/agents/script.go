@@ -12,10 +12,11 @@ import (
 
 // ScriptInput is the project brief the ScriptAgent turns into a script.
 type ScriptInput struct {
-	Brief       string
-	ContentType string
-	Platform    string
-	Style       string
+	Brief        string
+	ContentType  string
+	Platform     string
+	Style        string
+	SystemPrompt string
 }
 
 // Scene is one scene of a script.
@@ -52,8 +53,12 @@ func NewScriptAgent(model llm.ChatModel) *ScriptAgent {
 // org's text model through the ModelRouter and passes it here. Run keeps the
 // bound default for un-routed callers.
 func (a *ScriptAgent) RunWith(ctx context.Context, model llm.ChatModel, in ScriptInput) (ScriptOutput, error) {
+	sysPrompt := scriptSystemPrompt
+	if in.SystemPrompt != "" {
+		sysPrompt = in.SystemPrompt
+	}
 	agent := coreagents.NewSimpleAgent(model, coreagents.SimpleOptions{
-		Name: "script", SystemPrompt: scriptSystemPrompt,
+		Name: "script", SystemPrompt: sysPrompt,
 	})
 	prompt := fmt.Sprintf(
 		"Brief: %s\nContent type: %s\nTarget platform: %s\nStyle: %s",

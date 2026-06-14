@@ -14,6 +14,21 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/blob"
 )
 
+// init 默认关闭 APIBase 校验——httptest.NewServer 返回 http://127.0.0.1:port，
+// 不符合 https+/api/v3 形态但完全能跑 Put/Get/Delete 路径。需要显式校验 APIBase 的
+// 测试用 withValidator(t) 临时打开。
+func init() {
+	apiBaseValidator = func(string) error { return nil }
+}
+
+// withValidator 在 t 期间把生产校验器换回真实版本。需要显式校验 APIBase 的测试用之。
+func withValidator(t *testing.T) {
+	t.Helper()
+	prev := apiBaseValidator
+	apiBaseValidator = validateAPIBase
+	t.Cleanup(func() { apiBaseValidator = prev })
+}
+
 func TestSatisfiesBlobStore(t *testing.T) {
 	var _ blob.BlobStore = (*Store)(nil)
 }
@@ -40,6 +55,69 @@ func TestNewDefaults(t *testing.T) {
 	}
 	if s.apiBase != defaultAPIBase {
 		t.Fatalf("apiBase=%q want %q", s.apiBase, defaultAPIBase)
+	}
+}
+
+// APIBase 必须是 GitHub REST API 根（默认 api.github.com 或 GHE 形如 /api/v3）。
+// 真实生产事故：把 jsDelivr CDN 链接（costa92/article-images 公开仓库的缓存前缀）
+// 填进 storage config 的 Endpoint（→ APIBase）字段，每次 Put 前 getSHA 就去 GET 一个
+// 形态错位的 jsDelivr URL，EOF，6/6 asset 失败。New() 必须在最早期挡掉这类明显错的输入。
+func TestNewRejectsBadAPIBase(t *testing.T) {
+	withValidator(t)
+	cases := []struct {
+		name string
+		base string
+	}{
+		{"jsDelivr CDN root", "https://cdn.jsdelivr.net/gh/owner/repo"},
+		{"jsDelivr CDN root no path", "https://cdn.jsdelivr.net"},
+		{"raw.githubusercontent 直链主机", "https://raw.githubusercontent.com"},
+		{"cdn.* host", "https://cdn.example.com"},
+		{"raw.* host", "https://raw.example.com"},
+		{"GHE 形态但缺 /api/v3", "https://ghe.example.com"},
+		{"GHE 形态但路径不是 /api/v3", "https://ghe.example.com/api/v4"},
+		{"http 明文（token 不能走明文）", "http://api.github.com"},
+		{"非 URL 字符串", "not-a-url"},
+		{"空字符串以外的纯路径", "/repos/owner/repo"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := New(Config{Owner: "o", Repo: "r", Token: "t", APIBase: tc.base}); err == nil {
+				t.Fatalf("expected error for apiBase=%q", tc.base)
+			}
+		})
+	}
+}
+
+func TestNewAcceptsValidAPIBase(t *testing.T) {
+	withValidator(t)
+	// 显式默认。
+	s, err := New(Config{Owner: "o", Repo: "r", Token: "t", APIBase: "https://api.github.com"})
+	if err != nil {
+		t.Fatalf("explicit default: %v", err)
+	}
+	if s.apiBase != "https://api.github.com" {
+		t.Fatalf("apiBase=%q", s.apiBase)
+	}
+	// 显式默认 + 尾斜杠（应被 TrimRight 吃掉）。
+	s, _ = New(Config{Owner: "o", Repo: "r", Token: "t", APIBase: "https://api.github.com/"})
+	if s.apiBase != "https://api.github.com" {
+		t.Fatalf("trailing slash not trimmed: apiBase=%q", s.apiBase)
+	}
+	// GHE 形态：host + /api/v3。
+	s, err = New(Config{Owner: "o", Repo: "r", Token: "t", APIBase: "https://ghe.example.com/api/v3"})
+	if err != nil {
+		t.Fatalf("GHE: %v", err)
+	}
+	if s.apiBase != "https://ghe.example.com/api/v3" {
+		t.Fatalf("GHE apiBase=%q", s.apiBase)
+	}
+	// GHE 形态：子路径下的 GHE。
+	s, err = New(Config{Owner: "o", Repo: "r", Token: "t", APIBase: "https://ghe.example.com/github/api/v3"})
+	if err != nil {
+		t.Fatalf("GHE subpath: %v", err)
+	}
+	if s.apiBase != "https://ghe.example.com/github/api/v3" {
+		t.Fatalf("GHE subpath apiBase=%q", s.apiBase)
 	}
 }
 

@@ -2,6 +2,8 @@ package storageconfig
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"os"
 	"testing"
@@ -103,7 +105,7 @@ func TestUpsertForOrgRoundTrip(t *testing.T) {
 	if sc.Scope != "org" || sc.OrgID != "org-a" || !sc.HasSecret {
 		t.Fatalf("upsert org result: %+v", sc)
 	}
-	got, ok, err := st.GetForOrg(ctx, "org-a")
+	got, ok, err := st.GetForOrg(ctx, "org-a", "s3")
 	if err != nil || !ok || got.OrgID != "org-a" {
 		t.Fatalf("get org: %v ok=%v %+v", err, ok, got)
 	}
@@ -120,7 +122,7 @@ func TestUpsertForOrgRoundTrip(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("per-org must be unique, got %d rows", n)
 	}
-	got, _, _ = st.GetForOrg(ctx, "org-a")
+	got, _, _ = st.GetForOrg(ctx, "org-a", "s3")
 	if got.Region != "eu-west-1" {
 		t.Fatalf("second org upsert must update, region=%q", got.Region)
 	}
@@ -161,7 +163,7 @@ func TestGetMissing(t *testing.T) {
 	pool := testPool(t)
 	st := New(pool, testBox(t))
 	ctx := context.Background()
-	if _, ok, err := st.GetForOrg(ctx, "org-nope-"+t.Name()); err != nil || ok {
+	if _, ok, err := st.GetForOrg(ctx, "org-nope-"+t.Name(), ""); err != nil || ok {
 		t.Fatalf("missing org: ok=%v err=%v", ok, err)
 	}
 }
@@ -198,7 +200,7 @@ func TestResolvePrecedence(t *testing.T) {
 		t.Fatalf("disabled org should fall to global: ok=%v err=%v %+v", ok, err, rs)
 	}
 	// 无 org 行且无 global → ok=false。先删 global。
-	if err := st.DeleteForOrg(ctx, "org-p"); err != nil {
+	if err := st.DeleteForOrg(ctx, "org-p", ""); err != nil {
 		t.Fatalf("delete org-p: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `DELETE FROM storage_configs WHERE scope='global'`); err != nil {
@@ -216,13 +218,13 @@ func TestDeleteForOrg(t *testing.T) {
 	if _, err := st.UpsertForOrg(ctx, "org-d", s3Input("s")); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := st.DeleteForOrg(ctx, "org-d"); err != nil {
+	if err := st.DeleteForOrg(ctx, "org-d", "s3"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if _, ok, _ := st.GetForOrg(ctx, "org-d"); ok {
+	if _, ok, _ := st.GetForOrg(ctx, "org-d", "s3"); ok {
 		t.Fatalf("row should be gone")
 	}
-	if err := st.DeleteForOrg(ctx, "org-d"); !errors.Is(err, ErrNotFound) {
+	if err := st.DeleteForOrg(ctx, "org-d", "s3"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("re-delete must return ErrNotFound, got %v", err)
 	}
 }
@@ -258,6 +260,42 @@ func TestValidationBeforeDBAccess(t *testing.T) {
 	disabledBoxStore := New(nil, mustDisabledBox(t))
 	if _, err := disabledBoxStore.UpsertGlobal(ctx, s3Input("secret")); !errors.Is(err, ErrEncUnavailable) {
 		t.Fatalf("disabled box with secret must return ErrEncUnavailable, got %v", err)
+	}
+}
+
+// 真实生产事故：用户把 jsDelivr CDN 链接（costa92/article-images 的缓存前缀）填进
+// github 模式的 Endpoint 字段——后端在它后面拼 /repos/.../contents/...，URL 形态错位 +
+// CDN 不可写，asset 6/6 失败。save 校验必须早期拒绝（而不是落库后等 worker 默默 fallback）。
+func TestGithubEndpointMustLookLikeAPIRoot(t *testing.T) {
+	gh := func(endpoint string) UpsertInput {
+		return UpsertInput{
+			Mode: "github", AccessKeyID: "octo", Bucket: "assets",
+			Endpoint: endpoint, Enabled: true,
+		}
+	}
+	// 这些必拒（生产已知错值 + 明显不是 API 根的形态）。
+	for _, bad := range []string{
+		"https://cdn.jsdelivr.net/gh/costa92/article-images",
+		"https://raw.githubusercontent.com",
+		"https://cdn.example.com",
+		"http://api.github.com",
+		"not-a-url",
+	} {
+		if err := validate(gh(bad)); err == nil {
+			t.Fatalf("github endpoint=%q must be rejected", bad)
+		}
+	}
+	// 这些必过：默认空（走 api.github.com）+ 显式默认 + GHE 形态。
+	for _, ok := range []string{
+		"",
+		"https://api.github.com",
+		"https://api.github.com/",
+		"https://ghe.example.com/api/v3",
+		"https://ghe.example.com/github/api/v3",
+	} {
+		if err := validate(gh(ok)); err != nil {
+			t.Fatalf("github endpoint=%q should pass validation, got: %v", ok, err)
+		}
 	}
 }
 
@@ -316,3 +354,70 @@ func TestGithubModeColumnOverload(t *testing.T) {
 		t.Fatalf("github resolve column overload mismatch: %+v", rs)
 	}
 }
+
+func TestMultipleOrgConfigsAndResolution(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	orgID := "org-multi-" + uniqueSuffix()
+
+	// Configure S3 for this org.
+	s3In := s3Input("s3sek")
+	if _, err := st.UpsertForOrg(ctx, orgID, s3In); err != nil {
+		t.Fatalf("upsert S3: %v", err)
+	}
+
+	// Configure GitHub for this org.
+	ghIn := UpsertInput{
+		Mode: "github", AccessKeyID: "octo", Bucket: "assets-repo", Region: "prod",
+		PublicPrefix: "media", Endpoint: "https://api.github.com",
+		Secret: "ghp_token", Enabled: true,
+	}
+	if _, err := st.UpsertForOrg(ctx, orgID, ghIn); err != nil {
+		t.Fatalf("upsert github: %v", err)
+	}
+
+	// Verify both configs exist and can be fetched.
+	s3Config, ok, err := st.GetForOrg(ctx, orgID, "s3")
+	if err != nil || !ok || s3Config.Mode != "s3" {
+		t.Fatalf("get s3 config: %v %v", err, ok)
+	}
+	ghConfig, ok, err := st.GetForOrg(ctx, orgID, "github")
+	if err != nil || !ok || ghConfig.Mode != "github" {
+		t.Fatalf("get github config: %v %v", err, ok)
+	}
+
+	// Verify resolution with specific mode.
+	s3Res, ok, err := st.ResolveForOrgAndMode(ctx, orgID, "s3")
+	if err != nil || !ok || s3Res.Mode != "s3" || s3Res.SecretKey != "s3sek" {
+		t.Fatalf("resolve s3: %v %v", err, ok)
+	}
+
+	ghRes, ok, err := st.ResolveForOrgAndMode(ctx, orgID, "github")
+	if err != nil || !ok || ghRes.Mode != "github" || ghRes.SecretKey != "ghp_token" {
+		t.Fatalf("resolve github: %v %v", err, ok)
+	}
+
+	// Verify delete per mode.
+	if err := st.DeleteForOrg(ctx, orgID, "github"); err != nil {
+		t.Fatalf("delete github: %v", err)
+	}
+
+	// GitHub config should be gone, S3 config should still exist.
+	_, ok, _ = st.GetForOrg(ctx, orgID, "github")
+	if ok {
+		t.Fatalf("github config should be deleted")
+	}
+	_, ok, _ = st.GetForOrg(ctx, orgID, "s3")
+	if !ok {
+		t.Fatalf("s3 config should still exist")
+	}
+}
+
+// Helper uniqueSuffix to avoid test pollution
+func uniqueSuffix() string {
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+

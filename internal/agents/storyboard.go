@@ -11,8 +11,9 @@ import (
 
 // StoryboardInput carries the upstream script (raw JSON) + style.
 type StoryboardInput struct {
-	ScriptJSON string
-	Style      string
+	ScriptJSON   string
+	Style        string
+	SystemPrompt string
 }
 
 // Shot is one storyboard shot (persisted as a shots row).
@@ -48,8 +49,12 @@ func NewStoryboardAgent(model llm.ChatModel) *StoryboardAgent {
 // org's text model through the ModelRouter and passes it here. Run keeps the
 // bound default for un-routed callers.
 func (a *StoryboardAgent) RunWith(ctx context.Context, model llm.ChatModel, in StoryboardInput) (StoryboardOutput, error) {
+	sysPrompt := storyboardSystemPrompt
+	if in.SystemPrompt != "" {
+		sysPrompt = in.SystemPrompt
+	}
 	agent := coreagents.NewSimpleAgent(model, coreagents.SimpleOptions{
-		Name: "storyboard", SystemPrompt: storyboardSystemPrompt,
+		Name: "storyboard", SystemPrompt: sysPrompt,
 	})
 	prompt := fmt.Sprintf("Script JSON:\n%s\n\nStyle: %s", in.ScriptJSON, in.Style)
 	res, err := agent.Run(ctx, prompt)

@@ -17,13 +17,14 @@ interface StorageConfigEnvelope {
 // 未配置 → config:null（回退全局默认）；secret 永不回显，仅报 hasSecret 布尔。
 export function useOrgStorageConfig(
   org: string,
+  mode?: string,
 ): UseQueryResult<StorageConfig | null> {
   return useQuery({
-    queryKey: ["storage-config", "org", org],
+    queryKey: ["storage-config", "org", org, mode || ""],
     queryFn: () =>
-      apiJSON<StorageConfigEnvelope>(`/api/orgs/${org}/storage-config`).then(
-        (env) => env.config,
-      ),
+      apiJSON<StorageConfigEnvelope>(
+        `/api/orgs/${org}/storage-config${mode ? `?mode=${mode}` : ""}`,
+      ).then((env) => env.config),
     enabled: org !== "",
   })
 }
@@ -42,9 +43,12 @@ export function useUpsertOrgStorageConfig(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(input),
       }),
-    onSuccess: () => {
+    onSuccess: (data) => {
       void queryClient.invalidateQueries({
-        queryKey: ["storage-config", "org", org],
+        queryKey: ["storage-config", "org", org, data.mode],
+      })
+      void queryClient.invalidateQueries({
+        queryKey: ["storage-config", "org", org, ""],
       })
     },
   })
@@ -54,16 +58,19 @@ export function useUpsertOrgStorageConfig(
 //（admin，deleteOrgStorageConfigHandler）。删除后该 org 回退到全局默认；无配置 → 404。
 export function useDeleteOrgStorageConfig(
   org: string,
-): UseMutationResult<{ ok: boolean }, Error, void> {
+): UseMutationResult<{ ok: boolean }, Error, { mode: string }> {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: () =>
-      apiJSON<{ ok: boolean }>(`/api/orgs/${org}/storage-config`, {
+    mutationFn: ({ mode }) =>
+      apiJSON<{ ok: boolean }>(`/api/orgs/${org}/storage-config?mode=${mode}`, {
         method: "DELETE",
       }),
-    onSuccess: () => {
+    onSuccess: (_data, vars) => {
       void queryClient.invalidateQueries({
-        queryKey: ["storage-config", "org", org],
+        queryKey: ["storage-config", "org", org, vars.mode],
+      })
+      void queryClient.invalidateQueries({
+        queryKey: ["storage-config", "org", org, ""],
       })
     },
   })

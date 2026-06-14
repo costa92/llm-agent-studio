@@ -141,3 +141,133 @@ func (p *Planner) PlanWith(ctx context.Context, projectID string, model llm.Chat
 	}
 	return Result{PlanID: planID, Valid: valid, FallbackUsed: fallback, ReadyTodos: ready}, nil
 }
+
+// WorkflowNode defines a node in a custom agent workflow.
+type WorkflowNode struct {
+	ID        string   `json:"id"`
+	Type      string   `json:"type"`      // "script", "storyboard", "asset", etc.
+	PromptID  string   `json:"promptId"`  // Reference to prompts.id
+	DependsOn []string `json:"dependsOn"`
+}
+
+func validateCustomGraph(nodes []WorkflowNode) error {
+	if len(nodes) == 0 {
+		return fmt.Errorf("custom workflow: empty graph")
+	}
+	ids := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		if n.ID == "" {
+			return fmt.Errorf("custom workflow: node with empty id")
+		}
+		if ids[n.ID] {
+			return fmt.Errorf("custom workflow: duplicate node id %q", n.ID)
+		}
+		ids[n.ID] = true
+		if !isTypeAllowed(n.Type) {
+			return fmt.Errorf("custom workflow: node %q has non-whitelisted type %q", n.ID, n.Type)
+		}
+	}
+	for _, n := range nodes {
+		for _, dep := range n.DependsOn {
+			if !ids[dep] {
+				return fmt.Errorf("custom workflow: node %q depends on unknown node %q", n.ID, dep)
+			}
+		}
+	}
+	// Cycle detection using DFS
+	const (
+		white = 0
+		gray  = 1
+		black = 2
+	)
+	color := make(map[string]int, len(nodes))
+	deps := make(map[string][]string, len(nodes))
+	for _, n := range nodes {
+		deps[n.ID] = n.DependsOn
+	}
+	var visit func(id string) error
+	visit = func(id string) error {
+		color[id] = gray
+		for _, dep := range deps[id] {
+			switch color[dep] {
+			case gray:
+				return fmt.Errorf("custom workflow: dependency cycle at %q→%q", id, dep)
+			case white:
+				if err := visit(dep); err != nil {
+					return err
+				}
+			}
+		}
+		color[id] = black
+		return nil
+	}
+	for _, n := range nodes {
+		if color[n.ID] == white {
+			if err := visit(n.ID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// PlanCustom plans a workflow defined manually by the user, bypassing the LLM planner.
+func (p *Planner) PlanCustom(ctx context.Context, projectID string, b Brief, nodes []WorkflowNode) (Result, error) {
+	if err := validateCustomGraph(nodes); err != nil {
+		return Result{}, fmt.Errorf("planner: validate custom graph: %w", err)
+	}
+
+	planID := newID()
+
+	// Persist the plan row. Status 'created', valid true, fallback_used false.
+	rawJSON, _ := json.Marshal(nodes)
+	if _, err := p.pool.Exec(ctx,
+		`INSERT INTO plans (id, project_id, status, raw_plan_json, valid, fallback_used)
+		 VALUES ($1,$2,'created',$3,true,false)`,
+		planID, projectID, rawJSON); err != nil {
+		return Result{}, fmt.Errorf("planner: insert plan: %w", err)
+	}
+
+	specs := make([]todos.NodeSpec, 0, len(nodes))
+	for _, n := range nodes {
+		inputMap := map[string]interface{}{}
+		if n.Type == "script" {
+			inputMap["brief"] = b.Brief
+			inputMap["contentType"] = b.ContentType
+			inputMap["targetPlatform"] = b.TargetPlatform
+			inputMap["style"] = b.Style
+		}
+
+		if n.PromptID != "" {
+			var promptContent string
+			err := p.pool.QueryRow(ctx, "SELECT content FROM prompts WHERE id=$1", n.PromptID).Scan(&promptContent)
+			if err != nil {
+				return Result{}, fmt.Errorf("planner: get prompt %q: %w", n.PromptID, err)
+			}
+			inputMap["systemPrompt"] = promptContent
+		}
+
+		inputBytes, err := json.Marshal(inputMap)
+		if err != nil {
+			return Result{}, fmt.Errorf("planner: marshal node input: %w", err)
+		}
+
+		specs = append(specs, todos.NodeSpec{
+			LocalID: n.ID, Type: n.Type, DependsOn: n.DependsOn, InputJSON: inputBytes,
+		})
+	}
+
+	idMap, err := p.todos.CreateGraph(ctx, projectID, planID, specs)
+	if err != nil {
+		return Result{}, fmt.Errorf("planner: create todo graph: %w", err)
+	}
+
+	var ready []ReadyTodo
+	for _, n := range nodes {
+		if len(n.DependsOn) == 0 {
+			ready = append(ready, ReadyTodo{ID: idMap[n.ID], Type: n.Type})
+		}
+	}
+
+	return Result{PlanID: planID, Valid: true, FallbackUsed: false, ReadyTodos: ready}, nil
+}

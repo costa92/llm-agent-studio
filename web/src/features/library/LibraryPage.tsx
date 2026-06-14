@@ -7,6 +7,7 @@ import { Button } from "@/components/studio/Button"
 import { AssetCard } from "@/components/studio/AssetCard"
 import { AssetThumb } from "@/features/workflow/AssetThumb.tsx"
 import { useResolvedAssetUrl } from "@/features/workflow/assetThumb"
+import { AssetPreviewActions } from "@/features/workflow/AssetPreviewActions"
 import { PromptBox } from "@/components/studio/PromptBox"
 import { LineageTrail, type LineageNode } from "@/components/studio/LineageTrail"
 import { cn } from "@/lib/utils"
@@ -100,7 +101,7 @@ export function LibraryView({
         </SheetContent>
       </Sheet>
 
-      <div className="flex min-w-0 flex-1 flex-col p-6">
+      <div className="flex min-w-0 flex-1 flex-col p-6 overflow-y-auto overscroll-contain">
         <header className="mb-5 flex items-center justify-between gap-3">
           <h1 className="font-heading text-[22px] font-bold text-text-1">资产库</h1>
           <div className="flex items-center gap-3">
@@ -143,9 +144,11 @@ export function LibraryView({
                   <AssetCard
                     assetId={asset.id}
                     alt={asset.prompt}
+                    type={asset.type}
                     caption={`v${asset.version}`}
                     selected={asset.id === selectedId}
                     onSelect={() => onSelect(asset.id)}
+                    className="w-full"
                   />
                   <Badge
                     variant={assetStatusVariant(asset.status)}
@@ -366,6 +369,8 @@ function AssetDetailBody({ detail }: { detail: AssetDetail }) {
           <Kv label="版本" value={`v${asset.version}`} />
         </dl>
 
+        <AssetPreviewActions assetId={asset.id} className="flex gap-2 border-t border-line pt-4" />
+
         <section className="flex flex-col gap-1.5">
           <h4 className="text-[11px] font-semibold tracking-[0.08em] text-text-3">
             PROMPT
@@ -400,7 +405,7 @@ function AssetMedia({ asset }: { asset: Asset }) {
 }
 
 function AssetVideoAudio({ asset, kind }: { asset: Asset; kind: "video" | "audio" }) {
-  const { url, loading } = useResolvedAssetUrl(asset.id)
+  const { url, loading } = useResolvedAssetUrl(asset.id, 0, kind)
   const placeholderCls = cn(
     "grid place-items-center text-[12px] text-text-3",
     kind === "video" ? "aspect-video w-full bg-black" : "p-5",

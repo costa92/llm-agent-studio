@@ -27,7 +27,7 @@ export function AssetThumb({ assetId, alt = "", className }: AssetThumbProps) {
     setImgFailed(false)
   }
 
-  const { url, loading } = useResolvedAssetUrl(assetId, reloadKey)
+  const { url, loading } = useResolvedAssetUrl(assetId, reloadKey, "image")
   // 解析失败（url == null 且非加载中）或 img 加载失败 → 降级占位。
   const failed = imgFailed || (!loading && url == null)
 

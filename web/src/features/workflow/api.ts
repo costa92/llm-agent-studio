@@ -29,22 +29,26 @@ export function useProject(id: string): UseQueryResult<Project> {
 export async function fetchEvents(
   id: string,
   afterSeq = 0,
+  planId?: string,
 ): Promise<StudioEvent[]> {
+  const params = new URLSearchParams()
+  params.set("afterSeq", afterSeq.toString())
+  if (planId) params.set("planId", planId)
   const env = await apiJSON<ItemsEnvelope<StudioEvent>>(
-    `/api/projects/${id}/events?afterSeq=${afterSeq}`,
+    `/api/projects/${id}/events?${params.toString()}`,
   )
   return env.items
 }
 
 // 回放：从 afterSeq=0 起按 seq 分页累积全部历史事件（每页最多 200 行）。
 // reducer 的 seq-dedup 保证与实时帧重叠时幂等。
-export async function fetchAllEvents(id: string): Promise<StudioEvent[]> {
+export async function fetchAllEvents(id: string, planId?: string): Promise<StudioEvent[]> {
   const PAGE = 200
   const all: StudioEvent[] = []
   let afterSeq = 0
   // 拉到某页不足 200 行即到底（最后一页或空）。
   for (;;) {
-    const page = await fetchEvents(id, afterSeq)
+    const page = await fetchEvents(id, afterSeq, planId)
     all.push(...page)
     if (page.length < PAGE) break
     afterSeq = page[page.length - 1].seq
@@ -104,8 +108,9 @@ export const scriptSchema = z
 export type ScriptDoc = z.infer<typeof scriptSchema>
 
 // GET /api/projects/{id}/script —— 裸 JSON。404 → null（未生成）；非法 JSON → 抛错（视图映射"数据异常"）。
-export async function fetchScript(id: string): Promise<ScriptDoc | null> {
-  const res = await apiFetch(`/api/projects/${id}/script`)
+export async function fetchScript(id: string, planId?: string): Promise<ScriptDoc | null> {
+  const qs = planId ? `?planId=${encodeURIComponent(planId)}` : ""
+  const res = await apiFetch(`/api/projects/${id}/script${qs}`)
   if (res.status === 404) return null
   if (!res.ok) {
     throw new Error(`script load failed: ${res.status}`)
@@ -115,10 +120,10 @@ export async function fetchScript(id: string): Promise<ScriptDoc | null> {
   return scriptSchema.parse(raw)
 }
 
-export function useScript(id: string): UseQueryResult<ScriptDoc | null> {
+export function useScript(id: string, planId?: string): UseQueryResult<ScriptDoc | null> {
   return useQuery({
-    queryKey: ["script", id],
-    queryFn: () => fetchScript(id),
+    queryKey: ["script", id, planId ?? ""],
+    queryFn: () => fetchScript(id, planId),
     enabled: id !== "",
     retry: false,
   })
@@ -136,11 +141,12 @@ export interface Shot {
   [k: string]: unknown
 }
 
-export function useShots(id: string): UseQueryResult<Shot[]> {
+export function useShots(id: string, planId?: string): UseQueryResult<Shot[]> {
+  const qs = planId ? `?planId=${encodeURIComponent(planId)}` : ""
   return useQuery({
-    queryKey: ["shots", id],
+    queryKey: ["shots", id, planId ?? ""],
     queryFn: () =>
-      apiJSON<ItemsEnvelope<Shot>>(`/api/projects/${id}/shots`).then(
+      apiJSON<ItemsEnvelope<Shot>>(`/api/projects/${id}/shots${qs}`).then(
         (env) => env.items,
       ),
     enabled: id !== "",
@@ -151,14 +157,38 @@ export function useShots(id: string): UseQueryResult<Shot[]> {
 export function useProjectAssets(
   id: string,
   status?: string,
+  planId?: string,
 ): UseQueryResult<unknown[]> {
-  const qs = status ? `?status=${encodeURIComponent(status)}` : ""
+  const params = new URLSearchParams()
+  if (status) params.set("status", status)
+  if (planId) params.set("planId", planId)
+  const qs = params.toString() ? `?${params.toString()}` : ""
   return useQuery({
-    queryKey: ["project-assets", id, status ?? ""],
+    queryKey: ["project-assets", id, status ?? "", planId ?? ""],
     queryFn: () =>
       apiJSON<ItemsEnvelope<unknown>>(`/api/projects/${id}/assets${qs}`).then(
         (env) => env.items,
       ),
     enabled: id !== "",
+  })
+}
+
+export interface Plan {
+  id: string
+  projectId: string
+  status: string
+  valid: boolean
+  fallbackUsed: boolean
+  createdAt: string
+}
+
+export function usePlans(projectId: string): UseQueryResult<Plan[]> {
+  return useQuery({
+    queryKey: ["plans", projectId],
+    queryFn: () =>
+      apiJSON<ItemsEnvelope<Plan>>(`/api/projects/${projectId}/plans`).then(
+        (env) => env.items,
+      ),
+    enabled: projectId !== "",
   })
 }

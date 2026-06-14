@@ -222,6 +222,39 @@ describe("timeline reducer — failure + retry (原型第6个 pip 重试范式)"
     expect(pip?.status).toBe("failed")
     expect(pip?.status).not.toBe("running")
   })
+
+  // 日志：todo_failed 必须把 payload.error 透出给用户，否则工作台只能看到「失败：todoId · 退避重试」，
+  // 真实报错（EOF / 401 / 配额）藏起来、用户得自己点进日志逐行找。
+  it("todo_failed log line includes payload.error verbatim", () => {
+    const errMsg = "worker: blob put: blob.github: get sha: ...: EOF"
+    const s = run([
+      f(1, "planner_started"),
+      f(2, "todo_ready", "a1", { type: "asset" }),
+      f(3, "todo_started", "a1", { type: "asset" }),
+      f(4, "todo_failed", "a1", { error: errMsg }),
+    ])
+    const failedLog = s.log.find((l) => l.kind === "todo_failed")
+    expect(failedLog).toBeDefined()
+    expect(failedLog?.text).toContain(errMsg)
+  })
+
+  // settle：所有 asset pip 都 failed（而不是 done）时，S4 必须落到 failed、S5 不能停在 blocked——
+  // 否则工作台「素材生成 · 0/6」一直转圈，与 run_done 后徽标「待审核 · 0」自相矛盾。
+  it("all asset pips failed → S4 failed, S5 failed (not stuck running/blocked)", () => {
+    const s = run([
+      f(1, "planner_started"),
+      f(2, "todo_ready", "a1", { type: "asset" }),
+      f(3, "todo_ready", "a2", { type: "asset" }),
+      f(4, "todo_started", "a1", { type: "asset" }),
+      f(5, "todo_started", "a2", { type: "asset" }),
+      f(6, "todo_failed", "a1", { error: "eof" }),
+      f(7, "todo_failed", "a2", { error: "eof" }),
+      f(8, "run_done"),
+    ])
+    expect(s.pips.every((p) => p.status === "failed")).toBe(true)
+    expect(stage(s, "S4").status).toBe("failed")
+    expect(stage(s, "S5").status).toBe("failed")
+  })
 })
 
 describe("timeline reducer — log-only events (no node-state change)", () => {

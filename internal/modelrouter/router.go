@@ -20,6 +20,7 @@ import (
 // unit tests can fake resolution without a live PG — *models.Store satisfies it).
 type resolver interface {
 	ResolveForOrg(ctx context.Context, orgID, kind string) (models.ResolvedModel, bool, error)
+	ResolveForOrgNamed(ctx context.Context, orgID, kind, provider, modelName string) (models.ResolvedModel, bool, error)
 }
 
 // registryDefaulter is the slice of *generate.Registry the router needs.
@@ -71,6 +72,11 @@ func New(cfg Config) *Router {
 // NEVER returns nil-meaningfully: on any miss/error/build-failure it returns
 // DefaultChat (callers depend on a usable model; if DefaultChat is also nil the
 // caller handles that — the router does not invent one).
+//
+// 不检查 rm.APIKey：是否需要 key 由 buildChatFactory 按 provider 决定（ollama 不
+// 需要 key；openai/deepseek 拿到空 key 会在请求时 401，让 caller 看到真错而不是
+// 默默退回 default）。M5.1 之前 ChatModelFor 这里就有一个 `rm.APIKey == ""` 短路，
+// 跟 ollama 等"keyless provider"不兼容，移掉。
 func (r *Router) ChatModelFor(ctx context.Context, orgID string) llm.ChatModel {
 	if r.models == nil {
 		return r.defaultChat
@@ -80,7 +86,7 @@ func (r *Router) ChatModelFor(ctx context.Context, orgID string) llm.ChatModel {
 		r.log.Warn("modelrouter: resolve chat config failed; using default chat model", "org", orgID, "err", err)
 		return r.defaultChat
 	}
-	if !ok || rm.APIKey == "" || r.buildChat == nil {
+	if !ok || r.buildChat == nil {
 		return r.defaultChat
 	}
 	m, berr := r.buildChat(rm.Provider, rm.Model, rm.APIKey, rm.BaseURL)
@@ -88,6 +94,31 @@ func (r *Router) ChatModelFor(ctx context.Context, orgID string) llm.ChatModel {
 		r.log.Warn("modelrouter: build org chat model failed; using default chat model",
 			"org", orgID, "provider", rm.Provider, "model", rm.Model, "err", berr)
 		return r.defaultChat
+	}
+	return m
+}
+
+// ChatModelForNamed 解析 org 下特定 (provider, model) 的 chat config，供 per-project
+// 规划模型 override 走（M5.1：project.planner_provider/planner_model）。找不到
+// 对应配置或 build 失败时返 nil（caller 走 ChatModelFor 拿默认 chat）。
+func (r *Router) ChatModelForNamed(ctx context.Context, orgID, provider, modelName string) llm.ChatModel {
+	if r.models == nil || provider == "" || modelName == "" {
+		return nil
+	}
+	rm, ok, err := r.models.ResolveForOrgNamed(ctx, orgID, "text", provider, modelName)
+	if err != nil {
+		r.log.Warn("modelrouter: resolve named chat config failed; falling back",
+			"org", orgID, "provider", provider, "model", modelName, "err", err)
+		return nil
+	}
+	if !ok || r.buildChat == nil {
+		return nil
+	}
+	m, berr := r.buildChat(rm.Provider, rm.Model, rm.APIKey, rm.BaseURL)
+	if berr != nil {
+		r.log.Warn("modelrouter: build named chat model failed; falling back",
+			"org", orgID, "provider", provider, "model", modelName, "err", berr)
+		return nil
 	}
 	return m
 }
@@ -131,4 +162,36 @@ func (r *Router) MediaGeneratorFor(ctx context.Context, orgID, kind string) gene
 			"org", orgID, "kind", kind, "provider", rm.Provider, "model", rm.Model, "err", rerr)
 	}
 	return r.registry.Default()
+}
+
+// MediaGeneratorForNamed 解析 org 下特定 (kind, provider, model) 的 media config，供 per-project
+// 媒体生成模型 override 走（如：project.image_provider/image_model）。找不到
+// 对应配置或 build 失败时返 nil（caller 走 MediaGeneratorFor 拿默认 media）。
+func (r *Router) MediaGeneratorForNamed(ctx context.Context, orgID, kind, provider, modelName string) generate.MediaGenerator {
+	if r.models == nil || provider == "" || modelName == "" {
+		return nil
+	}
+	rm, ok, err := r.models.ResolveForOrgNamed(ctx, orgID, kind, provider, modelName)
+	if err != nil {
+		r.log.Warn("modelrouter: resolve named media config failed; falling back",
+			"org", orgID, "kind", kind, "provider", provider, "model", modelName, "err", err)
+		return nil
+	}
+	if !ok {
+		return nil
+	}
+	if (rm.APIKey != "" || provider == "fake") && r.buildMedia != nil {
+		g, berr := r.buildMedia(kind, rm.Provider, rm.Model, rm.APIKey, rm.BaseURL)
+		if berr == nil {
+			return g
+		}
+		r.log.Warn("modelrouter: build named media generator failed; falling back to registry",
+			"org", orgID, "kind", kind, "provider", rm.Provider, "model", rm.Model, "err", berr)
+	}
+	if r.registry != nil {
+		if g, rerr := r.registry.Resolve(rm.Provider, rm.Model); rerr == nil {
+			return g
+		}
+	}
+	return nil
 }

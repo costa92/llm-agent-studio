@@ -25,6 +25,7 @@ type MailConfig struct {
 	SMTPHost  string `json:"smtpHost"`
 	SMTPPort  int    `json:"smtpPort"`
 	SMTPUser  string `json:"smtpUser"`
+	SMTPPass  string `json:"smtpPass,omitempty"`
 	SMTPFrom  string `json:"smtpFrom"`
 	Enabled   bool   `json:"enabled"`
 	HasSecret bool   `json:"hasSecret"`
@@ -99,18 +100,24 @@ func (s *Store) UpsertGlobal(ctx context.Context, in UpsertInput) error {
 
 func (s *Store) GetGlobal(ctx context.Context) (MailConfig, error) {
 	var c MailConfig
-	var hasPass bool
+	var passEnc []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, scope, smtp_host, smtp_port, smtp_user, smtp_from, enabled, (smtp_pass_enc IS NOT NULL) AS has_pass
+		SELECT id, scope, smtp_host, smtp_port, smtp_user, smtp_from, enabled, smtp_pass_enc
 		FROM mail_configs WHERE scope='global' LIMIT 1`).
-		Scan(&c.ID, &c.Scope, &c.SMTPHost, &c.SMTPPort, &c.SMTPUser, &c.SMTPFrom, &c.Enabled, &hasPass)
+		Scan(&c.ID, &c.Scope, &c.SMTPHost, &c.SMTPPort, &c.SMTPUser, &c.SMTPFrom, &c.Enabled, &passEnc)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return MailConfig{}, ErrNotFound
 	}
 	if err != nil {
 		return MailConfig{}, err
 	}
-	c.HasSecret = hasPass
+	c.HasSecret = len(passEnc) > 0
+	if len(passEnc) > 0 && s.box != nil && s.box.Enabled() {
+		dec, err := s.box.Decrypt(passEnc)
+		if err == nil {
+			c.SMTPPass = string(dec)
+		}
+	}
 	return c, nil
 }
 

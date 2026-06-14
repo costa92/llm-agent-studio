@@ -15,8 +15,8 @@ type StorageConfigStore interface {
 	UpsertGlobal(ctx context.Context, in storageconfig.UpsertInput) (storageconfig.StorageConfig, error)
 	UpsertForOrg(ctx context.Context, orgID string, in storageconfig.UpsertInput) (storageconfig.StorageConfig, error)
 	GetGlobal(ctx context.Context) (storageconfig.StorageConfig, bool, error)
-	GetForOrg(ctx context.Context, orgID string) (storageconfig.StorageConfig, bool, error)
-	DeleteForOrg(ctx context.Context, orgID string) error
+	GetForOrg(ctx context.Context, orgID string, mode string) (storageconfig.StorageConfig, bool, error)
+	DeleteForOrg(ctx context.Context, orgID string, mode string) error
 }
 
 // storageConfigWriteBody 是 PUT 入参 (camelCase 同 ModelConfig 风格)。secret write-only：
@@ -73,7 +73,8 @@ func mapStorageUpsertErr(w http.ResponseWriter, err error) bool {
 // 无配置 → 200 {config:null}。
 func getOrgStorageConfigHandler(s StorageConfigStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		sc, ok, err := s.GetForOrg(r.Context(), r.PathValue("org"))
+		mode := r.URL.Query().Get("mode")
+		sc, ok, err := s.GetForOrg(r.Context(), r.PathValue("org"), mode)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -116,7 +117,8 @@ func putOrgStorageConfigHandler(s StorageConfigStore) http.HandlerFunc {
 // ErrNotFound→404，成功→200 {ok:true} (匹配 model-config delete 约定)。
 func deleteOrgStorageConfigHandler(s StorageConfigStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if err := s.DeleteForOrg(r.Context(), r.PathValue("org")); err != nil {
+		mode := r.URL.Query().Get("mode")
+		if err := s.DeleteForOrg(r.Context(), r.PathValue("org"), mode); err != nil {
 			if errors.Is(err, storageconfig.ErrNotFound) {
 				http.Error(w, "storage config not found", http.StatusNotFound)
 				return

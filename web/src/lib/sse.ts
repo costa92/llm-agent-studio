@@ -53,8 +53,12 @@ export function streamRunEvents(
   handlers: SseHandlers,
   client: SseClient = fetchEventSource,
   signal?: AbortSignal,
+  planId?: string,
 ): Promise<void> {
-  return client(`/api/projects/${projectId}/events/stream`, {
+  const url = planId
+    ? `/api/projects/${projectId}/events/stream?planId=${encodeURIComponent(planId)}`
+    : `/api/projects/${projectId}/events/stream`
+  return client(url, {
     method: "GET",
     headers: { Authorization: `Bearer ${accessToken}` },
     // 标签页隐藏时仍保持连接（默认会断流）。

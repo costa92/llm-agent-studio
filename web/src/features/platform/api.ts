@@ -142,6 +142,28 @@ export function useDeleteUser(): UseMutationResult<
   })
 }
 
+// POST /api/platform/users/{userId}/reset-password → 200 {ok:true}。
+// 平台管理员强重置任意用户密码（用户管理页"重置密码"按钮）。
+// 密码弱（< 8 字符）/ 缺 → 400；不存在 → 404。
+// 不失效任何 query —— 重置密码不影响列表/详情显示。
+export function useResetUserPassword(): UseMutationResult<
+  { ok: boolean },
+  Error,
+  { userId: string; newPassword: string }
+> {
+  return useMutation({
+    mutationFn: ({ userId, newPassword }) =>
+      apiJSON<{ ok: boolean }>(
+        `/api/platform/users/${encodeURIComponent(userId)}/reset-password`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ newPassword }),
+        },
+      ),
+  })
+}
+
 // GET /api/platform/mail-config/global -> {config}
 export function useGlobalMailConfig(): UseQueryResult<MailConfig | null> {
   return useQuery({

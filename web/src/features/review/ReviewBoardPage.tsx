@@ -13,6 +13,7 @@ import { Button } from "@/components/studio/Button"
 import { Button as UiButton } from "@/components/ui/button"
 import { AssetCard } from "@/components/studio/AssetCard"
 import { AssetMedia } from "@/features/workflow/AssetMedia"
+import { AssetPreviewActions } from "@/features/workflow/AssetPreviewActions"
 import { PromptBox } from "@/components/studio/PromptBox"
 import { LineageTrail, type LineageNode } from "@/components/studio/LineageTrail"
 import type { Asset, AssetDetail } from "@/lib/types"
@@ -313,6 +314,8 @@ function ReviewDrawerBody({
           <Kv label="Provider·Model" value={`${asset.provider} · ${asset.model}`} />
           <Kv label="版本" value={`v${asset.version}`} />
         </dl>
+
+        <AssetPreviewActions assetId={asset.id} className="flex gap-2 border-t border-line pt-4" />
 
         {/* Prompt：只读 / 编辑（重生成）。 */}
         <section className="flex flex-col gap-1.5">

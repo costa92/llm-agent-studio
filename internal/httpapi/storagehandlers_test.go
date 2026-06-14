@@ -47,11 +47,11 @@ func (s *stubStorageStore) GetGlobal(context.Context) (storageconfig.StorageConf
 	return s.global, s.globalOK, nil
 }
 
-func (s *stubStorageStore) GetForOrg(context.Context, string) (storageconfig.StorageConfig, bool, error) {
+func (s *stubStorageStore) GetForOrg(context.Context, string, string) (storageconfig.StorageConfig, bool, error) {
 	return s.org, s.orgOK, nil
 }
 
-func (s *stubStorageStore) DeleteForOrg(context.Context, string) error {
+func (s *stubStorageStore) DeleteForOrg(context.Context, string, string) error {
 	if s.notFound {
 		return storageconfig.ErrNotFound
 	}

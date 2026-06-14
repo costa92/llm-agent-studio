@@ -113,10 +113,16 @@ func (s stubProjects) Get(_ context.Context, id string) (project.Project, error)
 func (s stubProjects) ListByOrg(_ context.Context, _ string, _ int, _ string) ([]project.Project, string, error) {
 	return nil, "", nil
 }
+func (s stubProjects) Update(_ context.Context, _ string, _ project.UpdateInput) (project.Project, error) {
+	return project.Project{}, nil
+}
 func (s stubProjects) SetStatus(_ context.Context, _, _ string) error { return nil }
 func (s stubProjects) Cancel(_ context.Context, _ string) error       { return nil }
 func (s stubProjects) OrgIDForProject(_ context.Context, _ string) (string, error) {
 	return s.orgID, nil
+}
+func (s stubProjects) ListPlans(_ context.Context, _ string) ([]project.Plan, error) {
+	return nil, nil
 }
 
 type stubPlanner struct{}
@@ -125,6 +131,9 @@ func (stubPlanner) Plan(_ context.Context, _ string, _ planner.Brief) (planner.R
 	return planner.Result{PlanID: "pl", Valid: true}, nil
 }
 func (stubPlanner) PlanWith(_ context.Context, _ string, _ llm.ChatModel, _ planner.Brief) (planner.Result, error) {
+	return planner.Result{PlanID: "pl", Valid: true}, nil
+}
+func (stubPlanner) PlanCustom(_ context.Context, _ string, _ planner.Brief, _ []planner.WorkflowNode) (planner.Result, error) {
 	return planner.Result{PlanID: "pl", Valid: true}, nil
 }
 

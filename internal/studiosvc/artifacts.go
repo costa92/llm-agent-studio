@@ -17,10 +17,18 @@ type Artifacts struct {
 func NewArtifacts(pool *pgxpool.Pool) *Artifacts { return &Artifacts{pool: pool} }
 
 // Todos lists a project's todos as JSON-serializable maps.
-func (a *Artifacts) Todos(ctx context.Context, projectID string) ([]map[string]any, error) {
-	rows, err := a.pool.Query(ctx,
-		`SELECT id, type, status, depends_on, attempts, error FROM todos WHERE project_id=$1 ORDER BY created_at ASC`,
-		projectID)
+func (a *Artifacts) Todos(ctx context.Context, projectID string, planID string) ([]map[string]any, error) {
+	var rows pgx.Rows
+	var err error
+	if planID == "" {
+		rows, err = a.pool.Query(ctx,
+			`SELECT id, type, status, depends_on, attempts, error FROM todos WHERE project_id=$1 ORDER BY created_at ASC`,
+			projectID)
+	} else {
+		rows, err = a.pool.Query(ctx,
+			`SELECT id, type, status, depends_on, attempts, error FROM todos WHERE project_id=$1 AND plan_id=$2 ORDER BY created_at ASC`,
+			projectID, planID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -43,11 +51,21 @@ func (a *Artifacts) Todos(ctx context.Context, projectID string) ([]map[string]a
 
 // Script returns the latest script's content_json for a project (ok=false if
 // none yet).
-func (a *Artifacts) Script(ctx context.Context, projectID string) (json.RawMessage, bool, error) {
+func (a *Artifacts) Script(ctx context.Context, projectID string, planID string) (json.RawMessage, bool, error) {
 	var content []byte
-	err := a.pool.QueryRow(ctx,
-		`SELECT content_json FROM scripts WHERE project_id=$1 ORDER BY created_at DESC LIMIT 1`,
-		projectID).Scan(&content)
+	var err error
+	if planID == "" {
+		err = a.pool.QueryRow(ctx,
+			`SELECT content_json FROM scripts WHERE project_id=$1 ORDER BY created_at DESC LIMIT 1`,
+			projectID).Scan(&content)
+	} else {
+		err = a.pool.QueryRow(ctx,
+			`SELECT s.content_json FROM scripts s
+			 JOIN todos t ON s.todo_id = t.id
+			 WHERE s.project_id=$1 AND t.plan_id=$2
+			 ORDER BY s.created_at DESC LIMIT 1`,
+			projectID, planID).Scan(&content)
+	}
 	if err == pgx.ErrNoRows {
 		return nil, false, nil
 	}
@@ -58,10 +76,21 @@ func (a *Artifacts) Script(ctx context.Context, projectID string) (json.RawMessa
 }
 
 // Shots lists a project's shots ordered by ordering.
-func (a *Artifacts) Shots(ctx context.Context, projectID string) ([]map[string]any, error) {
-	rows, err := a.pool.Query(ctx,
-		`SELECT id, shot_no, camera, scene, action, prompt, duration FROM shots WHERE project_id=$1 ORDER BY ordering ASC`,
-		projectID)
+func (a *Artifacts) Shots(ctx context.Context, projectID string, planID string) ([]map[string]any, error) {
+	var rows pgx.Rows
+	var err error
+	if planID == "" {
+		rows, err = a.pool.Query(ctx,
+			`SELECT id, shot_no, camera, scene, action, prompt, duration FROM shots WHERE project_id=$1 ORDER BY ordering ASC`,
+			projectID)
+	} else {
+		rows, err = a.pool.Query(ctx,
+			`SELECT s.id, s.shot_no, s.camera, s.scene, s.action, s.prompt, s.duration FROM shots s
+			 JOIN todos t ON s.todo_id = t.id
+			 WHERE s.project_id=$1 AND t.plan_id=$2
+			 ORDER BY s.ordering ASC`,
+			projectID, planID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -81,19 +110,33 @@ func (a *Artifacts) Shots(ctx context.Context, projectID string) ([]map[string]a
 	return out, rows.Err()
 }
 
-// Assets lists a project's assets, newest first, optionally filtered by status
-// (spec §9 GET /api/projects/{id}/assets — status/type/shot filter; M2 wires the
-// status filter; type/shot are library concerns served by /api/orgs/{org}/assets).
-func (a *Artifacts) Assets(ctx context.Context, projectID, status string) ([]map[string]any, error) {
-	q := `SELECT id, shot_id, type, blob_key, url, prompt, style, provider, model, status, version, parent_asset_id
-	      FROM assets WHERE project_id=$1`
-	args := []any{projectID}
-	if status != "" {
-		q += ` AND status=$2`
-		args = append(args, status)
+// Assets lists a project's assets, newest first, optionally filtered by status.
+func (a *Artifacts) Assets(ctx context.Context, projectID, planID, status string) ([]map[string]any, error) {
+	var rows pgx.Rows
+	var err error
+	if planID == "" {
+		q := `SELECT id, shot_id, type, blob_key, url, prompt, style, provider, model, status, version, parent_asset_id
+		      FROM assets WHERE project_id=$1`
+		args := []any{projectID}
+		if status != "" {
+			q += ` AND status=$2`
+			args = append(args, status)
+		}
+		q += ` ORDER BY created_at DESC`
+		rows, err = a.pool.Query(ctx, q, args...)
+	} else {
+		q := `SELECT a.id, a.shot_id, a.type, a.blob_key, a.url, a.prompt, a.style, a.provider, a.model, a.status, a.version, a.parent_asset_id
+		      FROM assets a
+		      JOIN todos t ON a.todo_id = t.id
+		      WHERE a.project_id=$1 AND t.plan_id=$2`
+		args := []any{projectID, planID}
+		if status != "" {
+			q += ` AND a.status=$3`
+			args = append(args, status)
+		}
+		q += ` ORDER BY a.created_at DESC`
+		rows, err = a.pool.Query(ctx, q, args...)
 	}
-	q += ` ORDER BY created_at DESC`
-	rows, err := a.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

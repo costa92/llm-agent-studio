@@ -2,7 +2,7 @@ import { useState } from "react"
 import { useForm, useWatch } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
-import { Loader2 } from "lucide-react"
+import { Loader2, Eye, EyeOff } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -265,6 +265,7 @@ export function CreateModelConfigForm({
   initial,
 }: CreateModelConfigFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null)
+  const [showApiKey, setShowApiKey] = useState(false)
   const isEdit = initial != null
   // catalog 里出现过的不重复 provider（保序）+ 末尾的 openai-compatible。
   const providers = [...new Set(catalog.map((e) => e.provider))]
@@ -281,7 +282,7 @@ export function CreateModelConfigForm({
       kind: initial?.kind ?? "image",
       model: initial?.model ?? "",
       baseUrl: initial?.baseUrl ?? "",
-      apiKey: "", // 编辑模式始终留空：空 = 保留既有密钥。
+      apiKey: initial?.apiKey ?? "",
       enabled: initial?.enabled ?? true,
       isDefault: initial?.isDefault ?? false,
       paramsText: initial?.params ? JSON.stringify(initial.params) : "",
@@ -439,14 +440,23 @@ export function CreateModelConfigForm({
 
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="mc-apikey">API Key（可选）</Label>
-        <input
-          id="mc-apikey"
-          type="password"
-          autoComplete="off"
-          placeholder="sk-..."
-          {...register("apiKey")}
-          className={selectClass}
-        />
+        <div className="relative flex items-center w-full">
+          <input
+            id="mc-apikey"
+            type={showApiKey ? "text" : "password"}
+            autoComplete="off"
+            placeholder="sk-..."
+            {...register("apiKey")}
+            className={`${selectClass} w-full pr-10`}
+          />
+          <button
+            type="button"
+            onClick={() => setShowApiKey(!showApiKey)}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-text-3 hover:text-text-1 focus:outline-none"
+          >
+            {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+          </button>
+        </div>
         <p className="text-[11.5px] text-text-3">
           {isEdit && initial?.hasApiKey
             ? "留空保持不变（已配置密钥）；填写则替换为新密钥。"

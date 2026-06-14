@@ -33,7 +33,7 @@ export function AssetCard({
       data-selected={selected ? "" : undefined}
       onClick={onSelect}
       className={cn(
-        "group flex flex-col overflow-hidden rounded-[10px] border bg-bg-surface text-left transition-colors",
+        "group flex flex-col w-full overflow-hidden rounded-[10px] border bg-bg-surface text-left transition-colors",
         selected ? "border-amber" : "border-line hover:border-text-3",
         className,
       )}

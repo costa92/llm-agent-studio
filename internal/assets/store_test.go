@@ -44,8 +44,10 @@ func TestCreateAndGet(t *testing.T) {
 	st := New(pool)
 	ctx := context.Background()
 	pid := seedProject(t, pool, "org-a")
+	// 用 unique 后缀避免共享测试池里硬编码 todo/shot ID 撞 assets_todo_uniq。
+	uniq := newID()
 	a, err := st.Create(ctx, CreateInput{
-		ProjectID: pid, ShotID: "shot1", TodoID: "todo1", Type: "image",
+		ProjectID: pid, ShotID: "shot_" + uniq, TodoID: "todo_" + uniq, Type: "image",
 		BlobKey: "k.png", Prompt: "p", Style: "国风", Provider: "fake", Model: "m",
 		Status: "pending_acceptance", Tags: []string{"hero"},
 	})
@@ -173,7 +175,9 @@ func TestSetSubmittedAndAsyncFailedAndInFlightCount(t *testing.T) {
 	ctx := context.Background()
 	pid := seedProject(t, pool, "org_async")
 	s := New(pool)
-	a, err := s.GetOrCreateForTodo(ctx, CreateInput{ProjectID: pid, TodoID: "todo_async_1", Type: "video", Status: "generating"})
+	// 唯一 todo id 避免共享测试池撞 assets_todo_uniq。
+	asyncTodoID := "todo_async_" + newID()
+	a, err := s.GetOrCreateForTodo(ctx, CreateInput{ProjectID: pid, TodoID: asyncTodoID, Type: "video", Status: "generating"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -232,7 +236,9 @@ func TestSetBlobAdvancesFromSubmitted(t *testing.T) {
 	ctx := context.Background()
 	pid := seedProject(t, pool, "org_setblob")
 	s := New(pool)
-	a, _ := s.GetOrCreateForTodo(ctx, CreateInput{ProjectID: pid, TodoID: "todo_sb_1", Type: "video", Status: "generating"})
+	// 唯一 todo id 避免共享测试池撞 assets_todo_uniq。
+	sbTodoID := "todo_sb_" + newID()
+	a, _ := s.GetOrCreateForTodo(ctx, CreateInput{ProjectID: pid, TodoID: sbTodoID, Type: "video", Status: "generating"})
 	_ = s.SetSubmitted(ctx, a.ID, "j")
 	// poll-done completion: SetBlob from-guard must accept 'submitted' now, and
 	// report won=true (it advanced exactly one row).

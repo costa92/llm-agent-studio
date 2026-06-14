@@ -7,8 +7,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -28,18 +30,50 @@ type Project struct {
 	Style          string `json:"style"`
 	Status         string `json:"status"`
 	CreatedBy      string `json:"createdBy"`
+	FallbackUsed   bool   `json:"fallbackUsed"`
+	// M5.1: per-project 规划模型 override。空 = 走 org 默认；非空时 runHandler
+	// 经 modelrouter.ChatModelForNamed 查 org model_configs 拿 provider/model 对应
+	// 的 key，再交给 planner.PlanWith 使用。
+	PlannerProvider string `json:"plannerProvider"`
+	PlannerModel    string `json:"plannerModel"`
+	// M9: per-project 图片生成模型 override。空 = 走 org 默认；非空时 worker
+	// 经 modelrouter.MediaGeneratorForNamed 查 org model_configs 拿 provider/model 对应
+	// 的 key，并构造对应的 MediaGenerator。
+	ImageProvider         string          `json:"imageProvider"`
+	ImageModel            string          `json:"imageModel"`
+	StorageMode           string          `json:"storageMode"`
+	CustomWorkflowEnabled bool            `json:"customWorkflowEnabled"`
+	WorkflowNodes         json.RawMessage `json:"workflowNodes"`
 }
 
 // CreateInput is the input to Create. Brief maps to the description column
 // (the creative brief the planner/ScriptAgent consume).
 type CreateInput struct {
-	OrgID          string
-	Name           string
-	Brief          string
-	ContentType    string
-	TargetPlatform string
-	Style          string
-	CreatedBy      string
+	OrgID                 string
+	Name                  string
+	Brief                 string
+	ContentType           string
+	TargetPlatform        string
+	Style                 string
+	CreatedBy             string
+	PlannerProvider       string
+	PlannerModel          string
+	ImageProvider         string
+	ImageModel            string
+	StorageMode           string
+	CustomWorkflowEnabled bool
+	WorkflowNodes         json.RawMessage
+}
+
+// UpdateInput 用于后期修改项目元数据（M5.1/M9 edit 入口）。
+type UpdateInput struct {
+	PlannerProvider       string          `json:"plannerProvider"`
+	PlannerModel          string          `json:"plannerModel"`
+	ImageProvider         string          `json:"imageProvider"`
+	ImageModel            string          `json:"imageModel"`
+	StorageMode           string          `json:"storageMode"`
+	CustomWorkflowEnabled bool            `json:"customWorkflowEnabled"`
+	WorkflowNodes         json.RawMessage `json:"workflowNodes"`
 }
 
 // Store persists projects.
@@ -65,11 +99,16 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Project, error) {
 		ID: newID(), OrgID: in.OrgID, Name: in.Name, Description: in.Brief,
 		ContentType: in.ContentType, TargetPlatform: in.TargetPlatform,
 		Style: in.Style, Status: "draft", CreatedBy: in.CreatedBy,
+		PlannerProvider: in.PlannerProvider, PlannerModel: in.PlannerModel,
+		ImageProvider: in.ImageProvider, ImageModel: in.ImageModel,
+		StorageMode: in.StorageMode,
+		CustomWorkflowEnabled: in.CustomWorkflowEnabled,
+		WorkflowNodes:         in.WorkflowNodes,
 	}
 	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO projects (id, org_id, name, description, content_type, target_platform, style, status, created_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-		p.ID, p.OrgID, p.Name, p.Description, p.ContentType, p.TargetPlatform, p.Style, p.Status, p.CreatedBy); err != nil {
+		`INSERT INTO projects (id, org_id, name, description, content_type, target_platform, style, status, created_by, planner_provider, planner_model, image_provider, image_model, storage_mode, custom_workflow_enabled, workflow_nodes)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+		p.ID, p.OrgID, p.Name, p.Description, p.ContentType, p.TargetPlatform, p.Style, p.Status, p.CreatedBy, p.PlannerProvider, p.PlannerModel, p.ImageProvider, p.ImageModel, p.StorageMode, p.CustomWorkflowEnabled, p.WorkflowNodes); err != nil {
 		return Project{}, fmt.Errorf("project: insert: %w", err)
 	}
 	return p, nil
@@ -79,9 +118,18 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Project, error) {
 func (s *Store) Get(ctx context.Context, id string) (Project, error) {
 	var p Project
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, org_id, name, description, content_type, target_platform, style, status, created_by
-		 FROM projects WHERE id=$1`, id).
-		Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy)
+		`SELECT p.id, p.org_id, p.name, p.description, p.content_type, p.target_platform, p.style, p.status, p.created_by,
+		        COALESCE(pl.fallback_used, false),
+		        p.planner_provider, p.planner_model, p.image_provider, p.image_model, p.storage_mode,
+		        p.custom_workflow_enabled, p.workflow_nodes
+		 FROM projects p
+		 LEFT JOIN (
+		     SELECT DISTINCT ON (project_id) project_id, fallback_used
+		     FROM plans
+		     ORDER BY project_id, created_at DESC
+		 ) pl ON p.id = pl.project_id
+		 WHERE p.id=$1`, id).
+		Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy, &p.FallbackUsed, &p.PlannerProvider, &p.PlannerModel, &p.ImageProvider, &p.ImageModel, &p.StorageMode, &p.CustomWorkflowEnabled, &p.WorkflowNodes)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Project{}, ErrNotFound
 	}
@@ -105,7 +153,7 @@ func (s *Store) ListByOrg(ctx context.Context, orgID string, limit int, cursor s
 		limit = 50
 	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, org_id, name, description, content_type, target_platform, style, status, created_by
+		`SELECT id, org_id, name, description, content_type, target_platform, style, status, created_by, planner_provider, planner_model, image_provider, image_model, storage_mode, custom_workflow_enabled, workflow_nodes
 		 FROM projects WHERE org_id=$1 AND id>$2 ORDER BY id ASC LIMIT $3`,
 		orgID, cursor, limit)
 	if err != nil {
@@ -115,7 +163,7 @@ func (s *Store) ListByOrg(ctx context.Context, orgID string, limit int, cursor s
 	var out []Project
 	for rows.Next() {
 		var p Project
-		if err := rows.Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy); err != nil {
+		if err := rows.Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy, &p.PlannerProvider, &p.PlannerModel, &p.ImageProvider, &p.ImageModel, &p.StorageMode, &p.CustomWorkflowEnabled, &p.WorkflowNodes); err != nil {
 			return nil, "", err
 		}
 		out = append(out, p)
@@ -136,11 +184,50 @@ func (s *Store) SetStatus(ctx context.Context, id, status string) error {
 	return err
 }
 
-// RefreshStatus recomputes the project status from its todo tally and persists
-// it. Called by the worker after each todo transition (spec §7.3 step 5).
+// Update 修改项目的 planner_provider / planner_model 以及 image_provider / image_model
+// （其他字段不允许改 — 想改 brief / style / 内容类型只能删了重建，避免污染已有 run 事件 history）。
+// 0 行影响 = 找不到该 id（POST 一致返 404 而非 200）。
+func (s *Store) Update(ctx context.Context, id string, in UpdateInput) (Project, error) {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE projects
+		 SET planner_provider=$2, planner_model=$3, image_provider=$4, image_model=$5, storage_mode=$6, custom_workflow_enabled=$7, workflow_nodes=$8, updated_at=now()
+		 WHERE id=$1`, id, in.PlannerProvider, in.PlannerModel, in.ImageProvider, in.ImageModel, in.StorageMode, in.CustomWorkflowEnabled, in.WorkflowNodes)
+	if err != nil {
+		return Project{}, fmt.Errorf("project: update: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return Project{}, ErrNotFound
+	}
+	return s.Get(ctx, id)
+}
+
+// RefreshStatus recomputes the project status from its LATEST plan's todo
+// tally and persists it. Called by the worker after each todo transition
+// (spec §7.3 step 5).
+//
+// 关键不变式：项目 status 必须按"最新 plan 维度"算。历史失败 run 不该污染当前
+// 重跑——计划 A 6/6 跑挂后再重跑成功（计划 B 5/5 done + 2 待审），项目应
+// 解析为 "review"，旧实现因为累加 todos（Failed=1）会卡在 "failed"（生产
+// 真实事故）。todos 表带 plan_id，SELECT 加 WHERE plan_id=<最新> 即可。
+//
+// 无 plan 的项目（draft 初始态 / 还没跑过）保持现状：DeriveStatus 对空
+// TodoCounts 返 "planning"，但项目初始就是 "draft"，硬改写会误导。
 func (s *Store) RefreshStatus(ctx context.Context, projectID string) (string, error) {
+	var latestPlanID string
+	err := s.pool.QueryRow(ctx,
+		`SELECT id FROM plans WHERE project_id=$1 ORDER BY created_at DESC LIMIT 1`,
+		projectID).Scan(&latestPlanID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// 无 plan：不改写 project.status（保持 create 时的 draft）。返回
+		// Get 出来的当前值，便于 caller 行为对称。
+		return s.currentStatus(ctx, projectID)
+	}
+	if err != nil {
+		return "", fmt.Errorf("project: find latest plan: %w", err)
+	}
+
 	var c TodoCounts
-	err := s.pool.QueryRow(ctx, `
+	err = s.pool.QueryRow(ctx, `
 		SELECT count(*),
 		       count(*) FILTER (WHERE status='ready'),
 		       count(*) FILTER (WHERE status='running'),
@@ -148,21 +235,35 @@ func (s *Store) RefreshStatus(ctx context.Context, projectID string) (string, er
 		       count(*) FILTER (WHERE status='done'),
 		       count(*) FILTER (WHERE status='failed'),
 		       count(*) FILTER (WHERE status='canceled')
-		FROM todos WHERE project_id=$1`, projectID).
+		FROM todos WHERE plan_id=$1`, latestPlanID).
 		Scan(&c.Total, &c.Ready, &c.Running, &c.Blocked, &c.Done, &c.Failed, &c.Canceled)
 	if err != nil {
-		return "", fmt.Errorf("project: tally todos: %w", err)
+		return "", fmt.Errorf("project: tally latest plan todos: %w", err)
 	}
+	// 资产通过 todos 关联到 plan（assets.todo_id → todos.plan_id）；这样
+	// pending_acceptance 也只计最新 plan 的，与 ListPlans 的关联方式一致。
 	if err := s.pool.QueryRow(ctx,
-		`SELECT count(*) FROM assets WHERE project_id=$1 AND status='pending_acceptance'`,
-		projectID).Scan(&c.PendingAssets); err != nil {
-		return "", fmt.Errorf("project: tally pending assets: %w", err)
+		`SELECT count(*) FROM assets a
+		 JOIN todos t ON a.todo_id = t.id
+		 WHERE t.plan_id = $1 AND a.status = 'pending_acceptance'`,
+		latestPlanID).Scan(&c.PendingAssets); err != nil {
+		return "", fmt.Errorf("project: tally latest plan pending assets: %w", err)
 	}
 	status := DeriveStatus(c)
 	if err := s.SetStatus(ctx, projectID, status); err != nil {
 		return "", err
 	}
 	return status, nil
+}
+
+// currentStatus returns the project's status column without modification.
+// Used by RefreshStatus to return the un-touched value when there are no
+// plans yet (so the function's return semantics stay uniform for callers).
+func (s *Store) currentStatus(ctx context.Context, projectID string) (string, error) {
+	var status string
+	err := s.pool.QueryRow(ctx,
+		`SELECT status FROM projects WHERE id=$1`, projectID).Scan(&status)
+	return status, err
 }
 
 // Cancel marks all non-terminal todos canceled, sweeps in-flight assets
@@ -187,4 +288,74 @@ func (s *Store) Cancel(ctx context.Context, projectID string) error {
 		return fmt.Errorf("project: cancel assets: %w", err)
 	}
 	return s.SetStatus(ctx, projectID, "canceled")
+}
+
+// Plan represents a run/plan for a project.
+type Plan struct {
+	ID           string    `json:"id"`
+	ProjectID    string    `json:"projectId"`
+	Status       string    `json:"status"`
+	Valid        bool      `json:"valid"`
+	FallbackUsed bool      `json:"fallbackUsed"`
+	CreatedAt    time.Time `json:"createdAt"`
+}
+
+// ListPlans lists all plans/runs for a specific project.
+func (s *Store) ListPlans(ctx context.Context, projectID string) ([]Plan, error) {
+	q := `
+		SELECT p.id, p.project_id, p.valid, p.fallback_used, p.created_at,
+		       COALESCE(t.total, 0),
+		       COALESCE(t.ready, 0),
+		       COALESCE(t.running, 0),
+		       COALESCE(t.blocked, 0),
+		       COALESCE(t.done, 0),
+		       COALESCE(t.failed, 0),
+		       COALESCE(t.canceled, 0),
+		       COALESCE(a.pending_assets, 0)
+		FROM plans p
+		LEFT JOIN (
+		    SELECT plan_id,
+		           count(*) as total,
+		           count(*) FILTER (WHERE status='ready') as ready,
+		           count(*) FILTER (WHERE status='running') as running,
+		           count(*) FILTER (WHERE status='blocked') as blocked,
+		           count(*) FILTER (WHERE status='done') as done,
+		           count(*) FILTER (WHERE status='failed') as failed,
+		           count(*) FILTER (WHERE status='canceled') as canceled
+		    FROM todos
+		    GROUP BY plan_id
+		) t ON p.id = t.plan_id
+		LEFT JOIN (
+		    SELECT t.plan_id, count(*) as pending_assets
+		    FROM assets a
+		    JOIN todos t ON a.todo_id = t.id
+		    WHERE a.status = 'pending_acceptance'
+		    GROUP BY t.plan_id
+		) a ON p.id = a.plan_id
+		WHERE p.project_id = $1
+		ORDER BY p.created_at DESC`
+
+	rows, err := s.pool.Query(ctx, q, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("project: list plans: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Plan
+	for rows.Next() {
+		var p Plan
+		var c TodoCounts
+		if err := rows.Scan(
+			&p.ID, &p.ProjectID, &p.Valid, &p.FallbackUsed, &p.CreatedAt,
+			&c.Total, &c.Ready, &c.Running, &c.Blocked, &c.Done, &c.Failed, &c.Canceled, &c.PendingAssets,
+		); err != nil {
+			return nil, fmt.Errorf("project: list plans: scan: %w", err)
+		}
+		p.Status = DeriveStatus(c)
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("project: list plans: rows: %w", err)
+	}
+	return out, nil
 }

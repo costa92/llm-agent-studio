@@ -24,6 +24,16 @@ export interface Project {
   style: string
   status: ProjectStatus
   createdBy: string
+  fallbackUsed?: boolean
+  // M5.1: per-project 规划模型 override。空 = 走 org 默认；非空时 run 时
+  // 后端 router 用 (provider, model) 查 org 的对应 model_config 拿 key。
+  plannerProvider?: string
+  plannerModel?: string
+  // M9: per-project 图片生成模型 override。空 = 走 org 默认；非空时 后端
+  // router 用 (provider, model) 查 org 的对应 model_config 拿 key。
+  imageProvider?: string
+  imageModel?: string
+  storageMode?: string
 }
 
 // UI-spec §7.2。
@@ -43,6 +53,14 @@ export interface CreateProjectInput {
   contentType: string
   targetPlatform: string
   style: string
+  // M5.1: per-project 规划模型 override。空 = 走 org 默认；非空时 run 时
+  // router 用 (provider, model) 查 org 的对应 model_config 拿 key。
+  plannerProvider?: string
+  plannerModel?: string
+  // M9: per-project 图片生成模型 override。空 = 走 org 默认；非空时 后端
+  // router 用 (provider, model) 查 org 的对应 model_config 拿 key。
+  imageProvider?: string
+  imageModel?: string
 }
 
 // runHandler 返回：POST /api/projects/{id}/run → 202。
@@ -122,6 +140,22 @@ export interface Style {
   suffix: string
 }
 
+export interface Prompt {
+  id: string
+  orgId: string
+  name: string
+  content: string
+  style: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CreatePromptInput {
+  name: string
+  content: string
+  style: string
+}
+
 // POST /api/prompt/build → {prompt}。
 export interface BuildPromptResponse {
   prompt: string
@@ -151,6 +185,7 @@ export interface ModelConfig {
   baseUrl: string
   // 是否已为本配置写入 per-config API key；false → 回退服务端 env 密钥。
   hasApiKey: boolean
+  apiKey?: string
   params?: Record<string, unknown>
 }
 
@@ -333,6 +368,7 @@ export interface MailConfig {
   smtpHost: string
   smtpPort: number
   smtpUser: string
+  smtpPass?: string
   smtpFrom: string
   enabled: boolean
   hasSecret: boolean

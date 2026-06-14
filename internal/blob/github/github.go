@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -71,6 +72,9 @@ func New(cfg Config) (*Store, error) {
 		apiBase = defaultAPIBase
 	}
 	apiBase = strings.TrimRight(apiBase, "/")
+	if err := apiBaseValidator(apiBase); err != nil {
+		return nil, err
+	}
 	return &Store{
 		owner:      cfg.Owner,
 		repo:       cfg.Repo,
@@ -184,6 +188,49 @@ func (s *Store) SignedURL(_ context.Context, key string, _ time.Duration) (strin
 	return "https://" + rawHost + "/" + s.owner + "/" + s.repo + "/" + s.branch + "/" + s.objectPath(key), nil
 }
 
+// ReadKey retrieves the raw contents of the file from GitHub (spec §10).
+func (s *Store) ReadKey(ctx context.Context, key string) ([]byte, string, error) {
+	path := s.objectPath(key)
+	u := s.contentsURL(path) + "?ref=" + s.branch
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("blob.github: build read request: %w", err)
+	}
+	s.setHeaders(req)
+	req.Header.Set("Accept", "application/vnd.github.raw")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("blob.github: read: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, "", fmt.Errorf("blob.github: file not found: %s", path)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", apiError("read", resp)
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("blob.github: read body: %w", err)
+	}
+
+	contentType := "application/octet-stream"
+	if strings.HasSuffix(path, ".png") {
+		contentType = "image/png"
+	} else if strings.HasSuffix(path, ".jpg") || strings.HasSuffix(path, ".jpeg") {
+		contentType = "image/jpeg"
+	} else if strings.HasSuffix(path, ".gif") {
+		contentType = "image/gif"
+	} else if strings.HasSuffix(path, ".mp4") {
+		contentType = "video/mp4"
+	} else if strings.HasSuffix(path, ".mp3") {
+		contentType = "audio/mpeg"
+	}
+
+	return data, contentType, nil
+}
+
 // Delete 删除文件：先 GET sha (404 → 视为已删除，返回 nil，幂等)，再 DELETE
 // {message, sha, branch}。
 func (s *Store) Delete(ctx context.Context, key string) error {
@@ -226,4 +273,57 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 func apiError(op string, resp *http.Response) error {
 	snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
 	return fmt.Errorf("blob.github: %s: status %d: %s", op, resp.StatusCode, strings.TrimSpace(string(snippet)))
+}
+
+// apiBaseValidator 是 New() 的 APIBase 校验钩子；测试可整体替换为 noop（httptest.NewServer
+// 返回的 http://127.0.0.1:port 不符合生产校验，但完全能跑 Put/Get/Delete 路径）。
+var apiBaseValidator = validateAPIBase
+
+// ValidateAPIBase 暴露给上层（storageconfig save 校验、UI 后端预检等）做同样的入口检查。
+// 上层调用不必担心 token/owner/repo 等其他字段——本函数只看 URL 形态。
+func ValidateAPIBase(apiBase string) error { return apiBaseValidator(apiBase) }
+
+// validateAPIBase 校验 APIBase 形如 GitHub REST API 根。
+// 真实生产事故：把 jsDelivr CDN / raw.githubusercontent 误填进 storage config 的 Endpoint
+// 字段（→ APIBase），后端在它后面拼 /repos/.../contents/...，URL 形态错位 + CDN 不可写，
+// asset 6/6 失败、Put 前 getSHA 直接 EOF。New() 在最早期挡掉这类明显错的输入。
+//
+// 接受：默认 https://api.github.com；GHE 形如 https://<host>[/<subpath>]/api/v3。
+// 拒绝：CDN 主机（cdn.* / cdn.jsdelivr.net）、raw 直链主机、http://明文、非 URL 字符串。
+func validateAPIBase(apiBase string) error {
+	u, err := url.Parse(apiBase)
+	if err != nil {
+		return fmt.Errorf("blob.github: apiBase %q is not a valid URL: %w", apiBase, err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("blob.github: apiBase must be https:// (got %q); token 不能走明文", apiBase)
+	}
+	host := strings.ToLower(u.Hostname())
+	// CDN / 直链主机（jsDelivr + 自托管 cdn.* / raw.* 形态）一票否决——它们的响应不是
+	// GitHub API 形态，写入 / 鉴权全不可用，错误日志里 EOF 全部源于此。
+	if host == "cdn.jsdelivr.net" || strings.HasPrefix(host, "cdn.") ||
+		host == "raw.githubusercontent.com" || strings.HasPrefix(host, "raw.") {
+		return fmt.Errorf(
+			"blob.github: apiBase %q 是 CDN / raw 直链主机，不是 GitHub API 根；请填 https://api.github.com （GHE 用 https://<host>/api/v3）",
+			apiBase,
+		)
+	}
+	// 路径必须以 /api/v3 收尾（GHE 常见有子路径，如 /github/api/v3）；空路径 = 默认 api.github.com 主机。
+	path := strings.TrimRight(u.Path, "/")
+	if path == "" {
+		if host != "api.github.com" {
+			return fmt.Errorf(
+				"blob.github: apiBase %q 路径为空且 host 不是 api.github.com —— GHE 必须在路径末段带 /api/v3",
+				apiBase,
+			)
+		}
+		return nil
+	}
+	if !strings.HasSuffix(path, "/api/v3") {
+		return fmt.Errorf(
+			"blob.github: apiBase %q 路径末段必须是 /api/v3（GHE 形如 https://<host>[/<subpath>]/api/v3）",
+			apiBase,
+		)
+	}
+	return nil
 }

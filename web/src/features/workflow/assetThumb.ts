@@ -1,25 +1,29 @@
 import { useEffect, useState } from "react"
-import { apiFetch } from "@/lib/apiClient"
+import { getAccessToken } from "@/lib/apiClient"
 
-// 缩略图来源（计划 Task 10 Step 4 决策 / §已知缺口 1）：
+// 缩略图来源（计划 Task 10 Step 4 / §已知缺口 1）：
 //   Asset 无 signedUrl 字段。可显示图一律走 GET /api/assets/{id}/content。
 //   该端点在 auth middleware 后（asset(roleViewer)，需 Authorization: Bearer），
-//   命中后 302 重定向到 HMAC 签名的 blob URL（/api/blob/{key}?sig=...，无需 auth）。
-//
-//   旧实现用 redirect:"manual" 读 302 的 Location —— 这在真实浏览器里是错的：
-//   按 WHATWG Fetch，manual 重定向返回 opaque-redirect 过滤响应，header 列表为空，
-//   res.headers.get("Location") 恒为 null，于是缩略图全部降级为占位。
-//
-//   现改用 redirect:"follow"：apiFetch 注入内存 Bearer（withAuth），fetch 自动跟随 302
-//   到签名 URL 并下载字节（仅一次、已鉴权），再用 blob 生成 object URL 塞 <img src>。
-//   调用方负责在卸载/重拉时 revokeObjectURL（见 AssetThumb 的 effect 清理）。
-//   签名过期或加载失败（img onError）→ 重拉一次刷新（UI-spec §11 默认决策 3）。
-export async function resolveAssetUrl(assetId: string): Promise<string | null> {
-  const res = await apiFetch(`/api/assets/${assetId}/content`, {
+//   此处为避免跨域重定向时的 CORS / 预检问题（浏览器在 302 重定向到 GitHub raw 时会因
+//   Authorization 自定义头部而触发 Options 预检导致失败），通过 query parameter 传递 token
+//   并采用原生 fetch（无自定义 Header），从而能以 Simple Request 安全且无痛地跟随 302 重定向。
+export async function resolveAssetUrl(assetId: string, type?: string): Promise<string | null> {
+  const token = getAccessToken()
+  const url = `/api/assets/${assetId}/content` + (token ? `?token=${encodeURIComponent(token)}` : "")
+  const res = await fetch(url, {
     redirect: "follow",
   })
   if (!res.ok) return null
-  const blob = await res.blob()
+  let blob = await res.blob()
+  if (blob.type === "text/plain" || blob.type === "application/octet-stream" || !blob.type) {
+    let targetMime = "image/png"
+    if (type === "video") {
+      targetMime = "video/mp4"
+    } else if (type === "audio") {
+      targetMime = "audio/mpeg"
+    }
+    blob = new Blob([blob], { type: targetMime })
+  }
   return URL.createObjectURL(blob)
 }
 
@@ -29,6 +33,7 @@ export async function resolveAssetUrl(assetId: string): Promise<string | null> {
 export function useResolvedAssetUrl(
   assetId: string,
   reloadKey = 0,
+  type?: string,
 ): { url: string | null; loading: boolean } {
   // resolved 标识"当前 (assetId,reloadKey) 已完成解析"——只在 await 之后 setState
   //   （避免 effect 体内同步 setState 触发级联渲染）。loading = 尚未完成解析。
@@ -39,7 +44,7 @@ export function useResolvedAssetUrl(
     let objectUrl: string | null = null
     const key = `${assetId}::${reloadKey}`
     void (async () => {
-      const next = await resolveAssetUrl(assetId)
+      const next = await resolveAssetUrl(assetId, type)
       if (cancelled) {
         // 已卸载/重拉：当前结果作废，立即释放避免泄漏。
         if (next) URL.revokeObjectURL(next)
@@ -52,7 +57,7 @@ export function useResolvedAssetUrl(
       cancelled = true
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [assetId, reloadKey])
+  }, [assetId, reloadKey, type])
 
   const key = `${assetId}::${reloadKey}`
   const loading = resolved?.key !== key
