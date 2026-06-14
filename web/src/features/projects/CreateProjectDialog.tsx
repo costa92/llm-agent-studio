@@ -30,7 +30,7 @@ const CONTENT_TYPES = ["短视频", "广告片", "动画", "宣传片"] as const
 const TARGET_PLATFORMS = ["抖音", "视频号", "B 站", "小红书", "通用"] as const
 
 // name 必填（后端缺则 400）；brief 必填（创意需求驱动 planner）；其余给默认值。
-// M5.1: plannerProvider / plannerModel 可选（空 = 走 org 默认）。
+// M5.1/M9: plannerProvider / plannerModel, imageProvider / imageModel 可选（空 = 走 org 默认）。
 const formSchema = z.object({
   name: z.string().min(1, "请输入项目名称"),
   brief: z.string().min(1, "请输入创意需求"),
@@ -39,6 +39,8 @@ const formSchema = z.object({
   style: z.string().min(1, "请选择风格"),
   plannerProvider: z.string(),
   plannerModel: z.string(),
+  imageProvider: z.string(),
+  imageModel: z.string(),
 })
 
 type FormValues = z.infer<typeof formSchema>
@@ -47,6 +49,8 @@ export interface CreateProjectFormProps {
   styles: Style[]
   /** M5.1: org 下 kind=text 的启用模型列表（供规划模型下拉）。空 = 不显示该下拉。 */
   textModels?: ModelConfig[]
+  /** M9: org 下 kind=image 的启用模型列表（供图片模型下拉）。空 = 不显示该下拉。 */
+  imageModels?: ModelConfig[]
   /** 提交表单——返回 Promise<Project>（成功）或 reject（失败）。 */
   onSubmit: (input: CreateProjectInput) => Promise<Project>
   /** 创建成功后回调（关闭 Dialog / 跳工作台）。 */
@@ -57,6 +61,7 @@ export interface CreateProjectFormProps {
 export function CreateProjectForm({
   styles,
   textModels,
+  imageModels,
   onSubmit,
   onSuccess,
 }: CreateProjectFormProps) {
@@ -78,6 +83,9 @@ export function CreateProjectForm({
       // M5.1: 规划模型默认空 = 走 org 默认。下拉只显示 org 启用的 text 模型。
       plannerProvider: "",
       plannerModel: "",
+      // M9: 图片模型默认空 = 走 org 默认。下拉只显示 org 启用的 image 模型。
+      imageProvider: "",
+      imageModel: "",
     },
   })
 
@@ -93,6 +101,9 @@ export function CreateProjectForm({
         style: values.style,
         ...(values.plannerProvider && values.plannerModel
           ? { plannerProvider: values.plannerProvider, plannerModel: values.plannerModel }
+          : {}),
+        ...(values.imageProvider && values.imageModel
+          ? { imageProvider: values.imageProvider, imageModel: values.imageModel }
           : {}),
       }
       const project = await onSubmit(input)
@@ -249,6 +260,61 @@ export function CreateProjectForm({
           />
           <p className="text-[11.5px] text-text-3">
             留空 = 走组织默认；选某个模型则本次及后续 run 都用该模型。
+          </p>
+        </div>
+      )}
+
+      {imageModels && imageModels.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="imageModel">图片生成模型（可选）</Label>
+          <Controller
+            control={control}
+            name="imageProvider"
+            render={({ field: provField }) => (
+              <Controller
+                control={control}
+                name="imageModel"
+                render={({ field: modField }) => (
+                  <Select
+                    value={
+                      provField.value && modField.value
+                        ? `${provField.value}::${modField.value}`
+                        : "__default__"
+                    }
+                    onValueChange={(v) => {
+                      if (v === "__default__") {
+                        provField.onChange("")
+                        modField.onChange("")
+                        return
+                      }
+                      const sep = v.indexOf("::")
+                      if (sep < 0) return
+                      provField.onChange(v.slice(0, sep))
+                      modField.onChange(v.slice(sep + 2))
+                    }}
+                  >
+                    <SelectTrigger id="imageModel" aria-invalid={false}>
+                      <SelectValue placeholder="使用组织默认" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__default__">使用组织默认</SelectItem>
+                      {imageModels.map((m) => {
+                        const key = `${m.provider}::${m.model}`
+                        return (
+                          <SelectItem key={key} value={key}>
+                            {m.provider} · {m.model}
+                            {m.isDefault ? "（默认）" : ""}
+                          </SelectItem>
+                        )
+                      })}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+            )}
+          />
+          <p className="text-[11.5px] text-text-3">
+            留空 = 走组织默认；选某个模型则本次及后续 run 都用该模型生成图片。
           </p>
         </div>
       )}

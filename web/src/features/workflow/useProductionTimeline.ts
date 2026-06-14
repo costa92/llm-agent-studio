@@ -38,7 +38,7 @@ function toFrame(e: StudioEvent): SseFrame {
 // 可注入依赖（生产默认真实实现；单测喂 fake）。
 export interface TimelineDeps {
   // 回放：拉全部历史事件（GET /events 分页累积）。
-  fetchAllEvents: (id: string) => Promise<StudioEvent[]>
+  fetchAllEvents: (id: string, planId?: string) => Promise<StudioEvent[]>
   // SSE 客户端（默认 fetchEventSource；测试喂脚本化 fake）。
   sseClient?: SseClient
 }
@@ -51,6 +51,7 @@ export interface UseProductionTimelineArgs extends TimelineDeps {
   status: ProjectStatus | undefined
   // 是否启用（projectId 就绪后）。
   enabled?: boolean
+  planId?: string
 }
 
 export interface ProductionTimeline {
@@ -76,7 +77,7 @@ function timelineReducer(state: TimelineState, action: Action): TimelineState {
   }
 }
 
-// 编排 hook。回放 → 续接实时；完成态只回放。seq-dedup 吸收重叠。
+// 编编排 hook。回放 → 续接实时；完成态只回放。seq-dedup 吸收重叠。
 export function useProductionTimeline({
   projectId,
   accessToken,
@@ -84,6 +85,7 @@ export function useProductionTimeline({
   enabled = true,
   fetchAllEvents,
   sseClient = fetchEventSource,
+  planId,
 }: UseProductionTimelineArgs): ProductionTimeline {
   const [state, dispatch] = useReducer(timelineReducer, undefined, initialTimeline)
   const [conn, setConn] = useState<SseConnState>("idle")
@@ -117,7 +119,7 @@ export function useProductionTimeline({
 
       // ── 1) 回放历史事件（重建全态）──
       try {
-        const events = await fetchAllEvents(projectId)
+        const events = await fetchAllEvents(projectId, planId)
         if (cancelled) return
         dispatch({ type: "replayed", frames: events.map(toFrame) })
       } catch {
@@ -158,6 +160,7 @@ export function useProductionTimeline({
           },
           sseClient,
           controller.signal,
+          planId,
         )
       } catch {
         if (!cancelled) setConn("disconnected")
@@ -173,7 +176,7 @@ export function useProductionTimeline({
     // accessToken 变化（刷新轮换）不应重起整条流——SSE 客户端用首次 token；
     // 重连由 fetch-event-source 处理。故 deps 只含 projectId/status/enabled。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, status, enabled])
+  }, [projectId, status, enabled, planId])
 
   return { state, conn, replayed }
 }

@@ -226,7 +226,7 @@ function renderView(overrides?: {
 describe("StorageConfigView", () => {
   it("renders only the org section, not the global section (moved to /platform)", () => {
     renderView()
-    expect(screen.getByText("本组织存储")).toBeInTheDocument()
+    expect(screen.getByText("本组织存储 (Amazon S3 / S3 兼容)")).toBeInTheDocument()
     // 全局默认存储已迁至平台管理页，不再出现在 org 页。
     expect(screen.queryByText("全局默认存储")).not.toBeInTheDocument()
   })

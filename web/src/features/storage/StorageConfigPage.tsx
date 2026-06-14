@@ -77,10 +77,10 @@ const formSchema = z
 
 type FormValues = z.infer<typeof formSchema>
 
-// initial → 表单默认值。secret 始终留空（空 = 保留既有）；hasSecret 决定提示文案。
-function defaultsFor(initial: StorageConfig | null | undefined): FormValues {
+// initial → 表单默认值。secret 始终留空（空 = 保保留既有）；hasSecret 决定提示文案。
+function defaultsFor(initial: StorageConfig | null | undefined, activeMode?: StorageMode): FormValues {
   return {
-    mode: initial?.mode ?? "localfs",
+    mode: initial?.mode ?? activeMode ?? "localfs",
     endpoint: initial?.endpoint ?? "",
     region: initial?.region ?? "",
     bucket: initial?.bucket ?? "",
@@ -99,10 +99,11 @@ export interface StorageConfigFormProps {
   onSubmit: (input: UpsertStorageConfigInput) => Promise<StorageConfig>
   // org 覆盖区显示「禁用 = 回退全局」提示；全局区不显示。
   isOrgScope: boolean
+  activeMode?: StorageMode
 }
 
 // 单个存储配置表单：mode 下拉 + per-mode 条件字段 + write-only secret。
-export function StorageConfigForm({ initial, onSubmit, isOrgScope }: StorageConfigFormProps) {
+export function StorageConfigForm({ initial, onSubmit, isOrgScope, activeMode }: StorageConfigFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null)
   const {
     register,
@@ -112,7 +113,7 @@ export function StorageConfigForm({ initial, onSubmit, isOrgScope }: StorageConf
     formState: { errors, isSubmitting },
   } = useForm<FormValues>({
     resolver: zodResolver(formSchema),
-    defaultValues: defaultsFor(initial),
+    defaultValues: defaultsFor(initial, activeMode),
   })
 
   const mode = useWatch({ control, name: "mode" })
@@ -166,7 +167,7 @@ export function StorageConfigForm({ initial, onSubmit, isOrgScope }: StorageConf
     <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
       <div className="flex flex-col gap-1.5">
         <Label htmlFor={fid("mode")}>存储类型 (mode)</Label>
-        <select id={fid("mode")} {...register("mode")} className={fieldClass}>
+        <select id={fid("mode")} {...register("mode")} className={fieldClass} disabled={isOrgScope && activeMode !== undefined}>
           {MODES.map((m) => (
             <option key={m} value={m}>
               {MODE_LABELS[m]}
@@ -428,6 +429,7 @@ interface SectionProps {
   onRetry: () => void
   onSubmit: (input: UpsertStorageConfigInput) => Promise<StorageConfig>
   isOrgScope: boolean
+  activeMode: StorageMode
   // org 区的删除入口（confirm dialog 在外层管理）；global 区不传。
   onRequestDelete?: () => void
   canDelete?: boolean
@@ -442,6 +444,7 @@ function StorageSection({
   onRetry,
   onSubmit,
   isOrgScope,
+  activeMode,
   onRequestDelete,
   canDelete,
 }: SectionProps) {
@@ -491,10 +494,11 @@ function StorageSection({
       ) : (
         // key 绑 config 同一性：org 删除回退（config 变 null）后重置表单为默认 localfs。
         <StorageConfigForm
-          key={config?.id ?? "empty"}
+          key={`${config?.id ?? "empty"}-${activeMode || "default"}`}
           initial={config}
           onSubmit={onSubmit}
           isOrgScope={isOrgScope}
+          activeMode={activeMode}
         />
       )}
     </section>
@@ -506,6 +510,8 @@ export interface StorageConfigViewProps {
   orgConfig: StorageConfig | null | undefined
   orgLoading: boolean
   orgError: boolean
+  activeMode?: "s3" | "oss" | "cos" | "github"
+  onActiveModeChange?: (mode: "s3" | "oss" | "cos" | "github") => void
   onOrgRetry: () => void
   onOrgSubmit: (input: UpsertStorageConfigInput) => Promise<StorageConfig>
   onOrgDelete: () => Promise<void>
@@ -517,6 +523,8 @@ export function StorageConfigView({
   orgConfig,
   orgLoading,
   orgError,
+  activeMode = "s3",
+  onActiveModeChange = () => {},
   onOrgRetry,
   onOrgSubmit,
   onOrgDelete,
@@ -534,15 +542,33 @@ export function StorageConfigView({
         </p>
       </header>
 
+      {/* Tabs */}
+      <div className="flex border-b border-line gap-2">
+        {(["s3", "oss", "cos", "github"] as const).map((m) => (
+          <button
+            key={m}
+            onClick={() => onActiveModeChange(m)}
+            className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-[2px] transition-colors ${
+              activeMode === m
+                ? "border-amber text-amber"
+                : "border-transparent text-text-3 hover:text-text-1"
+            }`}
+          >
+            {MODE_LABELS[m]}
+          </button>
+        ))}
+      </div>
+
       <StorageSection
-        title="本组织存储"
-        description="本组织专属覆盖；未配置或停用时回退到全局默认。"
+        title={`本组织存储 (${MODE_LABELS[activeMode]})`}
+        description={`配置本组织的 ${MODE_LABELS[activeMode]} 后端。未配置或停用时回退到全局默认。`}
         config={orgConfig}
         isLoading={orgLoading}
         isError={orgError}
         onRetry={onOrgRetry}
         onSubmit={onOrgSubmit}
-        isOrgScope
+        isOrgScope={true}
+        activeMode={activeMode}
         onRequestDelete={() => setConfirmDelete(true)}
         canDelete={orgConfig != null}
       />

@@ -57,6 +57,7 @@ export interface WorkbenchViewProps {
   onOpenReview?: () => void
   // 顶栏面包屑返回项目列表。
   onBack?: () => void
+  plannerModelNode?: ReactNode
 }
 
 // 三栏工作台：左 brief/KV/WarnStrip/EventLog，中制片轨道，右选中工件预览。
@@ -76,6 +77,7 @@ export function WorkbenchView({
   drawer,
   onOpenReview,
   onBack,
+  plannerModelNode,
 }: WorkbenchViewProps) {
   const { stages, pips, doneAssetCount, pipCount, pendingAssetCount, slateVisible, runStatus } =
     timeline
@@ -153,6 +155,7 @@ export function WorkbenchView({
             <MetaRow label="内容类型" value={project.contentType} />
             <MetaRow label="目标平台" value={project.targetPlatform} />
             <MetaRow label="风格" value={project.style} />
+            {plannerModelNode}
           </section>
           {fallbackUsed && (
             <section className="mb-5">

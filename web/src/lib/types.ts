@@ -29,6 +29,11 @@ export interface Project {
   // 后端 router 用 (provider, model) 查 org 的对应 model_config 拿 key。
   plannerProvider?: string
   plannerModel?: string
+  // M9: per-project 图片生成模型 override。空 = 走 org 默认；非空时 后端
+  // router 用 (provider, model) 查 org 的对应 model_config 拿 key。
+  imageProvider?: string
+  imageModel?: string
+  storageMode?: string
 }
 
 // UI-spec §7.2。
@@ -52,6 +57,10 @@ export interface CreateProjectInput {
   // router 用 (provider, model) 查 org 的对应 model_config 拿 key。
   plannerProvider?: string
   plannerModel?: string
+  // M9: per-project 图片生成模型 override。空 = 走 org 默认；非空时 后端
+  // router 用 (provider, model) 查 org 的对应 model_config 拿 key。
+  imageProvider?: string
+  imageModel?: string
 }
 
 // runHandler 返回：POST /api/projects/{id}/run → 202。
@@ -129,6 +138,22 @@ export interface RegenerateResponse {
 export interface Style {
   name: string
   suffix: string
+}
+
+export interface Prompt {
+  id: string
+  orgId: string
+  name: string
+  content: string
+  style: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CreatePromptInput {
+  name: string
+  content: string
+  style: string
 }
 
 // POST /api/prompt/build → {prompt}。

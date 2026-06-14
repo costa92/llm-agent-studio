@@ -212,7 +212,6 @@ describe("CreateProjectForm", () => {
             enabled: true,
             isDefault: true,
             baseUrl: "",
-            useSsl: true,
             hasApiKey: true,
           },
         ]}
@@ -251,7 +250,6 @@ describe("CreateProjectForm", () => {
             enabled: true,
             isDefault: false,
             baseUrl: "",
-            useSsl: true,
             hasApiKey: false,
           },
         ]}

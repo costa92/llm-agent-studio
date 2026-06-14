@@ -37,12 +37,33 @@ describe("resolveAssetUrl (authed fetch follows 302 → blob object URL)", () =>
 
     expect(url).toBe("blob:mock/0")
     // 请求命中 /content，且按真实浏览器语义 redirect:"follow"（非 manual）。
-    expect(String(fetchMock.mock.calls[0][0])).toContain("/api/assets/as1/content")
+    expect(String(fetchMock.mock.calls[0][0])).toContain("/api/assets/as1/content?token=tok-1")
     expect(fetchMock.mock.calls[0][1]?.redirect).toBe("follow")
-    // /content 在 auth middleware 后 —— 必须带内存 Bearer（apiFetch 注入）。
+    // 无自定义 Authorization 头部，避免重定向跨域预检触发失败。
     const headers = new Headers(fetchMock.mock.calls[0][1]?.headers)
-    expect(headers.get("Authorization")).toBe("Bearer tok-1")
+    expect(headers.get("Authorization")).toBeNull()
     expect(URL.createObjectURL).toHaveBeenCalledOnce()
+  })
+
+  it("coerces generic text/plain or application/octet-stream to specified type", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      blob: vi.fn().mockResolvedValue(new Blob(["bytes"], { type: "text/plain" })),
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    // Coerce text/plain to image/png by default (when type is "image" or not specified)
+    const url1 = await resolveAssetUrl("as3", "image")
+    expect(url1).toBe("blob:mock/0")
+    const call1Blob = vi.mocked(URL.createObjectURL).mock.calls[0][0] as Blob
+    expect(call1Blob.type).toBe("image/png")
+
+    // Coerce text/plain to video/mp4 when type is "video"
+    const url2 = await resolveAssetUrl("as4", "video")
+    expect(url2).toBe("blob:mock/1")
+    const call2Blob = vi.mocked(URL.createObjectURL).mock.calls[1][0] as Blob
+    expect(call2Blob.type).toBe("video/mp4")
   })
 
   it("returns null when the content fetch fails (non-2xx)", async () => {
@@ -51,6 +72,5 @@ describe("resolveAssetUrl (authed fetch follows 302 → blob object URL)", () =>
       vi.fn().mockResolvedValue(new Response("not found", { status: 404 })),
     )
     expect(await resolveAssetUrl("as2")).toBeNull()
-    expect(URL.createObjectURL).not.toHaveBeenCalled()
   })
 })

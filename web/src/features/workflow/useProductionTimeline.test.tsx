@@ -54,7 +54,7 @@ describe("useProductionTimeline (replay-then-live orchestration)", () => {
     )
 
     // 回放先发生。
-    await waitFor(() => expect(fetchAllEvents).toHaveBeenCalledWith("p1"))
+    await waitFor(() => expect(fetchAllEvents).toHaveBeenCalledWith("p1", undefined))
 
     // 续接实时后：S2 应为 done（seq 4），且**没有重复渲染**——日志里 seq 1/2/3 各仅一条。
     await waitFor(() => {

@@ -1,9 +1,12 @@
 import {
   useMutation,
+  useQuery,
+  useQueryClient,
   type UseMutationResult,
+  type UseQueryResult,
 } from "@tanstack/react-query"
 import { apiJSON } from "@/lib/apiClient"
-import type { BuildPromptResponse } from "@/lib/types"
+import type { BuildPromptResponse, Prompt, CreatePromptInput } from "@/lib/types"
 
 // 风格下拉与建项目/重生成共用 —— 复用 T9 已建的 usePromptStyles（GET /api/prompt-styles）。
 export { usePromptStyles } from "@/features/projects/api"
@@ -28,5 +31,65 @@ export function useBuildPrompt(): UseMutationResult<
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt, style }),
       }),
+  })
+}
+
+export function usePrompts(org: string): UseQueryResult<Prompt[]> {
+  return useQuery({
+    queryKey: ["prompts", org],
+    queryFn: () =>
+      apiJSON<{ items: Prompt[] }>(`/api/orgs/${org}/prompts`).then(
+        (res) => res.items,
+      ),
+    enabled: org !== "",
+  })
+}
+
+export function useCreatePrompt(
+  org: string,
+): UseMutationResult<Prompt, Error, CreatePromptInput> {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: CreatePromptInput) =>
+      apiJSON<Prompt>(`/api/orgs/${org}/prompts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["prompts", org] })
+    },
+  })
+}
+
+export function useUpdatePrompt(
+  org: string,
+): UseMutationResult<Prompt, Error, { id: string; input: CreatePromptInput }> {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: CreatePromptInput }) =>
+      apiJSON<Prompt>(`/api/orgs/${org}/prompts/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["prompts", org] })
+    },
+  })
+}
+
+export function useDeletePrompt(
+  org: string,
+): UseMutationResult<void, Error, string> {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiJSON<void>(`/api/orgs/${org}/prompts/${id}`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["prompts", org] })
+    },
   })
 }

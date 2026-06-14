@@ -125,6 +125,23 @@ export function useOrgTextModels(
   })
 }
 
+// M9: 项目图片模型下拉的源数据。返回 org 下 kind='image' 且 enabled=true 的模型，
+// 让"per-project 选图片模型"那个下拉只显示 org 真有 key 的可选模型。
+export function useOrgImageModels(
+  org: string,
+): UseQueryResult<ModelConfig[]> {
+  return useQuery({
+    queryKey: ["org-image-models", org],
+    queryFn: () =>
+      apiJSON<ItemsEnvelope<ModelConfig>>(
+        `/api/orgs/${org}/model-configs`,
+      ).then((env) =>
+        env.items.filter((m) => m.kind === "image" && m.enabled),
+      ),
+    enabled: org !== "",
+  })
+}
+
 // 创建模型配置：POST /api/orgs/{org}/model-configs body {kind,provider,model,enabled,isDefault,params}
 //   → 200 ModelConfig（admin，createModelConfigHandler）。
 // provider/model 缺失 → 400；含密钥型 param → 400 ErrSecretParam（见 configError.ts）。

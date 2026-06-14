@@ -12,7 +12,7 @@ export interface AssetMediaProps {
 }
 
 export function AssetMedia({ assetId, type, className }: AssetMediaProps) {
-  const { url, loading } = useResolvedAssetUrl(assetId)
+  const { url, loading } = useResolvedAssetUrl(assetId, 0, type)
 
   if (loading || url == null) {
     return (

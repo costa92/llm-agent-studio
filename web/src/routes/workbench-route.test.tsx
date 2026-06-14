@@ -69,6 +69,7 @@ describe("workbench under org namespace", () => {
     installFetchRoutes({
       "/model-configs": () => jsonResponse({ items: [] }),
       "/api/projects/p1/events": () => jsonResponse({ items: [] }),
+      "/api/projects/p1/plans": () => jsonResponse({ items: [] }),
       "/api/projects/p1": () => jsonResponse(project),
       "/api/": () => jsonResponse({ items: [] }),
     })
