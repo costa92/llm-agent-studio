@@ -133,6 +133,9 @@ func (stubPlanner) Plan(_ context.Context, _ string, _ planner.Brief) (planner.R
 func (stubPlanner) PlanWith(_ context.Context, _ string, _ llm.ChatModel, _ planner.Brief) (planner.Result, error) {
 	return planner.Result{PlanID: "pl", Valid: true}, nil
 }
+func (stubPlanner) PlanCustom(_ context.Context, _ string, _ planner.Brief, _ []planner.WorkflowNode) (planner.Result, error) {
+	return planner.Result{PlanID: "pl", Valid: true}, nil
+}
 
 type stubAppender struct{}
 

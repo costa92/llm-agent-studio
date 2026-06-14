@@ -25,6 +25,7 @@ import (
 // satisfies it). Resolution already encodes per-org → global precedence.
 type resolver interface {
 	ResolveForOrg(ctx context.Context, orgID string) (storageconfig.ResolvedStorage, bool, error)
+	ResolveForOrgAndMode(ctx context.Context, orgID string, mode string) (storageconfig.ResolvedStorage, bool, error)
 }
 
 // Config configures a Router. Configs/Build are required for routing; Default is
@@ -68,12 +69,17 @@ func New(cfg Config) *Router {
 // that — the router does not invent one). Resolution already encodes per-org →
 // global; Default is the third layer.
 func (r *Router) BlobStoreFor(ctx context.Context, orgID string) (blob.BlobStore, error) {
+	return r.BlobStoreForMode(ctx, orgID, "")
+}
+
+// BlobStoreForMode returns the org's configured blob store for a specific mode, else Default.
+func (r *Router) BlobStoreForMode(ctx context.Context, orgID string, mode string) (blob.BlobStore, error) {
 	if r.configs == nil || r.build == nil {
 		return r.def, nil
 	}
-	rs, ok, err := r.configs.ResolveForOrg(ctx, orgID)
+	rs, ok, err := r.configs.ResolveForOrgAndMode(ctx, orgID, mode)
 	if err != nil {
-		r.log.Warn("storagerouter: resolve storage config failed; using default store", "org", orgID, "err", err)
+		r.log.Warn("storagerouter: resolve storage config failed; using default store", "org", orgID, "mode", mode, "err", err)
 		return r.def, nil
 	}
 	if !ok {

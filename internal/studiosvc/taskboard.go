@@ -32,6 +32,13 @@ type TaskRow struct {
 }
 
 // Board 返回 org 下每个项目的运行快照，按 lastActivityAt 降序。空 org 返回非 nil 空切片。
+//
+// M5.2: progress_done / progress_total / pending_review 全部按"最新 plan 维度"算，
+// 与 RefreshStatus 一致——行级 status 字段（取自 projects.status，RefreshStatus
+// 已经按最新 plan 重算）若不配合同口径，徽标"待审核 1" vs "待审核 63" 那种
+// 自相矛盾就会出现。failing_agent / last_activity_at 维持现状：failing_agent
+// 在 LATERAL 任意状态 todos 上找（审计时关心），last_activity_at
+// 自然跨 plan 取 max（最近活动含历史事件）。
 func (b *TaskBoard) Board(ctx context.Context, orgID string) ([]TaskRow, error) {
 	rows, err := b.pool.Query(ctx, `
 		SELECT
@@ -42,16 +49,21 @@ func (b *TaskBoard) Board(ctx context.Context, orgID string) ([]TaskRow, error) 
 		  COALESCE(f.failing_agent, '') AS failing_agent,
 		  GREATEST(p.updated_at, COALESCE(e.last_ts, p.updated_at)) AS last_activity_at
 		FROM projects p
-		LEFT JOIN (
-		  SELECT project_id,
-		         count(*) FILTER (WHERE status='done')      AS done,
-		         count(*) FILTER (WHERE status<>'canceled') AS total
-		  FROM todos GROUP BY project_id
-		) t ON t.project_id = p.id
-		LEFT JOIN (
-		  SELECT project_id, count(*) AS pending
-		  FROM assets WHERE status='pending_acceptance' GROUP BY project_id
-		) a ON a.project_id = p.id
+		LEFT JOIN LATERAL (
+		  SELECT id FROM plans WHERE project_id = p.id
+		  ORDER BY created_at DESC LIMIT 1
+		) lp ON true
+		LEFT JOIN LATERAL (
+		  SELECT
+		    count(*) FILTER (WHERE status='done')      AS done,
+		    count(*) FILTER (WHERE status<>'canceled') AS total
+		  FROM todos WHERE plan_id = lp.id
+		) t ON true
+		LEFT JOIN LATERAL (
+		  SELECT count(*) AS pending
+		  FROM assets a JOIN todos t ON a.todo_id = t.id
+		  WHERE t.plan_id = lp.id AND a.status = 'pending_acceptance'
+		) a ON true
 		LEFT JOIN (
 		  SELECT project_id, max(ts) AS last_ts FROM run_events GROUP BY project_id
 		) e ON e.project_id = p.id

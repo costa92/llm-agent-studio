@@ -88,7 +88,7 @@ func (s *Store) MarkDone(ctx context.Context, todoID, outputRef string) (bool, e
 	defer func() { _ = tx.Rollback(ctx) }()
 	var projectID string
 	tag, err := tx.Exec(ctx,
-		`UPDATE todos SET status='done', output_ref=$2, locked_by='', locked_until=NULL, updated_at=now()
+		`UPDATE todos SET status='done', output_ref=$2, error='', locked_by='', locked_until=NULL, updated_at=now()
 		 WHERE id=$1 AND status='running'`, todoID, outputRef)
 	if err != nil {
 		return false, fmt.Errorf("todos: mark done: %w", err)

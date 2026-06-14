@@ -40,6 +40,18 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/todos"
 )
 
+// ClaimedTodo holds metadata about a claimed todo task.
+type ClaimedTodo struct {
+	TodoID    string
+	ProjectID string
+	Type      string
+	Attempts  int
+	Input     []byte
+}
+
+// TaskExecutor is a function type for executing a claimed todo.
+type TaskExecutor func(ctx context.Context, todo ClaimedTodo) (outputRef string, err error)
+
 // Config configures a Worker.
 type Config struct {
 	Pool             *pgxpool.Pool
@@ -56,6 +68,7 @@ type Config struct {
 	Models           *models.Store       // resolve org default provider+model; nil → registry default
 	Registry         *generate.Registry  // nil → use Asset's bound generator directly
 	Router           *modelrouter.Router // BYOK per-org 模型路由 (chat + media); nil → legacy Models/Registry path
+	CustomExecutors  map[string]TaskExecutor // custom executors registered for task types
 	WorkerID         string
 	GenQuota         int // rolling-24h per-org generation quota; 0 = unlimited (backstop for fan-out)
 	MaxConcurrentGen int // global concurrent asset-todo cap; 0 = unlimited
@@ -84,7 +97,8 @@ type Config struct {
 
 // Worker drains the todos queue.
 type Worker struct {
-	cfg Config
+	cfg       Config
+	executors map[string]TaskExecutor
 }
 
 // errRescheduled signals that runAsset already self-rescheduled the todo (async
@@ -134,7 +148,22 @@ func New(cfg Config) *Worker {
 	if cfg.MaxPollBackoff <= 0 {
 		cfg.MaxPollBackoff = 30 * time.Second
 	}
-	return &Worker{cfg: cfg}
+	w := &Worker{cfg: cfg}
+	w.executors = map[string]TaskExecutor{
+		"script": func(ctx context.Context, t ClaimedTodo) (string, error) {
+			return w.runScript(ctx, claimed{todoID: t.TodoID, projectID: t.ProjectID, typ: t.Type, attempts: t.Attempts, input: t.Input})
+		},
+		"storyboard": func(ctx context.Context, t ClaimedTodo) (string, error) {
+			return w.runStoryboard(ctx, claimed{todoID: t.TodoID, projectID: t.ProjectID, typ: t.Type, attempts: t.Attempts, input: t.Input})
+		},
+		"asset": func(ctx context.Context, t ClaimedTodo) (string, error) {
+			return w.runAsset(ctx, claimed{todoID: t.TodoID, projectID: t.ProjectID, typ: t.Type, attempts: t.Attempts, input: t.Input})
+		},
+	}
+	for k, v := range cfg.CustomExecutors {
+		w.executors[k] = v
+	}
+	return w
 }
 
 // claimed describes a todo atomically claimed for processing.
@@ -288,15 +317,18 @@ func (w *Worker) process(ctx context.Context, c claimed) {
 
 	var outputRef string
 	var perr error
-	switch c.typ {
-	case "script":
-		outputRef, perr = w.runScript(dctx, c)
-	case "storyboard":
-		outputRef, perr = w.runStoryboard(dctx, c)
-	case "asset":
-		outputRef, perr = w.runAsset(dctx, c)
-	default:
+	executor, exists := w.executors[c.typ]
+	if !exists {
 		perr = fmt.Errorf("worker: unknown todo type %q", c.typ)
+	} else {
+		todo := ClaimedTodo{
+			TodoID:    c.todoID,
+			ProjectID: c.projectID,
+			Type:      c.typ,
+			Attempts:  c.attempts,
+			Input:     c.input,
+		}
+		outputRef, perr = executor(dctx, todo)
 	}
 
 	if errors.Is(perr, errRescheduled) {
@@ -360,10 +392,12 @@ func (w *Worker) runScript(ctx context.Context, c claimed) (string, error) {
 		ContentType    string `json:"contentType"`
 		TargetPlatform string `json:"targetPlatform"`
 		Style          string `json:"style"`
+		SystemPrompt   string `json:"systemPrompt"`
 	}
 	_ = json.Unmarshal(c.input, &in)
 	scriptIn := studioagents.ScriptInput{
 		Brief: in.Brief, ContentType: in.ContentType, Platform: in.TargetPlatform, Style: in.Style,
+		SystemPrompt: in.SystemPrompt,
 	}
 	var out studioagents.ScriptOutput
 	var err error
@@ -424,8 +458,13 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 		`SELECT style FROM projects WHERE id=$1`, c.projectID).Scan(&projectStyle); err != nil {
 		return "", fmt.Errorf("worker: load project style: %w", err)
 	}
+	var storyboardInputJSON struct {
+		SystemPrompt string `json:"systemPrompt"`
+	}
+	_ = json.Unmarshal(c.input, &storyboardInputJSON)
 	storyboardIn := studioagents.StoryboardInput{
 		ScriptJSON: string(contentJSON), Style: projectStyle,
+		SystemPrompt: storyboardInputJSON.SystemPrompt,
 	}
 	var out studioagents.StoryboardOutput
 	var err error
@@ -551,7 +590,14 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 		// base_url/api_key) with env-keyed registry + registry-default fallbacks.
 		// Resolution is non-fatal (the router logs + falls back internally).
 		if orgID, oerr := w.cfg.Projects.OrgIDForProject(ctx, c.projectID); oerr == nil {
-			routed = w.cfg.Router.MediaGeneratorFor(ctx, orgID, kind)
+			if kind == "image" {
+				if proj, perr := w.cfg.Projects.Get(ctx, c.projectID); perr == nil && proj.ImageProvider != "" && proj.ImageModel != "" {
+					routed = w.cfg.Router.MediaGeneratorForNamed(ctx, orgID, kind, proj.ImageProvider, proj.ImageModel)
+				}
+			}
+			if routed == nil {
+				routed = w.cfg.Router.MediaGeneratorFor(ctx, orgID, kind)
+			}
 		}
 	} else if w.cfg.Models != nil && w.cfg.Registry != nil {
 		if orgID, oerr := w.cfg.Projects.OrgIDForProject(ctx, c.projectID); oerr == nil {
@@ -634,10 +680,15 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 	// Store bytes (pull-to-blob already done by the image adapter). 按 asset 所属 org
 	// 路由对象存储 (per-org → global → 内置 localfs 默认)；router 出错也回落 Default，
 	// 故 BlobStoreFor 极少返回 err，真出错则当 Put 失败处理。
-	blobKey := "assets/" + c.projectID + "/" + created.id
+	blobKey := "assets/" + c.projectID + "/" + created.id + mimeToExt(out.MimeType)
 	if len(out.Bytes) > 0 {
 		orgID, _ := w.cfg.Projects.OrgIDForProject(ctx, c.projectID)
-		bs, berr := w.cfg.Storage.BlobStoreFor(ctx, orgID)
+		proj, perr := w.cfg.Projects.Get(ctx, c.projectID)
+		var storageMode string
+		if perr == nil {
+			storageMode = proj.StorageMode
+		}
+		bs, berr := w.cfg.Storage.BlobStoreForMode(ctx, orgID, storageMode)
 		if berr != nil {
 			_, _ = w.cfg.Assets.SetBlob(cctx, created.id, "", "", "", "", "failed")
 			return "", fmt.Errorf("worker: resolve blob store: %w", berr)
@@ -761,6 +812,7 @@ func (w *Worker) fail(ctx context.Context, c claimed, cause error) {
 		msg = cause.Error()
 	}
 	if c.attempts >= w.cfg.MaxAttempts {
+		w.cfg.Logger.Error("worker: task failed terminally (attempts exhausted)", "todo", c.todoID, "type", c.typ, "err", cause)
 		// Attempts exhausted: mark failed AND transitively cancel dependents so
 		// they leave 'blocked' (else DeriveStatus wedges the project in 'running'
 		// — spec §7.3 step 4: 耗尽 → failed + 阻断后继).
@@ -781,6 +833,7 @@ func (w *Worker) fail(ctx context.Context, c claimed, cause error) {
 		}
 		return
 	}
+	w.cfg.Logger.Warn("worker: task failed, rescheduling", "todo", c.todoID, "type", c.typ, "attempt", c.attempts, "err", cause)
 	backoff := w.cfg.BaseBackoff * (1 << (c.attempts - 1))
 	nextRun := w.cfg.Clock().Add(backoff)
 	if _, err := w.cfg.Pool.Exec(ctx,
@@ -1237,11 +1290,16 @@ func (w *Worker) completeAsync(cctx context.Context, c claimed, asset assets.Ass
 		}
 		data, mime = b, ct
 	}
-	blobKey := "assets/" + c.projectID + "/" + asset.ID
+	blobKey := "assets/" + c.projectID + "/" + asset.ID + mimeToExt(mime)
 	if len(data) > 0 {
 		// 按 asset 所属 org 路由对象存储 (per-org → global → 内置 localfs 默认)。
 		orgID, _ := w.cfg.Projects.OrgIDForProject(cctx, c.projectID)
-		bs, berr := w.cfg.Storage.BlobStoreFor(cctx, orgID)
+		proj, perr := w.cfg.Projects.Get(cctx, c.projectID)
+		var storageMode string
+		if perr == nil {
+			storageMode = proj.StorageMode
+		}
+		bs, berr := w.cfg.Storage.BlobStoreForMode(cctx, orgID, storageMode)
 		if berr != nil {
 			_ = w.cfg.Assets.SetAsyncFailed(cctx, asset.ID)
 			return "", fmt.Errorf("worker: async resolve blob store: %w", berr)
@@ -1289,4 +1347,31 @@ func (w *Worker) completeAsync(cctx context.Context, c claimed, asset assets.Ass
 func idempotencyKey(todoID string) string {
 	sum := sha256.Sum256([]byte("studio-submit:" + todoID))
 	return hex.EncodeToString(sum[:16])
+}
+
+func mimeToExt(mimeType string) string {
+	switch strings.ToLower(strings.Split(mimeType, ";")[0]) {
+	case "image/png":
+		return ".png"
+	case "image/jpeg", "image/jpg":
+		return ".jpg"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	case "video/mp4":
+		return ".mp4"
+	case "video/webm":
+		return ".webm"
+	case "audio/mpeg", "audio/mp3":
+		return ".mp3"
+	case "audio/ogg":
+		return ".ogg"
+	case "audio/wav", "audio/x-wav":
+		return ".wav"
+	case "audio/aac":
+		return ".aac"
+	default:
+		return ""
+	}
 }

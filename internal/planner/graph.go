@@ -8,13 +8,26 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 )
 
-// m2Types is the M2 todo-type whitelist. 'asset' is now runnable (worker has an
-// asset dispatch case + storyboard-completion fan-out). 'review' stays out (HITL
-// is a DB state machine, not a worker todo type). A planner emitting 'review'
-// is still treated as malformed → fallback.
-var m1Types = map[string]bool{"script": true, "storyboard": true, "asset": true}
+var (
+	typesMu          sync.RWMutex
+	whitelistedTypes = map[string]bool{"script": true, "storyboard": true, "asset": true}
+)
+
+// RegisterType registers a custom task type with the planner's whitelist.
+func RegisterType(typ string) {
+	typesMu.Lock()
+	defer typesMu.Unlock()
+	whitelistedTypes[typ] = true
+}
+
+func isTypeAllowed(typ string) bool {
+	typesMu.RLock()
+	defer typesMu.RUnlock()
+	return whitelistedTypes[typ]
+}
 
 // Node is one planner-emitted todo node.
 type Node struct {
@@ -58,7 +71,7 @@ func Validate(g Graph) error {
 			return fmt.Errorf("planner: duplicate node id %q", n.ID)
 		}
 		ids[n.ID] = true
-		if !m1Types[n.Type] {
+		if !isTypeAllowed(n.Type) {
 			return fmt.Errorf("planner: node %q has non-whitelisted type %q", n.ID, n.Type)
 		}
 		if n.Type == "script" {

@@ -49,6 +49,7 @@ func TestCreateGetListProject(t *testing.T) {
 		OrgID: orgID, Name: "Promo", Brief: "a promo", ContentType: "ad",
 		TargetPlatform: "tiktok", Style: "cyberpunk", CreatedBy: "u1",
 		PlannerProvider: "minimax", PlannerModel: "minimax-text-01",
+		StorageMode:     "oss",
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -58,6 +59,9 @@ func TestCreateGetListProject(t *testing.T) {
 	}
 	if p.PlannerProvider != "minimax" || p.PlannerModel != "minimax-text-01" {
 		t.Fatalf("planner override not persisted: %+v", p)
+	}
+	if p.StorageMode != "oss" {
+		t.Fatalf("storage mode not persisted: %+v", p)
 	}
 	got, err := s.Get(ctx, p.ID)
 	if err != nil {
@@ -69,6 +73,9 @@ func TestCreateGetListProject(t *testing.T) {
 	if got.PlannerProvider != "minimax" || got.PlannerModel != "minimax-text-01" {
 		t.Fatalf("get: planner override not round-tripped: %+v", got)
 	}
+	if got.StorageMode != "oss" {
+		t.Fatalf("get: storage mode not round-tripped: %+v", got)
+	}
 	items, _, err := s.ListByOrg(ctx, orgID, 50, "")
 	if err != nil {
 		t.Fatalf("list: %v", err)
@@ -78,6 +85,9 @@ func TestCreateGetListProject(t *testing.T) {
 	}
 	if items[0].PlannerProvider != "minimax" {
 		t.Fatalf("list: planner override missing in projection: %+v", items[0])
+	}
+	if items[0].StorageMode != "oss" {
+		t.Fatalf("list: storage mode missing in projection: %+v", items[0])
 	}
 }
 
@@ -95,28 +105,29 @@ func TestUpdatePlannerOverride(t *testing.T) {
 	// 初值空 → 改 → 拿到新值。
 	upd, err := s.Update(ctx, p.ID, UpdateInput{
 		PlannerProvider: "ollama", PlannerModel: "gemma4:26b",
+		StorageMode:     "github",
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if upd.PlannerProvider != "ollama" || upd.PlannerModel != "gemma4:26b" {
+	if upd.PlannerProvider != "ollama" || upd.PlannerModel != "gemma4:26b" || upd.StorageMode != "github" {
 		t.Fatalf("update did not persist: %+v", upd)
 	}
 	// Get 拿到的也是新值。
 	got, _ := s.Get(ctx, p.ID)
-	if got.PlannerProvider != "ollama" {
+	if got.PlannerProvider != "ollama" || got.StorageMode != "github" {
 		t.Fatalf("get after update: %+v", got)
 	}
 	// 清回空。
-	cleared, err := s.Update(ctx, p.ID, UpdateInput{PlannerProvider: "", PlannerModel: ""})
+	cleared, err := s.Update(ctx, p.ID, UpdateInput{PlannerProvider: "", PlannerModel: "", StorageMode: ""})
 	if err != nil {
 		t.Fatalf("clear: %v", err)
 	}
-	if cleared.PlannerProvider != "" || cleared.PlannerModel != "" {
+	if cleared.PlannerProvider != "" || cleared.PlannerModel != "" || cleared.StorageMode != "" {
 		t.Fatalf("clear did not reset: %+v", cleared)
 	}
 	// 找不到 → ErrNotFound。
-	if _, err := s.Update(ctx, "nope", UpdateInput{PlannerProvider: "x"}); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Update(ctx, "nope", UpdateInput{PlannerProvider: "x", StorageMode: "localfs"}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing id: want ErrNotFound, got %v", err)
 	}
 }

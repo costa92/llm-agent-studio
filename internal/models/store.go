@@ -82,6 +82,7 @@ func Catalog() []CatalogEntry {
 		{Provider: "google", Model: "imagen-3.0-generate-002", Kind: "image", Label: "Google Imagen 3"},
 		{Provider: "minimax", Model: "image-01", Kind: "image", Label: "MiniMax image-01"},
 		{Provider: "volcengine", Model: "doubao-seedream-3-0-t2i", Kind: "image", Label: "Volcengine Seedream"},
+		{Provider: "fake", Model: "fake", Kind: "image", Label: "Fake Image (sandbox)"},
 		// M4 二期: video/audio entries. fake-* drive the sandbox FakeAsync live
 		// verification; the real models are key-gated skeletons (spec §8, TODO m5).
 		{Provider: "fake", Model: "fake-video-async", Kind: "video", Label: "Fake Async Video (sandbox)"},

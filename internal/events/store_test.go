@@ -40,7 +40,7 @@ func TestAppendAndList(t *testing.T) {
 	if _, err := s.Append(ctx, projID, "todo_ready", "t1", map[string]any{"type": "script"}); err != nil {
 		t.Fatalf("append 2: %v", err)
 	}
-	evs, err := s.List(ctx, projID, 0, 100)
+	evs, err := s.List(ctx, projID, "", 0, 100)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestAppendAndList(t *testing.T) {
 		t.Fatalf("seq not monotonic: %+v", evs)
 	}
 	// afterSeq filters.
-	tail, err := s.List(ctx, projID, evs[0].Seq, 100)
+	tail, err := s.List(ctx, projID, "", evs[0].Seq, 100)
 	if err != nil {
 		t.Fatalf("list tail: %v", err)
 	}

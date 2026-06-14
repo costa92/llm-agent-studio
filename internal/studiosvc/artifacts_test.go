@@ -27,15 +27,15 @@ func TestArtifactsReadTodosScriptShots(t *testing.T) {
 	_, _ = pool.Exec(ctx, `INSERT INTO shots (id, project_id, script_id, todo_id, shot_no) VALUES ('sh1',$1,'sc1','t1',1)`, projID)
 
 	a := NewArtifacts(pool)
-	todos, err := a.Todos(ctx, projID)
+	todos, err := a.Todos(ctx, projID, "")
 	if err != nil || len(todos) != 1 {
 		t.Fatalf("todos: %v len=%d", err, len(todos))
 	}
-	script, ok, err := a.Script(ctx, projID)
+	script, ok, err := a.Script(ctx, projID, "")
 	if err != nil || !ok || string(script) == "" {
 		t.Fatalf("script: %v ok=%v", err, ok)
 	}
-	shots, err := a.Shots(ctx, projID)
+	shots, err := a.Shots(ctx, projID, "")
 	if err != nil || len(shots) != 1 {
 		t.Fatalf("shots: %v len=%d", err, len(shots))
 	}
@@ -59,7 +59,7 @@ func TestArtifactsAssets(t *testing.T) {
 		`INSERT INTO assets (id,project_id,shot_id,type,blob_key,prompt,style,provider,model,status,version)
 		 VALUES (md5(random()::text),$1,'s1','image','k','p','国风','fake','m','pending_acceptance',1)`, pid)
 	ar := NewArtifacts(pool)
-	items, err := ar.Assets(ctx, pid, "")
+	items, err := ar.Assets(ctx, pid, "", "")
 	if err != nil || len(items) != 1 {
 		t.Fatalf("assets: %v len=%d", err, len(items))
 	}
@@ -67,7 +67,7 @@ func TestArtifactsAssets(t *testing.T) {
 		t.Fatalf("status: %v", items[0]["status"])
 	}
 	// status filter narrows.
-	none, _ := ar.Assets(ctx, pid, "accepted")
+	none, _ := ar.Assets(ctx, pid, "", "accepted")
 	if len(none) != 0 {
 		t.Fatalf("filter leaked: %d", len(none))
 	}

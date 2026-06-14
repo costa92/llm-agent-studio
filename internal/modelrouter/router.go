@@ -163,3 +163,35 @@ func (r *Router) MediaGeneratorFor(ctx context.Context, orgID, kind string) gene
 	}
 	return r.registry.Default()
 }
+
+// MediaGeneratorForNamed 解析 org 下特定 (kind, provider, model) 的 media config，供 per-project
+// 媒体生成模型 override 走（如：project.image_provider/image_model）。找不到
+// 对应配置或 build 失败时返 nil（caller 走 MediaGeneratorFor 拿默认 media）。
+func (r *Router) MediaGeneratorForNamed(ctx context.Context, orgID, kind, provider, modelName string) generate.MediaGenerator {
+	if r.models == nil || provider == "" || modelName == "" {
+		return nil
+	}
+	rm, ok, err := r.models.ResolveForOrgNamed(ctx, orgID, kind, provider, modelName)
+	if err != nil {
+		r.log.Warn("modelrouter: resolve named media config failed; falling back",
+			"org", orgID, "kind", kind, "provider", provider, "model", modelName, "err", err)
+		return nil
+	}
+	if !ok {
+		return nil
+	}
+	if (rm.APIKey != "" || provider == "fake") && r.buildMedia != nil {
+		g, berr := r.buildMedia(kind, rm.Provider, rm.Model, rm.APIKey, rm.BaseURL)
+		if berr == nil {
+			return g
+		}
+		r.log.Warn("modelrouter: build named media generator failed; falling back to registry",
+			"org", orgID, "kind", kind, "provider", rm.Provider, "model", rm.Model, "err", berr)
+	}
+	if r.registry != nil {
+		if g, rerr := r.registry.Resolve(rm.Provider, rm.Model); rerr == nil {
+			return g
+		}
+	}
+	return nil
+}

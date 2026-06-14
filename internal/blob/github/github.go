@@ -188,6 +188,49 @@ func (s *Store) SignedURL(_ context.Context, key string, _ time.Duration) (strin
 	return "https://" + rawHost + "/" + s.owner + "/" + s.repo + "/" + s.branch + "/" + s.objectPath(key), nil
 }
 
+// ReadKey retrieves the raw contents of the file from GitHub (spec §10).
+func (s *Store) ReadKey(ctx context.Context, key string) ([]byte, string, error) {
+	path := s.objectPath(key)
+	u := s.contentsURL(path) + "?ref=" + s.branch
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("blob.github: build read request: %w", err)
+	}
+	s.setHeaders(req)
+	req.Header.Set("Accept", "application/vnd.github.raw")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("blob.github: read: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, "", fmt.Errorf("blob.github: file not found: %s", path)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", apiError("read", resp)
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("blob.github: read body: %w", err)
+	}
+
+	contentType := "application/octet-stream"
+	if strings.HasSuffix(path, ".png") {
+		contentType = "image/png"
+	} else if strings.HasSuffix(path, ".jpg") || strings.HasSuffix(path, ".jpeg") {
+		contentType = "image/jpeg"
+	} else if strings.HasSuffix(path, ".gif") {
+		contentType = "image/gif"
+	} else if strings.HasSuffix(path, ".mp4") {
+		contentType = "video/mp4"
+	} else if strings.HasSuffix(path, ".mp3") {
+		contentType = "audio/mpeg"
+	}
+
+	return data, contentType, nil
+}
+
 // Delete 删除文件：先 GET sha (404 → 视为已删除，返回 nil，幂等)，再 DELETE
 // {message, sha, branch}。
 func (s *Store) Delete(ctx context.Context, key string) error {

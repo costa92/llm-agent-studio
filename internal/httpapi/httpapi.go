@@ -50,6 +50,7 @@ type Deps struct {
 	TaskBoard     TaskBoardReader    // 任务中心: 跨项目运行状态聚合 (org-scoped, viewer+)
 	Cost          CostStore
 	PromptBuilder *prompt.Builder
+	PromptStore   *prompt.Store
 	GenQuota      int // rolling-24h per-org generation quota; 0 = unlimited
 
 	// ModelAvailable reports whether a catalog (provider, kind) entry is actually
@@ -156,6 +157,12 @@ func NewMux(d Deps) *http.ServeMux {
 	// Prompt builder (viewer+, org-agnostic preview — auth only).
 	mux.Handle("GET /api/prompt-styles", authOnly(promptStylesHandler()))
 	mux.Handle("POST /api/prompt/build", authOnly(promptBuildHandler(d.PromptBuilder)))
+	if d.PromptStore != nil {
+		mux.Handle("GET /api/orgs/{org}/prompts", scoped(roleViewer, orgScope, listPromptsHandler(d.PromptStore)))
+		mux.Handle("POST /api/orgs/{org}/prompts", scoped(roleEditor, orgScope, createPromptHandler(d.PromptStore)))
+		mux.Handle("PUT /api/orgs/{org}/prompts/{id}", scoped(roleEditor, orgScope, updatePromptHandler(d.PromptStore)))
+		mux.Handle("DELETE /api/orgs/{org}/prompts/{id}", scoped(roleEditor, orgScope, deletePromptHandler(d.PromptStore)))
+	}
 	// HITL (admin-only) — asset-scoped.
 	mux.Handle("POST /api/assets/{id}/accept", asset(roleAdmin, acceptHandler(d.Review)))
 	mux.Handle("POST /api/assets/{id}/reject", asset(roleAdmin, rejectHandler(d.Review)))
@@ -163,7 +170,7 @@ func NewMux(d Deps) *http.ServeMux {
 	// Asset library + single asset (viewer+).
 	mux.Handle("GET /api/orgs/{org}/assets", scoped(roleViewer, orgScope, libraryHandler(d.AssetLibrary)))
 	mux.Handle("GET /api/assets/{id}", asset(roleViewer, getAssetHandler(d.AssetLibrary)))
-	mux.Handle("GET /api/assets/{id}/content", asset(roleViewer, assetContentHandler(d.AssetLibrary, d.BlobRouter)))
+	mux.Handle("GET /api/assets/{id}/content", asset(roleViewer, assetContentHandler(d.AssetLibrary, d.BlobRouter, d.Projects)))
 	// Signed blob回源 (NO auth — HMAC sig in query gates access, spec §10).
 	if d.BlobServer != nil {
 		mux.Handle("GET /api/blob/{key...}", blobHandler(d.BlobServer))

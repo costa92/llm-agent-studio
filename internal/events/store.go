@@ -89,14 +89,55 @@ func (s *Store) AppendRunDone(ctx context.Context, projectID string) (int64, boo
 
 // List returns events for a project with seq > afterSeq, oldest first, up to
 // limit. afterSeq=0 returns from the beginning (paging + SSE catch-up).
-func (s *Store) List(ctx context.Context, projectID string, afterSeq int64, limit int) ([]Event, error) {
+// If planID is non-empty, only returns events belonging to that plan's run window.
+func (s *Store) List(ctx context.Context, projectID string, planID string, afterSeq int64, limit int) ([]Event, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
-	rows, err := s.pool.Query(ctx,
-		`SELECT seq, kind, todo_id, payload FROM run_events
-		 WHERE project_id=$1 AND seq>$2 ORDER BY seq ASC LIMIT $3`,
-		projectID, afterSeq, limit)
+	if planID == "" {
+		rows, err := s.pool.Query(ctx,
+			`SELECT seq, kind, todo_id, payload FROM run_events
+			 WHERE project_id=$1 AND seq>$2 ORDER BY seq ASC LIMIT $3`,
+			projectID, afterSeq, limit)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var out []Event
+		for rows.Next() {
+			var e Event
+			if err := rows.Scan(&e.Seq, &e.Kind, &e.TodoID, &e.Payload); err != nil {
+				return nil, err
+			}
+			out = append(out, e)
+		}
+		return out, rows.Err()
+	}
+
+	q := `
+		WITH bounds AS (
+		  SELECT created_at FROM plans WHERE id = $2
+		),
+		start_event AS (
+		  SELECT seq FROM run_events
+		  WHERE project_id = $1 AND kind = 'planner_started'
+		    AND ts <= (SELECT created_at FROM bounds)
+		  ORDER BY ts DESC LIMIT 1
+		),
+		end_event AS (
+		  SELECT seq FROM run_events
+		  WHERE project_id = $1 AND kind = 'planner_started'
+		    AND seq > (SELECT seq FROM start_event)
+		  ORDER BY seq ASC LIMIT 1
+		)
+		SELECT seq, kind, todo_id, payload FROM run_events
+		WHERE project_id = $1
+		  AND seq >= COALESCE((SELECT seq FROM start_event), 0)
+		  AND seq < COALESCE((SELECT seq FROM end_event), 9223372036854775807)
+		  AND seq > $3
+		ORDER BY seq ASC LIMIT $4`
+
+	rows, err := s.pool.Query(ctx, q, projectID, planID, afterSeq, limit)
 	if err != nil {
 		return nil, err
 	}

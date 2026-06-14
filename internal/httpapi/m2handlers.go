@@ -13,6 +13,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/blob"
 	"github.com/costa92/llm-agent-studio/internal/cost"
 	"github.com/costa92/llm-agent-studio/internal/models"
+	"github.com/costa92/llm-agent-studio/internal/project"
 	"github.com/costa92/llm-agent-studio/internal/prompt"
 	"github.com/costa92/llm-agent-studio/internal/review"
 )
@@ -35,11 +36,13 @@ type AssetLibrary interface {
 	OrgIDForAsset(ctx context.Context, assetID string) (string, error)
 }
 
-// BlobRouter resolves an org's对象存储 blob store (per-org → global → 内置默认)，供
-// assetContentHandler 按 asset 所属 org 取对应 store 再 SignedURL (satisfied by
-// *storagerouter.Router)。secret 永不进 handler——只取 store 句柄签 URL。
 type BlobRouter interface {
 	BlobStoreFor(ctx context.Context, orgID string) (blob.BlobStore, error)
+	BlobStoreForMode(ctx context.Context, orgID string, mode string) (blob.BlobStore, error)
+}
+
+type ProjectReader interface {
+	Get(ctx context.Context, id string) (project.Project, error)
 }
 
 // BlobServer additionally serves bytes for the localfs回源 handler.
@@ -234,7 +237,7 @@ func getAssetHandler(lib AssetLibrary) http.HandlerFunc {
 // assetContentHandler (GET /api/assets/{id}/content): viewer+. 302 to signed URL.
 // 按 asset 所属 org 路由对象存储后再签名 (per-org → global → 内置默认)，多租户各自
 // 落在自己的 bucket/store 上。
-func assetContentHandler(lib AssetLibrary, router BlobRouter) http.HandlerFunc {
+func assetContentHandler(lib AssetLibrary, router BlobRouter, ps ProjectReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		a, err := lib.Get(r.Context(), id)
@@ -255,11 +258,34 @@ func assetContentHandler(lib AssetLibrary, router BlobRouter) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		bs, err := router.BlobStoreFor(r.Context(), orgID)
+		proj, err := ps.Get(r.Context(), a.ProjectID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		bs, err := router.BlobStoreForMode(r.Context(), orgID, proj.StorageMode)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		type ctxReader interface {
+			ReadKey(ctx context.Context, key string) ([]byte, string, error)
+		}
+		if rdr, ok := bs.(ctxReader); ok {
+			data, ct, err := rdr.ReadKey(r.Context(), a.BlobKey)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if ct != "" {
+				w.Header().Set("Content-Type", ct)
+			}
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("Content-Security-Policy", "sandbox")
+			_, _ = w.Write(data)
+			return
+		}
+
 		signed, err := bs.SignedURL(r.Context(), a.BlobKey, signedURLTTL)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)

@@ -34,6 +34,10 @@ func (f fakeResolver) ResolveForOrg(context.Context, string) (storageconfig.Reso
 	return f.rs, f.ok, f.err
 }
 
+func (f fakeResolver) ResolveForOrgAndMode(context.Context, string, string) (storageconfig.ResolvedStorage, bool, error) {
+	return f.rs, f.ok, f.err
+}
+
 func TestBlobStoreForBuildsFromConfig(t *testing.T) {
 	def := &stubBlob{name: "default"}
 	built := &stubBlob{name: "org"}
@@ -148,6 +152,10 @@ func TestBlobStoreForRebuildsOnIdentityChange(t *testing.T) {
 type orgVaryingResolver struct{}
 
 func (orgVaryingResolver) ResolveForOrg(_ context.Context, orgID string) (storageconfig.ResolvedStorage, bool, error) {
+	return storageconfig.ResolvedStorage{Mode: "s3", Bucket: orgID}, true, nil
+}
+
+func (orgVaryingResolver) ResolveForOrgAndMode(_ context.Context, orgID, mode string) (storageconfig.ResolvedStorage, bool, error) {
 	return storageconfig.ResolvedStorage{Mode: "s3", Bucket: orgID}, true, nil
 }
 

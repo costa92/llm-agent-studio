@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"testing"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/cost"
 	"github.com/costa92/llm-agent-studio/internal/events"
 	"github.com/costa92/llm-agent-studio/internal/generate"
+	"github.com/costa92/llm-agent-studio/internal/planner"
 	"github.com/costa92/llm-agent-studio/internal/project"
 	"github.com/costa92/llm-agent-studio/internal/prompt"
 	"github.com/costa92/llm-agent-studio/internal/storage"
@@ -203,5 +205,92 @@ func TestWorkerFailsTodoOnAgentError(t *testing.T) {
 	}
 	if projStatus != "failed" {
 		t.Fatalf("project status=%q want failed", projStatus)
+	}
+}
+
+func TestWorkerCustomExecutor(t *testing.T) {
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker tests")
+	}
+	ctx := context.Background()
+	st, err := storage.Open(ctx, storage.Config{PGURL: dsn})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	pool := st.Pool()
+	projID := "wce_" + randHex3()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO projects (id, org_id, name, created_by) VALUES ($1,'o','n','u')`, projID); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+
+	// 1. Register the custom type to planner
+	planner.RegisterType("translate")
+
+	todoStore := todos.New(pool)
+	ids, err := todoStore.CreateGraph(ctx, projID, "pl_wce", []todos.NodeSpec{
+		{LocalID: "t", Type: "translate", DependsOn: nil, InputJSON: []byte(`{"text":"hello"}`)},
+	})
+	if err != nil {
+		t.Fatalf("create graph: %v", err)
+	}
+
+	// 2. Setup custom executor
+	executed := false
+	var receivedInput []byte
+	customExecutors := map[string]TaskExecutor{
+		"translate": func(ctx context.Context, todo ClaimedTodo) (string, error) {
+			executed = true
+			receivedInput = todo.Input
+			return "translated:content_id_123", nil
+		},
+	}
+
+	w := New(Config{
+		Pool:            pool,
+		Todos:           todoStore,
+		Projects:        project.New(pool),
+		Events:          events.New(pool),
+		Storage:         testStorage(),
+		CustomExecutors: customExecutors,
+		WorkerID:        "test-wce",
+	})
+
+	ran, err := w.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+	if !ran {
+		t.Fatalf("worker did not run any task")
+	}
+
+	if !executed {
+		t.Fatalf("custom executor was not executed")
+	}
+	var parsed map[string]string
+	if err := json.Unmarshal(receivedInput, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal input: %v", err)
+	}
+	if parsed["text"] != "hello" {
+		t.Fatalf("expected input text to be 'hello', got %q", parsed["text"])
+	}
+
+	// 3. Assert task status and outputRef in database
+	var status string
+	var outputRef string
+	err = pool.QueryRow(ctx, `SELECT status, output_ref FROM todos WHERE id=$1`, ids["t"]).Scan(&status, &outputRef)
+	if err != nil {
+		t.Fatalf("query status: %v", err)
+	}
+	if status != "done" {
+		t.Fatalf("expected status 'done', got %q", status)
+	}
+	if outputRef != "translated:content_id_123" {
+		t.Fatalf("expected output_ref 'translated:content_id_123', got %q", outputRef)
 	}
 }

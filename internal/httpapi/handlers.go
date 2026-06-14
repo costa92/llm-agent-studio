@@ -69,6 +69,7 @@ type ProjectStore interface {
 type PlannerPort interface {
 	Plan(ctx context.Context, projectID string, b planner.Brief) (planner.Result, error)
 	PlanWith(ctx context.Context, projectID string, model llm.ChatModel, b planner.Brief) (planner.Result, error)
+	PlanCustom(ctx context.Context, projectID string, b planner.Brief, nodes []planner.WorkflowNode) (planner.Result, error)
 }
 
 // ChatRouter resolves an org's BYOK chat model (satisfied by *modelrouter.Router).
@@ -244,13 +245,18 @@ func createProjectHandler(ps ProjectStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		uid := authzhttp.UserID(r.Context())
 		var req struct {
-			Name            string `json:"name"`
-			Brief           string `json:"brief"`
-			ContentType     string `json:"contentType"`
-			TargetPlatform  string `json:"targetPlatform"`
-			Style           string `json:"style"`
-			PlannerProvider string `json:"plannerProvider"`
-			PlannerModel    string `json:"plannerModel"`
+			Name                  string          `json:"name"`
+			Brief                 string          `json:"brief"`
+			ContentType           string          `json:"contentType"`
+			TargetPlatform        string          `json:"targetPlatform"`
+			Style                 string          `json:"style"`
+			PlannerProvider       string          `json:"plannerProvider"`
+			PlannerModel          string          `json:"plannerModel"`
+			ImageProvider         string          `json:"imageProvider"`
+			ImageModel            string          `json:"imageModel"`
+			StorageMode           string          `json:"storageMode"`
+			CustomWorkflowEnabled bool            `json:"customWorkflowEnabled"`
+			WorkflowNodes         json.RawMessage `json:"workflowNodes"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
 			http.Error(w, "bad request: name required", http.StatusBadRequest)
@@ -260,7 +266,13 @@ func createProjectHandler(ps ProjectStore) http.HandlerFunc {
 			OrgID: r.PathValue("org"), Name: req.Name, Brief: req.Brief,
 			ContentType: req.ContentType, TargetPlatform: req.TargetPlatform,
 			Style: req.Style, CreatedBy: uid,
-			PlannerProvider: req.PlannerProvider, PlannerModel: req.PlannerModel,
+			PlannerProvider:       req.PlannerProvider,
+			PlannerModel:          req.PlannerModel,
+			ImageProvider:         req.ImageProvider,
+			ImageModel:            req.ImageModel,
+			StorageMode:           req.StorageMode,
+			CustomWorkflowEnabled: req.CustomWorkflowEnabled,
+			WorkflowNodes:         req.WorkflowNodes,
 		})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -370,15 +382,26 @@ func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore,
 			TargetPlatform: p.TargetPlatform, Style: p.Style,
 		}
 		var res planner.Result
-		// M5.1: per-project 规划模型 override 优先于 org 默认。如果 project 上
-		// 配了 planner_provider+planner_model，runHandler 拿这个去 modelrouter
-		// 查 org 的对应 model_config（可能也是默认之一），拿其 key 走 buildChat。
-		// 查不到 / build 失败 → 退回 org 默认 chat。空 = 走完全默认。
-		plannerModel := chatModelForPlan(r.Context(), cr, p)
-		if plannerModel != nil {
-			res, err = pl.PlanWith(r.Context(), id, plannerModel, brief)
+		if p.CustomWorkflowEnabled {
+			var nodes []planner.WorkflowNode
+			if len(p.WorkflowNodes) > 0 {
+				if err := json.Unmarshal(p.WorkflowNodes, &nodes); err != nil {
+					http.Error(w, "invalid custom workflow configuration: "+err.Error(), http.StatusBadRequest)
+					return
+				}
+			}
+			res, err = pl.PlanCustom(r.Context(), id, brief, nodes)
 		} else {
-			res, err = pl.Plan(r.Context(), id, brief)
+			// M5.1: per-project 规划模型 override 优先于 org 默认。如果 project 上
+			// 配了 planner_provider+planner_model，runHandler 拿这个去 modelrouter
+			// 查 org 的对应 model_config（可能也是默认之一），拿其 key 走 buildChat。
+			// 查不到 / build 失败 → 退回 org 默认 chat。空 = 走完全默认。
+			plannerModel := chatModelForPlan(r.Context(), cr, p)
+			if plannerModel != nil {
+				res, err = pl.PlanWith(r.Context(), id, plannerModel, brief)
+			} else {
+				res, err = pl.Plan(r.Context(), id, brief)
+			}
 		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)

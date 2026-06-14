@@ -13,7 +13,7 @@ import (
 // SSE handler returns instead of polling forever).
 type scriptedReader struct{ evs []events.Event }
 
-func (s scriptedReader) List(_ context.Context, _ string, after int64, _ int) ([]events.Event, error) {
+func (s scriptedReader) List(_ context.Context, _ string, _ string, after int64, _ int) ([]events.Event, error) {
 	var out []events.Event
 	for _, e := range s.evs {
 		if e.Seq > after {
