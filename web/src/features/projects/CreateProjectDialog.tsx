@@ -114,8 +114,12 @@ export function CreateProjectForm({
   })
 
   return (
-    <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
-      <div className="flex flex-col gap-1.5">
+    <form
+      onSubmit={submit}
+      className="grid grid-cols-1 gap-4 sm:grid-cols-2"
+      noValidate
+    >
+      <div className="flex flex-col gap-1.5 sm:col-span-2">
         <Label htmlFor="name">项目名称</Label>
         <Input id="name" aria-invalid={errors.name != null} {...register("name")} />
         {errors.name && (
@@ -123,11 +127,11 @@ export function CreateProjectForm({
         )}
       </div>
 
-      <div className="flex flex-col gap-1.5">
+      <div className="flex flex-col gap-1.5 sm:col-span-2">
         <Label htmlFor="brief">创意需求</Label>
         <Textarea
           id="brief"
-          rows={3}
+          rows={2}
           placeholder="用一句话描述你想要的作品"
           aria-invalid={errors.brief != null}
           {...register("brief")}
@@ -320,12 +324,12 @@ export function CreateProjectForm({
       )}
 
       {submitError && (
-        <p role="alert" className="text-[12px] text-danger">
+        <p role="alert" className="text-[12px] text-danger sm:col-span-2">
           {submitError}
         </p>
       )}
 
-      <DialogFooter>
+      <DialogFooter className="sm:col-span-2">
         <Button type="submit" variant="amber" disabled={isSubmitting}>
           {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
           创建
@@ -349,7 +353,7 @@ export function CreateProjectDialog({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>{trigger}</DialogTrigger>
-      <DialogContent>
+      <DialogContent className="flex max-h-[90vh] w-[95vw] flex-col sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>新建项目</DialogTitle>
           <DialogDescription>用一句创意需求开始你的第一支作品。</DialogDescription>
