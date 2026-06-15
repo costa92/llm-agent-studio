@@ -132,6 +132,42 @@ func TestUpdatePlannerOverride(t *testing.T) {
 	}
 }
 
+// M14: SetCover links/clears a project's cover_asset_id; missing id → ErrNotFound.
+func TestSetCover(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	orgID := "org_cover_" + uniqueSuffix()
+	p, err := s.Create(ctx, CreateInput{OrgID: orgID, Name: "Cov", CreatedBy: "u"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if p.CoverAssetID != "" {
+		t.Fatalf("new project should have empty cover: %+v", p)
+	}
+	if err := s.SetCover(ctx, p.ID, "a1"); err != nil {
+		t.Fatalf("set cover: %v", err)
+	}
+	got, err := s.Get(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.CoverAssetID != "a1" {
+		t.Fatalf("cover not persisted: %+v", got)
+	}
+	// Clear.
+	if err := s.SetCover(ctx, p.ID, ""); err != nil {
+		t.Fatalf("clear cover: %v", err)
+	}
+	cleared, _ := s.Get(ctx, p.ID)
+	if cleared.CoverAssetID != "" {
+		t.Fatalf("cover not cleared: %+v", cleared)
+	}
+	// Missing project → ErrNotFound.
+	if err := s.SetCover(ctx, "missing", "a1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing id: want ErrNotFound, got %v", err)
+	}
+}
+
 func TestCancelSweepsGeneratingAssets(t *testing.T) {
 	s, pool := newStore(t)
 	ctx := context.Background()

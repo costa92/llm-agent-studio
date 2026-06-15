@@ -358,10 +358,16 @@ var m13Migrations = []string{
 	`CREATE UNIQUE INDEX IF NOT EXISTS prompts_org_kind_default_uniq ON prompts (org_id, kind) WHERE is_default`,
 }
 
-// Migrate applies the M1 + M2 + M3 + M4 + M5 + M6 + M7 + M8 + M9 + M10 + M11 + M12 + M13 migrations in order. Idempotent.
+// m14Migrations add the per-project cover image link (cover_asset_id → an assets
+// row reused; '' = no cover). additive only.
+var m14Migrations = []string{
+	`ALTER TABLE projects ADD COLUMN IF NOT EXISTS cover_asset_id TEXT NOT NULL DEFAULT ''`,
+}
+
+// Migrate applies the M1 + M2 + M3 + M4 + M5 + M6 + M7 + M8 + M9 + M10 + M11 + M12 + M13 + M14 migrations in order. Idempotent.
 func (s *Storage) Migrate(ctx context.Context) error {
-	all := append(append(append(append(append(append(append(append(append(append(append(append(append([]string{},
-		m1Migrations...), m2Migrations...), m3Migrations...), m4Migrations...), m5Migrations...), m6Migrations...), m7Migrations...), m8Migrations...), m9Migrations...), m10Migrations...), m11Migrations...), m12Migrations...), m13Migrations...)
+	all := append(append(append(append(append(append(append(append(append(append(append(append(append(append([]string{},
+		m1Migrations...), m2Migrations...), m3Migrations...), m4Migrations...), m5Migrations...), m6Migrations...), m7Migrations...), m8Migrations...), m9Migrations...), m10Migrations...), m11Migrations...), m12Migrations...), m13Migrations...), m14Migrations...)
 	for _, stmt := range all {
 		if _, err := s.pool.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("storage: migrate: %w", err)

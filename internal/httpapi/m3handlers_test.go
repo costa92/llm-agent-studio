@@ -19,12 +19,18 @@ import (
 
 // stubCost is a canned CostStore for handler tests.
 type stubCost struct {
-	agg    cost.Aggregate
-	per    []cost.ProjectAggregate
-	recent []cost.LedgerEntry
-	count  int
+	agg      cost.Aggregate
+	per      []cost.ProjectAggregate
+	recent   []cost.LedgerEntry
+	count    int
+	recorded []cost.Generation
 
 	gotFrom, gotTo time.Time
+}
+
+func (s *stubCost) Record(_ context.Context, g cost.Generation) error {
+	s.recorded = append(s.recorded, g)
+	return nil
 }
 
 func (s *stubCost) ByOrgBetween(_ context.Context, _ string, from, to time.Time) (cost.Aggregate, error) {
@@ -116,8 +122,9 @@ func (s stubProjects) ListByOrg(_ context.Context, _ string, _ int, _ string) ([
 func (s stubProjects) Update(_ context.Context, _ string, _ project.UpdateInput) (project.Project, error) {
 	return project.Project{}, nil
 }
-func (s stubProjects) SetStatus(_ context.Context, _, _ string) error { return nil }
-func (s stubProjects) Cancel(_ context.Context, _ string) error       { return nil }
+func (s stubProjects) SetStatus(_ context.Context, _, _ string) error  { return nil }
+func (s stubProjects) SetCover(_ context.Context, _, _ string) error   { return nil }
+func (s stubProjects) Cancel(_ context.Context, _ string) error        { return nil }
 func (s stubProjects) OrgIDForProject(_ context.Context, _ string) (string, error) {
 	return s.orgID, nil
 }
