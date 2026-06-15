@@ -7,6 +7,7 @@ import { ModelConfigView } from "@/features/cost/ModelConfigPage"
 import {
   useCreateModelConfig,
   useDeleteModelConfig,
+  useListModels,
   useModelCatalog,
   useModelConfigs,
   useUpdateModelConfig,
@@ -29,6 +30,7 @@ function ModelConfigsPage() {
   const create = useCreateModelConfig(org)
   const update = useUpdateModelConfig(org)
   const del = useDeleteModelConfig(org)
+  const listModels = useListModels(org)
 
   // 返回 Promise 让表单 await；成功 toast 在 onSuccess、失败 toast（含 400 密钥拒绝）在 catch。
   function handleCreate(input: CreateModelConfigInput): Promise<ModelConfig> {
@@ -85,6 +87,7 @@ function ModelConfigsPage() {
         onCreate={handleCreate}
         onUpdate={handleUpdate}
         onDelete={handleDelete}
+        onListModels={(input) => listModels.mutateAsync(input)}
       />
     </AdminGate>
   )
