@@ -36,6 +36,9 @@ export interface Project {
   storageMode?: string
   customWorkflowEnabled?: boolean
   workflowNodes?: string
+  // 封面图：指向一个 image 资产的 id；空串 = 无封面。
+  // 展示用 AssetThumb assetId={coverAssetId}（走 GET /api/assets/{id}/content）。
+  coverAssetId?: string
 }
 
 // UI-spec §7.2。

@@ -1,15 +1,19 @@
 import { Skeleton } from "@/components/ui/skeleton"
 import { Badge } from "@/components/studio/Badge"
 import { Button } from "@/components/studio/Button"
+import { AssetThumb } from "@/features/workflow/AssetThumb"
 import type { CreateProjectInput, ModelConfig, Project, Style } from "@/lib/types"
 import { statusLabel, statusVariant } from "./status"
 import { CreateProjectDialog } from "./CreateProjectDialog"
+import { CoverDialog } from "./CoverDialog"
 
 export interface ProjectListViewProps {
   projects: Project[] | undefined
   isLoading: boolean
   isError: boolean
   onRetry: () => void
+  /** 当前 org（封面对话框失效 ["projects", org] 用）。 */
+  org: string
   /** editor+ 才显示"新建项目"（viewer 隐藏）。 */
   canCreate: boolean
   styles: Style[]
@@ -30,6 +34,7 @@ export function ProjectListView({
   isLoading,
   isError,
   onRetry,
+  org,
   canCreate,
   styles,
   textModels,
@@ -73,31 +78,66 @@ export function ProjectListView({
       ) : projects && projects.length > 0 ? (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-4">
           {projects.map((project) => (
-            <button
+            // 卡片改为 div：封面带 + 「设封面」按钮与"打开项目"按钮平级，
+            // 避免按钮嵌按钮（非法 HTML 且会劫持点击）。
+            <div
               key={project.id}
-              type="button"
-              onClick={() => onOpenProject(project)}
-              className="flex flex-col gap-3 rounded-xl border border-line bg-bg-surface p-[18px] text-left transition-colors hover:border-text-3"
+              className="flex flex-col overflow-hidden rounded-xl border border-line bg-bg-surface transition-colors hover:border-text-3"
             >
-              <div className="flex items-start justify-between gap-3">
-                <span className="font-heading text-[15px] font-medium text-text-1">
-                  {project.name}
-                </span>
-                <Badge variant={statusVariant(project.status)}>
-                  {statusLabel(project.status)}
-                </Badge>
-              </div>
-              {project.description && (
-                <p className="line-clamp-2 text-[12.5px] text-text-2">
-                  {project.description}
-                </p>
+              {/* 封面带：有封面渲染资产缩略图，否则占位。 */}
+              {project.coverAssetId ? (
+                <AssetThumb
+                  assetId={project.coverAssetId}
+                  alt={project.name}
+                  className="aspect-video w-full rounded-t-lg object-cover"
+                />
+              ) : (
+                <div className="grid aspect-video w-full place-items-center rounded-t-lg bg-bg-raised text-[11px] text-text-3">
+                  无封面
+                </div>
               )}
-              <div className="mt-auto flex gap-2 text-[11px] text-text-3">
-                {project.contentType && <span>{project.contentType}</span>}
-                {project.targetPlatform && <span>· {project.targetPlatform}</span>}
-                {project.style && <span>· {project.style}</span>}
-              </div>
-            </button>
+
+              {/* 主体：点击进项目工作台。 */}
+              <button
+                type="button"
+                onClick={() => onOpenProject(project)}
+                className="flex flex-1 flex-col gap-3 p-[18px] text-left"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <span className="font-heading text-[15px] font-medium text-text-1">
+                    {project.name}
+                  </span>
+                  <Badge variant={statusVariant(project.status)}>
+                    {statusLabel(project.status)}
+                  </Badge>
+                </div>
+                {project.description && (
+                  <p className="line-clamp-2 text-[12.5px] text-text-2">
+                    {project.description}
+                  </p>
+                )}
+                <div className="mt-auto flex gap-2 text-[11px] text-text-3">
+                  {project.contentType && <span>{project.contentType}</span>}
+                  {project.targetPlatform && <span>· {project.targetPlatform}</span>}
+                  {project.style && <span>· {project.style}</span>}
+                </div>
+              </button>
+
+              {/* 「设封面」：与打开项目按钮平级。editor+ 才显示。 */}
+              {canCreate && (
+                <div className="border-t border-line px-[18px] py-2.5">
+                  <CoverDialog
+                    project={project}
+                    org={org}
+                    trigger={
+                      <Button variant="ghost" className="h-auto px-2 py-1 text-[12px]">
+                        设封面
+                      </Button>
+                    }
+                  />
+                </div>
+              )}
+            </div>
           ))}
         </div>
       ) : needsModelConfig ? (
