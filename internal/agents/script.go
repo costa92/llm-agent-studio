@@ -53,9 +53,16 @@ func NewScriptAgent(model llm.ChatModel) *ScriptAgent {
 // org's text model through the ModelRouter and passes it here. Run keeps the
 // bound default for un-routed callers.
 func (a *ScriptAgent) RunWith(ctx context.Context, model llm.ChatModel, in ScriptInput) (ScriptOutput, error) {
+	// The structured-output contract (scriptSystemPrompt: the exact JSON shape +
+	// "output ONLY the JSON") is MANDATORY — the downstream parser needs it. A
+	// per-node custom prompt (workflow promptId/promptText) is layered on as
+	// creative guidance, never a replacement: replacing it drops the JSON contract
+	// and the script comes back empty (title/scenes missing).
 	sysPrompt := scriptSystemPrompt
 	if in.SystemPrompt != "" {
-		sysPrompt = in.SystemPrompt
+		sysPrompt = scriptSystemPrompt +
+			"\n\nAdditional creative guidance (apply it, but ALWAYS keep the exact JSON output format described above):\n" +
+			strings.TrimSpace(in.SystemPrompt)
 	}
 	agent := coreagents.NewSimpleAgent(model, coreagents.SimpleOptions{
 		Name: "script", SystemPrompt: sysPrompt,

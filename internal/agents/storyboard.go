@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	coreagents "github.com/costa92/llm-agent"
 	"github.com/costa92/llm-agent-contract/llm"
@@ -49,9 +50,14 @@ func NewStoryboardAgent(model llm.ChatModel) *StoryboardAgent {
 // org's text model through the ModelRouter and passes it here. Run keeps the
 // bound default for un-routed callers.
 func (a *StoryboardAgent) RunWith(ctx context.Context, model llm.ChatModel, in StoryboardInput) (StoryboardOutput, error) {
+	// Same contract as the script agent: the JSON-shape instruction is mandatory;
+	// a per-node custom prompt augments it as guidance, never replaces it (else
+	// the shots JSON can't be parsed).
 	sysPrompt := storyboardSystemPrompt
 	if in.SystemPrompt != "" {
-		sysPrompt = in.SystemPrompt
+		sysPrompt = storyboardSystemPrompt +
+			"\n\nAdditional creative guidance (apply it, but ALWAYS keep the exact JSON output format described above):\n" +
+			strings.TrimSpace(in.SystemPrompt)
 	}
 	agent := coreagents.NewSimpleAgent(model, coreagents.SimpleOptions{
 		Name: "storyboard", SystemPrompt: sysPrompt,
