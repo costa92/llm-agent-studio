@@ -9,3 +9,20 @@ if (typeof globalThis.ResizeObserver === "undefined") {
     disconnect(): void {}
   }
 }
+
+// jsdom 不实现以下 DOM API；radix-ui Select 在打开下拉时引用它们。
+// 提供无操作 polyfill，使 Select 可在测试环境正常打开（仅测试环境）。
+if (typeof Element !== "undefined") {
+  if (!Element.prototype.hasPointerCapture) {
+    Element.prototype.hasPointerCapture = () => false
+  }
+  if (!Element.prototype.setPointerCapture) {
+    Element.prototype.setPointerCapture = () => {}
+  }
+  if (!Element.prototype.releasePointerCapture) {
+    Element.prototype.releasePointerCapture = () => {}
+  }
+  if (!Element.prototype.scrollIntoView) {
+    Element.prototype.scrollIntoView = () => {}
+  }
+}

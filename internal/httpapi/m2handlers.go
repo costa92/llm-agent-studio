@@ -167,6 +167,30 @@ func listModelsHandler(keyLookup func(ctx context.Context, orgID, configID strin
 	}
 }
 
+// revealModelKeyHandler (GET /api/orgs/{org}/model-configs/{id}/reveal): admin.
+// 解密并回传单个配置的完整 API key 明文，供管理员核对已存密钥。这是唯一会经 HTTP
+// 回传明文 key 的端点——列表/创建/更新响应仍绝不夹带 key（守卫测试钉死该约束）。
+// keyLookup 返回 "" 表示该配置未存 per-config key（→ hasApiKey:false，apiKey 空）；
+// ErrNotFound（不存在/跨 org）→ 404；解密失败等 → 500。
+func revealModelKeyHandler(keyLookup func(ctx context.Context, orgID, configID string) (string, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if keyLookup == nil {
+			http.Error(w, "key reveal unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		key, err := keyLookup(r.Context(), r.PathValue("org"), r.PathValue("id"))
+		if err != nil {
+			if errors.Is(err, models.ErrNotFound) {
+				http.Error(w, "model config not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"hasApiKey": key != "", "apiKey": key})
+	}
+}
+
 // catalogModelsFor returns the static catalog model ids for a provider — the
 // fallback list when live fetching is unavailable.
 func catalogModelsFor(provider string) []string {

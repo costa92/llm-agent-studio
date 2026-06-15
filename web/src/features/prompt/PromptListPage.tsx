@@ -2,7 +2,7 @@ import { useState } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
-import { Loader2, Plus, Edit, Trash2, Copy, Check, Wand2 } from "lucide-react"
+import { Loader2, Plus, Edit, Trash2, Copy, Check, Wand2, Star } from "lucide-react"
 import { toast } from "sonner"
 
 import {
@@ -21,6 +21,13 @@ import { Button } from "@/components/studio/Button"
 import { Button as UiButton } from "@/components/ui/button"
 import { Badge } from "@/components/studio/Badge"
 import { PromptBox } from "@/components/studio/PromptBox"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import type { Prompt } from "@/lib/types"
 import {
@@ -29,18 +36,28 @@ import {
   useCreatePrompt,
   useUpdatePrompt,
   useDeletePrompt,
+  useSetPromptDefault,
 } from "./api"
+
+// 提示词类型标签：''=通用 / "script"=剧本 / "storyboard"=分镜。
+const KIND_LABELS: Record<string, string> = {
+  "": "通用",
+  script: "剧本",
+  storyboard: "分镜",
+}
 
 const formSchema = z.object({
   name: z.string().min(1, "名称必填"),
   content: z.string().min(1, "提示词内容必填"),
   style: z.string(),
+  kind: z.string(),
 })
 
 interface FormValues {
   name: string
   content: string
   style: string
+  kind: string
 }
 
 interface PromptListPageProps {
@@ -53,6 +70,7 @@ export function PromptListPage({ org }: PromptListPageProps) {
   const createMutation = useCreatePrompt(org)
   const updateMutation = useUpdatePrompt(org)
   const deleteMutation = useDeletePrompt(org)
+  const setDefaultMutation = useSetPromptDefault(org)
 
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingPrompt, setEditingPrompt] = useState<Prompt | null>(null)
@@ -72,6 +90,7 @@ export function PromptListPage({ org }: PromptListPageProps) {
       name: "",
       content: "",
       style: "",
+      kind: "",
     },
   })
 
@@ -94,6 +113,7 @@ export function PromptListPage({ org }: PromptListPageProps) {
       name: "",
       content: "",
       style: "",
+      kind: "",
     })
     setDialogOpen(true)
   }
@@ -104,6 +124,7 @@ export function PromptListPage({ org }: PromptListPageProps) {
       name: p.name,
       content: p.content,
       style: p.style,
+      kind: p.kind,
     })
     setDialogOpen(true)
   }
@@ -134,6 +155,15 @@ export function PromptListPage({ org }: PromptListPageProps) {
       setDeleteTarget(null)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "删除失败，请重试")
+    }
+  }
+
+  const handleSetDefault = async (p: Prompt) => {
+    try {
+      await setDefaultMutation.mutateAsync(p.id)
+      toast.success("已设为默认")
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "操作失败，请重试")
     }
   }
 
@@ -197,6 +227,18 @@ export function PromptListPage({ org }: PromptListPageProps) {
                       {p.name}
                     </span>
                     <div className="flex items-center gap-1 shrink-0">
+                      {!p.isDefault && (
+                        <UiButton
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-text-3 hover:text-amber"
+                          onClick={() => void handleSetDefault(p)}
+                          disabled={setDefaultMutation.isPending}
+                          aria-label={`设为默认 ${p.name}`}
+                        >
+                          <Star className="h-3.5 w-3.5" />
+                        </UiButton>
+                      )}
                       <UiButton
                         variant="ghost"
                         size="icon"
@@ -222,11 +264,13 @@ export function PromptListPage({ org }: PromptListPageProps) {
                     {p.content}
                   </div>
 
-                  {p.style && (
-                    <div className="flex flex-wrap gap-1.5">
-                      <Badge variant="running">{p.style}</Badge>
-                    </div>
-                  )}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <Badge variant="pending">
+                      {KIND_LABELS[p.kind] ?? "通用"}
+                    </Badge>
+                    {p.isDefault && <Badge variant="done">默认</Badge>}
+                    {p.style && <Badge variant="running">{p.style}</Badge>}
+                  </div>
                 </div>
 
                 <div className="mt-4 pt-3 border-t border-line flex flex-col gap-2">
@@ -298,6 +342,26 @@ export function PromptListPage({ org }: PromptListPageProps) {
               {errors.content && (
                 <p className="text-xs text-danger">{errors.content.message}</p>
               )}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-text-2">提示词类型</Label>
+              {/* Radix Select.Item 不允许空字符串 value，通用(kind="")用 "__general__" 哨兵。 */}
+              <Select
+                value={formValues.kind || "__general__"}
+                onValueChange={(val) =>
+                  setValue("kind", val === "__general__" ? "" : val)
+                }
+              >
+                <SelectTrigger className="border-line bg-bg-base text-text-1">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__general__">通用</SelectItem>
+                  <SelectItem value="script">剧本 (script)</SelectItem>
+                  <SelectItem value="storyboard">分镜 (storyboard)</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
 
             <div className="space-y-1.5">

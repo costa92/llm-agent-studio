@@ -59,17 +59,15 @@ export function useUpdateProject(
     imageProvider: string
     imageModel: string
     storageMode: string
-    customWorkflowEnabled: boolean
-    workflowNodes: string
   }
 > {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, plannerProvider, plannerModel, imageProvider, imageModel, storageMode, customWorkflowEnabled, workflowNodes }) =>
+    mutationFn: ({ id, plannerProvider, plannerModel, imageProvider, imageModel, storageMode }) =>
       apiJSON<Project>(`/api/projects/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plannerProvider, plannerModel, imageProvider, imageModel, storageMode, customWorkflowEnabled, workflowNodes }),
+        body: JSON.stringify({ plannerProvider, plannerModel, imageProvider, imageModel, storageMode }),
       }),
     onSuccess: (_data, vars) => {
       void queryClient.invalidateQueries({ queryKey: ["projects", org] })

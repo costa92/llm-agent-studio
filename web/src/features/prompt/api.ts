@@ -6,7 +6,12 @@ import {
   type UseQueryResult,
 } from "@tanstack/react-query"
 import { apiJSON } from "@/lib/apiClient"
-import type { BuildPromptResponse, Prompt, CreatePromptInput } from "@/lib/types"
+import type {
+  BasicPrompt,
+  BuildPromptResponse,
+  Prompt,
+  CreatePromptInput,
+} from "@/lib/types"
 
 // 风格下拉与建项目/重生成共用 —— 复用 T9 已建的 usePromptStyles（GET /api/prompt-styles）。
 export { usePromptStyles } from "@/features/projects/api"
@@ -31,6 +36,19 @@ export function useBuildPrompt(): UseMutationResult<
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt, style }),
       }),
+  })
+}
+
+// 内置基础提示词（GET /api/prompt-presets，auth-only，全局只读）。供工作流节点在
+// org 尚未自建提示词时直接选用；按节点类型（kind）过滤展示。长缓存（内容固定）。
+export function useBasicPrompts(): UseQueryResult<BasicPrompt[]> {
+  return useQuery({
+    queryKey: ["prompt-presets"],
+    queryFn: () =>
+      apiJSON<{ items: BasicPrompt[] }>(`/api/prompt-presets`).then(
+        (res) => res.items,
+      ),
+    staleTime: 60 * 60 * 1000,
   })
 }
 
@@ -72,6 +90,23 @@ export function useUpdatePrompt(
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["prompts", org] })
+    },
+  })
+}
+
+// 设为默认：PUT /api/orgs/{org}/prompts/{id}/default（无 body，editor 角色）。
+// 后端清空同 kind 其他默认、把本条标记为默认；成功后刷新列表缓存。
+export function useSetPromptDefault(
+  org: string,
+): UseMutationResult<Prompt, Error, string> {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiJSON<Prompt>(`/api/orgs/${org}/prompts/${id}/default`, {
+        method: "PUT",
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["prompts", org] })

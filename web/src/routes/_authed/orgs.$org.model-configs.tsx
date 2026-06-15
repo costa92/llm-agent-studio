@@ -10,6 +10,7 @@ import {
   useListModels,
   useModelCatalog,
   useModelConfigs,
+  useRevealModelKey,
   useUpdateModelConfig,
 } from "@/features/cost/api"
 import { modelConfigErrorMessage } from "@/features/cost/configError"
@@ -31,6 +32,7 @@ function ModelConfigsPage() {
   const update = useUpdateModelConfig(org)
   const del = useDeleteModelConfig(org)
   const listModels = useListModels(org)
+  const revealKey = useRevealModelKey(org)
 
   // 返回 Promise 让表单 await；成功 toast 在 onSuccess、失败 toast（含 400 密钥拒绝）在 catch。
   function handleCreate(input: CreateModelConfigInput): Promise<ModelConfig> {
@@ -88,6 +90,9 @@ function ModelConfigsPage() {
         onUpdate={handleUpdate}
         onDelete={handleDelete}
         onListModels={(input) => listModels.mutateAsync(input)}
+        onRevealKey={(id) =>
+          revealKey.mutateAsync(id).then((r) => r.apiKey)
+        }
       />
     </AdminGate>
   )

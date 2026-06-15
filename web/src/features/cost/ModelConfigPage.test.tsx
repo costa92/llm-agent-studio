@@ -211,6 +211,55 @@ describe("CreateModelConfigForm (edit mode)", () => {
     )
   })
 
+  it("查看密钥 reveals the stored key into the field and switches to plaintext", async () => {
+    const onRevealKey = vi.fn().mockResolvedValue("sk-revealed-secret")
+    const user = userEvent.setup()
+
+    render(
+      <CreateModelConfigForm
+        catalog={CATALOG}
+        initial={EXISTING}
+        onCreate={vi.fn().mockResolvedValue(EXISTING)}
+        onRevealKey={onRevealKey}
+      />,
+    )
+
+    const key = screen.getByLabelText(/API Key/)
+    expect(key).toHaveValue("")
+    expect(key).toHaveAttribute("type", "password")
+
+    await user.click(screen.getByRole("button", { name: /查看密钥/ }))
+
+    await waitFor(() => expect(onRevealKey).toHaveBeenCalledWith("mc-edit"))
+    await waitFor(() => expect(key).toHaveValue("sk-revealed-secret"))
+    // 回显后切为明文显示。
+    expect(key).toHaveAttribute("type", "text")
+  })
+
+  it("hides 查看密钥 when the config has no stored key or no onRevealKey", () => {
+    // 无 onRevealKey → 不显示。
+    const { unmount } = render(
+      <CreateModelConfigForm catalog={CATALOG} initial={EXISTING} onCreate={vi.fn()} />,
+    )
+    expect(
+      screen.queryByRole("button", { name: /查看密钥/ }),
+    ).not.toBeInTheDocument()
+    unmount()
+
+    // hasApiKey:false → 即便传了 onRevealKey 也不显示。
+    render(
+      <CreateModelConfigForm
+        catalog={CATALOG}
+        initial={{ ...EXISTING, hasApiKey: false }}
+        onCreate={vi.fn()}
+        onRevealKey={vi.fn()}
+      />,
+    )
+    expect(
+      screen.queryByRole("button", { name: /查看密钥/ }),
+    ).not.toBeInTheDocument()
+  })
+
   it("submits the new key when the API key field is filled", async () => {
     const onCreate = vi.fn().mockResolvedValue(EXISTING)
     const user = userEvent.setup()

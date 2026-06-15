@@ -166,11 +166,12 @@ type Store struct {
 func New(pool *pgxpool.Pool, box *secretbox.Box) *Store { return &Store{pool: pool, box: box} }
 
 // KeyForConfig returns the DECRYPTED api key for one config, located by
-// (id AND org_id). Used by the live model-listing endpoint so an admin editing an
-// existing config can refresh the model list WITHOUT re-entering the key. Returns
-// "" (no error) when the config stores no key; ErrNotFound when the row is absent
-// or belongs to another org. This is server-internal — the plaintext key is sent
-// only to the provider's official API, never back to the HTTP client.
+// (id AND org_id). Used by (a) the live model-listing endpoint so an admin editing
+// an existing config can refresh the model list WITHOUT re-entering the key, and
+// (b) the admin reveal endpoint (GET .../model-configs/{id}/reveal), the single
+// place the plaintext key is returned over HTTP. Returns "" (no error) when the
+// config stores no key; ErrNotFound when the row is absent or belongs to another
+// org. The bulk list/create/update responses still never carry the key.
 func (s *Store) KeyForConfig(ctx context.Context, orgID, id string) (string, error) {
 	var keyEnc []byte
 	err := s.pool.QueryRow(ctx,

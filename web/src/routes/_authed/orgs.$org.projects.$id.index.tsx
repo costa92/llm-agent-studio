@@ -10,8 +10,14 @@ import {
   usePlans,
 } from "@/features/workflow/api"
 import { useUpdateProject } from "@/features/projects/api"
+import {
+  useWorkflows,
+  useRunWorkflow,
+  useDeleteWorkflow,
+} from "@/features/projects/workflowApi"
 import { useOrgTextModels, useOrgImageModels } from "@/features/cost/api"
 import { EditProjectDialog } from "@/features/projects/EditProjectDialog"
+import { WorkflowDialog } from "@/features/projects/WorkflowDialog"
 import { statusLabel, statusVariant } from "@/features/projects/status"
 import type { ProjectStatus } from "@/lib/types"
 
@@ -36,6 +42,44 @@ function RunsListPage() {
   const updateProject = useUpdateProject(org)
   const textModelsQuery = useOrgTextModels(org)
   const imageModelsQuery = useOrgImageModels(org)
+
+  // 工作流：一个项目可有多条 DAG 工作流，各自独立运行。
+  const workflowsQuery = useWorkflows(id)
+  const workflows = workflowsQuery.data || []
+  const runWorkflow = useRunWorkflow(id)
+  const deleteWorkflow = useDeleteWorkflow(id)
+
+  async function handleRunWorkflow(wfId: string) {
+    try {
+      const res = await runWorkflow.mutateAsync(wfId)
+      if (res.fallbackUsed) {
+        toast.warning("工作流校验未通过，已回落默认管线")
+      } else {
+        toast.success("已开始运行")
+      }
+      void navigate({
+        to: "/orgs/$org/projects/$id/runs/$runId",
+        params: { org, id, runId: res.planId },
+      })
+    } catch (err) {
+      const status = (err as { status?: number }).status
+      if (status === 429) {
+        toast.error("配额已用尽，请稍后再试")
+        return
+      }
+      toast.error("运行失败")
+    }
+  }
+
+  async function handleDeleteWorkflow(wfId: string, name: string) {
+    if (!window.confirm(`确认删除工作流「${name}」？此操作不可撤销。`)) return
+    try {
+      await deleteWorkflow.mutateAsync(wfId)
+      toast.success("工作流已删除")
+    } catch {
+      toast.error("删除失败")
+    }
+  }
 
   async function handleStartGeneration() {
     try {
@@ -140,6 +184,96 @@ function RunsListPage() {
           {isRunning || run.isPending ? "正在初始化..." : "开始新生成"}
         </Button>
       </header>
+
+      {/* 工作流 section：一个项目可有多条 DAG 工作流，各自独立运行。 */}
+      <section className="bg-bg-default border border-line rounded-xl p-5 shadow-sm mb-8">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-xs font-semibold tracking-wider text-text-3 uppercase">工作流</h3>
+          <WorkflowDialog
+            projectId={id}
+            orgId={org}
+            trigger={<Button variant="amber">新建工作流</Button>}
+            onSuccess={() => toast.success("工作流已保存")}
+          />
+        </div>
+
+        {workflows.length === 0 ? (
+          <div className="flex flex-col items-center justify-center text-center py-8">
+            <p className="text-sm text-text-2 mb-1 font-semibold">暂无工作流</p>
+            <p className="text-xs text-text-3 max-w-xs">
+              点击右上角“新建工作流”，按手动配置的 DAG 节点和依赖关系执行。
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="border-b border-line text-xs text-text-3">
+                  <th className="pb-3 font-semibold">名称</th>
+                  <th className="pb-3 font-semibold">节点数</th>
+                  <th className="pb-3 font-semibold">最近运行</th>
+                  <th className="pb-3 font-semibold text-right">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {workflows.map((wf) => (
+                  <tr key={wf.id} className="border-b border-line/50 hover:bg-bg-surface/30 transition-colors text-sm text-text-1">
+                    <td className="py-3 font-semibold">{wf.name}</td>
+                    <td className="py-3 text-text-2">{wf.nodes.length}</td>
+                    <td className="py-3">
+                      {wf.latestRunStatus ? (
+                        <Badge variant={statusVariant(wf.latestRunStatus as ProjectStatus)}>
+                          {statusLabel(wf.latestRunStatus as ProjectStatus)}
+                        </Badge>
+                      ) : (
+                        <span className="text-text-3 text-xs">未运行</span>
+                      )}
+                    </td>
+                    <td className="py-3 text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        <Button
+                          variant="ghost"
+                          onClick={() => void handleRunWorkflow(wf.id)}
+                          disabled={runWorkflow.isPending}
+                        >
+                          运行
+                        </Button>
+                        <WorkflowDialog
+                          projectId={id}
+                          orgId={org}
+                          initial={wf}
+                          trigger={<Button variant="ghost">编辑</Button>}
+                          onSuccess={() => toast.success("工作流已保存")}
+                        />
+                        {wf.latestPlanId && (
+                          <Button
+                            variant="ghost"
+                            onClick={() =>
+                              void navigate({
+                                to: "/orgs/$org/projects/$id/runs/$runId",
+                                params: { org, id, runId: wf.latestPlanId as string },
+                              })
+                            }
+                          >
+                            查看产物
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          onClick={() => void handleDeleteWorkflow(wf.id, wf.name)}
+                          disabled={deleteWorkflow.isPending}
+                        >
+                          删除
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
 
       {/* Main Grid Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">

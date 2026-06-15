@@ -33,7 +33,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/orgs/$org/tasks", params: {}, icon: <ListChecks />, label: "任务中心" },
   { to: "/orgs/$org/review", params: {}, icon: <CheckSquare />, label: "审核", adminOnly: true },
   { to: "/orgs/$org/assets", params: {}, icon: <Image />, label: "资产" },
-  { to: "/orgs/$org/prompt", params: {}, icon: <Wand2 />, label: "Prompt" },
+  { to: "/orgs/$org/prompt", params: {}, icon: <Wand2 />, label: "提示词" },
   { to: "/orgs/$org/cost", params: {}, icon: <Wallet />, label: "成本", adminOnly: true },
   { to: "/orgs/$org/model-configs", params: {}, icon: <SlidersHorizontal />, label: "模型", adminOnly: true },
   { to: "/orgs/$org/storage-config", params: {}, icon: <HardDrive />, label: "存储", adminOnly: true },

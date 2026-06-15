@@ -42,7 +42,7 @@ func TestPromptHandlersCRUD(t *testing.T) {
 	var createdID string
 	{
 		h := createPromptHandler(s)
-		reqBody := `{"name":"Cute Cat","content":"draw a very cute cat","style":"日漫"}`
+		reqBody := `{"name":"Cute Cat","content":"draw a very cute cat","style":"日漫","kind":"script"}`
 		req := httptest.NewRequest("POST", "/api/orgs/org-handlers-test/prompts", strings.NewReader(reqBody))
 		req.SetPathValue("org", org)
 		rec := httptest.NewRecorder()
@@ -55,7 +55,7 @@ func TestPromptHandlersCRUD(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
 			t.Fatalf("create unmarshal: %v", err)
 		}
-		if p.Name != "Cute Cat" || p.Content != "draw a very cute cat" || p.Style != "日漫" {
+		if p.Name != "Cute Cat" || p.Content != "draw a very cute cat" || p.Style != "日漫" || p.Kind != "script" {
 			t.Fatalf("created prompt mismatch: %+v", p)
 		}
 		createdID = p.ID
@@ -64,7 +64,7 @@ func TestPromptHandlersCRUD(t *testing.T) {
 	// 3. Update
 	{
 		h := updatePromptHandler(s)
-		reqBody := `{"name":"Cool Dog","content":"draw a very cool dog","style":"吉卜力"}`
+		reqBody := `{"name":"Cool Dog","content":"draw a very cool dog","style":"吉卜力","kind":"script"}`
 		req := httptest.NewRequest("PUT", "/api/orgs/org-handlers-test/prompts/"+createdID, strings.NewReader(reqBody))
 		req.SetPathValue("org", org)
 		req.SetPathValue("id", createdID)
@@ -78,8 +78,29 @@ func TestPromptHandlersCRUD(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
 			t.Fatalf("update unmarshal: %v", err)
 		}
-		if p.Name != "Cool Dog" || p.Content != "draw a very cool dog" || p.Style != "吉卜力" {
+		if p.Name != "Cool Dog" || p.Content != "draw a very cool dog" || p.Style != "吉卜力" || p.Kind != "script" {
 			t.Fatalf("updated prompt mismatch: %+v", p)
+		}
+	}
+
+	// 3b. Set default
+	{
+		h := setPromptDefaultHandler(s)
+		req := httptest.NewRequest("PUT", "/api/orgs/org-handlers-test/prompts/"+createdID+"/default", nil)
+		req.SetPathValue("org", org)
+		req.SetPathValue("id", createdID)
+		rec := httptest.NewRecorder()
+		h(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("set default code = %d body=%s", rec.Code, rec.Body.String())
+		}
+		var p prompt.Prompt
+		if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
+			t.Fatalf("set default unmarshal: %v", err)
+		}
+		if !p.IsDefault {
+			t.Fatalf("expected IsDefault true, got %+v", p)
 		}
 	}
 
