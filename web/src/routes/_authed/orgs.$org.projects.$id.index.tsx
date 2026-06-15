@@ -13,6 +13,7 @@ import { useUpdateProject } from "@/features/projects/api"
 import { useOrgTextModels, useOrgImageModels } from "@/features/cost/api"
 import { EditProjectDialog } from "@/features/projects/EditProjectDialog"
 import { statusLabel, statusVariant } from "@/features/projects/status"
+import type { ProjectStatus } from "@/lib/types"
 
 export const Route = createFileRoute("/_authed/orgs/$org/projects/$id/")({
   component: RunsListPage,
@@ -209,8 +210,8 @@ function RunsListPage() {
                             {plan.id}
                           </td>
                           <td className="py-3">
-                            <Badge variant={statusVariant(plan.status as any)}>
-                              {statusLabel(plan.status as any)}
+                            <Badge variant={statusVariant(plan.status as ProjectStatus)}>
+                              {statusLabel(plan.status as ProjectStatus)}
                             </Badge>
                           </td>
                           <td className="py-3">

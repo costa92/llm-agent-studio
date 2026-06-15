@@ -121,8 +121,8 @@ export function PromptListPage({ org }: PromptListPageProps) {
         toast.success("提示词已保存")
       }
       setDialogOpen(false)
-    } catch (err: any) {
-      toast.error(err.message || "操作失败，请重试")
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "操作失败，请重试")
     }
   }
 
@@ -132,8 +132,8 @@ export function PromptListPage({ org }: PromptListPageProps) {
       await deleteMutation.mutateAsync(deleteTarget.id)
       toast.success("提示词已删除")
       setDeleteTarget(null)
-    } catch (err: any) {
-      toast.error(err.message || "删除失败，请重试")
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "删除失败，请重试")
     }
   }
 
