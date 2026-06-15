@@ -39,14 +39,14 @@ describe("PromptListPage", () => {
       data: PROMPTS,
       isLoading: false,
       isError: false,
-    } as any)
+    } as unknown as ReturnType<typeof api.usePrompts>)
     vi.mocked(api.usePromptStyles).mockReturnValue({
       data: STYLES,
       isLoading: false,
-    } as any)
-    vi.mocked(api.useCreatePrompt).mockReturnValue({} as any)
-    vi.mocked(api.useUpdatePrompt).mockReturnValue({} as any)
-    vi.mocked(api.useDeletePrompt).mockReturnValue({} as any)
+    } as unknown as ReturnType<typeof api.usePromptStyles>)
+    vi.mocked(api.useCreatePrompt).mockReturnValue({} as unknown as ReturnType<typeof api.useCreatePrompt>)
+    vi.mocked(api.useUpdatePrompt).mockReturnValue({} as unknown as ReturnType<typeof api.useUpdatePrompt>)
+    vi.mocked(api.useDeletePrompt).mockReturnValue({} as unknown as ReturnType<typeof api.useDeletePrompt>)
 
     render(<PromptListPage org="org1" />)
 
@@ -62,14 +62,14 @@ describe("PromptListPage", () => {
     vi.mocked(api.usePrompts).mockReturnValue({
       data: [],
       isLoading: false,
-    } as any)
+    } as unknown as ReturnType<typeof api.usePrompts>)
     vi.mocked(api.usePromptStyles).mockReturnValue({
       data: STYLES,
       isLoading: false,
-    } as any)
+    } as unknown as ReturnType<typeof api.usePromptStyles>)
     vi.mocked(api.useCreatePrompt).mockReturnValue({
       mutateAsync,
-    } as any)
+    } as unknown as ReturnType<typeof api.useCreatePrompt>)
 
     const user = userEvent.setup()
     render(<PromptListPage org="org1" />)
