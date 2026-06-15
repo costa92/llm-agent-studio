@@ -318,14 +318,19 @@ func getProjectHandler(ps ProjectStore) http.HandlerFunc {
 	}
 }
 
-// updateProjectHandler (PUT /api/projects/{id}): editor+. M5.1：现在只允许改
-// planner_provider / planner_model 两个字段（想改 brief / style 删了重建），
+// updateProjectHandler (PUT /api/projects/{id}): editor+. 允许编辑项目基本信息
+// （名称/创意需求/内容类型/目标平台/风格）+ 规划/图片模型 + 存储方式。
 // body=project.UpdateInput 形式，返 200 + 更新后的 Project DTO。找不到 → 404。
+// 名称为空 → 400（与 create 的 name 必填对齐）。
 func updateProjectHandler(ps ProjectStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in project.UpdateInput
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			http.Error(w, "bad request: invalid body", http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(in.Name) == "" {
+			http.Error(w, "bad request: name is required", http.StatusBadRequest)
 			return
 		}
 		p, err := ps.Update(r.Context(), r.PathValue("id"), in)
