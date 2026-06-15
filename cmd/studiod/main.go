@@ -42,6 +42,7 @@ import (
 	genaudio "github.com/costa92/llm-agent-studio/internal/generate/audio"
 	genimage "github.com/costa92/llm-agent-studio/internal/generate/image"
 	genvideo "github.com/costa92/llm-agent-studio/internal/generate/video"
+	"github.com/costa92/llm-agent-studio/internal/health"
 	"github.com/costa92/llm-agent-studio/internal/httpapi"
 	"github.com/costa92/llm-agent-studio/internal/mail"
 	"github.com/costa92/llm-agent-studio/internal/mailconfig"
@@ -141,6 +142,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	model = obs.WrapModel(model, tp) // otel decorator (spec §12)
 
 	projectStore := project.New(st.Pool())
+	healthStore := health.New(st.Pool(), projectStore)
 	workflowStore := workflows.New(st.Pool())
 	todoStore := todos.New(st.Pool())
 	eventStore := events.New(st.Pool())
@@ -355,6 +357,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		Members:        membersSvc,
 		Platform:       platformSvc,
 		TaskBoard:      taskBoard,
+		Health:         healthStore,
 		Cost:           costStore,
 		PromptBuilder:  promptBuilder,
 		PromptStore:    promptStore,

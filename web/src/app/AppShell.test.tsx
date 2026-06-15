@@ -43,6 +43,8 @@ function renderShell(
     makeLeaf("/orgs/$org/model-configs"),
     makeLeaf("/platform"),
     makeLeaf("/platform/orgs"),
+    makeLeaf("/platform/users"),
+    makeLeaf("/platform/health"),
   ])
   const router = createRouter({
     routeTree,
@@ -123,6 +125,12 @@ describe("AppShell", () => {
   it("shows the 全部组织 nav item when isPlatformAdmin", async () => {
     renderShell({ isPlatformAdmin: true })
     expect(await screen.findAllByText("全部组织")).not.toHaveLength(0)
+  })
+
+  // 监控入口（非 org-scoped）：平台监控 / 数据健康页，仅平台超级管理员可见。
+  it("shows the 监控 nav item when isPlatformAdmin", async () => {
+    renderShell({ isPlatformAdmin: true })
+    expect(await screen.findAllByText("监控")).not.toHaveLength(0)
   })
 
   it("hides the 平台 / 全部组织 nav items when not a platform admin (even if org admin)", async () => {
