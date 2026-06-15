@@ -34,6 +34,8 @@ export interface Project {
   imageProvider?: string
   imageModel?: string
   storageMode?: string
+  customWorkflowEnabled?: boolean
+  workflowNodes?: string
 }
 
 // UI-spec §7.2。
@@ -61,6 +63,8 @@ export interface CreateProjectInput {
   // router 用 (provider, model) 查 org 的对应 model_config 拿 key。
   imageProvider?: string
   imageModel?: string
+  customWorkflowEnabled?: boolean
+  workflowNodes?: string
 }
 
 // runHandler 返回：POST /api/projects/{id}/run → 202。

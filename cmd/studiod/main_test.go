@@ -1150,3 +1150,108 @@ func TestEndToEndFakeAsyncVideoSubmitPoll(t *testing.T) {
 		t.Fatalf("asset_polling must never be emitted (M4 DEFER)")
 	}
 }
+
+func TestEndToEndCustomWorkflow(t *testing.T) {
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run the studio custom workflow e2e")
+	}
+
+	// We define 2 scripted responses:
+	//   1) script agent → custom script JSON
+	//   2) storyboard agent → custom shots JSON
+	// The planner response is omitted because custom workflow bypasses it.
+	srv, done := newHarness(t, dsn,
+		llm.Response{Text: `{"title":"Custom Tea","logline":"custom x","scenes":[{"heading":"INT","description":"d","dialogue":""}]}`},
+		llm.Response{Text: `{"shots":[{"shotNo":1,"camera":"wide","scene":"s1","action":"a","prompt":"custom shot1","duration":2}]}`},
+	)
+	defer done()
+
+	seedUser(t, dsn, "custom_e2e@studio.com")
+	client := srv.Client()
+	do := func(method, path, bearer, body string) (int, map[string]any) {
+		req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		var m map[string]any
+		_ = json.Unmarshal(raw, &m)
+		if m == nil {
+			m = map[string]any{"_raw": string(raw)}
+		}
+		return resp.StatusCode, m
+	}
+
+	// 1. Login.
+	code, body := do("POST", "/api/auth/login", "", `{"Email":"custom_e2e@studio.com","Password":"pw"}`)
+	if code != http.StatusOK {
+		t.Fatalf("login code=%d body=%v", code, body)
+	}
+	token, _ := body["access_token"].(string)
+
+	// 2. Create org.
+	_, ob := do("POST", "/api/orgs", token, `{"name":"Custom Org"}`)
+	orgID, _ := ob["id"].(string)
+
+	// 3. Create prompt override.
+	pCode, pb := do("POST", "/api/orgs/"+orgID+"/prompts", token,
+		`{"name":"custom_prompt","content":"custom template","style":"anime"}`)
+	if pCode != http.StatusCreated {
+		t.Fatalf("create prompt code=%d body=%v", pCode, pb)
+	}
+	promptID, _ := pb["id"].(string)
+
+	// 4. Create project.
+	_, projb := do("POST", "/api/orgs/"+orgID+"/projects", token,
+		`{"name":"Promo","brief":"a coffee ad","contentType":"ad","targetPlatform":"web","style":"realistic"}`)
+	projID, _ := projb["id"].(string)
+
+	// 5. Update project to enable custom workflow and define workflowNodes.
+	workflowNodes := `[
+		{"id": "node-script", "type": "script", "promptId": "` + promptID + `", "dependsOn": []},
+		{"id": "node-storyboard", "type": "storyboard", "dependsOn": ["node-script"]}
+	]`
+	upBody := `{"plannerProvider":"","plannerModel":"","imageProvider":"","imageModel":"","storageMode":"","customWorkflowEnabled":true,"workflowNodes":` + workflowNodes + `}`
+	upCode, upb := do("PUT", "/api/projects/"+projID, token, upBody)
+	if upCode != http.StatusOK {
+		t.Fatalf("update project code=%d body=%v", upCode, upb)
+	}
+
+	// 6. Run the project (kicks off PlanCustom and enqueues custom todos).
+	runCode, runb := do("POST", "/api/projects/"+projID+"/run", token, "")
+	if runCode != http.StatusAccepted {
+		t.Fatalf("run project code=%d body=%v", runCode, runb)
+	}
+
+	// 7. Verify the plans row was created and fallback_used is false, valid is true.
+	valid, _ := runb["valid"].(bool)
+	fallback, _ := runb["fallbackUsed"].(bool)
+	if !valid || fallback {
+		t.Fatalf("run result invalid/fallback: %+v", runb)
+	}
+
+	// 8. Wait/Poll for todos to check that they run and reach review status.
+	var status string
+	for i := 0; i < 50; i++ {
+		pCode, pb = do("GET", "/api/projects/"+projID, token, "")
+		status, _ = pb["status"].(string)
+		if status == "review" || status == "failed" {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if status != "review" {
+		t.Fatalf("expected project status to be review, got %q", status)
+	}
+}
+

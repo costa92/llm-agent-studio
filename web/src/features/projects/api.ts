@@ -49,14 +49,27 @@ export function useCreateProject(
 // M5.1/M9: 现在允许改规划模型和图片生成模型；成功后失效 project + run-history Query。
 export function useUpdateProject(
   org: string,
-): UseMutationResult<Project, Error, { id: string; plannerProvider: string; plannerModel: string; imageProvider: string; imageModel: string; storageMode: string }> {
+): UseMutationResult<
+  Project,
+  Error,
+  {
+    id: string
+    plannerProvider: string
+    plannerModel: string
+    imageProvider: string
+    imageModel: string
+    storageMode: string
+    customWorkflowEnabled: boolean
+    workflowNodes: string
+  }
+> {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, plannerProvider, plannerModel, imageProvider, imageModel, storageMode }) =>
+    mutationFn: ({ id, plannerProvider, plannerModel, imageProvider, imageModel, storageMode, customWorkflowEnabled, workflowNodes }) =>
       apiJSON<Project>(`/api/projects/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plannerProvider, plannerModel, imageProvider, imageModel, storageMode }),
+        body: JSON.stringify({ plannerProvider, plannerModel, imageProvider, imageModel, storageMode, customWorkflowEnabled, workflowNodes }),
       }),
     onSuccess: (_data, vars) => {
       void queryClient.invalidateQueries({ queryKey: ["projects", org] })
