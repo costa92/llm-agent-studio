@@ -9,7 +9,7 @@ import {
   useRun,
   usePlans,
 } from "@/features/workflow/api"
-import { useUpdateProject } from "@/features/projects/api"
+import { useUpdateProject, usePromptStyles } from "@/features/projects/api"
 import {
   useWorkflows,
   useRunWorkflow,
@@ -42,6 +42,7 @@ function RunsListPage() {
   const updateProject = useUpdateProject(org)
   const textModelsQuery = useOrgTextModels(org)
   const imageModelsQuery = useOrgImageModels(org)
+  const stylesQuery = usePromptStyles()
 
   // 工作流：一个项目可有多条 DAG 工作流，各自独立运行。
   const workflowsQuery = useWorkflows(id)
@@ -163,16 +164,17 @@ function RunsListPage() {
             <EditProjectDialog
               trigger={
                 <button className="underline underline-offset-2 hover:text-text-1">
-                  编辑
+                  编辑项目
                 </button>
               }
               project={project}
               textModels={textModelsQuery.data}
               imageModels={imageModelsQuery.data}
+              styles={stylesQuery.data}
               onSubmit={(input) =>
                 updateProject.mutateAsync({ id: project.id, ...input })
               }
-              onSuccess={() => toast.success("项目模型配置已更新")}
+              onSuccess={() => toast.success("项目信息已更新")}
             />
           </p>
         </div>

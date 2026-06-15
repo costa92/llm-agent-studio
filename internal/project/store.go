@@ -69,7 +69,14 @@ type CreateInput struct {
 }
 
 // UpdateInput 用于后期修改项目元数据（M5.1/M9 edit 入口）。
+// 基本信息（名称/创意需求/内容类型/目标平台/风格）也走这里编辑——early 设计
+// 让用户「删了重建」，现按需补上原地编辑。
 type UpdateInput struct {
+	Name                  string          `json:"name"`
+	Description           string          `json:"description"`
+	ContentType           string          `json:"contentType"`
+	TargetPlatform        string          `json:"targetPlatform"`
+	Style                 string          `json:"style"`
 	PlannerProvider       string          `json:"plannerProvider"`
 	PlannerModel          string          `json:"plannerModel"`
 	ImageProvider         string          `json:"imageProvider"`
@@ -211,8 +218,12 @@ func (s *Store) Update(ctx context.Context, id string, in UpdateInput) (Project,
 	// untouched preserves any pre-migration data instead of zeroing it on edit.
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE projects
-		 SET planner_provider=$2, planner_model=$3, image_provider=$4, image_model=$5, storage_mode=$6, updated_at=now()
-		 WHERE id=$1`, id, in.PlannerProvider, in.PlannerModel, in.ImageProvider, in.ImageModel, in.StorageMode)
+		 SET name=$2, description=$3, content_type=$4, target_platform=$5, style=$6,
+		     planner_provider=$7, planner_model=$8, image_provider=$9, image_model=$10, storage_mode=$11,
+		     updated_at=now()
+		 WHERE id=$1`,
+		id, in.Name, in.Description, in.ContentType, in.TargetPlatform, in.Style,
+		in.PlannerProvider, in.PlannerModel, in.ImageProvider, in.ImageModel, in.StorageMode)
 	if err != nil {
 		return Project{}, fmt.Errorf("project: update: %w", err)
 	}

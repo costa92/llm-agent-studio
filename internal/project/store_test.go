@@ -104,8 +104,9 @@ func TestUpdatePlannerOverride(t *testing.T) {
 	}
 	// 初值空 → 改 → 拿到新值。
 	upd, err := s.Update(ctx, p.ID, UpdateInput{
+		Name:            "X",
 		PlannerProvider: "ollama", PlannerModel: "gemma4:26b",
-		StorageMode:     "github",
+		StorageMode: "github",
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
@@ -118,8 +119,8 @@ func TestUpdatePlannerOverride(t *testing.T) {
 	if got.PlannerProvider != "ollama" || got.StorageMode != "github" {
 		t.Fatalf("get after update: %+v", got)
 	}
-	// 清回空。
-	cleared, err := s.Update(ctx, p.ID, UpdateInput{PlannerProvider: "", PlannerModel: "", StorageMode: ""})
+	// 清回空（name 仍需带上，否则会被写空）。
+	cleared, err := s.Update(ctx, p.ID, UpdateInput{Name: "X", PlannerProvider: "", PlannerModel: "", StorageMode: ""})
 	if err != nil {
 		t.Fatalf("clear: %v", err)
 	}
@@ -127,8 +128,37 @@ func TestUpdatePlannerOverride(t *testing.T) {
 		t.Fatalf("clear did not reset: %+v", cleared)
 	}
 	// 找不到 → ErrNotFound。
-	if _, err := s.Update(ctx, "nope", UpdateInput{PlannerProvider: "x", StorageMode: "localfs"}); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Update(ctx, "nope", UpdateInput{Name: "x", PlannerProvider: "x", StorageMode: "localfs"}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing id: want ErrNotFound, got %v", err)
+	}
+}
+
+// 基本信息（名称/创意需求/内容类型/目标平台/风格）可原地编辑并持久化。
+func TestUpdateBasicInfo(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	orgID := "org_updinfo_" + uniqueSuffix()
+	p, err := s.Create(ctx, CreateInput{
+		OrgID: orgID, Name: "旧名", Brief: "旧需求",
+		ContentType: "短视频", TargetPlatform: "抖音", Style: "写实", CreatedBy: "u",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	upd, err := s.Update(ctx, p.ID, UpdateInput{
+		Name: "新名", Description: "新需求",
+		ContentType: "广告片", TargetPlatform: "B 站", Style: "动画",
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if upd.Name != "新名" || upd.Description != "新需求" ||
+		upd.ContentType != "广告片" || upd.TargetPlatform != "B 站" || upd.Style != "动画" {
+		t.Fatalf("basic info not persisted: %+v", upd)
+	}
+	got, _ := s.Get(ctx, p.ID)
+	if got.Name != "新名" || got.Style != "动画" {
+		t.Fatalf("get after update: %+v", got)
 	}
 }
 

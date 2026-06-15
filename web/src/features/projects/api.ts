@@ -45,8 +45,9 @@ export function useCreateProject(
   })
 }
 
-// PUT /api/projects/{id} body {plannerProvider,plannerModel,imageProvider,imageModel} → Project（editor+）。
-// M5.1/M9: 现在允许改规划模型和图片生成模型；成功后失效 project + run-history Query。
+// PUT /api/projects/{id} → Project（editor+）。
+// 允许编辑项目基本信息（名称/创意需求/内容类型/目标平台/风格）+ 规划/图片模型 +
+// 存储方式；成功后失效 project + run-history Query。name 为空 → 后端 400。
 export function useUpdateProject(
   org: string,
 ): UseMutationResult<
@@ -54,6 +55,11 @@ export function useUpdateProject(
   Error,
   {
     id: string
+    name: string
+    description: string
+    contentType: string
+    targetPlatform: string
+    style: string
     plannerProvider: string
     plannerModel: string
     imageProvider: string
@@ -63,11 +69,11 @@ export function useUpdateProject(
 > {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, plannerProvider, plannerModel, imageProvider, imageModel, storageMode }) =>
+    mutationFn: ({ id, ...body }) =>
       apiJSON<Project>(`/api/projects/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plannerProvider, plannerModel, imageProvider, imageModel, storageMode }),
+        body: JSON.stringify(body),
       }),
     onSuccess: (_data, vars) => {
       void queryClient.invalidateQueries({ queryKey: ["projects", org] })
