@@ -24,7 +24,7 @@ import {
   usePlans,
 } from "@/features/workflow/api"
 import { useProductionTimeline } from "@/features/workflow/useProductionTimeline"
-import { useUpdateProject } from "@/features/projects/api"
+import { useUpdateProject, usePromptStyles } from "@/features/projects/api"
 import { useOrgTextModels, useOrgImageModels } from "@/features/cost/api"
 import { EditProjectDialog } from "@/features/projects/EditProjectDialog"
 import type { Pip, StageId } from "@/lib/timeline"
@@ -55,6 +55,7 @@ function RunWorkbenchPage() {
   const updateProject = useUpdateProject(org)
   const textModelsQuery = useOrgTextModels(org)
   const imageModelsQuery = useOrgImageModels(org)
+  const stylesQuery = usePromptStyles()
 
   // 选中态
   const [selection, setSelection] = useState<Selection>(null)
@@ -212,17 +213,18 @@ function RunWorkbenchPage() {
         <EditProjectDialog
           trigger={
             <button className="text-[11px] text-text-3 underline underline-offset-2 hover:text-text-1 cursor-pointer">
-              编辑模型配置
+              编辑项目
             </button>
           }
           project={project}
           textModels={textModelsQuery.data}
           imageModels={imageModelsQuery.data}
+          styles={stylesQuery.data}
           onSubmit={(input) =>
             updateProject.mutateAsync({ id: project.id, ...input })
           }
           onSuccess={() => {
-            toast.success("项目模型配置已更新")
+            toast.success("项目信息已更新")
             void projectQuery.refetch()
           }}
         />

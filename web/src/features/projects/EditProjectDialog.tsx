@@ -19,15 +19,27 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/studio/Button"
-import type { ModelConfig, Project } from "@/lib/types"
+import type { ModelConfig, Project, Style } from "@/lib/types"
 
-// M5.1/M9: 项目详情页"编辑模型配置"入口——弹框。
-// 允许修改 plannerProvider / plannerModel 以及 imageProvider / imageModel 字段。
-// 空 = 走 org 默认。
+// 项目详情页"编辑项目信息"入口——弹框。
+// 允许修改基本信息（名称/创意需求/内容类型/目标平台/风格）以及
+// plannerProvider / plannerModel / imageProvider / imageModel / storageMode。
+// 模型/存储留空 = 走 org 默认。
+
+// 内容类型 / 目标平台与 CreateProjectDialog 保持一致（后端只存字符串，无白名单）。
+const CONTENT_TYPES = ["短视频", "广告片", "动画", "宣传片"] as const
+const TARGET_PLATFORMS = ["抖音", "视频号", "B 站", "小红书", "通用"] as const
 
 const formSchema = z.object({
+  name: z.string().min(1, "请输入项目名称"),
+  description: z.string(),
+  contentType: z.string().min(1, "请选择内容类型"),
+  targetPlatform: z.string().min(1, "请选择目标平台"),
+  style: z.string().min(1, "请选择风格"),
   plannerProvider: z.string(),
   plannerModel: z.string(),
   imageProvider: z.string(),
@@ -41,7 +53,14 @@ export interface EditProjectFormProps {
   project: Project
   textModels?: ModelConfig[]
   imageModels?: ModelConfig[]
+  /** GET /api/prompt-styles 的风格列表，供风格下拉。 */
+  styles?: Style[]
   onSubmit: (input: {
+    name: string
+    description: string
+    contentType: string
+    targetPlatform: string
+    style: string
     plannerProvider: string
     plannerModel: string
     imageProvider: string
@@ -55,18 +74,25 @@ export function EditProjectForm({
   project,
   textModels,
   imageModels,
+  styles,
   onSubmit,
   onSuccess,
 }: EditProjectFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null)
 
   const {
+    register,
     handleSubmit,
     control,
-    formState: { isSubmitting },
+    formState: { errors, isSubmitting },
   } = useForm<FormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
+      name: project.name ?? "",
+      description: project.description ?? "",
+      contentType: project.contentType ?? CONTENT_TYPES[0],
+      targetPlatform: project.targetPlatform ?? TARGET_PLATFORMS[0],
+      style: project.style ?? "",
       plannerProvider: project.plannerProvider ?? "",
       plannerModel: project.plannerModel ?? "",
       imageProvider: project.imageProvider ?? "",
@@ -80,6 +106,11 @@ export function EditProjectForm({
 
     try {
       const updated = await onSubmit({
+        name: values.name,
+        description: values.description,
+        contentType: values.contentType,
+        targetPlatform: values.targetPlatform,
+        style: values.style,
         plannerProvider: values.plannerProvider,
         plannerModel: values.plannerModel,
         imageProvider: values.imageProvider,
@@ -92,8 +123,107 @@ export function EditProjectForm({
     }
   })
 
+  // 风格下拉：项目当前风格若不在 styles 列表里，补一个选项避免回显丢失。
+  const styleOptions = styles ?? []
+  const hasCurrentStyle =
+    !project.style || styleOptions.some((s) => s.name === project.style)
+
   return (
     <form onSubmit={submit} className="flex flex-col gap-4 max-h-[75vh] overflow-y-auto pr-2" noValidate>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="edit-name">项目名称</Label>
+        <Input
+          id="edit-name"
+          aria-invalid={errors.name != null}
+          {...register("name")}
+        />
+        {errors.name && (
+          <p className="text-[12px] text-danger">{errors.name.message}</p>
+        )}
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="edit-description">创意需求</Label>
+        <Textarea
+          id="edit-description"
+          rows={3}
+          placeholder="用一句话描述你想要的作品"
+          {...register("description")}
+        />
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="edit-contentType">内容类型</Label>
+        <Controller
+          control={control}
+          name="contentType"
+          render={({ field }) => (
+            <Select value={field.value} onValueChange={field.onChange}>
+              <SelectTrigger id="edit-contentType">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {CONTENT_TYPES.map((ct) => (
+                  <SelectItem key={ct} value={ct}>
+                    {ct}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+        />
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="edit-targetPlatform">目标平台</Label>
+        <Controller
+          control={control}
+          name="targetPlatform"
+          render={({ field }) => (
+            <Select value={field.value} onValueChange={field.onChange}>
+              <SelectTrigger id="edit-targetPlatform">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {TARGET_PLATFORMS.map((tp) => (
+                  <SelectItem key={tp} value={tp}>
+                    {tp}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+        />
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="edit-style">风格</Label>
+        <Controller
+          control={control}
+          name="style"
+          render={({ field }) => (
+            <Select value={field.value} onValueChange={field.onChange}>
+              <SelectTrigger id="edit-style" aria-invalid={errors.style != null}>
+                <SelectValue placeholder="选择风格" />
+              </SelectTrigger>
+              <SelectContent>
+                {!hasCurrentStyle && (
+                  <SelectItem value={project.style}>{project.style}</SelectItem>
+                )}
+                {styleOptions.map((s) => (
+                  <SelectItem key={s.name} value={s.name}>
+                    {s.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+        />
+        {errors.style && (
+          <p className="text-[12px] text-danger">{errors.style.message}</p>
+        )}
+      </div>
+
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="edit-plannerModel">规划用模型</Label>
         <Controller
@@ -268,9 +398,9 @@ export function EditProjectDialog({
       <DialogTrigger asChild>{trigger}</DialogTrigger>
       <DialogContent className="max-w-xl">
         <DialogHeader>
-          <DialogTitle>编辑模型与工作流配置</DialogTitle>
+          <DialogTitle>编辑项目信息</DialogTitle>
           <DialogDescription>
-            改后影响后续所有 run；当前正在跑的 run 不受影响。
+            基本信息即时生效；模型/存储改动影响后续所有 run，当前正在跑的 run 不受影响。
           </DialogDescription>
         </DialogHeader>
         <EditProjectForm
