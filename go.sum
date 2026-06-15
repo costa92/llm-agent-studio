@@ -24,8 +24,8 @@ github.com/client9/misspell v0.3.4/go.mod h1:qj6jICC3Q7zFZvVWo7KLAzC3yx5G7kyvSDk
 github.com/cncf/udpa/go v0.0.0-20191209042840-269d4d468f6f/go.mod h1:M8M6+tZqaGXZJjfX53e64911xZQV5JYwmTeXPW+k8Sc=
 github.com/costa92/llm-agent v0.9.0 h1:A0xpymao707gmuUdTPTvqBWV28Vf0G6lGDFhR4EEP5k=
 github.com/costa92/llm-agent v0.9.0/go.mod h1:JMQn+s7OUC/+opLQosFNPhpZnxRTpiVBOXvRfIeUwAE=
-github.com/costa92/llm-agent-authz v0.4.0 h1:0DzGyayzGhw0W1Yu1c/Qie0aK0ir87jnxyL7/Jwoj8c=
-github.com/costa92/llm-agent-authz v0.4.0/go.mod h1:oV1drhWIpqwzbUe8ja0PpETbIsA8Iw2BsijlhEG3Kf8=
+github.com/costa92/llm-agent-authz v0.4.1 h1:JAqf9wJ/9tzHhyoaeAqTJwkqumR1GjzHcHqCeQ3ehGs=
+github.com/costa92/llm-agent-authz v0.4.1/go.mod h1:oV1drhWIpqwzbUe8ja0PpETbIsA8Iw2BsijlhEG3Kf8=
 github.com/costa92/llm-agent-contract v0.5.0 h1:aSAYsImVvJLRJ8+6Y/fSUFdafHq+mfvhfKw+WDW3TIU=
 github.com/costa92/llm-agent-contract v0.5.0/go.mod h1:8pbOX+wp/O2NCV8P6x+4bShM3n/ibsdyMiNHkolfOME=
 github.com/costa92/llm-agent-otel v0.4.0 h1:E/GeSi4D6cYDXce1BDbO4gc+4f43t13PXKIIaO+SySY=
