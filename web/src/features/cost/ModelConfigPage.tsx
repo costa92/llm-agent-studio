@@ -374,10 +374,13 @@ export function CreateModelConfigForm({
 
   // 切 provider 后旧的拉取结果失效（按 render 派生，避免 effect 里 setState）。
   const activeLive = live && live.provider === provider ? live : null
-  // 下拉/快捷填充的候选：拉取到 live 列表则用它，否则回退静态建议的 model。
+  // 下拉/快捷填充的候选：只有 live 成功（source="live"）才用拉到的列表；
+  // 失败/不支持时回退到按 kind 过滤过的静态建议，避免把 image/video 漏到 text 下拉。
+  const isLive = activeLive?.source === "live"
   const liveModels = activeLive?.models ?? []
-  const optionModels =
-    liveModels.length > 0 ? liveModels : suggestions.map((s) => s.model)
+  const optionModels = isLive && liveModels.length > 0
+    ? liveModels
+    : suggestions.map((s) => s.model)
 
   const submit = handleSubmit(async (values) => {
     setSubmitError(null)
@@ -492,7 +495,7 @@ export function CreateModelConfigForm({
         )}
         {optionModels.length > 0 && (
           <p className="flex flex-wrap gap-1.5 text-[11.5px] text-text-3">
-            {liveModels.length > 0 ? "官方模型：" : "常用："}
+            {isLive ? "官方模型：" : "常用："}
             {optionModels.slice(0, 24).map((m) => (
               <button
                 key={m}
@@ -511,9 +514,14 @@ export function CreateModelConfigForm({
           </p>
         )}
         {activeLive && activeLive.source === "catalog" && (
-          <p className="text-[11.5px] text-text-3">
-            未能从官方接口拉取（{activeLive.error ?? "该 provider 不支持"}），已回退建议列表。
-          </p>
+          <div className="flex flex-col gap-0.5 text-[11.5px] text-text-3">
+            <span>
+              {activeLive.message ?? activeLive.error ?? "未能从官方接口拉取"}，已回退建议列表。
+            </span>
+            {activeLive.hint && (
+              <span className="text-text-2">{activeLive.hint}</span>
+            )}
+          </div>
         )}
         {errors.model && (
           <p className="text-[12px] text-danger">{errors.model.message}</p>

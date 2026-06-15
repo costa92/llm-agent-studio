@@ -90,11 +90,18 @@ func Catalog() []CatalogEntry {
 		{Provider: "runway", Model: "gen-3", Kind: "video", Label: "Runway Gen-3"},
 		{Provider: "kling", Model: "kling-v1", Kind: "video", Label: "Kling v1"},
 		{Provider: "google", Model: "veo-2", Kind: "video", Label: "Google Veo 2"},
+		{Provider: "minimax", Model: "MiniMax-Hailuo-02", Kind: "video", Label: "MiniMax Hailuo-02"},
 		{Provider: "openai", Model: "tts-1", Kind: "audio", Label: "OpenAI TTS-1"},
+		{Provider: "minimax", Model: "speech-02-hd", Kind: "audio", Label: "MiniMax speech-02-hd"},
+		{Provider: "minimax", Model: "speech-01-turbo", Kind: "audio", Label: "MiniMax speech-01-turbo"},
 		// BYOK: text/chat 模型建议项 (provider/model 在 store 中自由填写，UI 还可经
 		// "openai-compatible" 伪 provider 自定义 base_url + model — 后续任务)。
 		{Provider: "deepseek", Model: "deepseek-chat", Kind: "text", Label: "DeepSeek Chat"},
 		{Provider: "openai", Model: "gpt-4o-mini", Kind: "text", Label: "OpenAI GPT-4o mini"},
+		// MiniMax text/abab 系列（modellist 走 /v1/models 拉取；catalog 仅作兜底）。
+		{Provider: "minimax", Model: "MiniMax-Text-01", Kind: "text", Label: "MiniMax Text-01"},
+		{Provider: "minimax", Model: "MiniMax-M1", Kind: "text", Label: "MiniMax M1"},
+		{Provider: "minimax", Model: "abab-6.5s-chat", Kind: "text", Label: "MiniMax abab-6.5s-chat"},
 		// 本地 Ollama 文本模型（无需 key，base_url 缺省 http://localhost:11434；模型名可自由改）。
 		{Provider: "ollama", Model: "llama3", Kind: "text", Label: "Ollama Llama 3 (本地)"},
 		{Provider: "ollama", Model: "qwen2.5", Kind: "text", Label: "Ollama Qwen2.5 (本地)"},

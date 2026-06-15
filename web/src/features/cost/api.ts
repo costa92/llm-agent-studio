@@ -143,8 +143,11 @@ export function useOrgImageModels(
 }
 
 // 拉取 provider 官方模型列表：POST /api/orgs/{org}/model-configs/list-models
-//   body {provider, baseUrl?, apiKey?, configId?} → {models, source, error?}。
-// source="live" 来自官方接口；"catalog" 为回退（不支持/失败时返回静态目录 + error）。
+//   body {provider, baseUrl?, apiKey?, configId?} → {models, source, message?, hint?, error?}。
+// source="live" 来自官方接口；"catalog" 为回退（不支持/失败时返回静态目录 + 友好 message）。
+//   - message: 用户可读的失败原因（无 Go 内部 noise）
+//   - hint:    可选的操作建议（如 "请确认 Ollama 已启动"）
+//   - error:   兼容字段，等同 message
 // 编辑既有配置时传 configId、留空 apiKey，后端复用已存密钥（无需重输）。
 export interface ListModelsInput {
   provider: string
@@ -155,6 +158,8 @@ export interface ListModelsInput {
 export interface ListModelsResult {
   models: string[]
   source: "live" | "catalog"
+  message?: string
+  hint?: string
   error?: string
 }
 export function useListModels(

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -155,8 +156,10 @@ type listModelsRequest struct {
 // omitted but configId names an existing config, keyLookup resolves that config's
 // stored (decrypted) key so an admin can refresh the list without re-typing the
 // key. Any failure (unsupported provider, bad key, network) falls back to the
-// static catalog for that provider, with the reason in "error". The key is sent
-// only to the provider and is never echoed back.
+// static catalog for that provider, with a clean user-facing "message" + optional
+// actionable "hint" in the response. The raw cause is logged for ops but never
+// echoed to the client. The key is sent only to the provider and is never
+// echoed back.
 func listModelsHandler(keyLookup func(ctx context.Context, orgID, configID string) (string, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		org := r.PathValue("org")
@@ -175,10 +178,18 @@ func listModelsHandler(keyLookup func(ctx context.Context, orgID, configID strin
 				apiKey = k
 			}
 		}
-		res, lerr := modellist.List(r.Context(), req.Provider, req.BaseURL, apiKey, catalogModelsFor(req.Provider))
+		res, info := modellist.List(r.Context(), req.Provider, req.BaseURL, apiKey, catalogModelsFor(req.Provider))
 		out := map[string]any{"models": res.Models, "source": res.Source}
-		if lerr != nil {
-			out["error"] = lerr.Error()
+		if info != nil {
+			if info.Internal != nil {
+				slog.Warn("list models: live fetch failed, falling back to catalog",
+					"provider", req.Provider, "err", info.Internal)
+			}
+			out["message"] = info.Message
+			if info.Hint != "" {
+				out["hint"] = info.Hint
+			}
+			out["error"] = info.Message
 		}
 		writeJSON(w, http.StatusOK, out)
 	}
