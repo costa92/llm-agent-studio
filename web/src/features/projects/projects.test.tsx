@@ -62,6 +62,7 @@ function baseViewProps() {
     canCreate: true,
     styles: STYLES,
     onCreate: vi.fn(),
+    onUpdate: vi.fn(),
     onOpenProject: vi.fn(),
   }
 }
@@ -83,6 +84,32 @@ describe("ProjectListView", () => {
 
     await user.click(screen.getByText("夏日广告片"))
     expect(onOpenProject).toHaveBeenCalledTimes(1)
+  })
+
+  it("opens the edit dialog from the card 编辑 button and submits via onUpdate", async () => {
+    const onUpdate = vi.fn().mockResolvedValue(makeProject())
+    const user = userEvent.setup()
+    renderWithClient(
+      <ProjectListView
+        {...baseViewProps()}
+        projects={[makeProject()]}
+        onUpdate={onUpdate}
+      />,
+    )
+
+    await user.click(screen.getByRole("button", { name: "编辑" }))
+    // 弹窗打开 → 名称回显当前值。
+    expect(await screen.findByLabelText("项目名称")).toHaveValue("夏日广告片")
+
+    const name = screen.getByLabelText("项目名称")
+    await user.clear(name)
+    await user.type(name, "改个名字")
+    await user.click(screen.getByRole("button", { name: "保存" }))
+
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1))
+    const arg = onUpdate.mock.calls[0][0]
+    expect(arg.id).toBe("p1")
+    expect(arg.name).toBe("改个名字")
   })
 
   it("renders the 无封面 placeholder for a project without a cover", () => {
