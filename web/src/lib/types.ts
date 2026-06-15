@@ -440,3 +440,50 @@ export interface UpsertMailConfigInput {
   smtpFrom: string
   enabled: boolean
 }
+
+// 平台监控 / 数据健康（平台超级管理员专属，/api/platform/health/*）。
+
+// 系统层面健康快照：DB 连通/延迟、积压 todo、最近事件时间、worker 活性。
+export interface HealthSystem {
+  dbLatencyMs: number
+  dbOk: boolean
+  stuckTodos: number
+  lastEventAt: string
+  workerHealthy: boolean
+}
+
+// 单项数据一致性检查。severity ∈ warn/error；count 为命中条数；
+// samples 为示例 ID（截断展示）；repairable 标记是否支持「一键修复」。
+export interface HealthCheck {
+  id: string
+  title: string
+  severity: "warn" | "error"
+  count: number
+  samples: string[]
+  repairable: boolean
+}
+
+// GET /api/platform/health → HealthReport：系统快照 + 一致性检查列表。
+export interface HealthReport {
+  system: HealthSystem
+  checks: HealthCheck[]
+}
+
+// POST /api/platform/health/repair → {checkId, repaired}（repaired 为本次修复条数）。
+export interface RepairResult {
+  checkId: string
+  repaired: number
+}
+
+// GET /api/platform/health/events → {items: HealthFailure[]}。运营失败 / 错误事件。
+// at 为 RFC3339 字符串；error 可能较长，展示时截断。
+export interface HealthFailure {
+  todoId: string
+  projectId: string
+  projectName: string
+  orgId: string
+  type: string
+  agent: string
+  error: string
+  at: string
+}
