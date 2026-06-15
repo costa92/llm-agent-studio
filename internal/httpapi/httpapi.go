@@ -49,6 +49,7 @@ type Deps struct {
 	Members       MemberService      // org 成员管理: 列出/按邮箱添加/改角色/移除 (org-scoped)
 	Platform      PlatformService    // 平台超级管理员: 系统级存储配置 + 所有 org 视图 + 平台管理员名册
 	TaskBoard     TaskBoardReader    // 任务中心: 跨项目运行状态聚合 (org-scoped, viewer+)
+	Health        HealthReporter     // 平台健康/数据完整性监控 + 修复 (unauth probes + platformAdmin 报告/修复)
 	Cost          CostStore
 	PromptBuilder *prompt.Builder
 	PromptStore   *prompt.Store
@@ -194,6 +195,12 @@ func NewMux(d Deps) *http.ServeMux {
 	if d.BlobServer != nil {
 		mux.Handle("GET /api/blob/{key...}", blobHandler(d.BlobServer))
 	}
+	// Health / metrics. Liveness + Prometheus scrape are UNAUTH (ops probes);
+	// the rich report + repair + recent-failures are platformAdmin-gated below.
+	if d.Health != nil {
+		mux.Handle("GET /healthz", healthzHandler(d.Health))
+		mux.Handle("GET /metrics", metricsHandler(d.Health))
+	}
 	// Model management (admin).
 	mux.Handle("GET /api/model-catalog", authOnly(modelCatalogHandler(d.ModelAvailable)))
 	mux.Handle("POST /api/orgs/{org}/model-configs/list-models", scoped(roleAdmin, orgScope, listModelsHandler(d.ModelKeyLookup)))
@@ -229,6 +236,12 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("GET /api/platform/users/{userId}", platformAdmin(platformUserDetailHandler(d.Platform)))
 	mux.Handle("DELETE /api/platform/users/{userId}", platformAdmin(platformDeleteUserHandler(d.Platform)))
 	mux.Handle("POST /api/platform/users/{userId}/reset-password", platformAdmin(platformResetPasswordHandler(d.Platform)))
+	// Platform health/data-integrity: full report + repair + recent failures.
+	if d.Health != nil {
+		mux.Handle("GET /api/platform/health", platformAdmin(platformHealthHandler(d.Health)))
+		mux.Handle("POST /api/platform/health/repair", platformAdmin(platformHealthRepairHandler(d.Health)))
+		mux.Handle("GET /api/platform/health/events", platformAdmin(platformHealthEventsHandler(d.Health)))
+	}
 	// Cost center (admin).
 	mux.Handle("GET /api/orgs/{org}/cost", scoped(roleAdmin, orgScope, orgCostHandler(d.Cost)))
 	mux.Handle("GET /api/projects/{id}/cost", proj(roleAdmin, projectCostHandler(d.Cost)))
