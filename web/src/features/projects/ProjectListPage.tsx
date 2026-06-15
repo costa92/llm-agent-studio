@@ -1,3 +1,4 @@
+import { toast } from "sonner"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Badge } from "@/components/studio/Badge"
 import { Button } from "@/components/studio/Button"
@@ -6,6 +7,21 @@ import type { CreateProjectInput, ModelConfig, Project, Style } from "@/lib/type
 import { statusLabel, statusVariant } from "./status"
 import { CreateProjectDialog } from "./CreateProjectDialog"
 import { CoverDialog } from "./CoverDialog"
+import { EditProjectDialog } from "./EditProjectDialog"
+
+// 「编辑」按钮提交的项目信息（= useUpdateProject 载荷去掉 id）。
+export type UpdateProjectFields = {
+  name: string
+  description: string
+  contentType: string
+  targetPlatform: string
+  style: string
+  plannerProvider: string
+  plannerModel: string
+  imageProvider: string
+  imageModel: string
+  storageMode: string
+}
 
 export interface ProjectListViewProps {
   projects: Project[] | undefined
@@ -17,9 +33,13 @@ export interface ProjectListViewProps {
   /** editor+ 才显示"新建项目"（viewer 隐藏）。 */
   canCreate: boolean
   styles: Style[]
-  /** M5.1：org 下 kind=text 的启用模型，供"新建项目"对话框的规划模型下拉。 */
+  /** M5.1：org 下 kind=text 的启用模型，供"新建项目"/"编辑"对话框的规划模型下拉。 */
   textModels?: ModelConfig[]
+  /** M9：org 下 kind=image 的启用模型，供"编辑"对话框的图片模型下拉。 */
+  imageModels?: ModelConfig[]
   onCreate: (input: CreateProjectInput) => Promise<Project>
+  /** 编辑项目信息（卡片「编辑」按钮）。id + 整表单字段 → 更新后的 Project。 */
+  onUpdate: (input: { id: string } & UpdateProjectFields) => Promise<Project>
   /** 点击卡片进工作台（路由在 T10 接入；T9 为可注入回调便于单测）。 */
   onOpenProject: (project: Project) => void
   /** T5：org 尚无启用的生成模型配置 → 空态先引导去配置模型。 */
@@ -38,7 +58,9 @@ export function ProjectListView({
   canCreate,
   styles,
   textModels,
+  imageModels,
   onCreate,
+  onUpdate,
   onOpenProject,
   needsModelConfig = false,
   onConfigureModel,
@@ -123,9 +145,22 @@ export function ProjectListView({
                 </div>
               </button>
 
-              {/* 「设封面」：与打开项目按钮平级。editor+ 才显示。 */}
+              {/* 「编辑」+「设封面」：与打开项目按钮平级。editor+ 才显示。 */}
               {canCreate && (
-                <div className="border-t border-line px-[18px] py-2.5">
+                <div className="flex items-center gap-2 border-t border-line px-[18px] py-2.5">
+                  <EditProjectDialog
+                    project={project}
+                    textModels={textModels}
+                    imageModels={imageModels}
+                    styles={styles}
+                    onSubmit={(input) => onUpdate({ id: project.id, ...input })}
+                    onSuccess={() => toast.success("项目信息已更新")}
+                    trigger={
+                      <Button variant="ghost" className="h-auto px-2 py-1 text-[12px]">
+                        编辑
+                      </Button>
+                    }
+                  />
                   <CoverDialog
                     project={project}
                     org={org}

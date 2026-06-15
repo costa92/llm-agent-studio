@@ -1,10 +1,15 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import {
   useCreateProject,
+  useUpdateProject,
   useProjects,
   usePromptStyles,
 } from "@/features/projects/api"
-import { useModelConfigs, useOrgTextModels } from "@/features/cost/api"
+import {
+  useModelConfigs,
+  useOrgTextModels,
+  useOrgImageModels,
+} from "@/features/cost/api"
 import { ProjectListView } from "@/features/projects/ProjectListPage"
 
 // T9：项目列表 + 建项目视图。org 校验由父段布局 orgs.$org.projects.tsx 的 beforeLoad 承担。
@@ -18,6 +23,7 @@ function ProjectsPage() {
   const projectsQuery = useProjects(org)
   const stylesQuery = usePromptStyles()
   const createProject = useCreateProject(org)
+  const updateProject = useUpdateProject(org)
   // T5：org 是否已有启用的生成模型配置（model-configs 列表里存在 enabled 项）。
   // 仅在查询成功（非加载/错误）且确无启用项时引导配置——避免加载中误闪引导。
   // admin-gated 端点；非 admin 拿不到列表 → 不引导（保持普通空态）。
@@ -25,8 +31,9 @@ function ProjectsPage() {
   const needsModelConfig =
     modelConfigsQuery.isSuccess &&
     !modelConfigsQuery.data.some((c) => c.enabled)
-  // M5.1: "新建项目"对话框的规划模型下拉的源数据。
+  // M5.1/M9: "新建项目"/"编辑"对话框的规划模型 + 图片模型下拉的源数据。
   const textModelsQuery = useOrgTextModels(org)
+  const imageModelsQuery = useOrgImageModels(org)
 
   return (
     <ProjectListView
@@ -44,7 +51,9 @@ function ProjectsPage() {
       canCreate
       styles={stylesQuery.data ?? []}
       textModels={textModelsQuery.data}
+      imageModels={imageModelsQuery.data}
       onCreate={(input) => createProject.mutateAsync(input)}
+      onUpdate={(input) => updateProject.mutateAsync(input)}
       onOpenProject={(project) =>
         // T10：进项目工作台（制片轨道）——org-scoped 路径，org param 透传以保住导航轨。
         navigate({
