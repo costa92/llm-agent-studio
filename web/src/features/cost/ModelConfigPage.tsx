@@ -596,7 +596,7 @@ export function CreateModelConfigDialog({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>{trigger}</DialogTrigger>
-      <DialogContent>
+      <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>添加模型配置</DialogTitle>
           <DialogDescription>
@@ -639,7 +639,7 @@ export function EditModelConfigDialog({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>{trigger}</DialogTrigger>
-      <DialogContent>
+      <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>编辑模型配置</DialogTitle>
           <DialogDescription>
