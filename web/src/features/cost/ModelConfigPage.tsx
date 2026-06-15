@@ -24,6 +24,7 @@ import type {
   CreateModelConfigInput,
   ModelConfig,
 } from "@/lib/types"
+import type { ListModelsInput, ListModelsResult } from "@/features/cost/api"
 
 // kind 标签：text（文本/对话）+ image/video/audio。
 const KIND_LABELS: Record<string, string> = {
@@ -54,6 +55,8 @@ export interface ModelConfigViewProps {
   onUpdate: (id: string, input: CreateModelConfigInput) => Promise<ModelConfig>
   // 删除（按 id；确认后调用）。
   onDelete: (id: string) => Promise<void>
+  // 拉取 provider 官方模型列表（可选；不传则不显示「拉取模型」按钮）。
+  onListModels?: (input: ListModelsInput) => Promise<ListModelsResult>
 }
 
 // 模型配置（admin-only）：按 kind 分组配置表 + 创建表单。表单绝不含 API key 字段。
@@ -66,6 +69,7 @@ export function ModelConfigView({
   onCreate,
   onUpdate,
   onDelete,
+  onListModels,
 }: ModelConfigViewProps) {
   // 删除确认弹窗：保存待删除配置；null = 弹窗关闭（mirror 退回确认模式）。
   const [deleteTarget, setDeleteTarget] = useState<ModelConfig | null>(null)
@@ -92,6 +96,7 @@ export function ModelConfigView({
     <CreateModelConfigDialog
       catalog={catalog ?? []}
       onCreate={onCreate}
+      onListModels={onListModels}
       trigger={<Button variant="amber">添加模型</Button>}
     />
   )
@@ -120,6 +125,7 @@ export function ModelConfigView({
           <CreateModelConfigDialog
             catalog={catalog ?? []}
             onCreate={onCreate}
+            onListModels={onListModels}
             trigger={<Button variant="amber">添加第一个模型</Button>}
           />
         </div>
@@ -158,6 +164,7 @@ export function ModelConfigView({
                       config={c}
                       catalog={catalog ?? []}
                       onUpdate={onUpdate}
+                      onListModels={onListModels}
                       trigger={
                         <UiButton variant="ghost" size="sm" aria-label={`编辑 ${c.provider} ${c.model}`}>
                           编辑
@@ -256,6 +263,8 @@ export interface CreateModelConfigFormProps {
   // 编辑模式：传入既有配置 → 表单预填 provider/kind/model/baseUrl/params；
   // API key 留空（hasApiKey 时提示「留空保持不变」），提交时空则后端保留既有密钥。
   initial?: ModelConfig
+  // 拉取 provider 官方模型列表（可选；不传则不显示「拉取模型」按钮）。
+  onListModels?: (input: ListModelsInput) => Promise<ListModelsResult>
 }
 
 export function CreateModelConfigForm({
@@ -263,9 +272,13 @@ export function CreateModelConfigForm({
   onCreate,
   onSuccess,
   initial,
+  onListModels,
 }: CreateModelConfigFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [showApiKey, setShowApiKey] = useState(false)
+  // 拉取到的官方模型列表（含拉取时的 provider，用于切 provider 后判失效）。
+  const [live, setLive] = useState<(ListModelsResult & { provider: string }) | null>(null)
+  const [listing, setListing] = useState(false)
   const isEdit = initial != null
   // catalog 里出现过的不重复 provider（保序）+ 末尾的 openai-compatible。
   const providers = [...new Set(catalog.map((e) => e.provider))]
@@ -273,6 +286,7 @@ export function CreateModelConfigForm({
     register,
     handleSubmit,
     setValue,
+    getValues,
     control,
     formState: { errors, isSubmitting },
   } = useForm<FormValues>({
@@ -300,6 +314,39 @@ export function CreateModelConfigForm({
   const isCompatible = provider === COMPATIBLE_PROVIDER
   // 本地 Ollama：base_url 缺省 http://localhost:11434，无需 API key。
   const isOllama = provider === "ollama"
+
+  // 「拉取模型」：用当前表单的 provider/baseUrl/apiKey 调官方接口；编辑时传 configId
+  // 让后端复用已存密钥（apiKey 留空）。失败/不支持时后端回退静态目录并带 error。
+  async function fetchModels() {
+    if (!onListModels) return
+    const v = getValues()
+    setListing(true)
+    try {
+      const res = await onListModels({
+        provider: v.provider,
+        baseUrl: v.baseUrl.trim() || undefined,
+        apiKey: v.apiKey || undefined,
+        configId: initial?.id,
+      })
+      setLive({ ...res, provider: v.provider })
+    } catch {
+      setLive({
+        models: [],
+        source: "catalog",
+        error: "拉取失败，请检查 base_url / API key",
+        provider: v.provider,
+      })
+    } finally {
+      setListing(false)
+    }
+  }
+
+  // 切 provider 后旧的拉取结果失效（按 render 派生，避免 effect 里 setState）。
+  const activeLive = live && live.provider === provider ? live : null
+  // 下拉/快捷填充的候选：拉取到 live 列表则用它，否则回退静态建议的 model。
+  const liveModels = activeLive?.models ?? []
+  const optionModels =
+    liveModels.length > 0 ? liveModels : suggestions.map((s) => s.model)
 
   const submit = handleSubmit(async (values) => {
     setSubmitError(null)
@@ -375,42 +422,68 @@ export function CreateModelConfigForm({
 
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="mc-model">模型 (model)</Label>
-        <input
-          id="mc-model"
-          list={suggestions.length > 0 ? "mc-model-suggestions" : undefined}
-          aria-invalid={errors.model != null}
-          placeholder={isCompatible ? "如 deepseek-chat" : "如 gpt-4o-mini"}
-          {...register("model")}
-          className={selectClass}
-        />
-        {suggestions.length > 0 && (
+        <div className="flex items-center gap-2">
+          <input
+            id="mc-model"
+            list={optionModels.length > 0 ? "mc-model-suggestions" : undefined}
+            aria-invalid={errors.model != null}
+            placeholder={isCompatible ? "如 deepseek-chat" : "如 gpt-4o-mini"}
+            {...register("model")}
+            className={selectClass + " flex-1"}
+          />
+          {onListModels && (
+            <UiButton
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={listing}
+              onClick={() => void fetchModels()}
+              aria-label="从官方接口拉取模型列表"
+            >
+              {listing ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                "拉取模型"
+              )}
+            </UiButton>
+          )}
+        </div>
+        {optionModels.length > 0 && (
           <datalist id="mc-model-suggestions">
-            {suggestions.map((e) => (
-              <option key={e.model} value={e.model}>
-                {e.label}
-              </option>
+            {optionModels.map((m) => (
+              <option key={m} value={m} />
             ))}
           </datalist>
         )}
-        {suggestions.length > 0 && (
+        {optionModels.length > 0 && (
           <p className="flex flex-wrap gap-1.5 text-[11.5px] text-text-3">
-            常用：
-            {suggestions.map((e) => (
+            {liveModels.length > 0 ? "官方模型：" : "常用："}
+            {optionModels.slice(0, 24).map((m) => (
               <button
-                key={e.model}
+                key={m}
                 type="button"
-                onClick={() => setValue("model", e.model, { shouldValidate: true })}
+                onClick={() => setValue("model", m, { shouldValidate: true })}
                 className="rounded border border-line px-1.5 py-0.5 text-text-2 hover:text-text-1"
               >
-                {e.model}
+                {m}
               </button>
             ))}
+          </p>
+        )}
+        {activeLive?.source === "live" && (
+          <p className="text-[11.5px] text-review">
+            已从官方接口拉取 {liveModels.length} 个模型。
+          </p>
+        )}
+        {activeLive && activeLive.source === "catalog" && (
+          <p className="text-[11.5px] text-text-3">
+            未能从官方接口拉取（{activeLive.error ?? "该 provider 不支持"}），已回退建议列表。
           </p>
         )}
         {errors.model && (
           <p className="text-[12px] text-danger">{errors.model.message}</p>
         )}
-        {hasUnavailableSuggestion && (
+        {hasUnavailableSuggestion && !activeLive && (
           <p className="text-[11.5px] text-text-3">
             该 provider 未配置服务端密钥，请在下方填写 API key。
           </p>
@@ -550,6 +623,7 @@ export interface EditModelConfigDialogProps {
   onUpdate: (id: string, input: CreateModelConfigInput) => Promise<ModelConfig>
   trigger: React.ReactNode
   onSuccess?: (mc: ModelConfig) => void
+  onListModels?: (input: ListModelsInput) => Promise<ListModelsResult>
 }
 
 // 编辑弹窗：复用创建表单，预填既有配置；提交走 onUpdate(id, input)。
@@ -559,6 +633,7 @@ export function EditModelConfigDialog({
   onUpdate,
   trigger,
   onSuccess,
+  onListModels,
 }: EditModelConfigDialogProps) {
   const [open, setOpen] = useState(false)
   return (
@@ -575,6 +650,7 @@ export function EditModelConfigDialog({
           catalog={catalog}
           initial={config}
           onCreate={(input) => onUpdate(config.id, input)}
+          onListModels={onListModels}
           onSuccess={(mc) => {
             setOpen(false)
             onSuccess?.(mc)

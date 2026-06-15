@@ -142,6 +142,34 @@ export function useOrgImageModels(
   })
 }
 
+// 拉取 provider 官方模型列表：POST /api/orgs/{org}/model-configs/list-models
+//   body {provider, baseUrl?, apiKey?, configId?} → {models, source, error?}。
+// source="live" 来自官方接口；"catalog" 为回退（不支持/失败时返回静态目录 + error）。
+// 编辑既有配置时传 configId、留空 apiKey，后端复用已存密钥（无需重输）。
+export interface ListModelsInput {
+  provider: string
+  baseUrl?: string
+  apiKey?: string
+  configId?: string
+}
+export interface ListModelsResult {
+  models: string[]
+  source: "live" | "catalog"
+  error?: string
+}
+export function useListModels(
+  org: string,
+): UseMutationResult<ListModelsResult, Error, ListModelsInput> {
+  return useMutation({
+    mutationFn: (input: ListModelsInput) =>
+      apiJSON<ListModelsResult>(`/api/orgs/${org}/model-configs/list-models`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      }),
+  })
+}
+
 // 创建模型配置：POST /api/orgs/{org}/model-configs body {kind,provider,model,enabled,isDefault,params}
 //   → 200 ModelConfig（admin，createModelConfigHandler）。
 // provider/model 缺失 → 400；含密钥型 param → 400 ErrSecretParam（见 configError.ts）。

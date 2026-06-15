@@ -30,14 +30,12 @@ import (
 	studioagents "github.com/costa92/llm-agent-studio/internal/agents"
 	"github.com/costa92/llm-agent-studio/internal/assets"
 	"github.com/costa92/llm-agent-studio/internal/blob"
-	"github.com/costa92/llm-agent-studio/internal/blob/localfs"
 	blobgithub "github.com/costa92/llm-agent-studio/internal/blob/github"
+	"github.com/costa92/llm-agent-studio/internal/blob/localfs"
 	bloboss "github.com/costa92/llm-agent-studio/internal/blob/oss"
 	blobs3 "github.com/costa92/llm-agent-studio/internal/blob/s3"
 	"github.com/costa92/llm-agent-studio/internal/config"
 	"github.com/costa92/llm-agent-studio/internal/cost"
-	"github.com/costa92/llm-agent-studio/internal/mail"
-	"github.com/costa92/llm-agent-studio/internal/mailconfig"
 	"github.com/costa92/llm-agent-studio/internal/events"
 	"github.com/costa92/llm-agent-studio/internal/fetch"
 	"github.com/costa92/llm-agent-studio/internal/generate"
@@ -45,6 +43,8 @@ import (
 	genimage "github.com/costa92/llm-agent-studio/internal/generate/image"
 	genvideo "github.com/costa92/llm-agent-studio/internal/generate/video"
 	"github.com/costa92/llm-agent-studio/internal/httpapi"
+	"github.com/costa92/llm-agent-studio/internal/mail"
+	"github.com/costa92/llm-agent-studio/internal/mailconfig"
 	"github.com/costa92/llm-agent-studio/internal/modelrouter"
 	"github.com/costa92/llm-agent-studio/internal/models"
 	"github.com/costa92/llm-agent-studio/internal/obs"
@@ -357,6 +357,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		PromptStore:    promptStore,
 		GenQuota:       cfg.OrgDailyGenQuota,
 		ModelAvailable: modelAvailable(cfg),
+		ModelKeyLookup: modelStore.KeyForConfig,
 		WebFS:          webFS,
 	})
 

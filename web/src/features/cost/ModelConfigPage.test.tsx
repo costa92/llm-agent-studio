@@ -295,3 +295,53 @@ describe("ModelConfigView delete", () => {
     expect(onDelete).toHaveBeenCalledWith("mc-edit")
   })
 })
+
+describe("CreateModelConfigForm 拉取官方模型", () => {
+  it("拉取模型 fetches live models, shows chips, fills input on click", async () => {
+    const onListModels = vi
+      .fn()
+      .mockResolvedValue({ models: ["gpt-4o", "o3-mini"], source: "live" })
+    const user = userEvent.setup()
+    render(
+      <CreateModelConfigForm
+        catalog={CATALOG}
+        onCreate={vi.fn().mockResolvedValue(CREATED)}
+        onListModels={onListModels}
+      />,
+    )
+
+    await user.click(screen.getByRole("button", { name: /拉取模型/ }))
+    await waitFor(() => expect(onListModels).toHaveBeenCalledTimes(1))
+    // request carries the selected provider (default = first catalog provider).
+    expect(onListModels.mock.calls[0][0]).toMatchObject({ provider: "openai" })
+
+    expect(await screen.findByText(/已从官方接口拉取 2 个模型/)).toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "gpt-4o" }))
+    expect(screen.getByLabelText("模型 (model)")).toHaveValue("gpt-4o")
+  })
+
+  it("shows a fallback note when listing falls back to catalog", async () => {
+    const onListModels = vi.fn().mockResolvedValue({
+      models: ["image-01"],
+      source: "catalog",
+      error: "provider has no live model API",
+    })
+    const user = userEvent.setup()
+    render(
+      <CreateModelConfigForm
+        catalog={CATALOG}
+        onCreate={vi.fn()}
+        onListModels={onListModels}
+      />,
+    )
+    await user.click(screen.getByRole("button", { name: /拉取模型/ }))
+    expect(await screen.findByText(/已回退建议列表/)).toBeInTheDocument()
+  })
+
+  it("hides the 拉取模型 button when onListModels is absent", () => {
+    render(<CreateModelConfigForm catalog={CATALOG} onCreate={vi.fn()} />)
+    expect(
+      screen.queryByRole("button", { name: /拉取模型/ }),
+    ).not.toBeInTheDocument()
+  })
+})

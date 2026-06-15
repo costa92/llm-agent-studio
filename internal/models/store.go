@@ -134,8 +134,8 @@ type CreateInput struct {
 	Model     string
 	Enabled   bool
 	IsDefault bool
-	BaseURL   string          // 可选，per-config endpoint (openai-compatible)
-	APIKey    string          // 可选明文 key；非空则经 box 加密入库，绝不回显
+	BaseURL   string // 可选，per-config endpoint (openai-compatible)
+	APIKey    string // 可选明文 key；非空则经 box 加密入库，绝不回显
 	Params    json.RawMessage
 }
 
@@ -162,6 +162,32 @@ type Store struct {
 // New builds a Store. box 提供 per-config api key 的静态加解密；nil/disabled box
 // 表示无法存储 key (带非空 APIKey 的 Create 返回 ErrEncUnavailable)。
 func New(pool *pgxpool.Pool, box *secretbox.Box) *Store { return &Store{pool: pool, box: box} }
+
+// KeyForConfig returns the DECRYPTED api key for one config, located by
+// (id AND org_id). Used by the live model-listing endpoint so an admin editing an
+// existing config can refresh the model list WITHOUT re-entering the key. Returns
+// "" (no error) when the config stores no key; ErrNotFound when the row is absent
+// or belongs to another org. This is server-internal — the plaintext key is sent
+// only to the provider's official API, never back to the HTTP client.
+func (s *Store) KeyForConfig(ctx context.Context, orgID, id string) (string, error) {
+	var keyEnc []byte
+	err := s.pool.QueryRow(ctx,
+		`SELECT api_key_enc FROM model_configs WHERE id=$1 AND org_id=$2`, id, orgID).Scan(&keyEnc)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("models: key for config: %w", err)
+	}
+	if len(keyEnc) == 0 {
+		return "", nil
+	}
+	pt, err := s.box.Decrypt(keyEnc)
+	if err != nil {
+		return "", fmt.Errorf("models: decrypt key: %w", err)
+	}
+	return string(pt), nil
+}
 
 func newID() string {
 	b := make([]byte, 16)

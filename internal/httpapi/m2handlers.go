@@ -12,6 +12,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/assets"
 	"github.com/costa92/llm-agent-studio/internal/blob"
 	"github.com/costa92/llm-agent-studio/internal/cost"
+	"github.com/costa92/llm-agent-studio/internal/modellist"
 	"github.com/costa92/llm-agent-studio/internal/models"
 	"github.com/costa92/llm-agent-studio/internal/project"
 	"github.com/costa92/llm-agent-studio/internal/prompt"
@@ -122,6 +123,60 @@ func modelCatalogHandler(avail func(provider, kind string) bool) http.HandlerFun
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"catalog": out})
 	}
+}
+
+// listModelsRequest is the body of the live model-listing endpoint.
+type listModelsRequest struct {
+	Provider string `json:"provider"`
+	BaseURL  string `json:"baseUrl"`
+	APIKey   string `json:"apiKey"`   // entered key (create / key change); optional
+	ConfigID string `json:"configId"` // existing config → reuse its stored key
+}
+
+// listModelsHandler (POST /api/orgs/{org}/model-configs/list-models): admin.
+// Fetches the provider's live model list from its OFFICIAL API. When apiKey is
+// omitted but configId names an existing config, keyLookup resolves that config's
+// stored (decrypted) key so an admin can refresh the list without re-typing the
+// key. Any failure (unsupported provider, bad key, network) falls back to the
+// static catalog for that provider, with the reason in "error". The key is sent
+// only to the provider and is never echoed back.
+func listModelsHandler(keyLookup func(ctx context.Context, orgID, configID string) (string, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		org := r.PathValue("org")
+		var req listModelsRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if req.Provider == "" {
+			http.Error(w, "provider required", http.StatusBadRequest)
+			return
+		}
+		apiKey := req.APIKey
+		if apiKey == "" && req.ConfigID != "" && keyLookup != nil {
+			if k, err := keyLookup(r.Context(), org, req.ConfigID); err == nil {
+				apiKey = k
+			}
+		}
+		res, lerr := modellist.List(r.Context(), req.Provider, req.BaseURL, apiKey, catalogModelsFor(req.Provider))
+		out := map[string]any{"models": res.Models, "source": res.Source}
+		if lerr != nil {
+			out["error"] = lerr.Error()
+		}
+		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+// catalogModelsFor returns the static catalog model ids for a provider — the
+// fallback list when live fetching is unavailable.
+func catalogModelsFor(provider string) []string {
+	out := []string{}
+	for _, e := range models.Catalog() {
+		if e.Provider == provider {
+			out = append(out, e.Model)
+		}
+	}
+	return out
 }
 
 // acceptHandler (POST /api/assets/{id}/accept): admin. 409 on non-pending. No

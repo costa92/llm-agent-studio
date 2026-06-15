@@ -58,6 +58,12 @@ type Deps struct {
 	// registered. nil → all entries treated as available (focused unit tests omit it).
 	ModelAvailable func(provider, kind string) bool
 
+	// ModelKeyLookup resolves a model-config's stored (decrypted) api key by
+	// (orgID, configID), so the live model-listing endpoint can refresh the list
+	// for an existing config without the admin re-typing the key. nil → listing
+	// only uses keys supplied in the request.
+	ModelKeyLookup func(ctx context.Context, orgID, configID string) (string, error)
+
 	// WebFS, when non-nil, mounts a built SPA under "GET /" (catch-all, ranked
 	// below every /api/* route). nil = backend-only (no UI served).
 	WebFS fs.FS
@@ -177,6 +183,7 @@ func NewMux(d Deps) *http.ServeMux {
 	}
 	// Model management (admin).
 	mux.Handle("GET /api/model-catalog", authOnly(modelCatalogHandler(d.ModelAvailable)))
+	mux.Handle("POST /api/orgs/{org}/model-configs/list-models", scoped(roleAdmin, orgScope, listModelsHandler(d.ModelKeyLookup)))
 	mux.Handle("POST /api/orgs/{org}/model-configs", scoped(roleAdmin, orgScope, createModelConfigHandler(d.Models)))
 	mux.Handle("GET /api/orgs/{org}/model-configs", scoped(roleAdmin, orgScope, listModelConfigsHandler(d.Models)))
 	mux.Handle("PUT /api/orgs/{org}/model-configs/{id}", scoped(roleAdmin, orgScope, updateModelConfigHandler(d.Models)))
