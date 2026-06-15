@@ -164,6 +164,29 @@ describe("WorkflowForm", () => {
     expect(arg.nodes[0].promptId).toBe("new-p")
   })
 
+  it("标准管线 button fills script → storyboard", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(makeWorkflow())
+    const user = userEvent.setup()
+    render(
+      <WorkflowForm
+        initial={makeWorkflow({
+          name: "wf",
+          nodes: [{ id: "x", type: "script", promptId: "", dependsOn: [] }],
+        })}
+        onSubmit={onSubmit}
+      />,
+    )
+    await user.click(screen.getByRole("button", { name: "标准管线" }))
+    await user.click(screen.getByRole("button", { name: "保存" }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+    const arg = onSubmit.mock.calls[0][0]
+    expect(arg.nodes.map((n: { type: string }) => n.type)).toEqual([
+      "script",
+      "storyboard",
+    ])
+    expect(arg.nodes[1].dependsOn).toEqual(["script-1"])
+  })
+
   it("supports inline custom prompt text (not saved to library)", async () => {
     const onSubmit = vi.fn().mockResolvedValue(makeWorkflow())
     const user = userEvent.setup()

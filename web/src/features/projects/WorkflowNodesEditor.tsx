@@ -46,29 +46,56 @@ export function WorkflowNodesEditor({
   const defaultPromptIdFor = (kind: string) =>
     prompts?.find((p) => p.kind === kind && p.isDefault)?.id ?? ""
 
+  // 标准管线：脚本 → 分镜。分镜完成后 worker 会自动为每个镜头扇出图片生成任务，
+  // 所以这两步即可跑出图片产物；仅脚本节点不会产出图片。
+  const fillStandardPipeline = () =>
+    onChange([
+      { id: "script-1", type: "script", promptId: defaultPromptIdFor("script"), dependsOn: [] },
+      {
+        id: "storyboard-1",
+        type: "storyboard",
+        promptId: defaultPromptIdFor("storyboard"),
+        dependsOn: ["script-1"],
+      },
+    ])
+
   return (
     <div className="flex flex-col gap-3 border border-border rounded-lg p-3 bg-muted/20">
       <div className="flex items-center justify-between border-b border-border pb-2">
         <h4 className="text-[13px] font-semibold text-text-1">工作流节点配置</h4>
-        <button
-          type="button"
-          className="text-[12px] text-amber hover:text-amber/80 font-medium border border-amber/30 hover:border-amber px-2.5 py-1 rounded transition-colors cursor-pointer"
-          onClick={() => {
-            const newId = `node-${nodes.length + 1}`
-            onChange([
-              ...nodes,
-              {
-                id: newId,
-                type: "script",
-                promptId: defaultPromptIdFor("script"),
-                dependsOn: [],
-              },
-            ])
-          }}
-        >
-          + 添加节点
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="text-[12px] text-text-2 hover:text-text-1 font-medium border border-border hover:border-text-3 px-2.5 py-1 rounded transition-colors cursor-pointer"
+            onClick={fillStandardPipeline}
+          >
+            标准管线
+          </button>
+          <button
+            type="button"
+            className="text-[12px] text-amber hover:text-amber/80 font-medium border border-amber/30 hover:border-amber px-2.5 py-1 rounded transition-colors cursor-pointer"
+            onClick={() => {
+              const newId = `node-${nodes.length + 1}`
+              onChange([
+                ...nodes,
+                {
+                  id: newId,
+                  type: "script",
+                  promptId: defaultPromptIdFor("script"),
+                  dependsOn: [],
+                },
+              ])
+            }}
+          >
+            + 添加节点
+          </button>
+        </div>
       </div>
+
+      <p className="text-[11px] text-text-3">
+        提示：分镜(storyboard)节点完成后会自动为每个镜头生成图片；只有脚本节点不会产出图片。
+        点「标准管线」一键填充 脚本→分镜。
+      </p>
 
       {nodes.length === 0 ? (
         <p className="text-[11.5px] text-text-3 text-center py-2">暂无步骤，点击上方“添加节点”开始配置</p>
