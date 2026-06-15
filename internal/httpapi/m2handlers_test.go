@@ -230,8 +230,8 @@ func TestCreateModelConfigBYOKHidesKey(t *testing.T) {
 		t.Fatalf("create: code=%d body=%s", rr.Code, rr.Body.String())
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, rawKey) {
-		t.Fatalf("apiKey missing in create response: %s", body)
+	if strings.Contains(body, rawKey) {
+		t.Fatalf("apiKey LEAKED in create response (must never echo): %s", body)
 	}
 	if !strings.Contains(body, `"hasApiKey":true`) || !strings.Contains(body, `"baseUrl":"`+baseURL+`"`) {
 		t.Fatalf("create response missing hasApiKey/baseUrl: %s", body)
@@ -250,8 +250,8 @@ func TestCreateModelConfigBYOKHidesKey(t *testing.T) {
 		t.Fatalf("list: code=%d body=%s", lr.Code, lr.Body.String())
 	}
 	lbody := lr.Body.String()
-	if !strings.Contains(lbody, rawKey) {
-		t.Fatalf("apiKey missing in list response: %s", lbody)
+	if strings.Contains(lbody, rawKey) {
+		t.Fatalf("apiKey LEAKED in list response (must never echo): %s", lbody)
 	}
 	if !strings.Contains(lbody, `"hasApiKey":true`) || !strings.Contains(lbody, created.ID) {
 		t.Fatalf("list missing created config / hasApiKey: %s", lbody)
@@ -392,8 +392,8 @@ func TestUpdateModelConfigBYOKHidesKey(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("update keep: code=%d body=%s", rr.Code, rr.Body.String())
 	}
-	if b := rr.Body.String(); !strings.Contains(b, origKey) {
-		t.Fatalf("raw key missing in update response: %s", b)
+	if b := rr.Body.String(); strings.Contains(b, origKey) {
+		t.Fatalf("raw key LEAKED in update response (must never echo): %s", b)
 	}
 	if !strings.Contains(rr.Body.String(), `"hasApiKey":true`) || !strings.Contains(rr.Body.String(), `"model":"gpt-4o"`) {
 		t.Fatalf("update response shape: %s", rr.Body.String())
@@ -406,8 +406,8 @@ func TestUpdateModelConfigBYOKHidesKey(t *testing.T) {
 	rr2 := httptest.NewRecorder()
 	updateModelConfigHandler(st)(rr2, modelConfigReq("PUT", org, mc.ID,
 		`{"kind":"text","provider":"openai-compatible","model":"gpt-4o","baseUrl":"https://b.example.com/v1","apiKey":"`+newKey+`","enabled":true,"isDefault":true}`))
-	if rr2.Code != http.StatusOK || !strings.Contains(rr2.Body.String(), newKey) {
-		t.Fatalf("update replace: code=%d missing=%v body=%s", rr2.Code, !strings.Contains(rr2.Body.String(), newKey), rr2.Body.String())
+	if rr2.Code != http.StatusOK || strings.Contains(rr2.Body.String(), newKey) {
+		t.Fatalf("update replace: code=%d leaked=%v body=%s", rr2.Code, strings.Contains(rr2.Body.String(), newKey), rr2.Body.String())
 	}
 	if rm, ok, err := st.ResolveForOrg(context.Background(), org, "text"); err != nil || !ok || rm.APIKey != newKey {
 		t.Fatalf("replace: resolved key=%q (want %q) ok=%v err=%v", rm.APIKey, newKey, ok, err)
