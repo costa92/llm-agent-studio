@@ -15,6 +15,10 @@ dist-ssr
 # TanStack Router generated route tree
 src/routeTree.gen.ts
 
+# Local UI-review artifacts (audit notes + screenshots), not source.
+.planning/
+UI-REVIEW.md
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
