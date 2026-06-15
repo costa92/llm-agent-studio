@@ -11,6 +11,7 @@ import (
 	"github.com/costa92/llm-agent-contract/llm"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/costa92/llm-agent-studio/internal/prompt"
 	"github.com/costa92/llm-agent-studio/internal/todos"
 )
 
@@ -144,10 +145,15 @@ func (p *Planner) PlanWith(ctx context.Context, projectID string, model llm.Chat
 
 // WorkflowNode defines a node in a custom agent workflow.
 type WorkflowNode struct {
-	ID        string   `json:"id"`
-	Type      string   `json:"type"`      // "script", "storyboard", "asset", etc.
-	PromptID  string   `json:"promptId"`  // Reference to prompts.id
-	DependsOn []string `json:"dependsOn"`
+	ID   string `json:"id"`
+	Type string `json:"type"` // "script", "storyboard", "asset", etc.
+	// PromptID references a prompts.id (org library) or a built-in preset id
+	// ("builtin:…"). Ignored when PromptText is set.
+	PromptID string `json:"promptId"`
+	// PromptText is an inline, ad-hoc system prompt typed directly on the node
+	// (not saved to the library). Takes precedence over PromptID when non-empty.
+	PromptText string   `json:"promptText"`
+	DependsOn  []string `json:"dependsOn"`
 }
 
 func validateCustomGraph(nodes []WorkflowNode) error {
@@ -211,8 +217,11 @@ func validateCustomGraph(nodes []WorkflowNode) error {
 	return nil
 }
 
-// PlanCustom plans a workflow defined manually by the user, bypassing the LLM planner.
-func (p *Planner) PlanCustom(ctx context.Context, projectID string, b Brief, nodes []WorkflowNode) (Result, error) {
+// PlanCustom plans a workflow defined manually by the user, bypassing the LLM
+// planner. workflowID ties the run (plans row) to its first-class workflow so a
+// workflow's runs/assets/timeline can be isolated; pass "" for the legacy
+// project-level custom run (stored as NULL workflow_id).
+func (p *Planner) PlanCustom(ctx context.Context, projectID, workflowID string, b Brief, nodes []WorkflowNode) (Result, error) {
 	if err := validateCustomGraph(nodes); err != nil {
 		return Result{}, fmt.Errorf("planner: validate custom graph: %w", err)
 	}
@@ -220,11 +229,12 @@ func (p *Planner) PlanCustom(ctx context.Context, projectID string, b Brief, nod
 	planID := newID()
 
 	// Persist the plan row. Status 'created', valid true, fallback_used false.
+	// NULLIF maps an empty workflowID to NULL (the FK is nullable).
 	rawJSON, _ := json.Marshal(nodes)
 	if _, err := p.pool.Exec(ctx,
-		`INSERT INTO plans (id, project_id, status, raw_plan_json, valid, fallback_used)
-		 VALUES ($1,$2,'created',$3,true,false)`,
-		planID, projectID, rawJSON); err != nil {
+		`INSERT INTO plans (id, project_id, workflow_id, status, raw_plan_json, valid, fallback_used)
+		 VALUES ($1,$2,NULLIF($3,''),'created',$4,true,false)`,
+		planID, projectID, workflowID, rawJSON); err != nil {
 		return Result{}, fmt.Errorf("planner: insert plan: %w", err)
 	}
 
@@ -238,13 +248,23 @@ func (p *Planner) PlanCustom(ctx context.Context, projectID string, b Brief, nod
 			inputMap["style"] = b.Style
 		}
 
-		if n.PromptID != "" {
-			var promptContent string
-			err := p.pool.QueryRow(ctx, "SELECT content FROM prompts WHERE id=$1", n.PromptID).Scan(&promptContent)
-			if err != nil {
-				return Result{}, fmt.Errorf("planner: get prompt %q: %w", n.PromptID, err)
+		// Prompt precedence: inline custom text > PromptID (builtin/library) >
+		// the agent's built-in default (no systemPrompt set).
+		if n.PromptText != "" {
+			inputMap["systemPrompt"] = n.PromptText
+		} else if n.PromptID != "" {
+			// Built-in presets ("builtin:…") resolve from code (no DB row); any
+			// other id is an org prompt-library entry resolved from the table.
+			if content, ok := prompt.BasicPromptContent(n.PromptID); ok {
+				inputMap["systemPrompt"] = content
+			} else {
+				var promptContent string
+				err := p.pool.QueryRow(ctx, "SELECT content FROM prompts WHERE id=$1", n.PromptID).Scan(&promptContent)
+				if err != nil {
+					return Result{}, fmt.Errorf("planner: get prompt %q: %w", n.PromptID, err)
+				}
+				inputMap["systemPrompt"] = promptContent
 			}
-			inputMap["systemPrompt"] = promptContent
 		}
 
 		inputBytes, err := json.Marshal(inputMap)

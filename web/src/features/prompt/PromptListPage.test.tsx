@@ -10,6 +10,7 @@ vi.mock("./api", () => ({
   useCreatePrompt: vi.fn(),
   useUpdatePrompt: vi.fn(),
   useDeletePrompt: vi.fn(),
+  useSetPromptDefault: vi.fn(),
 }))
 
 afterEach(() => {
@@ -23,6 +24,8 @@ const PROMPTS = [
     name: "Cute Cat",
     content: "a very cute cat",
     style: "日漫",
+    kind: "",
+    isDefault: false,
     createdAt: "2026-06-14T00:00:00Z",
     updatedAt: "2026-06-14T00:00:00Z",
   },
@@ -47,6 +50,7 @@ describe("PromptListPage", () => {
     vi.mocked(api.useCreatePrompt).mockReturnValue({} as unknown as ReturnType<typeof api.useCreatePrompt>)
     vi.mocked(api.useUpdatePrompt).mockReturnValue({} as unknown as ReturnType<typeof api.useUpdatePrompt>)
     vi.mocked(api.useDeletePrompt).mockReturnValue({} as unknown as ReturnType<typeof api.useDeletePrompt>)
+    vi.mocked(api.useSetPromptDefault).mockReturnValue({} as unknown as ReturnType<typeof api.useSetPromptDefault>)
 
     render(<PromptListPage org="org1" />)
 
@@ -70,6 +74,9 @@ describe("PromptListPage", () => {
     vi.mocked(api.useCreatePrompt).mockReturnValue({
       mutateAsync,
     } as unknown as ReturnType<typeof api.useCreatePrompt>)
+    vi.mocked(api.useUpdatePrompt).mockReturnValue({} as unknown as ReturnType<typeof api.useUpdatePrompt>)
+    vi.mocked(api.useDeletePrompt).mockReturnValue({} as unknown as ReturnType<typeof api.useDeletePrompt>)
+    vi.mocked(api.useSetPromptDefault).mockReturnValue({} as unknown as ReturnType<typeof api.useSetPromptDefault>)
 
     const user = userEvent.setup()
     render(<PromptListPage org="org1" />)
@@ -90,7 +97,58 @@ describe("PromptListPage", () => {
         name: "New Prompt",
         content: "draw a bird",
         style: "吉卜力",
+        kind: "",
       })
     })
+  })
+
+  it("shows a 默认 badge for the default prompt", async () => {
+    vi.mocked(api.usePrompts).mockReturnValue({
+      data: [{ ...PROMPTS[0], kind: "script", isDefault: true }],
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof api.usePrompts>)
+    vi.mocked(api.usePromptStyles).mockReturnValue({
+      data: STYLES,
+      isLoading: false,
+    } as unknown as ReturnType<typeof api.usePromptStyles>)
+    vi.mocked(api.useCreatePrompt).mockReturnValue({} as unknown as ReturnType<typeof api.useCreatePrompt>)
+    vi.mocked(api.useUpdatePrompt).mockReturnValue({} as unknown as ReturnType<typeof api.useUpdatePrompt>)
+    vi.mocked(api.useDeletePrompt).mockReturnValue({} as unknown as ReturnType<typeof api.useDeletePrompt>)
+    vi.mocked(api.useSetPromptDefault).mockReturnValue({} as unknown as ReturnType<typeof api.useSetPromptDefault>)
+
+    render(<PromptListPage org="org1" />)
+
+    expect(screen.getByText("默认")).toBeInTheDocument()
+    // 默认提示词不再展示「设为默认」按钮。
+    expect(
+      screen.queryByRole("button", { name: /设为默认/ }),
+    ).not.toBeInTheDocument()
+  })
+
+  it("fires the set-default mutation when 设为默认 is clicked", async () => {
+    const mutateAsync = vi.fn().mockResolvedValue({})
+    vi.mocked(api.usePrompts).mockReturnValue({
+      data: PROMPTS,
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof api.usePrompts>)
+    vi.mocked(api.usePromptStyles).mockReturnValue({
+      data: STYLES,
+      isLoading: false,
+    } as unknown as ReturnType<typeof api.usePromptStyles>)
+    vi.mocked(api.useCreatePrompt).mockReturnValue({} as unknown as ReturnType<typeof api.useCreatePrompt>)
+    vi.mocked(api.useUpdatePrompt).mockReturnValue({} as unknown as ReturnType<typeof api.useUpdatePrompt>)
+    vi.mocked(api.useDeletePrompt).mockReturnValue({} as unknown as ReturnType<typeof api.useDeletePrompt>)
+    vi.mocked(api.useSetPromptDefault).mockReturnValue({
+      mutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof api.useSetPromptDefault>)
+
+    const user = userEvent.setup()
+    render(<PromptListPage org="org1" />)
+
+    await user.click(screen.getByRole("button", { name: /设为默认/ }))
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith("p1"))
   })
 })

@@ -188,10 +188,14 @@ func (s *Store) SetStatus(ctx context.Context, id, status string) error {
 // （其他字段不允许改 — 想改 brief / style / 内容类型只能删了重建，避免污染已有 run 事件 history）。
 // 0 行影响 = 找不到该 id（POST 一致返 404 而非 200）。
 func (s *Store) Update(ctx context.Context, id string, in UpdateInput) (Project, error) {
+	// custom_workflow_enabled / workflow_nodes are intentionally NOT updated here:
+	// custom workflows are now first-class rows in the workflows table (m12), and
+	// the project edit form no longer sends them. Leaving the legacy columns
+	// untouched preserves any pre-migration data instead of zeroing it on edit.
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE projects
-		 SET planner_provider=$2, planner_model=$3, image_provider=$4, image_model=$5, storage_mode=$6, custom_workflow_enabled=$7, workflow_nodes=$8, updated_at=now()
-		 WHERE id=$1`, id, in.PlannerProvider, in.PlannerModel, in.ImageProvider, in.ImageModel, in.StorageMode, in.CustomWorkflowEnabled, in.WorkflowNodes)
+		 SET planner_provider=$2, planner_model=$3, image_provider=$4, image_model=$5, storage_mode=$6, updated_at=now()
+		 WHERE id=$1`, id, in.PlannerProvider, in.PlannerModel, in.ImageProvider, in.ImageModel, in.StorageMode)
 	if err != nil {
 		return Project{}, fmt.Errorf("project: update: %w", err)
 	}

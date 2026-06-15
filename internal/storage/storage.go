@@ -320,10 +320,48 @@ var m11Migrations = []string{
 	`ALTER TABLE projects ADD COLUMN IF NOT EXISTS workflow_nodes JSONB`,
 }
 
-// Migrate applies the M1 + M2 + M3 + M4 + M5 + M6 + M7 + M8 + M9 + M10 + M11 migrations in order. Idempotent.
+// m12Migrations promote custom workflows to a first-class 1:N model: a project
+// can own MANY named workflows, and each workflow is an independent execution
+// unit. A run (plans row) records WHICH workflow it came from via workflow_id
+// (NULL = legacy/LLM-planner run). run_events also carries workflow_id so a
+// workflow's run timeline can be isolated. The m11 single-embedded workflow
+// (projects.custom_workflow_enabled + workflow_nodes) is backfilled into one
+// workflows row per project; the legacy columns are kept (not dropped).
+var m12Migrations = []string{
+	`CREATE TABLE IF NOT EXISTS workflows (
+		id          TEXT PRIMARY KEY,
+		project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+		name        TEXT NOT NULL,
+		nodes       JSONB NOT NULL DEFAULT '[]',
+		created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+		updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+	)`,
+	`CREATE INDEX IF NOT EXISTS workflows_project_idx ON workflows (project_id, created_at)`,
+	`ALTER TABLE plans      ADD COLUMN IF NOT EXISTS workflow_id TEXT REFERENCES workflows(id) ON DELETE SET NULL`,
+	`ALTER TABLE run_events ADD COLUMN IF NOT EXISTS workflow_id TEXT NOT NULL DEFAULT ''`,
+	// Backfill the m11 embedded workflow into a first-class row. Guarded by
+	// NOT EXISTS so re-running migrations never duplicates. md5(random()||clock)
+	// yields a 32-hex id matching the app's newID() format.
+	`INSERT INTO workflows (id, project_id, name, nodes)
+	 SELECT md5(random()::text || clock_timestamp()::text), p.id, '默认工作流', p.workflow_nodes
+	 FROM projects p
+	 WHERE p.custom_workflow_enabled = true
+	   AND p.workflow_nodes IS NOT NULL
+	   AND p.workflow_nodes::text NOT IN ('', 'null', '[]')
+	   AND NOT EXISTS (SELECT 1 FROM workflows w WHERE w.project_id = p.id)`,
+}
+
+// m13Migrations add per-kind typing + per-(org,kind) default to prompts.
+var m13Migrations = []string{
+	`ALTER TABLE prompts ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE prompts ADD COLUMN IF NOT EXISTS is_default BOOLEAN NOT NULL DEFAULT false`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS prompts_org_kind_default_uniq ON prompts (org_id, kind) WHERE is_default`,
+}
+
+// Migrate applies the M1 + M2 + M3 + M4 + M5 + M6 + M7 + M8 + M9 + M10 + M11 + M12 + M13 migrations in order. Idempotent.
 func (s *Storage) Migrate(ctx context.Context) error {
-	all := append(append(append(append(append(append(append(append(append(append(append([]string{},
-		m1Migrations...), m2Migrations...), m3Migrations...), m4Migrations...), m5Migrations...), m6Migrations...), m7Migrations...), m8Migrations...), m9Migrations...), m10Migrations...), m11Migrations...)
+	all := append(append(append(append(append(append(append(append(append(append(append(append(append([]string{},
+		m1Migrations...), m2Migrations...), m3Migrations...), m4Migrations...), m5Migrations...), m6Migrations...), m7Migrations...), m8Migrations...), m9Migrations...), m10Migrations...), m11Migrations...), m12Migrations...), m13Migrations...)
 	for _, stmt := range all {
 		if _, err := s.pool.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("storage: migrate: %w", err)

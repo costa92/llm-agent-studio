@@ -59,6 +59,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/studiosvc"
 	"github.com/costa92/llm-agent-studio/internal/todos"
 	"github.com/costa92/llm-agent-studio/internal/worker"
+	"github.com/costa92/llm-agent-studio/internal/workflows"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -140,6 +141,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	model = obs.WrapModel(model, tp) // otel decorator (spec §12)
 
 	projectStore := project.New(st.Pool())
+	workflowStore := workflows.New(st.Pool())
 	todoStore := todos.New(st.Pool())
 	eventStore := events.New(st.Pool())
 	plannerSvc := planner.New(model, todoStore, st.Pool())
@@ -336,6 +338,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		OrgBootstrap: studiosvc.NewOrg(az),
 		OrgList:      studiosvc.NewOrgList(st.Pool()),
 		Projects:     projectStore,
+		Workflows:    workflowStore,
 		Planner:      plannerSvc,
 		ChatRouter:   router,
 		Events:       eventStore,

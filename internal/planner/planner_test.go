@@ -188,7 +188,14 @@ func TestPlanCustom(t *testing.T) {
 		{ID: "node-storyboard", Type: "storyboard", DependsOn: []string{"node-script"}},
 	}
 
-	res, err := p.PlanCustom(ctx, projID, Brief{Brief: "custom brief", Style: "custom style"}, nodes)
+	// Seed a workflow so the run can be tagged with its workflow_id.
+	wfID := "wf_" + randHex2()
+	if _, err := st.Pool().Exec(ctx,
+		`INSERT INTO workflows (id, project_id, name, nodes) VALUES ($1,$2,'wf','[]')`, wfID, projID); err != nil {
+		t.Fatalf("seed workflow: %v", err)
+	}
+
+	res, err := p.PlanCustom(ctx, projID, wfID, Brief{Brief: "custom brief", Style: "custom style"}, nodes)
 	if err != nil {
 		t.Fatalf("PlanCustom: %v", err)
 	}
@@ -197,9 +204,19 @@ func TestPlanCustom(t *testing.T) {
 		t.Fatalf("want valid plan, got %+v", res)
 	}
 
-	// Verify todos created
+	// The plan row is tagged with the workflow id (run belongs to a workflow).
+	var gotWF string
+	if err := st.Pool().QueryRow(ctx, `SELECT COALESCE(workflow_id,'') FROM plans WHERE id=$1`, res.PlanID).Scan(&gotWF); err != nil {
+		t.Fatalf("query plan workflow_id: %v", err)
+	}
+	if gotWF != wfID {
+		t.Fatalf("plan workflow_id=%q want %q", gotWF, wfID)
+	}
+
+	// Verify todos created (this run only — scope by the plan id, since the
+	// legacy-run assertion below adds more todos to the same project).
 	var count int
-	err = st.Pool().QueryRow(ctx, `SELECT count(*) FROM todos WHERE project_id=$1`, projID).Scan(&count)
+	err = st.Pool().QueryRow(ctx, `SELECT count(*) FROM todos WHERE plan_id=$1`, res.PlanID).Scan(&count)
 	if err != nil || count != 2 {
 		t.Fatalf("expected 2 todos, got %d (err: %v)", count, err)
 	}
@@ -213,5 +230,66 @@ func TestPlanCustom(t *testing.T) {
 
 	if !strings.Contains(inputJSON, "Custom Script Prompt Template") || !strings.Contains(inputJSON, "custom brief") {
 		t.Fatalf("expected inputJSON to contain prompt template and brief, got %q", inputJSON)
+	}
+
+	// An empty workflowID stores NULL (legacy project-level custom run).
+	res2, err := p.PlanCustom(ctx, projID, "", Brief{Brief: "legacy"}, nodes)
+	if err != nil {
+		t.Fatalf("PlanCustom legacy: %v", err)
+	}
+	var nullWF *string
+	if err := st.Pool().QueryRow(ctx, `SELECT workflow_id FROM plans WHERE id=$1`, res2.PlanID).Scan(&nullWF); err != nil {
+		t.Fatalf("query legacy plan workflow_id: %v", err)
+	}
+	if nullWF != nil {
+		t.Fatalf("legacy run workflow_id should be NULL, got %q", *nullWF)
+	}
+}
+
+// TestPlanCustomBuiltinPrompt: a node referencing a built-in preset id
+// ("builtin:…") resolves its systemPrompt from code, with NO prompts table row.
+func TestPlanCustomBuiltinPrompt(t *testing.T) {
+	p, st, projID := newPlanner(t, nil)
+	ctx := context.Background()
+
+	nodes := []WorkflowNode{{ID: "node-script", Type: "script", PromptID: "builtin:script-basic"}}
+	res, err := p.PlanCustom(ctx, projID, "", Brief{Brief: "b"}, nodes)
+	if err != nil {
+		t.Fatalf("PlanCustom: %v", err)
+	}
+	var inputJSON string
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT input_json FROM todos WHERE plan_id=$1 AND type='script'`, res.PlanID).Scan(&inputJSON); err != nil {
+		t.Fatalf("query script input_json: %v", err)
+	}
+	if !strings.Contains(inputJSON, "专业的短视频编剧") {
+		t.Fatalf("built-in systemPrompt not resolved into input_json: %q", inputJSON)
+	}
+}
+
+// TestPlanCustomInlinePromptText: an inline PromptText on a node is used directly
+// as systemPrompt and takes precedence over PromptID (no DB/builtin lookup).
+func TestPlanCustomInlinePromptText(t *testing.T) {
+	p, st, projID := newPlanner(t, nil)
+	ctx := context.Background()
+
+	// PromptText set AND a (would-be-erroring) PromptID → PromptText wins, and the
+	// bogus PromptID is never resolved (else this would error).
+	nodes := []WorkflowNode{{
+		ID: "node-script", Type: "script",
+		PromptID:   "nonexistent-id",
+		PromptText: "临时手写的系统提示词内容",
+	}}
+	res, err := p.PlanCustom(ctx, projID, "", Brief{Brief: "b"}, nodes)
+	if err != nil {
+		t.Fatalf("PlanCustom: %v", err)
+	}
+	var inputJSON string
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT input_json FROM todos WHERE plan_id=$1 AND type='script'`, res.PlanID).Scan(&inputJSON); err != nil {
+		t.Fatalf("query script input_json: %v", err)
+	}
+	if !strings.Contains(inputJSON, "临时手写的系统提示词内容") {
+		t.Fatalf("inline PromptText not used as systemPrompt: %q", inputJSON)
 	}
 }

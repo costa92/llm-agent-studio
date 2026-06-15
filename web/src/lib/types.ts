@@ -74,6 +74,44 @@ export interface RunResponse {
   fallbackUsed: boolean
 }
 
+// 工作流 DAG 节点。type ∈ script/storyboard/asset；script&storyboard 可带 promptId
+// （提示词库/内置预设 override，空 = 系统内置默认）或 promptText（行内自定义文本，
+// 不入库；非空时优先于 promptId）；dependsOn 引用同一工作流内其他节点的 id。
+export interface WorkflowNode {
+  id: string
+  type: string
+  promptId: string
+  promptText?: string
+  dependsOn: string[]
+}
+
+// workflow/store.go。一个项目可有多条工作流；nodes 是 JSON 数组（非字符串）。
+// latestRunStatus 为最近一次 run 的项目状态串（从未跑过 = 空串）；latestPlanId 同理。
+export interface Workflow {
+  id: string
+  projectId: string
+  name: string
+  nodes: WorkflowNode[]
+  createdAt: string
+  updatedAt: string
+  latestRunStatus?: string
+  latestPlanId?: string
+}
+
+// createWorkflow/updateWorkflow 入参：POST/PUT /api/projects/{id}/workflows[/{wfId}]。
+export interface CreateWorkflowInput {
+  name: string
+  nodes: WorkflowNode[]
+}
+
+// runWorkflow 返回：POST /api/projects/{id}/workflows/{wfId}/run → 202。
+export interface RunWorkflowResponse {
+  planId: string
+  valid: boolean
+  fallbackUsed: boolean
+  workflowId: string
+}
+
 // events/store.go。GET /events 列表元素 = {seq, kind, todoId?, payload?}。
 export interface StudioEvent {
   seq: number
@@ -150,14 +188,30 @@ export interface Prompt {
   name: string
   content: string
   style: string
+  // 提示词类型：''=通用 / "script"=剧本 / "storyboard"=分镜。供工作流节点按类型过滤。
+  kind: string
+  // 是否为该 org 下同类型（kind）的默认提示词。同 kind 最多一条为 true。
+  isDefault: boolean
   createdAt: string
   updatedAt: string
+}
+
+// 内置基础提示词（GET /api/prompt-presets）。code-defined、只读；id 形如
+// "builtin:script-basic"。kind 对应工作流节点类型（script/storyboard），供节点
+// 编辑器按类型过滤展示。
+export interface BasicPrompt {
+  id: string
+  name: string
+  content: string
+  kind: string
 }
 
 export interface CreatePromptInput {
   name: string
   content: string
   style: string
+  // 提示词类型：''=通用 / "script" / "storyboard"。
+  kind: string
 }
 
 // POST /api/prompt/build → {prompt}。

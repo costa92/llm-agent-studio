@@ -32,6 +32,7 @@ type Deps struct {
 	OrgBootstrap OrgBootstrapper
 	OrgList      OrgLister
 	Projects     ProjectStore
+	Workflows    WorkflowStore // first-class 1:N workflows per project; nil in focused unit tests
 	Planner      PlannerPort
 	ChatRouter   ChatRouter // BYOK 模型路由 for the run handler's planner; nil → bound default
 	Events       EventAppender
@@ -156,17 +157,29 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("GET /api/projects/{id}/script", proj(roleViewer, scriptHandler(d.Artifacts)))
 	mux.Handle("GET /api/projects/{id}/shots", proj(roleViewer, shotsHandler(d.Artifacts)))
 	mux.Handle("GET /api/projects/{id}/assets", proj(roleViewer, projectAssetsHandler(d.Artifacts)))
+	// First-class workflows (1:N per project). Each workflow is an independent
+	// execution unit: its own DAG, its own runs (plans.workflow_id), its own
+	// assets/timeline (reached via the run's planId). nil Workflows → focused tests.
+	if d.Workflows != nil {
+		mux.Handle("GET /api/projects/{id}/workflows", proj(roleViewer, listWorkflowsHandler(d.Workflows)))
+		mux.Handle("POST /api/projects/{id}/workflows", proj(roleEditor, createWorkflowHandler(d.Workflows)))
+		mux.Handle("PUT /api/projects/{id}/workflows/{wfId}", proj(roleEditor, updateWorkflowHandler(d.Workflows)))
+		mux.Handle("DELETE /api/projects/{id}/workflows/{wfId}", proj(roleEditor, deleteWorkflowHandler(d.Workflows)))
+		mux.Handle("POST /api/projects/{id}/workflows/{wfId}/run", proj(roleEditor, runWorkflowHandler(d.Projects, d.Workflows, d.Planner, d.Events, d.Cost, d.GenQuota)))
+	}
 
 	asset := func(min authzrole.Role, h http.HandlerFunc) http.Handler {
 		return scoped(min, assetScope(d.AssetLibrary), h)
 	}
 	// Prompt builder (viewer+, org-agnostic preview — auth only).
 	mux.Handle("GET /api/prompt-styles", authOnly(promptStylesHandler()))
+	mux.Handle("GET /api/prompt-presets", authOnly(promptPresetsHandler()))
 	mux.Handle("POST /api/prompt/build", authOnly(promptBuildHandler(d.PromptBuilder)))
 	if d.PromptStore != nil {
 		mux.Handle("GET /api/orgs/{org}/prompts", scoped(roleViewer, orgScope, listPromptsHandler(d.PromptStore)))
 		mux.Handle("POST /api/orgs/{org}/prompts", scoped(roleEditor, orgScope, createPromptHandler(d.PromptStore)))
 		mux.Handle("PUT /api/orgs/{org}/prompts/{id}", scoped(roleEditor, orgScope, updatePromptHandler(d.PromptStore)))
+		mux.Handle("PUT /api/orgs/{org}/prompts/{id}/default", scoped(roleEditor, orgScope, setPromptDefaultHandler(d.PromptStore)))
 		mux.Handle("DELETE /api/orgs/{org}/prompts/{id}", scoped(roleEditor, orgScope, deletePromptHandler(d.PromptStore)))
 	}
 	// HITL (admin-only) — asset-scoped.
@@ -188,6 +201,7 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("GET /api/orgs/{org}/model-configs", scoped(roleAdmin, orgScope, listModelConfigsHandler(d.Models)))
 	mux.Handle("PUT /api/orgs/{org}/model-configs/{id}", scoped(roleAdmin, orgScope, updateModelConfigHandler(d.Models)))
 	mux.Handle("DELETE /api/orgs/{org}/model-configs/{id}", scoped(roleAdmin, orgScope, deleteModelConfigHandler(d.Models)))
+	mux.Handle("GET /api/orgs/{org}/model-configs/{id}/reveal", scoped(roleAdmin, orgScope, revealModelKeyHandler(d.ModelKeyLookup)))
 	// Storage config (对象存储后端). Per-org: org_admin scoped. Global: any-org-admin gate.
 	mux.Handle("GET /api/orgs/{org}/storage-config", scoped(roleAdmin, orgScope, getOrgStorageConfigHandler(d.StorageConfig)))
 	mux.Handle("PUT /api/orgs/{org}/storage-config", scoped(roleAdmin, orgScope, putOrgStorageConfigHandler(d.StorageConfig)))
