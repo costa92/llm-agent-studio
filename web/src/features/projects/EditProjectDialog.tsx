@@ -129,8 +129,12 @@ export function EditProjectForm({
     !project.style || styleOptions.some((s) => s.name === project.style)
 
   return (
-    <form onSubmit={submit} className="flex flex-col gap-4 max-h-[75vh] overflow-y-auto pr-2" noValidate>
-      <div className="flex flex-col gap-1.5">
+    <form
+      onSubmit={submit}
+      className="grid grid-cols-1 gap-4 sm:grid-cols-2"
+      noValidate
+    >
+      <div className="flex flex-col gap-1.5 sm:col-span-2">
         <Label htmlFor="edit-name">项目名称</Label>
         <Input
           id="edit-name"
@@ -142,11 +146,11 @@ export function EditProjectForm({
         )}
       </div>
 
-      <div className="flex flex-col gap-1.5">
+      <div className="flex flex-col gap-1.5 sm:col-span-2">
         <Label htmlFor="edit-description">创意需求</Label>
         <Textarea
           id="edit-description"
-          rows={3}
+          rows={2}
           placeholder="用一句话描述你想要的作品"
           {...register("description")}
         />
@@ -368,12 +372,12 @@ export function EditProjectForm({
       </div>
 
       {submitError && (
-        <p role="alert" className="text-[12px] text-danger">
+        <p role="alert" className="text-[12px] text-danger sm:col-span-2">
           {submitError}
         </p>
       )}
 
-      <DialogFooter className="mt-4 pb-2">
+      <DialogFooter className="mt-2 sm:col-span-2">
         <Button type="submit" variant="amber" disabled={isSubmitting}>
           {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
           保存
@@ -396,7 +400,7 @@ export function EditProjectDialog({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>{trigger}</DialogTrigger>
-      <DialogContent className="max-w-xl">
+      <DialogContent className="flex max-h-[90vh] w-[95vw] flex-col overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>编辑项目信息</DialogTitle>
           <DialogDescription>
