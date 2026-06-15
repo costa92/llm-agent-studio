@@ -112,8 +112,10 @@ type ModelConfig struct {
 	IsDefault bool            `json:"isDefault"`
 	BaseURL   string          `json:"baseUrl"`
 	HasAPIKey bool            `json:"hasApiKey"`
-	APIKey    string          `json:"apiKey,omitempty"`
 	Params    json.RawMessage `json:"params,omitempty"`
+	// NOTE: ModelConfig is the CLIENT-facing DTO and deliberately carries NO
+	// plaintext api key — only HasAPIKey. The decrypted key is exposed solely
+	// server-side via ResolvedModel (ResolveForOrg), never over HTTP (审计: 绝不回传 key)。
 }
 
 // ResolvedModel 是运行层 (ModelRouter) 用的解析结果，带解密后的 APIKey。
@@ -134,8 +136,8 @@ type CreateInput struct {
 	Model     string
 	Enabled   bool
 	IsDefault bool
-	BaseURL   string          // 可选，per-config endpoint (openai-compatible)
-	APIKey    string          // 可选明文 key；非空则经 box 加密入库，绝不回显
+	BaseURL   string // 可选，per-config endpoint (openai-compatible)
+	APIKey    string // 可选明文 key；非空则经 box 加密入库，绝不回显
 	Params    json.RawMessage
 }
 
@@ -214,7 +216,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (ModelConfig, error)
 	mc := ModelConfig{
 		ID: newID(), OrgID: in.OrgID, Kind: kind, Provider: in.Provider, Model: in.Model,
 		Enabled: in.Enabled, IsDefault: in.IsDefault, BaseURL: in.BaseURL,
-		HasAPIKey: keyEnc != nil, APIKey: in.APIKey, Params: in.Params,
+		HasAPIKey: keyEnc != nil, Params: in.Params,
 	}
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO model_configs (id, org_id, kind, provider, model, enabled, is_default, base_url, api_key_enc, params_json)
@@ -299,12 +301,7 @@ func (s *Store) Update(ctx context.Context, id, orgID string, in UpdateInput) (M
 		return ModelConfig{}, fmt.Errorf("models: reload: %w", err)
 	}
 	mc.HasAPIKey = len(keyEncReload) > 0
-	if len(keyEncReload) > 0 && s.box.Enabled() {
-		dec, err := s.box.Decrypt(keyEncReload)
-		if err == nil {
-			mc.APIKey = string(dec)
-		}
-	}
+	// 不解密回传明文 key——ModelConfig 是客户端 DTO，只暴露 HasAPIKey (审计: 绝不回传 key)。
 	if err := tx.Commit(ctx); err != nil {
 		return ModelConfig{}, err
 	}
@@ -345,12 +342,7 @@ func (s *Store) ListByOrg(ctx context.Context, orgID string) ([]ModelConfig, err
 			return nil, err
 		}
 		mc.HasAPIKey = len(keyEnc) > 0
-		if len(keyEnc) > 0 && s.box.Enabled() {
-			dec, err := s.box.Decrypt(keyEnc)
-			if err == nil {
-				mc.APIKey = string(dec)
-			}
-		}
+		// 不解密回传明文 key——只暴露 HasAPIKey (审计: 绝不回传 key)。
 		out = append(out, mc)
 	}
 	return out, rows.Err()
