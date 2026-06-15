@@ -78,7 +78,7 @@ export function EditProjectForm({
       try {
         const parsed = typeof project.workflowNodes === 'string'
           ? JSON.parse(project.workflowNodes)
-          : (project.workflowNodes as any);
+          : (project.workflowNodes as unknown as WorkflowNode[]);
         if (Array.isArray(parsed)) return parsed;
       } catch (e) {
         console.error(e)
