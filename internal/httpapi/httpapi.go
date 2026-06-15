@@ -42,6 +42,8 @@ type Deps struct {
 
 	Review        ReviewPort
 	AssetLibrary  AssetLibrary
+	CoverGen      CoverGenerator   // per-org media generator for project cover生成; nil → cover/generate route unmounted
+	CoverAssets   CoverAssetWriter // cover asset writer (create + set blob); nil → cover/generate+upload routes unmounted
 	BlobRouter    BlobRouter // per-org → global → 内置默认 的对象存储路由 (asset content 按 org 签名)
 	BlobServer    BlobServer // 内置 localfs回源 handler (始终非空)
 	Models        ModelStore
@@ -167,6 +169,16 @@ func NewMux(d Deps) *http.ServeMux {
 		mux.Handle("PUT /api/projects/{id}/workflows/{wfId}", proj(roleEditor, updateWorkflowHandler(d.Workflows)))
 		mux.Handle("DELETE /api/projects/{id}/workflows/{wfId}", proj(roleEditor, deleteWorkflowHandler(d.Workflows)))
 		mux.Handle("POST /api/projects/{id}/workflows/{wfId}/run", proj(roleEditor, runWorkflowHandler(d.Projects, d.Workflows, d.Planner, d.Events, d.Cost, d.GenQuota)))
+	}
+
+	// Project cover image (3 sources: AI-generate / upload / pick existing).
+	// Mounted as a group when the generator + writer ports are wired (focused unit
+	// tests that omit them skip the whole cover surface).
+	if d.CoverGen != nil && d.CoverAssets != nil {
+		mux.Handle("POST /api/projects/{id}/cover/generate", proj(roleEditor, coverGenerateHandler(d.Projects, d.CoverAssets, d.CoverGen, d.BlobRouter, d.Cost, d.GenQuota)))
+		mux.Handle("POST /api/projects/{id}/cover/upload", proj(roleEditor, coverUploadHandler(d.Projects, d.CoverAssets, d.BlobRouter)))
+		mux.Handle("PUT /api/projects/{id}/cover", proj(roleEditor, coverSetHandler(d.Projects, d.AssetLibrary)))
+		mux.Handle("GET /api/projects/{id}/cover/options", proj(roleViewer, coverOptionsHandler(d.Projects, d.AssetLibrary)))
 	}
 
 	asset := func(min authzrole.Role, h http.HandlerFunc) http.Handler {

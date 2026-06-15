@@ -58,6 +58,7 @@ type ProjectStore interface {
 	ListByOrg(ctx context.Context, orgID string, limit int, cursor string) ([]project.Project, string, error)
 	Update(ctx context.Context, id string, in project.UpdateInput) (project.Project, error)
 	SetStatus(ctx context.Context, id, status string) error
+	SetCover(ctx context.Context, projectID, assetID string) error
 	Cancel(ctx context.Context, projectID string) error
 	OrgIDForProject(ctx context.Context, projectID string) (string, error)
 	ListPlans(ctx context.Context, projectID string) ([]project.Plan, error)

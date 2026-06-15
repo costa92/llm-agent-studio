@@ -34,6 +34,7 @@ function ProjectsPage() {
       isLoading={projectsQuery.isLoading}
       isError={projectsQuery.isError}
       onRetry={() => void projectsQuery.refetch()}
+      org={org}
       needsModelConfig={needsModelConfig}
       onConfigureModel={() =>
         navigate({ to: "/orgs/$org/model-configs", params: { org } })

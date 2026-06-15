@@ -12,6 +12,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/assets"
 	"github.com/costa92/llm-agent-studio/internal/blob"
 	"github.com/costa92/llm-agent-studio/internal/cost"
+	"github.com/costa92/llm-agent-studio/internal/generate"
 	"github.com/costa92/llm-agent-studio/internal/modellist"
 	"github.com/costa92/llm-agent-studio/internal/models"
 	"github.com/costa92/llm-agent-studio/internal/project"
@@ -63,11 +64,27 @@ type ModelStore interface {
 
 // CostStore is the cost aggregation surface (satisfied by *cost.Store).
 type CostStore interface {
+	Record(ctx context.Context, g cost.Generation) error
 	ByOrgBetween(ctx context.Context, orgID string, from, to time.Time) (cost.Aggregate, error)
 	ByProjectBetween(ctx context.Context, projectID string, from, to time.Time) (cost.Aggregate, error)
 	PerProjectByOrg(ctx context.Context, orgID string, from, to time.Time) ([]cost.ProjectAggregate, error)
 	RecentByOrg(ctx context.Context, orgID string, limit int) ([]cost.LedgerEntry, error)
 	CountByOrgSince(ctx context.Context, orgID string, since time.Time) (int, error)
+}
+
+// CoverGenerator resolves a per-org media generator for the cover-generate
+// handler (satisfied by *modelrouter.Router). MediaGeneratorForNamed honors a
+// caller-supplied provider/model; MediaGeneratorFor falls back to the org default.
+type CoverGenerator interface {
+	MediaGeneratorFor(ctx context.Context, orgID, kind string) generate.MediaGenerator
+	MediaGeneratorForNamed(ctx context.Context, orgID, kind, provider, model string) generate.MediaGenerator
+}
+
+// CoverAssetWriter creates a cover asset row and fills its blob_key/url after the
+// bytes land in the blob store (satisfied by *assets.Store).
+type CoverAssetWriter interface {
+	Create(ctx context.Context, in assets.CreateInput) (assets.Asset, error)
+	SetCoverBlob(ctx context.Context, assetID, blobKey, url string) error
 }
 
 const signedURLTTL = 10 * time.Minute

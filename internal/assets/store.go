@@ -159,6 +159,17 @@ func (s *Store) SetBlob(ctx context.Context, id, blobKey, url, provider, model, 
 	return tag.RowsAffected() == 1, nil
 }
 
+// SetCoverBlob writes blob_key/url unconditionally (M14 cover assets). Unlike
+// SetBlob there is NO status guard: a cover asset is created status='accepted',
+// so SetBlob's generating/submitted-only guard would no-op. Wraps errors.
+func (s *Store) SetCoverBlob(ctx context.Context, id, blobKey, url string) error {
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE assets SET blob_key=$2, url=$3 WHERE id=$1`, id, blobKey, url); err != nil {
+		return fmt.Errorf("assets: set cover blob: %w", err)
+	}
+	return nil
+}
+
 // TransitionStatus moves an asset from→to atomically, returning ok=false (no
 // error) when the row is not in the expected `from` state (HITL 409 semantics,
 // spec §7.4 防重).

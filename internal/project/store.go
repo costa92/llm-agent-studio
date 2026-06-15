@@ -44,6 +44,9 @@ type Project struct {
 	StorageMode           string          `json:"storageMode"`
 	CustomWorkflowEnabled bool            `json:"customWorkflowEnabled"`
 	WorkflowNodes         json.RawMessage `json:"workflowNodes"`
+	// M14: cover image link — an assets row reused (served via GET
+	// /api/assets/{id}/content). '' = no cover.
+	CoverAssetID string `json:"coverAssetId"`
 }
 
 // CreateInput is the input to Create. Brief maps to the description column
@@ -121,7 +124,7 @@ func (s *Store) Get(ctx context.Context, id string) (Project, error) {
 		`SELECT p.id, p.org_id, p.name, p.description, p.content_type, p.target_platform, p.style, p.status, p.created_by,
 		        COALESCE(pl.fallback_used, false),
 		        p.planner_provider, p.planner_model, p.image_provider, p.image_model, p.storage_mode,
-		        p.custom_workflow_enabled, p.workflow_nodes
+		        p.custom_workflow_enabled, p.workflow_nodes, p.cover_asset_id
 		 FROM projects p
 		 LEFT JOIN (
 		     SELECT DISTINCT ON (project_id) project_id, fallback_used
@@ -129,7 +132,7 @@ func (s *Store) Get(ctx context.Context, id string) (Project, error) {
 		     ORDER BY project_id, created_at DESC
 		 ) pl ON p.id = pl.project_id
 		 WHERE p.id=$1`, id).
-		Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy, &p.FallbackUsed, &p.PlannerProvider, &p.PlannerModel, &p.ImageProvider, &p.ImageModel, &p.StorageMode, &p.CustomWorkflowEnabled, &p.WorkflowNodes)
+		Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy, &p.FallbackUsed, &p.PlannerProvider, &p.PlannerModel, &p.ImageProvider, &p.ImageModel, &p.StorageMode, &p.CustomWorkflowEnabled, &p.WorkflowNodes, &p.CoverAssetID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Project{}, ErrNotFound
 	}
@@ -153,7 +156,7 @@ func (s *Store) ListByOrg(ctx context.Context, orgID string, limit int, cursor s
 		limit = 50
 	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, org_id, name, description, content_type, target_platform, style, status, created_by, planner_provider, planner_model, image_provider, image_model, storage_mode, custom_workflow_enabled, workflow_nodes
+		`SELECT id, org_id, name, description, content_type, target_platform, style, status, created_by, planner_provider, planner_model, image_provider, image_model, storage_mode, custom_workflow_enabled, workflow_nodes, cover_asset_id
 		 FROM projects WHERE org_id=$1 AND id>$2 ORDER BY id ASC LIMIT $3`,
 		orgID, cursor, limit)
 	if err != nil {
@@ -163,7 +166,7 @@ func (s *Store) ListByOrg(ctx context.Context, orgID string, limit int, cursor s
 	var out []Project
 	for rows.Next() {
 		var p Project
-		if err := rows.Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy, &p.PlannerProvider, &p.PlannerModel, &p.ImageProvider, &p.ImageModel, &p.StorageMode, &p.CustomWorkflowEnabled, &p.WorkflowNodes); err != nil {
+		if err := rows.Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy, &p.PlannerProvider, &p.PlannerModel, &p.ImageProvider, &p.ImageModel, &p.StorageMode, &p.CustomWorkflowEnabled, &p.WorkflowNodes, &p.CoverAssetID); err != nil {
 			return nil, "", err
 		}
 		out = append(out, p)
@@ -182,6 +185,20 @@ func (s *Store) ListByOrg(ctx context.Context, orgID string, limit int, cursor s
 func (s *Store) SetStatus(ctx context.Context, id, status string) error {
 	_, err := s.pool.Exec(ctx, `UPDATE projects SET status=$2, updated_at=now() WHERE id=$1`, id, status)
 	return err
+}
+
+// SetCover links a project to its cover asset (M14). assetID="" clears the cover.
+// 0 rows affected = no such project → ErrNotFound (404 not 200).
+func (s *Store) SetCover(ctx context.Context, projectID, assetID string) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE projects SET cover_asset_id=$2, updated_at=now() WHERE id=$1`, projectID, assetID)
+	if err != nil {
+		return fmt.Errorf("project: set cover: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // Update 修改项目的 planner_provider / planner_model 以及 image_provider / image_model

@@ -350,6 +350,8 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 
 		Review:         reviewSvc,
 		AssetLibrary:   assetStore,
+		CoverGen:       router,
+		CoverAssets:    assetStore,
 		BlobRouter:     storageRouter,
 		BlobServer:     localfsDefault,
 		Models:         modelStore,

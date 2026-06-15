@@ -1,13 +1,37 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { render, screen, waitFor } from "@testing-library/react"
+import {
+  render,
+  screen,
+  waitFor,
+  type RenderOptions,
+} from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
+import { createElement, type ReactElement, type ReactNode } from "react"
 import type { Project, Style } from "@/lib/types"
 import { ProjectListView } from "./ProjectListPage"
 import { CreateProjectForm } from "./CreateProjectDialog"
 
+// AssetThumb 走 authed fetch → blob object URL；jsdom 无网络。stub useResolvedAssetUrl
+// 为 null（封面渲染 AssetThumb 的占位，不触网）——与 review.test.tsx 同款 mock。
+vi.mock("@/features/workflow/assetThumb", () => ({
+  resolveAssetUrl: vi.fn().mockResolvedValue(null),
+  useResolvedAssetUrl: () => ({ url: null as string | null, loading: false }),
+}))
+
 afterEach(() => {
   vi.restoreAllMocks()
 })
+
+// ProjectListView 现在内嵌 CoverDialog（用 useQueryClient）→ 需 QueryClientProvider 包裹。
+function renderWithClient(ui: ReactElement, options?: RenderOptions) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client }, children)
+  return render(ui, { wrapper, ...options })
+}
 
 const STYLES: Style[] = [
   { name: "日漫", suffix: "anime" },
@@ -34,6 +58,7 @@ function baseViewProps() {
     isLoading: false,
     isError: false,
     onRetry: vi.fn(),
+    org: "o1",
     canCreate: true,
     styles: STYLES,
     onCreate: vi.fn(),
@@ -45,7 +70,7 @@ describe("ProjectListView", () => {
   it("renders project cards with status badge and opens on click", async () => {
     const onOpenProject = vi.fn()
     const user = userEvent.setup()
-    render(
+    renderWithClient(
       <ProjectListView
         {...baseViewProps()}
         projects={[makeProject({ status: "running" })]}
@@ -60,8 +85,28 @@ describe("ProjectListView", () => {
     expect(onOpenProject).toHaveBeenCalledTimes(1)
   })
 
+  it("renders the 无封面 placeholder for a project without a cover", () => {
+    renderWithClient(
+      <ProjectListView {...baseViewProps()} projects={[makeProject()]} />,
+    )
+    expect(screen.getByText("无封面")).toBeInTheDocument()
+  })
+
+  it("renders a cover (AssetThumb) for a project with coverAssetId", () => {
+    renderWithClient(
+      <ProjectListView
+        {...baseViewProps()}
+        projects={[makeProject({ coverAssetId: "asset-9" })]}
+      />,
+    )
+    // useResolvedAssetUrl 被 stub 为 url=null → AssetThumb 落到占位（"图片不可用"），
+    // 而非"无封面"（即说明走的是封面分支而非占位分支）。
+    expect(screen.queryByText("无封面")).not.toBeInTheDocument()
+    expect(screen.getByText("图片不可用")).toBeInTheDocument()
+  })
+
   it("renders empty state with CTA when there are no projects", () => {
-    render(<ProjectListView {...baseViewProps()} projects={[]} />)
+    renderWithClient(<ProjectListView {...baseViewProps()} projects={[]} />)
     expect(screen.getByText("还没有项目")).toBeInTheDocument()
     expect(
       screen.getByText("用一句创意需求开始你的第一支作品"),
@@ -74,7 +119,7 @@ describe("ProjectListView", () => {
   it("nudges to configure a model in the empty state when no enabled config exists", async () => {
     const onConfigureModel = vi.fn()
     const user = userEvent.setup()
-    render(
+    renderWithClient(
       <ProjectListView
         {...baseViewProps()}
         projects={[]}
@@ -90,7 +135,7 @@ describe("ProjectListView", () => {
   })
 
   it("keeps the normal empty state when a model is configured", () => {
-    render(
+    renderWithClient(
       <ProjectListView
         {...baseViewProps()}
         projects={[]}
@@ -104,7 +149,7 @@ describe("ProjectListView", () => {
   })
 
   it("hides the create CTA for non-editors (canCreate=false)", () => {
-    render(
+    renderWithClient(
       <ProjectListView {...baseViewProps()} projects={[]} canCreate={false} />,
     )
     expect(screen.getByText("还没有项目")).toBeInTheDocument()
@@ -116,7 +161,7 @@ describe("ProjectListView", () => {
   it("renders error state with a retry button", async () => {
     const onRetry = vi.fn()
     const user = userEvent.setup()
-    render(
+    renderWithClient(
       <ProjectListView
         {...baseViewProps()}
         projects={undefined}
@@ -131,7 +176,7 @@ describe("ProjectListView", () => {
   })
 
   it("renders loading skeletons", () => {
-    const { container } = render(
+    const { container } = renderWithClient(
       <ProjectListView {...baseViewProps()} projects={undefined} isLoading />,
     )
     expect(container.querySelectorAll('[data-slot="skeleton"]').length).toBe(6)
