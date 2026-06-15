@@ -57,9 +57,11 @@ export interface ModelConfigViewProps {
   onDelete: (id: string) => Promise<void>
   // 拉取 provider 官方模型列表（可选；不传则不显示「拉取模型」按钮）。
   onListModels?: (input: ListModelsInput) => Promise<ListModelsResult>
+  // 查看（解密回显）已存密钥（可选；仅编辑模式且配置含密钥时显示「查看密钥」按钮）。
+  onRevealKey?: (id: string) => Promise<string>
 }
 
-// 模型配置（admin-only）：按 kind 分组配置表 + 创建表单。表单绝不含 API key 字段。
+// 模型配置（admin-only）：按 kind 分组配置表 + 创建表单。
 export function ModelConfigView({
   configs,
   catalog,
@@ -70,6 +72,7 @@ export function ModelConfigView({
   onUpdate,
   onDelete,
   onListModels,
+  onRevealKey,
 }: ModelConfigViewProps) {
   // 删除确认弹窗：保存待删除配置；null = 弹窗关闭（mirror 退回确认模式）。
   const [deleteTarget, setDeleteTarget] = useState<ModelConfig | null>(null)
@@ -165,6 +168,7 @@ export function ModelConfigView({
                       catalog={catalog ?? []}
                       onUpdate={onUpdate}
                       onListModels={onListModels}
+                      onRevealKey={onRevealKey}
                       trigger={
                         <UiButton variant="ghost" size="sm" aria-label={`编辑 ${c.provider} ${c.model}`}>
                           编辑
@@ -265,6 +269,8 @@ export interface CreateModelConfigFormProps {
   initial?: ModelConfig
   // 拉取 provider 官方模型列表（可选；不传则不显示「拉取模型」按钮）。
   onListModels?: (input: ListModelsInput) => Promise<ListModelsResult>
+  // 查看（解密回显）已存密钥（可选；仅编辑模式且配置含密钥时显示「查看密钥」按钮）。
+  onRevealKey?: (id: string) => Promise<string>
 }
 
 export function CreateModelConfigForm({
@@ -273,9 +279,13 @@ export function CreateModelConfigForm({
   onSuccess,
   initial,
   onListModels,
+  onRevealKey,
 }: CreateModelConfigFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [showApiKey, setShowApiKey] = useState(false)
+  // 「查看密钥」：解密回显已存密钥到密钥框。revealing=请求中；revealError=失败/无密钥提示。
+  const [revealing, setRevealing] = useState(false)
+  const [revealError, setRevealError] = useState<string | null>(null)
   // 拉取到的官方模型列表（含拉取时的 provider，用于切 provider 后判失效）。
   const [live, setLive] = useState<(ListModelsResult & { provider: string }) | null>(null)
   const [listing, setListing] = useState(false)
@@ -341,6 +351,27 @@ export function CreateModelConfigForm({
     }
   }
 
+  // 「查看密钥」：调 reveal 接口解密回显已存密钥，写入密钥框并切为明文显示。
+  // 仅编辑模式且配置含密钥时可用；空 key（未存独立密钥）给出提示而非静默。
+  async function revealKey() {
+    if (!onRevealKey || !initial) return
+    setRevealing(true)
+    setRevealError(null)
+    try {
+      const key = await onRevealKey(initial.id)
+      if (key) {
+        setValue("apiKey", key)
+        setShowApiKey(true)
+      } else {
+        setRevealError("该配置未存独立密钥（回退服务端 env 密钥）。")
+      }
+    } catch {
+      setRevealError("查看密钥失败，请重试。")
+    } finally {
+      setRevealing(false)
+    }
+  }
+
   // 切 provider 后旧的拉取结果失效（按 render 派生，避免 effect 里 setState）。
   const activeLive = live && live.provider === provider ? live : null
   // 下拉/快捷填充的候选：拉取到 live 列表则用它，否则回退静态建议的 model。
@@ -392,9 +423,13 @@ export function CreateModelConfigForm({
 
   const selectClass =
     "rounded-md border border-line bg-bg-base px-2.5 py-2 text-[13px] text-text-1 focus-visible:outline-2 focus-visible:outline-amber"
+  // 分区小标题：靠分隔线+字距把表单切成「基础 / 凭证与端点 / 选项 / 高级」四段。
+  const headingClass =
+    "text-[11px] font-semibold tracking-[0.08em] text-text-3"
 
   return (
     <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
+      <p className={headingClass}>基础</p>
       <div className="grid grid-cols-2 gap-3">
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="mc-provider">Provider</Label>
@@ -490,6 +525,10 @@ export function CreateModelConfigForm({
         )}
       </div>
 
+      <p className={`${headingClass} mt-1 border-t border-line pt-4`}>
+        凭证与端点
+      </p>
+
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="mc-baseurl">
           {isCompatible ? "Base URL（必填）" : "Base URL（可选）"}
@@ -530,42 +569,74 @@ export function CreateModelConfigForm({
             {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
           </button>
         </div>
+        {isEdit && initial?.hasApiKey && onRevealKey && (
+          <div className="flex items-center gap-2">
+            <UiButton
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={revealing}
+              onClick={() => void revealKey()}
+              aria-label="查看密钥（解密回显已存密钥）"
+            >
+              {revealing ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                "查看密钥"
+              )}
+            </UiButton>
+            {revealError && (
+              <span className="text-[11.5px] text-text-3">{revealError}</span>
+            )}
+          </div>
+        )}
         <p className="text-[11.5px] text-text-3">
           {isEdit && initial?.hasApiKey
-            ? "留空保持不变（已配置密钥）；填写则替换为新密钥。"
+            ? "留空保持不变（已配置密钥）；填写则替换为新密钥；点「查看密钥」可解密回显。"
             : "密钥仅写入、加密存储，不会回显；留空则回退服务端 env 密钥。"}
         </p>
       </div>
 
-      <label className="flex items-center gap-2 text-[13px] text-text-1">
-        <Checkbox
-          checked={enabled}
-          onCheckedChange={(v) => setValue("enabled", v === true)}
-        />
-        启用该模型
-      </label>
+      <p className={`${headingClass} mt-1 border-t border-line pt-4`}>选项</p>
 
-      <label className="flex items-center gap-2 text-[13px] text-text-1">
-        <Checkbox
-          checked={isDefault}
-          onCheckedChange={(v) => setValue("isDefault", v === true)}
-        />
-        设为该类型默认
-      </label>
+      <div className="grid grid-cols-2 gap-3">
+        <label className="flex items-center gap-2 text-[13px] text-text-1">
+          <Checkbox
+            checked={enabled}
+            onCheckedChange={(v) => setValue("enabled", v === true)}
+          />
+          启用该模型
+        </label>
 
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="mc-params">参数（可选 JSON）</Label>
-        <Textarea
-          id="mc-params"
-          rows={3}
-          placeholder={'例如 {"size":"1024x1024"}'}
-          className="font-mono text-[12px]"
-          {...register("paramsText")}
-        />
-        <p className="text-[11.5px] text-text-3">
-          参数中请勿包含 API key / secret 等密钥字段，密钥请填上方密钥字段。
-        </p>
+        <label className="flex items-center gap-2 text-[13px] text-text-1">
+          <Checkbox
+            checked={isDefault}
+            onCheckedChange={(v) => setValue("isDefault", v === true)}
+          />
+          设为该类型默认
+        </label>
       </div>
+
+      {/* 高级（默认折叠）：params 等不常用项收进来，让默认视图只剩基础/凭证/选项。
+          用原生 <details> 而非条件渲染——折叠态内容仍在 DOM，校验与测试不受影响。 */}
+      <details className="mt-1 border-t border-line pt-4">
+        <summary className={`${headingClass} cursor-pointer select-none`}>
+          高级设置
+        </summary>
+        <div className="mt-3 flex flex-col gap-1.5">
+          <Label htmlFor="mc-params">参数（可选 JSON）</Label>
+          <Textarea
+            id="mc-params"
+            rows={3}
+            placeholder={'例如 {"size":"1024x1024"}'}
+            className="font-mono text-[12px]"
+            {...register("paramsText")}
+          />
+          <p className="text-[11.5px] text-text-3">
+            参数中请勿包含 API key / secret 等密钥字段，密钥请填上方密钥字段。
+          </p>
+        </div>
+      </details>
 
       {submitError && (
         <p role="alert" className="text-[12px] text-danger">
@@ -624,6 +695,7 @@ export interface EditModelConfigDialogProps {
   trigger: React.ReactNode
   onSuccess?: (mc: ModelConfig) => void
   onListModels?: (input: ListModelsInput) => Promise<ListModelsResult>
+  onRevealKey?: (id: string) => Promise<string>
 }
 
 // 编辑弹窗：复用创建表单，预填既有配置；提交走 onUpdate(id, input)。
@@ -634,6 +706,7 @@ export function EditModelConfigDialog({
   trigger,
   onSuccess,
   onListModels,
+  onRevealKey,
 }: EditModelConfigDialogProps) {
   const [open, setOpen] = useState(false)
   return (
@@ -651,6 +724,7 @@ export function EditModelConfigDialog({
           initial={config}
           onCreate={(input) => onUpdate(config.id, input)}
           onListModels={onListModels}
+          onRevealKey={onRevealKey}
           onSuccess={(mc) => {
             setOpen(false)
             onSuccess?.(mc)

@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/costa92/llm-agent-studio/internal/models"
 )
 
 // TestListModelsHandlerUsesStoredKey: when the request omits apiKey but names a
@@ -86,5 +88,69 @@ func TestListModelsHandlerRejectsMissingProvider(t *testing.T) {
 	listModelsHandler(nil)(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("missing provider should be 400, got %d", rr.Code)
+	}
+}
+
+// revealReq builds a GET reveal request scoped to (org, id).
+func revealReq(org, id string) *http.Request {
+	req := httptest.NewRequest("GET", "/api/orgs/"+org+"/model-configs/"+id+"/reveal", nil)
+	req.SetPathValue("org", org)
+	req.SetPathValue("id", id)
+	return req
+}
+
+// TestRevealModelKeyHandlerReturnsDecryptedKey: an admin reveal returns the full
+// plaintext key plus hasApiKey:true. This is the one endpoint allowed to echo the
+// key (the list/create/update guard tests cover that those still never do).
+func TestRevealModelKeyHandlerReturnsDecryptedKey(t *testing.T) {
+	keyLookup := func(_ context.Context, orgID, configID string) (string, error) {
+		if orgID == "org1" && configID == "cfg1" {
+			return "sk-stored-secret", nil
+		}
+		return "", models.ErrNotFound
+	}
+	rr := httptest.NewRecorder()
+	revealModelKeyHandler(keyLookup)(rr, revealReq("org1", "cfg1"))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var out struct {
+		HasAPIKey bool   `json:"hasApiKey"`
+		APIKey    string `json:"apiKey"`
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &out)
+	if !out.HasAPIKey || out.APIKey != "sk-stored-secret" {
+		t.Fatalf("want full key revealed, got %+v", out)
+	}
+}
+
+// TestRevealModelKeyHandlerNoStoredKey: a config with no per-config key reveals
+// hasApiKey:false and an empty key (not a 404 — the config exists).
+func TestRevealModelKeyHandlerNoStoredKey(t *testing.T) {
+	keyLookup := func(_ context.Context, _, _ string) (string, error) { return "", nil }
+	rr := httptest.NewRecorder()
+	revealModelKeyHandler(keyLookup)(rr, revealReq("org1", "cfg1"))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d", rr.Code)
+	}
+	var out struct {
+		HasAPIKey bool   `json:"hasApiKey"`
+		APIKey    string `json:"apiKey"`
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &out)
+	if out.HasAPIKey || out.APIKey != "" {
+		t.Fatalf("want hasApiKey:false empty key, got %+v", out)
+	}
+}
+
+// TestRevealModelKeyHandlerNotFound: a missing / cross-org config is a 404.
+func TestRevealModelKeyHandlerNotFound(t *testing.T) {
+	keyLookup := func(_ context.Context, _, _ string) (string, error) { return "", models.ErrNotFound }
+	rr := httptest.NewRecorder()
+	revealModelKeyHandler(keyLookup)(rr, revealReq("org1", "missing"))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("missing config should be 404, got %d", rr.Code)
 	}
 }

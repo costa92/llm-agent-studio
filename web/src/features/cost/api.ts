@@ -170,6 +170,22 @@ export function useListModels(
   })
 }
 
+// 查看（解密回显）单个配置的完整 API key：GET /api/orgs/{org}/model-configs/{id}/reveal
+//   → {hasApiKey, apiKey}（admin，revealModelKeyHandler）。这是唯一会经 HTTP 回传明文
+// key 的端点——列表/创建/更新响应仍绝不夹带 key。仅在管理员主动点「查看密钥」时调用。
+export interface RevealKeyResult {
+  hasApiKey: boolean
+  apiKey: string
+}
+export function useRevealModelKey(
+  org: string,
+): UseMutationResult<RevealKeyResult, Error, string> {
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiJSON<RevealKeyResult>(`/api/orgs/${org}/model-configs/${id}/reveal`),
+  })
+}
+
 // 创建模型配置：POST /api/orgs/{org}/model-configs body {kind,provider,model,enabled,isDefault,params}
 //   → 200 ModelConfig（admin，createModelConfigHandler）。
 // provider/model 缺失 → 400；含密钥型 param → 400 ErrSecretParam（见 configError.ts）。
