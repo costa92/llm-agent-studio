@@ -132,8 +132,7 @@ func createOrgStorageConfigHandler(s StorageConfigStore) http.HandlerFunc {
 			return
 		}
 		sc, err := s.Create(r.Context(), r.PathValue("org"), in)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		if mapStorageUpsertErr(w, err) {
 			return
 		}
 		writeJSON(w, http.StatusOK, sc)
@@ -152,8 +151,7 @@ func updateOrgStorageConfigHandler(s StorageConfigStore) http.HandlerFunc {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		if mapStorageUpsertErr(w, err) {
 			return
 		}
 		writeJSON(w, http.StatusOK, sc)
