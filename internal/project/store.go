@@ -441,7 +441,7 @@ func (s *Store) LoadState(ctx context.Context, projectID string) (projectstate.P
 		in.Todos = append(in.Todos, t)
 	}
 	if err := rows.Err(); err != nil {
-		return projectstate.ProjectState{}, err
+		return projectstate.ProjectState{}, fmt.Errorf("project: load state todos rows: %w", err)
 	}
 
 	// assets of the latest plan (joined via todos)
@@ -461,7 +461,7 @@ func (s *Store) LoadState(ctx context.Context, projectID string) (projectstate.P
 		in.Assets = append(in.Assets, a)
 	}
 	if err := arows.Err(); err != nil {
-		return projectstate.ProjectState{}, err
+		return projectstate.ProjectState{}, fmt.Errorf("project: load state assets rows: %w", err)
 	}
 
 	return projectstate.Compute(in), nil
