@@ -59,4 +59,14 @@ describe("GraphView", () => {
     fireEvent.click(screen.getByText("规划器 #1"))
     expect(onSelect).not.toHaveBeenCalled()
   })
+
+  it("asset 节点无 assetId 时点击不触发", () => {
+    const onSelect = vi.fn()
+    const noAssetNodes: GraphNode[] = [
+      { id: "x", label: "素材生成 #1", type: "asset", status: "pending" },
+    ]
+    render(<GraphView nodes={noAssetNodes} edges={[]} onSelectNode={onSelect} />)
+    fireEvent.click(screen.getByText("素材生成 #1"))
+    expect(onSelect).not.toHaveBeenCalled()
+  })
 })
