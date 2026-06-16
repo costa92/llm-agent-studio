@@ -14,6 +14,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/costa92/llm-agent-studio/internal/projectstate"
 )
 
 // ErrNotFound is returned when a project row does not exist.
@@ -390,4 +392,77 @@ func (s *Store) ListPlans(ctx context.Context, projectID string) ([]Plan, error)
 		return nil, fmt.Errorf("project: list plans: rows: %w", err)
 	}
 	return out, nil
+}
+
+// LoadState loads the latest plan's todos + assets + event version and computes
+// the authoritative ProjectState (single source of truth for render). Used by
+// the GET /state endpoint and the SSE pusher so both channels agree.
+func (s *Store) LoadState(ctx context.Context, projectID string) (projectstate.ProjectState, error) {
+	p, err := s.Get(ctx, projectID)
+	if err != nil {
+		return projectstate.ProjectState{}, err
+	}
+	in := projectstate.Input{ProjectID: projectID, ProjectStatus: p.Status}
+
+	// version = max event seq for the project (monotonic; 0 if none).
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COALESCE(max(seq), 0) FROM run_events WHERE project_id=$1`, projectID).
+		Scan(&in.Version); err != nil {
+		return projectstate.ProjectState{}, fmt.Errorf("project: load state version: %w", err)
+	}
+
+	// latest plan
+	var planID string
+	var valid, fallbackUsed bool
+	err = s.pool.QueryRow(ctx,
+		`SELECT id, valid, fallback_used FROM plans WHERE project_id=$1 ORDER BY created_at DESC LIMIT 1`,
+		projectID).Scan(&planID, &valid, &fallbackUsed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return projectstate.Compute(in), nil // no plan: draft passthrough
+	}
+	if err != nil {
+		return projectstate.ProjectState{}, fmt.Errorf("project: load state plan: %w", err)
+	}
+	in.HasPlan = true
+	in.Plan = &projectstate.Plan{PlanID: planID, Valid: valid, FallbackUsed: fallbackUsed}
+
+	// todos of the latest plan
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, type, status, COALESCE(error,'') FROM todos WHERE plan_id=$1 ORDER BY updated_at ASC`, planID)
+	if err != nil {
+		return projectstate.ProjectState{}, fmt.Errorf("project: load state todos: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var t projectstate.Todo
+		if err := rows.Scan(&t.ID, &t.Type, &t.Status, &t.Error); err != nil {
+			return projectstate.ProjectState{}, fmt.Errorf("project: scan state todo: %w", err)
+		}
+		in.Todos = append(in.Todos, t)
+	}
+	if err := rows.Err(); err != nil {
+		return projectstate.ProjectState{}, err
+	}
+
+	// assets of the latest plan (joined via todos)
+	arows, err := s.pool.Query(ctx,
+		`SELECT a.id, a.todo_id, a.status FROM assets a
+		 JOIN todos t ON a.todo_id = t.id
+		 WHERE t.plan_id=$1 ORDER BY a.created_at ASC`, planID)
+	if err != nil {
+		return projectstate.ProjectState{}, fmt.Errorf("project: load state assets: %w", err)
+	}
+	defer arows.Close()
+	for arows.Next() {
+		var a projectstate.Asset
+		if err := arows.Scan(&a.ID, &a.TodoID, &a.Status); err != nil {
+			return projectstate.ProjectState{}, fmt.Errorf("project: scan state asset: %w", err)
+		}
+		in.Assets = append(in.Assets, a)
+	}
+	if err := arows.Err(); err != nil {
+		return projectstate.ProjectState{}, err
+	}
+
+	return projectstate.Compute(in), nil
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/costa92/llm-agent-studio/internal/projectstate"
 	"github.com/costa92/llm-agent-studio/internal/storage"
 )
 
@@ -373,5 +374,82 @@ func TestCancelSweepsSubmittedAssets(t *testing.T) {
 	}
 	if pending != 1 {
 		t.Fatalf("pending_acceptance must survive cancel, got %d", pending)
+	}
+}
+
+// TestLoadState_NoPlan_Draft: a newly created project (no plans) must return a
+// ProjectState with Status=="draft", RunStatus=="idle", and ProjectID==p.ID.
+// Guards the no-plan passthrough branch in LoadState.
+func TestLoadState_NoPlan_Draft(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	orgID := "org_ls_noplan_" + uniqueSuffix()
+	p, err := s.Create(ctx, CreateInput{OrgID: orgID, Name: "LS-NoPlan", CreatedBy: "u"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	st, err := s.LoadState(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if st.ProjectID != p.ID {
+		t.Errorf("ProjectID=%q want %q", st.ProjectID, p.ID)
+	}
+	if st.Status != "draft" {
+		t.Errorf("Status=%q want draft", st.Status)
+	}
+	if st.RunStatus != "idle" {
+		t.Errorf("RunStatus=%q want idle", st.RunStatus)
+	}
+}
+
+// TestLoadState_WithTodos: a project with a plan + a script todo must surface
+// the script stage's status correctly (one script todo in status 'running' →
+// script stage status 'running', RunStatus 'running').
+func TestLoadState_WithTodos(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	orgID := "org_ls_todos_" + uniqueSuffix()
+	p, err := s.Create(ctx, CreateInput{OrgID: orgID, Name: "LS-Todos", CreatedBy: "u"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	planID := "pln_ls_" + p.ID
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO plans (id, project_id, status, valid, fallback_used, created_at)
+		 VALUES ($1, $2, 'running', true, false, now())`, planID, p.ID); err != nil {
+		t.Fatalf("insert plan: %v", err)
+	}
+	todoID := "todo_ls_" + p.ID
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO todos (id, project_id, plan_id, type, status) VALUES ($1, $2, $3, 'script', 'running')`,
+		todoID, p.ID, planID); err != nil {
+		t.Fatalf("insert todo: %v", err)
+	}
+	st, err := s.LoadState(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if st.ProjectID != p.ID {
+		t.Errorf("ProjectID=%q want %q", st.ProjectID, p.ID)
+	}
+	if st.RunStatus != "running" {
+		t.Errorf("RunStatus=%q want running", st.RunStatus)
+	}
+	// Find the script stage.
+	var scriptStage *projectstate.Stage
+	for i := range st.Stages {
+		if st.Stages[i].Role == "script" {
+			scriptStage = &st.Stages[i]
+		}
+	}
+	if scriptStage == nil {
+		t.Fatalf("script stage missing in %+v", st.Stages)
+	}
+	if scriptStage.Status != "running" {
+		t.Errorf("script stage status=%q want running", scriptStage.Status)
+	}
+	if scriptStage.TodoID != todoID {
+		t.Errorf("script stage TodoID=%q want %q", scriptStage.TodoID, todoID)
 	}
 }
