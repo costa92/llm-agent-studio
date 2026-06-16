@@ -539,25 +539,45 @@ func TestLoadState_SpecificPlan(t *testing.T) {
 // planID that belongs to a different project) must return the draft passthrough
 // state without error (HasPlan==false semantics).
 func TestLoadState_UnknownPlan_Passthrough(t *testing.T) {
-	s, _ := newStore(t)
+	s, pool := newStore(t)
 	ctx := context.Background()
 	orgID := "org_ls_unk_" + uniqueSuffix()
 	p, err := s.Create(ctx, CreateInput{OrgID: orgID, Name: "LS-Unknown", CreatedBy: "u"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	st, err := s.LoadState(ctx, p.ID, "nonexistent-plan-id")
+
+	assertPassthrough := func(label, planID string) {
+		st, err := s.LoadState(ctx, p.ID, planID)
+		if err != nil {
+			t.Fatalf("LoadState(%s): %v", label, err)
+		}
+		if st.ProjectID != p.ID {
+			t.Errorf("%s: ProjectID=%q want %q", label, st.ProjectID, p.ID)
+		}
+		if st.Plan != nil {
+			t.Errorf("%s: Plan should be nil, got %+v", label, st.Plan)
+		}
+		if st.Status != "draft" {
+			t.Errorf("%s: Status=%q want draft", label, st.Status)
+		}
+	}
+
+	// A planID that simply does not exist → draft passthrough.
+	assertPassthrough("nonexistent", "nonexistent-plan-id")
+
+	// A planID that exists but belongs to ANOTHER project must NOT leak that
+	// project's state — the WHERE project_id=$2 guard turns it into passthrough.
+	otherP, err := s.Create(ctx, CreateInput{OrgID: orgID, Name: "LS-Other", CreatedBy: "u"})
 	if err != nil {
-		t.Fatalf("LoadState(unknown): %v", err)
+		t.Fatalf("create other: %v", err)
 	}
-	// No plan resolved → draft passthrough.
-	if st.ProjectID != p.ID {
-		t.Errorf("ProjectID=%q want %q", st.ProjectID, p.ID)
+	otherPlanID := "pln_other_" + uniqueSuffix()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO plans (id, project_id, status, valid, fallback_used, created_at)
+		 VALUES ($1, $2, 'running', true, false, now())`,
+		otherPlanID, otherP.ID); err != nil {
+		t.Fatalf("insert other-project plan: %v", err)
 	}
-	if st.Plan != nil {
-		t.Errorf("Plan should be nil for unknown planID, got %+v", st.Plan)
-	}
-	if st.Status != "draft" {
-		t.Errorf("Status=%q want draft", st.Status)
-	}
+	assertPassthrough("cross-project", otherPlanID)
 }

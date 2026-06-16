@@ -411,7 +411,9 @@ func (s *Store) LoadState(ctx context.Context, projectID, planID string) (projec
 	// version = max event seq for the project (monotonic; 0 if none).
 	// Note: this is project-wide, not scoped to a single plan. It may
 	// over-trigger a re-push on a historical page when a newer run emits
-	// events, but that is harmless — the state payload itself is plan-scoped.
+	// events, but that is harmless — the re-pushed payload is still computed
+	// for THIS planID below, so the client just receives its own (unchanged)
+	// snapshot again rather than another run's state.
 	if err := s.pool.QueryRow(ctx,
 		`SELECT COALESCE(max(seq), 0) FROM run_events WHERE project_id=$1`, projectID).
 		Scan(&in.Version); err != nil {
