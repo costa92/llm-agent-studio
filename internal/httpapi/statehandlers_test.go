@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/costa92/llm-agent-studio/internal/project"
 	"github.com/costa92/llm-agent-studio/internal/projectstate"
 )
 
@@ -29,8 +30,25 @@ func TestStateHandler_ReturnsSnapshot(t *testing.T) {
 	}
 }
 
+func TestStateHandler_NotFound(t *testing.T) {
+	h := stateHandler(errStoreStub{err: project.ErrNotFound})
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/missing/state", nil)
+	req.SetPathValue("id", "missing")
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("code = %d, want 404", rec.Code)
+	}
+}
+
 type stateStoreStub struct{ state projectstate.ProjectState }
 
 func (s stateStoreStub) LoadState(ctx context.Context, id string) (projectstate.ProjectState, error) {
 	return s.state, nil
+}
+
+type errStoreStub struct{ err error }
+
+func (s errStoreStub) LoadState(_ context.Context, _ string) (projectstate.ProjectState, error) {
+	return projectstate.ProjectState{}, s.err
 }

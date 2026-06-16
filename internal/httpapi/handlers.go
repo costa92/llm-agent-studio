@@ -511,7 +511,8 @@ func stateHandler(sr StateReader) http.HandlerFunc {
 		if errors.Is(err, project.ErrNotFound) {
 			http.Error(w, "project not found", http.StatusNotFound)
 			return
-		} else if err != nil {
+		}
+		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
