@@ -30,7 +30,10 @@ type Pip struct {
 
 // Assets is the authoritative asset tally (frontend no longer counts events).
 type Assets struct {
-	Total   int `json:"total"`
+	Total int `json:"total"`
+	// Done counts asset todos that have at least one generated asset record
+	// (not todo Status==done). An asset todo is "done" when assetByTodo[todo.ID]
+	// exists, regardless of the todo's own status field.
 	Done    int `json:"done"`
 	Pending int `json:"pending"`
 }
@@ -184,6 +187,9 @@ func Compute(in Input) ProjectState {
 	return st
 }
 
+// counts mirrors project.TodoCounts. Unrecognized todo statuses only increment
+// total (so a new status added to project.TodoCounts must be added here too,
+// otherwise deriveStatus will produce incorrect results for that status).
 type counts struct {
 	total, ready, running, blocked, done, failed, canceled, pendingAssets int
 }
@@ -255,6 +261,8 @@ func assetStageStatus(pips []Pip) string {
 	case anyRunning:
 		return "running"
 	default:
+		// mixed done+failed (no running) → pending: a partially-failed batch stays
+		// actionable (per-asset retry), it does not collapse the stage to failed.
 		return "pending"
 	}
 }

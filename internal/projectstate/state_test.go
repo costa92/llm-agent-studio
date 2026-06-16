@@ -31,10 +31,10 @@ func TestCompute_RunningWithScript(t *testing.T) {
 	if got.Version != 7 {
 		t.Fatalf("version = %d, want 7", got.Version)
 	}
-	if stageByRole(got, "planner").Status != "done" {
-		t.Fatalf("planner = %q, want done (todos exist)", stageByRole(got, "planner").Status)
+	if stageByRole(t, got, "planner").Status != "done" {
+		t.Fatalf("planner = %q, want done (todos exist)", stageByRole(t, got, "planner").Status)
 	}
-	if s := stageByRole(got, "script"); s.Status != "running" || s.TodoID != "t-s" {
+	if s := stageByRole(t, got, "script"); s.Status != "running" || s.TodoID != "t-s" {
 		t.Fatalf("script stage = %+v, want running/t-s", s)
 	}
 }
@@ -62,11 +62,11 @@ func TestCompute_AssetPipsAndCounts(t *testing.T) {
 	if got.Pips[0].AssetID != "as1" || got.Pips[0].Status != "done" {
 		t.Fatalf("pip0 = %+v, want as1/done", got.Pips[0])
 	}
-	if stageByRole(got, "asset").Status != "done" {
-		t.Fatalf("asset stage = %q, want done", stageByRole(got, "asset").Status)
+	if stageByRole(t, got, "asset").Status != "done" {
+		t.Fatalf("asset stage = %q, want done", stageByRole(t, got, "asset").Status)
 	}
-	if stageByRole(got, "review").Status != "pending" {
-		t.Fatalf("review stage = %q, want pending", stageByRole(got, "review").Status)
+	if stageByRole(t, got, "review").Status != "pending" {
+		t.Fatalf("review stage = %q, want pending", stageByRole(t, got, "review").Status)
 	}
 }
 
@@ -84,11 +84,69 @@ func TestCompute_LastFailureSurfaces(t *testing.T) {
 	}
 }
 
-func stageByRole(s ProjectState, role string) Stage {
+func stageByRole(t *testing.T, s ProjectState, role string) Stage {
+	t.Helper()
 	for _, st := range s.Stages {
 		if st.Role == role {
 			return st
 		}
 	}
-	return Stage{}
+	t.Fatalf("stageByRole: role %q not found in stages %+v", role, s.Stages)
+	return Stage{} // unreachable
+}
+
+func TestCompute_AssetStage_MixedDoneFailedIsPending(t *testing.T) {
+	in := Input{
+		ProjectID: "p1", ProjectStatus: "running", HasPlan: true,
+		Plan: &Plan{PlanID: "pl1"},
+		Todos: []Todo{
+			{ID: "a1", Type: "asset", Status: "done"},
+			{ID: "a2", Type: "asset", Status: "failed"},
+		},
+		Assets: []Asset{
+			{ID: "as1", TodoID: "a1", Status: "pending_acceptance"},
+			// a2 has no asset record — it failed before producing one
+		},
+	}
+	got := Compute(in)
+	if s := stageByRole(t, got, "asset"); s.Status != "pending" {
+		t.Fatalf("asset stage = %q, want pending (mixed done+failed, no running)", s.Status)
+	}
+}
+
+func TestCompute_PlanButNoTodos_Planning(t *testing.T) {
+	in := Input{
+		ProjectID: "p1", ProjectStatus: "planning", HasPlan: true,
+		Plan: &Plan{PlanID: "pl1"},
+	}
+	got := Compute(in)
+	if got.Status != "planning" {
+		t.Fatalf("status = %q, want planning", got.Status)
+	}
+	if got.RunStatus != "running" {
+		t.Fatalf("runStatus = %q, want running", got.RunStatus)
+	}
+	if s := stageByRole(t, got, "planner"); s.Status != "running" {
+		t.Fatalf("planner stage = %q, want running (plan exists but no todos yet)", s.Status)
+	}
+}
+
+func TestCompute_AssetDone_CountsAssetRecordNotTodoStatus(t *testing.T) {
+	in := Input{
+		ProjectID: "p1", ProjectStatus: "running", HasPlan: true,
+		Plan: &Plan{PlanID: "pl1"},
+		Todos: []Todo{
+			{ID: "a1", Type: "asset", Status: "running"},
+		},
+		Assets: []Asset{
+			{ID: "as1", TodoID: "a1", Status: "pending_acceptance"},
+		},
+	}
+	got := Compute(in)
+	if got.Assets.Done != 1 {
+		t.Fatalf("Assets.Done = %d, want 1 (asset record exists even though todo status is running)", got.Assets.Done)
+	}
+	if len(got.Pips) != 1 || got.Pips[0].Status != "running" {
+		t.Fatalf("pip = %+v, want status=running", got.Pips)
+	}
 }
