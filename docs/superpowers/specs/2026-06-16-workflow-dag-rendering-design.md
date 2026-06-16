@@ -211,6 +211,18 @@ EventLog)、右栏(选中工件预览)、顶栏(运行 / 取消 / 重运行 / SS
 跑一个分支自定义工作流(多 script / 分支依赖),中栏**如实画出该 DAG** 且各节点
 live 状态正确;**默认管线项目渲染与改动前逐像素一致**(现有 5 段轨道路径不受影响)。
 
+## 8.1 已知限制(优雅降级,非阻塞)
+
+- **删除工作流后历史 run 回落 5 段轨道**:`plans.workflow_id` 是 `ON DELETE SET
+  NULL`,而 first-class workflow 运行不置 `projects.custom_workflow_enabled`。
+  故「跑过工作流 W → 删除 W」后,该历史 run 的 `workflow_id` 变 NULL 且
+  custom_workflow_enabled=false → `isCustom=false` → 渲染回退到折叠的 5 段轨道
+  (不崩溃,优雅降级)。这是既有数据模型属性,非本子项目引入。若将来要修:plan
+  创建时持久化 per-plan `is_custom` 布尔,或由「存在非默认 depends_on 结构」推导。
+- **默认 run 也会计算 nodes/edges**:`buildGraph` 对默认管线运行同样执行(其 todos
+  也带 depends_on),`isCustom=false` 时前端不读。代价极小(少量计算+字节),换来
+  逻辑简单,刻意保留。
+
 ## 9. 范围边界(不在本子项目 A)
 
 - 视觉 / 动画打磨、流式 token 进度、运行控制交互升级 → **子项目 B**。
