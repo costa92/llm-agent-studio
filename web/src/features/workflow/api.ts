@@ -64,11 +64,14 @@ export async function fetchProjectState(id: string, planId?: string): Promise<Pr
 }
 
 // 权威状态查询。SSE 的 state 帧到达时由 useProductionTimeline 经 setQueryData 覆盖此缓存。
+// 跑动期间 SSE 才是最新源；给一个 staleTime 抑制窗口重聚焦触发的 REST 重取，避免用一份
+// 较旧快照覆盖刚到的 SSE 帧（version 单调，但客户端不做版本守卫，故用 staleTime 规避竞态）。
 export function useProjectState(id: string, planId?: string): UseQueryResult<ProjectState> {
   return useQuery({
     queryKey: ["project-state", id, planId ?? ""],
     queryFn: () => fetchProjectState(id, planId),
     enabled: id !== "",
+    staleTime: 5_000,
   })
 }
 
