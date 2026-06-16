@@ -30,7 +30,7 @@ import { useUpdateProject, usePromptStyles } from "@/features/projects/api"
 import { useOrgTextModels, useOrgImageModels } from "@/features/cost/api"
 import { EditProjectDialog } from "@/features/projects/EditProjectDialog"
 import type { StageId } from "@/lib/timeline"
-import type { ProjectState, PipState } from "@/lib/projectState"
+import type { ProjectState, PipState, GraphNode } from "@/lib/projectState"
 
 export const Route = createFileRoute(
   "/_authed/orgs/$org/projects/$id/runs/$runId"
@@ -173,6 +173,9 @@ function RunWorkbenchPage() {
   function handleSelectPip(pip: PipState) {
     if (pip.assetId) setSelection({ kind: "asset", assetId: pip.assetId })
   }
+  function handleSelectNode(node: GraphNode) {
+    if (node.assetId) setSelection({ kind: "asset", assetId: node.assetId })
+  }
 
   const drawerKind =
     selection?.kind === "script" || selection?.kind === "storyboard"
@@ -274,6 +277,7 @@ function RunWorkbenchPage() {
       }
       onSelectStage={handleSelectStage}
       onSelectPip={handleSelectPip}
+      onSelectNode={handleSelectNode}
       drawer={drawer}
       onOpenReview={() =>
         navigate({
