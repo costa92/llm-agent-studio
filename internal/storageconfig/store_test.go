@@ -414,6 +414,77 @@ func TestMultipleOrgConfigsAndResolution(t *testing.T) {
 	}
 }
 
+// TestResolveAndConfigIDAgreement verifies the fix for the "unreadable cover" bug:
+// when an org has multiple enabled configs (different modes), ResolveForOrgAndMode
+// and ConfigIDForOrgAndMode MUST resolve to the same row. Without ORDER BY in both
+// helper functions, two separate DB queries can return different rows → cover bytes
+// land in backend X but the asset's storage_config_id points to backend Y.
+//
+// The test inserts TWO enabled org-scoped configs (mode="localfs" and mode="s3"),
+// then verifies that the id returned by ConfigIDForOrgAndMode matches the config
+// that ResolveByID returns (i.e., same mode/bucket as the one ResolveForOrgAndMode
+// returned). Mismatch proves the two helpers diverged.
+func TestResolveAndConfigIDAgreement(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	org := "org-agree-" + uniqueSuffix()
+
+	// Insert localfs first (created_at earlier).
+	lfsIn := UpsertInput{Mode: "localfs", PublicPrefix: "/lfs", Enabled: true}
+	lfssc, err := st.UpsertForOrg(ctx, org, lfsIn)
+	if err != nil {
+		t.Fatalf("upsert localfs: %v", err)
+	}
+
+	// Insert s3 second (created_at later → ORDER BY created_at DESC picks this one first).
+	s3In := s3Input("agree-sek")
+	s3In.Bucket = "agree-bucket"
+	s3sc, err := st.UpsertForOrg(ctx, org, s3In)
+	if err != nil {
+		t.Fatalf("upsert s3: %v", err)
+	}
+
+	// Sanity: two distinct rows exist.
+	if lfssc.ID == s3sc.ID {
+		t.Fatalf("expected two distinct config ids, got same: %q", lfssc.ID)
+	}
+
+	// ResolveForOrgAndMode with mode="" resolves "any enabled" for the org.
+	rs, ok, err := st.ResolveForOrgAndMode(ctx, org, "")
+	if err != nil || !ok {
+		t.Fatalf("resolve: ok=%v err=%v", ok, err)
+	}
+
+	// ConfigIDForOrgAndMode with mode="" must return the SAME row's id.
+	resolvedID, ok, err := st.ConfigIDForOrgAndMode(ctx, org, "")
+	if err != nil || !ok {
+		t.Fatalf("configIDForOrgAndMode: ok=%v err=%v", ok, err)
+	}
+
+	// Confirm the returned id is one of our two rows.
+	if resolvedID != lfssc.ID && resolvedID != s3sc.ID {
+		t.Fatalf("configIDForOrgAndMode returned unknown id %q (want %q or %q)", resolvedID, lfssc.ID, s3sc.ID)
+	}
+
+	// Fetch the full config for the id ConfigIDForOrgAndMode returned.
+	refByID, ok, err := st.ResolveByID(ctx, resolvedID)
+	if err != nil || !ok {
+		t.Fatalf("resolveByID(%q): ok=%v err=%v", resolvedID, ok, err)
+	}
+
+	// The core assertion: the two helper functions must agree on which row to pick.
+	// If they disagree, a cover written to rs.Bucket would be sought via refByID.Bucket
+	// → wrong backend → unreadable cover.
+	if refByID.Mode != rs.Mode || refByID.Bucket != rs.Bucket || refByID.Endpoint != rs.Endpoint {
+		t.Fatalf("AGREEMENT FAILURE: ResolveForOrgAndMode returned mode=%q bucket=%q endpoint=%q "+
+			"but ConfigIDForOrgAndMode resolved to mode=%q bucket=%q endpoint=%q — "+
+			"the two helpers diverged; ORDER BY fix missing",
+			rs.Mode, rs.Bucket, rs.Endpoint,
+			refByID.Mode, refByID.Bucket, refByID.Endpoint)
+	}
+}
+
 // Helper uniqueSuffix to avoid test pollution
 func uniqueSuffix() string {
 	b := make([]byte, 4)

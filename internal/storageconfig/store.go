@@ -344,8 +344,10 @@ func (s *Store) ConfigIDForOrgAndMode(ctx context.Context, orgID, mode string) (
 }
 
 // configIDOne 跑一条 WHERE 子句的 SELECT id。无行 → ok=false。
+// ORDER BY created_at DESC, id 保证确定性：org 有多条启用行时每次返回同一行，与
+// resolveOne 的顺序完全一致，写路径持久化的 config id 与读路径解析到的后端绑定。
 func (s *Store) configIDOne(ctx context.Context, where string, args ...any) (string, bool, error) {
-	q := `SELECT id FROM storage_configs ` + where + ` LIMIT 1`
+	q := `SELECT id FROM storage_configs ` + where + ` ORDER BY created_at DESC, id LIMIT 1`
 	var id string
 	if err := s.pool.QueryRow(ctx, q, args...).Scan(&id); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -357,9 +359,12 @@ func (s *Store) configIDOne(ctx context.Context, where string, args ...any) (str
 }
 
 // resolveOne 跑一条 WHERE 子句的 SELECT 并解密 secret。无行 → ok=false。
+// ORDER BY created_at DESC, id 保证确定性：org 有多条启用行时每次返回同一行，与
+// configIDOne 的顺序完全一致，两者必须绑定到相同行——任何分歧都会导致 cover bytes
+// 落在后端 X 但 asset 记录持久化的是后端 Y 的 id，资产不可读。
 func (s *Store) resolveOne(ctx context.Context, where string, args ...any) (ResolvedStorage, bool, error) {
 	q := `SELECT mode, endpoint, region, bucket, access_key_id, secret_enc, use_ssl, public_prefix
-		 FROM storage_configs ` + where + ` LIMIT 1`
+		 FROM storage_configs ` + where + ` ORDER BY created_at DESC, id LIMIT 1`
 	row := s.pool.QueryRow(ctx, q, args...)
 	var rs ResolvedStorage
 	var enc []byte
