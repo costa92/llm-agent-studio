@@ -294,7 +294,7 @@ func TestPlatformGateRouting(t *testing.T) {
 	mux := NewMux(Deps{
 		Issuer: iss, RoleResolver: platformResolver{adminUID: "u-admin"},
 		Platform:      &stubPlatform{allOrgs: []map[string]any{}},
-		StorageConfig: &stubStorageStore{globalOK: false},
+		StorageConfig: &stubSCStore{},
 	})
 
 	// Non-platform user → 403 on gated routes (orgs + the new users route).

@@ -13,13 +13,16 @@ import (
 // *storageconfig.Store)。secret 只走 write-only 入参，DTO 永不回显 (HasSecret 布尔)。
 type StorageConfigStore interface {
 	UpsertGlobal(ctx context.Context, in storageconfig.UpsertInput) (storageconfig.StorageConfig, error)
-	UpsertForOrg(ctx context.Context, orgID string, in storageconfig.UpsertInput) (storageconfig.StorageConfig, error)
 	GetGlobal(ctx context.Context) (storageconfig.StorageConfig, bool, error)
-	GetForOrg(ctx context.Context, orgID string, mode string) (storageconfig.StorageConfig, bool, error)
-	DeleteForOrg(ctx context.Context, orgID string, mode string) error
+
+	List(ctx context.Context, orgID string) ([]storageconfig.StorageConfig, error)
+	Create(ctx context.Context, orgID string, in storageconfig.UpsertInput) (storageconfig.StorageConfig, error)
+	Update(ctx context.Context, orgID, id string, in storageconfig.UpsertInput) (storageconfig.StorageConfig, error)
+	Delete(ctx context.Context, orgID, id string) error
+	SetDefault(ctx context.Context, orgID, id string) error
 }
 
-// storageConfigWriteBody 是 PUT 入参 (camelCase 同 ModelConfig 风格)。secret write-only：
+// storageConfigWriteBody 是 PUT/POST 入参 (camelCase 同 ModelConfig 风格)。secret write-only：
 // 空=保留既有 secret_enc；非空=重新加密替换，绝不回显。
 type storageConfigWriteBody struct {
 	Mode         string `json:"mode"`
@@ -69,61 +72,125 @@ func mapStorageUpsertErr(w http.ResponseWriter, err error) bool {
 	return true
 }
 
-// getOrgStorageConfigHandler (GET /api/orgs/{org}/storage-config): org_admin.
-// 无配置 → 200 {config:null}。
-func getOrgStorageConfigHandler(s StorageConfigStore) http.HandlerFunc {
+// decodeStorageUpsert 解析 org 存储 upsert body，拒绝 localfs(per-org 无隔离意义)，
+// 拒绝空 name，失败时已写好响应、返回 ok=false。
+func decodeStorageUpsert(w http.ResponseWriter, r *http.Request) (storageconfig.UpsertInput, bool) {
+	var req struct {
+		Mode         string `json:"mode"`
+		Endpoint     string `json:"endpoint"`
+		Region       string `json:"region"`
+		Bucket       string `json:"bucket"`
+		AccessKeyID  string `json:"accessKeyId"`
+		Secret       string `json:"secret"`
+		PublicPrefix string `json:"publicPrefix"`
+		Name         string `json:"name"`
+		UseSSL       bool   `json:"useSsl"`
+		Enabled      bool   `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return storageconfig.UpsertInput{}, false
+	}
+	if req.Mode == "localfs" {
+		http.Error(w,
+			"per-org storage cannot use mode=\"localfs\" (all localfs configs share the platform's single env-configured root, so per-org localfs would not isolate storage; use s3, oss, cos, or github for per-org isolation)",
+			http.StatusBadRequest)
+		return storageconfig.UpsertInput{}, false
+	}
+	if req.Name == "" {
+		http.Error(w, "name required", http.StatusBadRequest)
+		return storageconfig.UpsertInput{}, false
+	}
+	return storageconfig.UpsertInput{
+		Mode: req.Mode, Endpoint: req.Endpoint, Region: req.Region, Bucket: req.Bucket,
+		AccessKeyID: req.AccessKeyID, PublicPrefix: req.PublicPrefix, UseSSL: req.UseSSL,
+		Enabled: req.Enabled, Secret: req.Secret, Name: req.Name,
+	}, true
+}
+
+// listOrgStorageConfigsHandler (GET /api/orgs/{org}/storage-configs): org_admin.
+func listOrgStorageConfigsHandler(s StorageConfigStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		mode := r.URL.Query().Get("mode")
-		sc, ok, err := s.GetForOrg(r.Context(), r.PathValue("org"), mode)
+		items, err := s.List(r.Context(), r.PathValue("org"))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeStorageGetResult(w, sc, ok)
+		if items == nil {
+			items = []storageconfig.StorageConfig{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	}
 }
 
-// putOrgStorageConfigHandler (PUT /api/orgs/{org}/storage-config): org_admin.
-// body=storageConfigWriteBody (secret 空=保留既有)。ErrEncUnavailable/validation→400，
-// 成功→200 StorageConfig DTO (绝不回显 secret)。
-//
-// 拒收 mode="localfs"（M8 §10 已知限制）：buildStorageStore 在 cmd/studiod/main.go
-// 对 mode=localfs 强制复用 localfsDefault（保持单一回源 server），故 per-org localfs
-// 配置即使写库也不会被 factory 解析，无法实现 per-org 存储隔离。允许写入会让管理员
-// 误以为已配 per-org 隔离，实际所有 org 共享同一根/同一密钥——UX 陷阱。
-// 全局 (PUT /api/platform/storage-config/global) 允许 localfs（语义是"使用 env 默认"）。
-func putOrgStorageConfigHandler(s StorageConfigStore) http.HandlerFunc {
+// createOrgStorageConfigHandler (POST /api/orgs/{org}/storage-configs): org_admin.
+// 拒收 mode="localfs"；name 必填。
+func createOrgStorageConfigHandler(s StorageConfigStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var req storageConfigWriteBody
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "bad request: invalid body", http.StatusBadRequest)
+		in, ok := decodeStorageUpsert(w, r)
+		if !ok {
 			return
 		}
-		if req.Mode == "localfs" {
-			http.Error(w,
-				"per-org storage cannot use mode=\"localfs\" (all localfs configs share the platform's single env-configured root, so per-org localfs would not isolate storage; use s3, oss, cos, or github for per-org isolation)",
-				http.StatusBadRequest)
-			return
-		}
-		sc, err := s.UpsertForOrg(r.Context(), r.PathValue("org"), req.toInput())
-		if mapStorageUpsertErr(w, err) {
+		sc, err := s.Create(r.Context(), r.PathValue("org"), in)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		writeJSON(w, http.StatusOK, sc)
 	}
 }
 
-// deleteOrgStorageConfigHandler (DELETE /api/orgs/{org}/storage-config): org_admin.
-// ErrNotFound→404，成功→200 {ok:true} (匹配 model-config delete 约定)。
+// updateOrgStorageConfigHandler (PUT /api/orgs/{org}/storage-configs/{id}): org_admin.
+func updateOrgStorageConfigHandler(s StorageConfigStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		in, ok := decodeStorageUpsert(w, r)
+		if !ok {
+			return
+		}
+		sc, err := s.Update(r.Context(), r.PathValue("org"), r.PathValue("id"), in)
+		if errors.Is(err, storageconfig.ErrNotFound) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, http.StatusOK, sc)
+	}
+}
+
+// deleteOrgStorageConfigHandler (DELETE /api/orgs/{org}/storage-configs/{id}): org_admin.
+// ErrInUse→409，ErrNotFound→404，成功→200 {ok:true}。
 func deleteOrgStorageConfigHandler(s StorageConfigStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		mode := r.URL.Query().Get("mode")
-		if err := s.DeleteForOrg(r.Context(), r.PathValue("org"), mode); err != nil {
-			if errors.Is(err, storageconfig.ErrNotFound) {
-				http.Error(w, "storage config not found", http.StatusNotFound)
-				return
-			}
+		err := s.Delete(r.Context(), r.PathValue("org"), r.PathValue("id"))
+		if errors.Is(err, storageconfig.ErrInUse) {
+			http.Error(w, "该存储有历史素材引用，请改为停用而非删除", http.StatusConflict)
+			return
+		}
+		if errors.Is(err, storageconfig.ErrNotFound) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	}
+}
+
+// setDefaultStorageConfigHandler (POST /api/orgs/{org}/storage-configs/{id}/default): org_admin.
+func setDefaultStorageConfigHandler(s StorageConfigStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		err := s.SetDefault(r.Context(), r.PathValue("org"), r.PathValue("id"))
+		if errors.Is(err, storageconfig.ErrNotFound) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})

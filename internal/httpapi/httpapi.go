@@ -222,10 +222,12 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("PUT /api/orgs/{org}/model-configs/{id}", scoped(roleAdmin, orgScope, updateModelConfigHandler(d.Models)))
 	mux.Handle("DELETE /api/orgs/{org}/model-configs/{id}", scoped(roleAdmin, orgScope, deleteModelConfigHandler(d.Models)))
 	mux.Handle("GET /api/orgs/{org}/model-configs/{id}/reveal", scoped(roleAdmin, orgScope, revealModelKeyHandler(d.ModelKeyLookup)))
-	// Storage config (对象存储后端). Per-org: org_admin scoped. Global: any-org-admin gate.
-	mux.Handle("GET /api/orgs/{org}/storage-config", scoped(roleAdmin, orgScope, getOrgStorageConfigHandler(d.StorageConfig)))
-	mux.Handle("PUT /api/orgs/{org}/storage-config", scoped(roleAdmin, orgScope, putOrgStorageConfigHandler(d.StorageConfig)))
-	mux.Handle("DELETE /api/orgs/{org}/storage-config", scoped(roleAdmin, orgScope, deleteOrgStorageConfigHandler(d.StorageConfig)))
+	// Storage configs (对象存储后端，多配置 list/CRUD/default). Per-org: org_admin scoped. Global: any-org-admin gate.
+	mux.Handle("GET /api/orgs/{org}/storage-configs", scoped(roleAdmin, orgScope, listOrgStorageConfigsHandler(d.StorageConfig)))
+	mux.Handle("POST /api/orgs/{org}/storage-configs", scoped(roleAdmin, orgScope, createOrgStorageConfigHandler(d.StorageConfig)))
+	mux.Handle("PUT /api/orgs/{org}/storage-configs/{id}", scoped(roleAdmin, orgScope, updateOrgStorageConfigHandler(d.StorageConfig)))
+	mux.Handle("DELETE /api/orgs/{org}/storage-configs/{id}", scoped(roleAdmin, orgScope, deleteOrgStorageConfigHandler(d.StorageConfig)))
+	mux.Handle("POST /api/orgs/{org}/storage-configs/{id}/default", scoped(roleAdmin, orgScope, setDefaultStorageConfigHandler(d.StorageConfig)))
 	// Org 成员管理 (org-scoped). 列出对任意 org 成员开放 (viewer)；增删改角色限 org_admin (admin).
 	mux.Handle("GET /api/orgs/{org}/members", scoped(roleViewer, orgScope, listMembersHandler(d.Members)))
 	mux.Handle("POST /api/orgs/{org}/members", scoped(roleAdmin, orgScope, addMemberHandler(d.Members)))
