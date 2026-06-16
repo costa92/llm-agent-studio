@@ -13,6 +13,7 @@ import type {
   RunResponse,
   StudioEvent,
 } from "@/lib/types"
+import type { ProjectState } from "@/lib/projectState"
 
 // GET /api/projects/{id} → Project（viewer+）。不存在 → 404。
 export function useProject(id: string): UseQueryResult<Project> {
@@ -54,6 +55,24 @@ export async function fetchAllEvents(id: string, planId?: string): Promise<Studi
     afterSeq = page[page.length - 1].seq
   }
   return all
+}
+
+// GET /api/projects/{id}/state → ProjectState（viewer+）。工作流状态的权威来源。
+export async function fetchProjectState(id: string, planId?: string): Promise<ProjectState> {
+  const qs = planId ? `?planId=${encodeURIComponent(planId)}` : ""
+  return apiJSON<ProjectState>(`/api/projects/${id}/state${qs}`)
+}
+
+// 权威状态查询。SSE 的 state 帧到达时由 useProductionTimeline 经 setQueryData 覆盖此缓存。
+// 跑动期间 SSE 才是最新源；给一个 staleTime 抑制窗口重聚焦触发的 REST 重取，避免用一份
+// 较旧快照覆盖刚到的 SSE 帧（version 单调，但客户端不做版本守卫，故用 staleTime 规避竞态）。
+export function useProjectState(id: string, planId?: string): UseQueryResult<ProjectState> {
+  return useQuery({
+    queryKey: ["project-state", id, planId ?? ""],
+    queryFn: () => fetchProjectState(id, planId),
+    enabled: id !== "",
+    staleTime: 5_000,
+  })
 }
 
 // POST /api/projects/{id}/run → 202 {planId,valid,fallbackUsed}（editor+）。配额超限 429；不存在 404。

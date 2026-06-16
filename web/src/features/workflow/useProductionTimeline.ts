@@ -1,18 +1,16 @@
 import { useEffect, useReducer, useRef, useState } from "react"
 import { fetchEventSource } from "@microsoft/fetch-event-source"
-import {
-  foldEvents,
-  initialTimeline,
-  reduceTimeline,
-  type TimelineState,
-} from "@/lib/timeline"
+import { foldLog, type LogLine } from "@/lib/timeline"
 import { streamRunEvents, type SseClient } from "@/lib/sse"
+import type { ProjectState } from "@/lib/projectState"
 import type { ProjectStatus, SseFrame, StudioEvent } from "@/lib/types"
 
-// 制片轨道编排：进入工作台时**先回放历史事件**（GET /events）重建轨道全态，
+// 制片轨道编排：进入工作台时**先回放历史事件**（GET /events）累积左栏日志，
 // **再开实时 SSE 流**续接。关键不变式（替代 Last-Event-ID）：
 //   服务端 sse.go 每次（重）连都从 after=0 全量回放——回放与实时帧必有重叠区间。
-//   Task 8 reducer 按 frame.seq 去重，故先回放后开流的重叠帧被 seq-dedup 吞掉，绝不重复渲染。
+//   foldLog 按 frame.seq 去重，故先回放后开流的重叠帧被吞掉，日志绝不重复。
+// 本里程碑后：状态推导已移至后端 projectstate.Compute；本 hook 只累积日志 +
+// 把后端权威 state 帧经 onState 透给调用方写缓存。
 // 完成态项目（completed/review/failed/canceled）**只回放、不开流**（UI-spec §11 决策 6）。
 
 // SSE 连接态（喂 SseIndicator）。
@@ -30,7 +28,7 @@ export function isTerminalStatus(status: ProjectStatus | undefined): boolean {
   return status != null && TERMINAL_STATUSES.has(status)
 }
 
-// StudioEvent（回放）→ SseFrame（reducer 入参）。回放元素 todoId 可缺，补空串。
+// StudioEvent（回放）→ SseFrame（日志入参）。回放元素 todoId 可缺，补空串。
 function toFrame(e: StudioEvent): SseFrame {
   return { seq: e.seq, kind: e.kind, todoId: e.todoId ?? "", payload: e.payload }
 }
@@ -52,10 +50,12 @@ export interface UseProductionTimelineArgs extends TimelineDeps {
   // 是否启用（projectId 就绪后）。
   enabled?: boolean
   planId?: string
+  // 后端权威 state 帧到达时回调（容器经 setQueryData 写缓存）。
+  onState?: (s: ProjectState) => void
 }
 
 export interface ProductionTimeline {
-  state: TimelineState
+  log: LogLine[]
   conn: SseConnState
   // 回放是否完成（用于区分"加载中"与"空轨道"）。
   replayed: boolean
@@ -66,18 +66,18 @@ type Action =
   | { type: "frame"; frame: SseFrame }
   | { type: "reset" }
 
-function timelineReducer(state: TimelineState, action: Action): TimelineState {
+function logReducer(state: LogLine[], action: Action): LogLine[] {
   switch (action.type) {
     case "reset":
-      return initialTimeline()
+      return []
     case "replayed":
-      return foldEvents(state, action.frames)
+      return foldLog(state, action.frames)
     case "frame":
-      return reduceTimeline(state, action.frame)
+      return foldLog(state, [action.frame])
   }
 }
 
-// 编编排 hook。回放 → 续接实时；完成态只回放。seq-dedup 吸收重叠。
+// 编排 hook。回放 → 续接实时；完成态只回放。foldLog seq-dedup 吸收重叠。
 export function useProductionTimeline({
   projectId,
   accessToken,
@@ -86,12 +86,16 @@ export function useProductionTimeline({
   fetchAllEvents,
   sseClient = fetchEventSource,
   planId,
+  onState,
 }: UseProductionTimelineArgs): ProductionTimeline {
-  const [state, dispatch] = useReducer(timelineReducer, undefined, initialTimeline)
+  const [log, dispatch] = useReducer(logReducer, [])
   const [conn, setConn] = useState<SseConnState>("idle")
   const [replayed, setReplayed] = useState(false)
   // 避免对已卸载组件 setState。
   const aliveRef = useRef(true)
+  // onState 走 ref，避免其引用变化重起整条流。
+  const onStateRef = useRef(onState)
+  onStateRef.current = onState
 
   useEffect(() => {
     aliveRef.current = true
@@ -112,12 +116,12 @@ export function useProductionTimeline({
       // （react-hooks/set-state-in-effect）。
       await Promise.resolve()
       if (cancelled) return
-      // 重置为新项目的初态。
+      // 重置为新项目的空日志。
       dispatch({ type: "reset" })
       setReplayed(false)
       if (!terminal) setConn("reconnecting")
 
-      // ── 1) 回放历史事件（重建全态）──
+      // ── 1) 回放历史事件（累积日志）──
       try {
         const events = await fetchAllEvents(projectId, planId)
         if (cancelled) return
@@ -144,8 +148,11 @@ export function useProductionTimeline({
               if (!cancelled) dispatch({ type: "frame", frame })
             },
             onMessage: (frame) => {
-              // message 兜底帧也进 reducer（日志），不改节点态。
+              // message 兜底帧也进日志，不改节点态。
               if (!cancelled) dispatch({ type: "frame", frame })
+            },
+            onState: (raw) => {
+              if (!cancelled) onStateRef.current?.(raw as ProjectState)
             },
             onOpen: () => {
               if (!cancelled) setConn("connected")
@@ -178,5 +185,5 @@ export function useProductionTimeline({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, status, enabled, planId])
 
-  return { state, conn, replayed }
+  return { log, conn, replayed }
 }

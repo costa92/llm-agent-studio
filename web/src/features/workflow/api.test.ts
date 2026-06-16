@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { fetchAllEvents, fetchScript } from "./api"
+import { fetchAllEvents, fetchProjectState, fetchScript } from "./api"
 import { setAccessToken } from "@/lib/apiClient"
 import { jsonResponse } from "@/test/helpers"
 
@@ -44,6 +44,28 @@ describe("fetchAllEvents (keyset replay accumulation)", () => {
     const all = await fetchAllEvents("p1")
     expect(all).toHaveLength(1)
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("fetchProjectState (GET /state authoritative snapshot)", () => {
+  it("fetches /state and returns the ProjectState", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          projectId: "p1",
+          version: 5,
+          status: "running",
+          runStatus: "running",
+          stages: [],
+          pips: [],
+          assets: { total: 0, done: 0, pending: 0 },
+        }),
+      ),
+    )
+    const st = await fetchProjectState("p1")
+    expect(st.status).toBe("running")
+    expect(st.version).toBe(5)
   })
 })
 

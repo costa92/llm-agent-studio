@@ -14,6 +14,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/costa92/llm-agent-studio/internal/projectstate"
 )
 
 // ErrNotFound is returned when a project row does not exist.
@@ -390,4 +392,93 @@ func (s *Store) ListPlans(ctx context.Context, projectID string) ([]Plan, error)
 		return nil, fmt.Errorf("project: list plans: rows: %w", err)
 	}
 	return out, nil
+}
+
+// LoadState loads a plan's todos + assets + event version and computes the
+// authoritative ProjectState (single source of truth for render). Used by
+// the GET /state endpoint and the SSE pusher so both channels agree.
+//
+// planID: when non-empty, loads state for that specific plan (guarded to
+// projectID to prevent cross-project leakage). When empty, loads the latest
+// plan — preserves existing behavior for callers that pass "".
+func (s *Store) LoadState(ctx context.Context, projectID, planID string) (projectstate.ProjectState, error) {
+	p, err := s.Get(ctx, projectID)
+	if err != nil {
+		return projectstate.ProjectState{}, err
+	}
+	in := projectstate.Input{ProjectID: projectID, ProjectStatus: p.Status}
+
+	// version = max event seq for the project (monotonic; 0 if none).
+	// Note: this is project-wide, not scoped to a single plan. It may
+	// over-trigger a re-push on a historical page when a newer run emits
+	// events, but that is harmless — the re-pushed payload is still computed
+	// for THIS planID below, so the client just receives its own (unchanged)
+	// snapshot again rather than another run's state.
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COALESCE(max(seq), 0) FROM run_events WHERE project_id=$1`, projectID).
+		Scan(&in.Version); err != nil {
+		return projectstate.ProjectState{}, fmt.Errorf("project: load state version: %w", err)
+	}
+
+	// resolve plan: when planID is provided use that plan (scoped to project);
+	// otherwise fall back to the latest plan for this project.
+	var planRowID string
+	var valid, fallbackUsed bool
+	if planID == "" {
+		err = s.pool.QueryRow(ctx,
+			`SELECT id, valid, fallback_used FROM plans WHERE project_id=$1 ORDER BY created_at DESC LIMIT 1`,
+			projectID).Scan(&planRowID, &valid, &fallbackUsed)
+	} else {
+		err = s.pool.QueryRow(ctx,
+			`SELECT id, valid, fallback_used FROM plans WHERE id=$1 AND project_id=$2`,
+			planID, projectID).Scan(&planRowID, &valid, &fallbackUsed)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return projectstate.Compute(in), nil // no plan / not found: draft passthrough
+	}
+	if err != nil {
+		return projectstate.ProjectState{}, fmt.Errorf("project: load state plan: %w", err)
+	}
+	in.HasPlan = true
+	in.Plan = &projectstate.Plan{PlanID: planRowID, Valid: valid, FallbackUsed: fallbackUsed}
+
+	// todos of the resolved plan
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, type, status, COALESCE(error,'') FROM todos WHERE plan_id=$1 ORDER BY updated_at ASC`, planRowID)
+	if err != nil {
+		return projectstate.ProjectState{}, fmt.Errorf("project: load state todos: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var t projectstate.Todo
+		if err := rows.Scan(&t.ID, &t.Type, &t.Status, &t.Error); err != nil {
+			return projectstate.ProjectState{}, fmt.Errorf("project: scan state todo: %w", err)
+		}
+		in.Todos = append(in.Todos, t)
+	}
+	if err := rows.Err(); err != nil {
+		return projectstate.ProjectState{}, fmt.Errorf("project: load state todos rows: %w", err)
+	}
+
+	// assets of the resolved plan (joined via todos)
+	arows, err := s.pool.Query(ctx,
+		`SELECT a.id, a.todo_id, a.status FROM assets a
+		 JOIN todos t ON a.todo_id = t.id
+		 WHERE t.plan_id=$1 ORDER BY a.created_at ASC`, planRowID)
+	if err != nil {
+		return projectstate.ProjectState{}, fmt.Errorf("project: load state assets: %w", err)
+	}
+	defer arows.Close()
+	for arows.Next() {
+		var a projectstate.Asset
+		if err := arows.Scan(&a.ID, &a.TodoID, &a.Status); err != nil {
+			return projectstate.ProjectState{}, fmt.Errorf("project: scan state asset: %w", err)
+		}
+		in.Assets = append(in.Assets, a)
+	}
+	if err := arows.Err(); err != nil {
+		return projectstate.ProjectState{}, fmt.Errorf("project: load state assets rows: %w", err)
+	}
+
+	return projectstate.Compute(in), nil
 }

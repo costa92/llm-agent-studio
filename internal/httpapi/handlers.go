@@ -17,6 +17,7 @@ import (
 
 	"github.com/costa92/llm-agent-studio/internal/planner"
 	"github.com/costa92/llm-agent-studio/internal/project"
+	"github.com/costa92/llm-agent-studio/internal/projectstate"
 	"github.com/costa92/llm-agent-studio/internal/studiosvc"
 )
 
@@ -62,6 +63,7 @@ type ProjectStore interface {
 	Cancel(ctx context.Context, projectID string) error
 	OrgIDForProject(ctx context.Context, projectID string) (string, error)
 	ListPlans(ctx context.Context, projectID string) ([]project.Plan, error)
+	LoadState(ctx context.Context, projectID, planID string) (projectstate.ProjectState, error)
 }
 
 // PlannerPort kicks off planning (satisfied by *planner.Planner). PlanWith
@@ -371,6 +373,23 @@ func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore,
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
+		// Early validation for project-level custom workflows: catch invalid graphs
+		// (including cycles) before any side effects (SetStatus, planner_started).
+		// PlanCustom also validates, but doing it here maps the error to 400 and
+		// avoids a dangling "planning" status + spurious planner_started event.
+		var customNodes []planner.WorkflowNode
+		if p.CustomWorkflowEnabled && len(p.WorkflowNodes) > 0 {
+			if err := json.Unmarshal(p.WorkflowNodes, &customNodes); err != nil {
+				http.Error(w, "invalid workflow: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if len(customNodes) > 0 {
+				if err := planner.ValidateCustomGraph(customNodes); err != nil {
+					http.Error(w, "invalid workflow: "+err.Error(), http.StatusBadRequest)
+					return
+				}
+			}
+		}
 		if over, err := quotaExceeded(r.Context(), cs, quota, p.OrgID); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -389,15 +408,9 @@ func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore,
 		}
 		var res planner.Result
 		if p.CustomWorkflowEnabled {
-			var nodes []planner.WorkflowNode
-			if len(p.WorkflowNodes) > 0 {
-				if err := json.Unmarshal(p.WorkflowNodes, &nodes); err != nil {
-					http.Error(w, "invalid custom workflow configuration: "+err.Error(), http.StatusBadRequest)
-					return
-				}
-			}
+			// customNodes already validated and populated above; use them directly.
 			// Legacy project-level custom run: no first-class workflow → NULL workflow_id.
-			res, err = pl.PlanCustom(r.Context(), id, "", brief, nodes)
+			res, err = pl.PlanCustom(r.Context(), id, "", brief, customNodes)
 		} else {
 			// M5.1: per-project 规划模型 override 优先于 org 默认。如果 project 上
 			// 配了 planner_provider+planner_model，runHandler 拿这个去 modelrouter
@@ -420,7 +433,8 @@ func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore,
 		for _, rt := range res.ReadyTodos {
 			_, _ = ev.Append(r.Context(), id, "todo_ready", rt.ID, map[string]any{"type": rt.Type})
 		}
-		_ = ps.SetStatus(r.Context(), id, "running")
+		// status no longer set imperatively to "running" here — it's derived from
+		// todos by projectstate.Compute / RefreshStatus (single source of truth).
 		writeJSON(w, http.StatusAccepted, map[string]any{
 			"planId": res.PlanID, "valid": res.Valid, "fallbackUsed": res.FallbackUsed,
 		})
@@ -493,6 +507,31 @@ func listPlansHandler(ps ProjectStore) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": plans})
+	}
+}
+
+// StateReader is the project-state surface the /state endpoint + SSE need.
+type StateReader interface {
+	LoadState(ctx context.Context, projectID, planID string) (projectstate.ProjectState, error)
+}
+
+// stateHandler (GET /api/projects/{id}/state): viewer+. Returns the
+// authoritative semantic snapshot computed by projectstate.Compute.
+// Accepts optional ?planId=<id> to scope the state to a specific run;
+// when omitted, returns the latest run's state (unchanged behavior).
+func stateHandler(sr StateReader) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		planID := r.URL.Query().Get("planId")
+		st, err := sr.LoadState(r.Context(), r.PathValue("id"), planID)
+		if errors.Is(err, project.ErrNotFound) {
+			http.Error(w, "project not found", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, st)
 	}
 }
 

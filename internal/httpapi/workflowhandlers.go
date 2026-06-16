@@ -51,6 +51,19 @@ func createWorkflowHandler(ws WorkflowStore) http.HandlerFunc {
 			http.Error(w, "bad request: name required", http.StatusBadRequest)
 			return
 		}
+		if len(req.Nodes) > 0 {
+			var nodes []planner.WorkflowNode
+			if err := json.Unmarshal(req.Nodes, &nodes); err != nil {
+				http.Error(w, "invalid workflow: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if len(nodes) > 0 {
+				if err := planner.ValidateCustomGraph(nodes); err != nil {
+					http.Error(w, "invalid workflow: "+err.Error(), http.StatusBadRequest)
+					return
+				}
+			}
+		}
 		wf, err := ws.Create(r.Context(), r.PathValue("id"), req.Name, req.Nodes)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -67,6 +80,19 @@ func updateWorkflowHandler(ws WorkflowStore) http.HandlerFunc {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
 			http.Error(w, "bad request: name required", http.StatusBadRequest)
 			return
+		}
+		if len(req.Nodes) > 0 {
+			var nodes []planner.WorkflowNode
+			if err := json.Unmarshal(req.Nodes, &nodes); err != nil {
+				http.Error(w, "invalid workflow: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if len(nodes) > 0 {
+				if err := planner.ValidateCustomGraph(nodes); err != nil {
+					http.Error(w, "invalid workflow: "+err.Error(), http.StatusBadRequest)
+					return
+				}
+			}
 		}
 		wf, err := ws.Update(r.Context(), r.PathValue("id"), r.PathValue("wfId"), req.Name, req.Nodes)
 		if errors.Is(err, workflows.ErrNotFound) {
@@ -125,12 +151,16 @@ func runWorkflowHandler(ps ProjectStore, ws WorkflowStore, pl PlannerPort, ev Ev
 		var nodes []planner.WorkflowNode
 		if len(wf.Nodes) > 0 {
 			if err := json.Unmarshal(wf.Nodes, &nodes); err != nil {
-				http.Error(w, "invalid workflow configuration: "+err.Error(), http.StatusBadRequest)
+				http.Error(w, "invalid workflow: "+err.Error(), http.StatusBadRequest)
 				return
 			}
 		}
 		if len(nodes) == 0 {
 			http.Error(w, "workflow has no nodes", http.StatusBadRequest)
+			return
+		}
+		if err := planner.ValidateCustomGraph(nodes); err != nil {
+			http.Error(w, "invalid workflow: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 		if over, err := quotaExceeded(r.Context(), cs, quota, p.OrgID); err != nil {

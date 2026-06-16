@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/costa92/llm-agent-studio/internal/projectstate"
 	"github.com/costa92/llm-agent-studio/internal/storage"
 )
 
@@ -374,4 +375,209 @@ func TestCancelSweepsSubmittedAssets(t *testing.T) {
 	if pending != 1 {
 		t.Fatalf("pending_acceptance must survive cancel, got %d", pending)
 	}
+}
+
+// TestLoadState_NoPlan_Draft: a newly created project (no plans) must return a
+// ProjectState with Status=="draft", RunStatus=="idle", and ProjectID==p.ID.
+// Guards the no-plan passthrough branch in LoadState.
+func TestLoadState_NoPlan_Draft(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	orgID := "org_ls_noplan_" + uniqueSuffix()
+	p, err := s.Create(ctx, CreateInput{OrgID: orgID, Name: "LS-NoPlan", CreatedBy: "u"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	st, err := s.LoadState(ctx, p.ID, "")
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if st.ProjectID != p.ID {
+		t.Errorf("ProjectID=%q want %q", st.ProjectID, p.ID)
+	}
+	if st.Status != "draft" {
+		t.Errorf("Status=%q want draft", st.Status)
+	}
+	if st.RunStatus != "idle" {
+		t.Errorf("RunStatus=%q want idle", st.RunStatus)
+	}
+}
+
+// TestLoadState_WithTodos: a project with a plan + a script todo must surface
+// the script stage's status correctly (one script todo in status 'running' →
+// script stage status 'running', RunStatus 'running').
+func TestLoadState_WithTodos(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	orgID := "org_ls_todos_" + uniqueSuffix()
+	p, err := s.Create(ctx, CreateInput{OrgID: orgID, Name: "LS-Todos", CreatedBy: "u"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	planID := "pln_ls_" + p.ID
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO plans (id, project_id, status, valid, fallback_used, created_at)
+		 VALUES ($1, $2, 'running', true, false, now())`, planID, p.ID); err != nil {
+		t.Fatalf("insert plan: %v", err)
+	}
+	todoID := "todo_ls_" + p.ID
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO todos (id, project_id, plan_id, type, status) VALUES ($1, $2, $3, 'script', 'running')`,
+		todoID, p.ID, planID); err != nil {
+		t.Fatalf("insert todo: %v", err)
+	}
+	st, err := s.LoadState(ctx, p.ID, "")
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if st.ProjectID != p.ID {
+		t.Errorf("ProjectID=%q want %q", st.ProjectID, p.ID)
+	}
+	if st.RunStatus != "running" {
+		t.Errorf("RunStatus=%q want running", st.RunStatus)
+	}
+	// Find the script stage.
+	var scriptStage *projectstate.Stage
+	for i := range st.Stages {
+		if st.Stages[i].Role == "script" {
+			scriptStage = &st.Stages[i]
+		}
+	}
+	if scriptStage == nil {
+		t.Fatalf("script stage missing in %+v", st.Stages)
+	}
+	if scriptStage.Status != "running" {
+		t.Errorf("script stage status=%q want running", scriptStage.Status)
+	}
+	if scriptStage.TodoID != todoID {
+		t.Errorf("script stage TodoID=%q want %q", scriptStage.TodoID, todoID)
+	}
+}
+
+// TestLoadState_SpecificPlan: two plans exist (older has a failed script todo,
+// newer has a running script todo). LoadState with the older plan's ID must
+// reflect the older plan's state; LoadState with "" must reflect the newer
+// plan (latest). Pins the regression fix: historical pages must not show
+// the latest run's state.
+func TestLoadState_SpecificPlan(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	orgID := "org_ls_specific_" + uniqueSuffix()
+	p, err := s.Create(ctx, CreateInput{OrgID: orgID, Name: "LS-Specific", CreatedBy: "u"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// older plan with a failed script todo
+	olderPlanID := "pln_older_" + uniqueSuffix()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO plans (id, project_id, status, valid, fallback_used, created_at)
+		 VALUES ($1, $2, 'failed', true, false, now() - interval '10 minutes')`,
+		olderPlanID, p.ID); err != nil {
+		t.Fatalf("insert older plan: %v", err)
+	}
+	olderTodoID := "todo_older_" + uniqueSuffix()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO todos (id, project_id, plan_id, type, status) VALUES ($1, $2, $3, 'script', 'failed')`,
+		olderTodoID, p.ID, olderPlanID); err != nil {
+		t.Fatalf("insert older todo: %v", err)
+	}
+
+	// newer plan with a running script todo
+	newerPlanID := "pln_newer_" + uniqueSuffix()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO plans (id, project_id, status, valid, fallback_used, created_at)
+		 VALUES ($1, $2, 'running', true, false, now())`,
+		newerPlanID, p.ID); err != nil {
+		t.Fatalf("insert newer plan: %v", err)
+	}
+	newerTodoID := "todo_newer_" + uniqueSuffix()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO todos (id, project_id, plan_id, type, status) VALUES ($1, $2, $3, 'script', 'running')`,
+		newerTodoID, p.ID, newerPlanID); err != nil {
+		t.Fatalf("insert newer todo: %v", err)
+	}
+
+	// LoadState with specific older plan ID must reflect the older plan.
+	older, err := s.LoadState(ctx, p.ID, olderPlanID)
+	if err != nil {
+		t.Fatalf("LoadState(olderPlanID): %v", err)
+	}
+	if older.Plan == nil || older.Plan.PlanID != olderPlanID {
+		t.Errorf("older: Plan.PlanID=%v want %q", older.Plan, olderPlanID)
+	}
+	var olderScript *projectstate.Stage
+	for i := range older.Stages {
+		if older.Stages[i].Role == "script" {
+			olderScript = &older.Stages[i]
+		}
+	}
+	if olderScript == nil {
+		t.Fatalf("older: script stage missing in %+v", older.Stages)
+	}
+	if olderScript.Status != "failed" {
+		t.Errorf("older: script stage status=%q want failed", olderScript.Status)
+	}
+	if olderScript.TodoID != olderTodoID {
+		t.Errorf("older: script stage TodoID=%q want %q", olderScript.TodoID, olderTodoID)
+	}
+
+	// LoadState with "" must reflect the newer (latest) plan.
+	latest, err := s.LoadState(ctx, p.ID, "")
+	if err != nil {
+		t.Fatalf("LoadState(latest): %v", err)
+	}
+	if latest.Plan == nil || latest.Plan.PlanID != newerPlanID {
+		t.Errorf("latest: Plan.PlanID=%v want %q", latest.Plan, newerPlanID)
+	}
+	if latest.RunStatus != "running" {
+		t.Errorf("latest: RunStatus=%q want running", latest.RunStatus)
+	}
+}
+
+// TestLoadState_UnknownPlan_Passthrough: requesting an unknown planID (or a
+// planID that belongs to a different project) must return the draft passthrough
+// state without error (HasPlan==false semantics).
+func TestLoadState_UnknownPlan_Passthrough(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	orgID := "org_ls_unk_" + uniqueSuffix()
+	p, err := s.Create(ctx, CreateInput{OrgID: orgID, Name: "LS-Unknown", CreatedBy: "u"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	assertPassthrough := func(label, planID string) {
+		st, err := s.LoadState(ctx, p.ID, planID)
+		if err != nil {
+			t.Fatalf("LoadState(%s): %v", label, err)
+		}
+		if st.ProjectID != p.ID {
+			t.Errorf("%s: ProjectID=%q want %q", label, st.ProjectID, p.ID)
+		}
+		if st.Plan != nil {
+			t.Errorf("%s: Plan should be nil, got %+v", label, st.Plan)
+		}
+		if st.Status != "draft" {
+			t.Errorf("%s: Status=%q want draft", label, st.Status)
+		}
+	}
+
+	// A planID that simply does not exist → draft passthrough.
+	assertPassthrough("nonexistent", "nonexistent-plan-id")
+
+	// A planID that exists but belongs to ANOTHER project must NOT leak that
+	// project's state — the WHERE project_id=$2 guard turns it into passthrough.
+	otherP, err := s.Create(ctx, CreateInput{OrgID: orgID, Name: "LS-Other", CreatedBy: "u"})
+	if err != nil {
+		t.Fatalf("create other: %v", err)
+	}
+	otherPlanID := "pln_other_" + uniqueSuffix()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO plans (id, project_id, status, valid, fallback_used, created_at)
+		 VALUES ($1, $2, 'running', true, false, now())`,
+		otherPlanID, otherP.ID); err != nil {
+		t.Fatalf("insert other-project plan: %v", err)
+	}
+	assertPassthrough("cross-project", otherPlanID)
 }

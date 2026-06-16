@@ -1,6 +1,7 @@
 import { useState } from "react"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { toast } from "sonner"
+import { ApiError } from "@/lib/apiClient"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Badge } from "@/components/studio/Badge"
 import { Button } from "@/components/studio/Button"
@@ -63,9 +64,13 @@ function RunsListPage() {
         params: { org, id, runId: res.planId },
       })
     } catch (err) {
-      const status = (err as { status?: number }).status
-      if (status === 429) {
+      if (err instanceof ApiError && err.status === 429) {
         toast.error("配额已用尽，请稍后再试")
+        return
+      }
+      if (err instanceof ApiError && err.status === 400) {
+        const msg = err.body.replace(/^invalid workflow:\s*/i, "").replace(/^custom workflow:\s*/i, "").trim()
+        toast.error(msg || "工作流配置无效")
         return
       }
       toast.error("运行失败")

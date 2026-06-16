@@ -2,11 +2,13 @@ package httpapi
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/costa92/llm-agent-studio/internal/events"
+	"github.com/costa92/llm-agent-studio/internal/projectstate"
 )
 
 // scriptedReader replays a fixed event list (terminating with run_done so the
@@ -31,7 +33,7 @@ func TestStreamWhitelistsEventNames(t *testing.T) {
 		{Seq: 1, Kind: "todo_ready", TodoID: "t1"},
 		{Seq: 2, Kind: "evil\nevent: hacked"},
 		{Seq: 3, Kind: "run_done"},
-	}})
+	}}, &stateStoreStub{})
 	req := httptest.NewRequest("GET", "/api/projects/p1/events/stream", nil)
 	req.SetPathValue("id", "p1")
 	rr := httptest.NewRecorder()
@@ -59,7 +61,7 @@ func TestStreamWhitelistsAssetSubmitted(t *testing.T) {
 		{Seq: 1, Kind: "asset_submitted", TodoID: "t1"},
 		{Seq: 2, Kind: "asset_polling", TodoID: "t1"},
 		{Seq: 3, Kind: "run_done"},
-	}})
+	}}, &stateStoreStub{})
 	req := httptest.NewRequest("GET", "/api/projects/p1/events/stream", nil)
 	req.SetPathValue("id", "p1")
 	rr := httptest.NewRecorder()
@@ -99,7 +101,7 @@ func TestStreamResumesFromLastEventID(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			h := streamEventsHandler(scriptedReader{evs: evs})
+			h := streamEventsHandler(scriptedReader{evs: evs}, &stateStoreStub{})
 			req := httptest.NewRequest("GET", "/api/projects/p1/events/stream", nil)
 			req.SetPathValue("id", "p1")
 			if tc.header != "" {
@@ -122,5 +124,38 @@ func TestStreamResumesFromLastEventID(t *testing.T) {
 				t.Fatalf("run_done must always be delivered to terminate the stream (header=%q):\n%s", tc.header, body)
 			}
 		})
+	}
+}
+
+func TestStreamEvents_EmitsInitialStateFrame(t *testing.T) {
+	// The handler runs the first emit() unconditionally before entering the
+	// ticker loop's ctx-check, so it always writes the initial "state" frame.
+	// scriptedReader.List and stateStoreStub.LoadState both ignore the context,
+	// so cancelling up front cannot abort that first emit — it completes, then
+	// the ticker loop's select sees ctx.Done() and returns. Waiting on <-done
+	// therefore guarantees the frame is in the buffer with zero scheduling races.
+	reader := scriptedReader{evs: nil} // no events — handler will not return early
+	st := &stateStoreStub{state: projectstate.ProjectState{
+		ProjectID: "p1", Version: 0, Status: "draft", RunStatus: "idle",
+	}}
+	h := streamEventsHandler(reader, st)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/p1/events/stream", nil)
+	req.SetPathValue("id", "p1")
+	ctx, cancel := context.WithCancel(req.Context())
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() { h(rec, req); close(done) }()
+	cancel() // first emit() runs before the ticker loop; this only stops the loop
+	<-done
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: state") {
+		t.Fatalf("missing initial state frame; body=%q", body)
+	}
+	if !strings.Contains(body, `"status":"draft"`) {
+		t.Fatalf("state frame missing status; body=%q", body)
 	}
 }

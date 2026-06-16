@@ -156,7 +156,10 @@ type WorkflowNode struct {
 	DependsOn  []string `json:"dependsOn"`
 }
 
-func validateCustomGraph(nodes []WorkflowNode) error {
+// ValidateCustomGraph enforces the custom-workflow DAG rules (non-empty, unique
+// ids, whitelisted types, known deps, acyclic). Callers validate at save AND
+// run time so a saved workflow is always runnable.
+func ValidateCustomGraph(nodes []WorkflowNode) error {
 	if len(nodes) == 0 {
 		return fmt.Errorf("custom workflow: empty graph")
 	}
@@ -222,7 +225,7 @@ func validateCustomGraph(nodes []WorkflowNode) error {
 // workflow's runs/assets/timeline can be isolated; pass "" for the legacy
 // project-level custom run (stored as NULL workflow_id).
 func (p *Planner) PlanCustom(ctx context.Context, projectID, workflowID string, b Brief, nodes []WorkflowNode) (Result, error) {
-	if err := validateCustomGraph(nodes); err != nil {
+	if err := ValidateCustomGraph(nodes); err != nil {
 		return Result{}, fmt.Errorf("planner: validate custom graph: %w", err)
 	}
 

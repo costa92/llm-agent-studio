@@ -26,6 +26,38 @@ import type {
 // 新建/编辑工作流。name 文本框 + WorkflowNodesEditor。
 // 校验：name 非空、≥1 节点、节点 id 非空且唯一（与原 EditProjectDialog 一致）。
 
+// 返回第一处问题的中文描述,无问题返回 null。前端与后端 ValidateCustomGraph 同义,
+// 让用户在保存前就看到「循环依赖」,而不是运行时才 400。
+export function findGraphError(nodes: { id: string; dependsOn: string[] }[]): string | null {
+  const ids = new Set(nodes.map((n) => n.id))
+  for (const n of nodes) {
+    for (const dep of n.dependsOn) {
+      if (!ids.has(dep)) return `节点「${n.id}」依赖了不存在的节点「${dep}」`
+    }
+  }
+  // DFS 三色环检测
+  const deps = new Map(nodes.map((n) => [n.id, n.dependsOn]))
+  const color = new Map<string, number>() // 0 white,1 gray,2 black
+  let cycleMsg: string | null = null
+  const visit = (id: string): boolean => {
+    color.set(id, 1)
+    for (const dep of deps.get(id) ?? []) {
+      const c = color.get(dep) ?? 0
+      if (c === 1) {
+        cycleMsg = `工作流存在循环依赖:「${id}」→「${dep}」`
+        return true
+      }
+      if (c === 0 && visit(dep)) return true
+    }
+    color.set(id, 2)
+    return false
+  }
+  for (const n of nodes) {
+    if ((color.get(n.id) ?? 0) === 0 && visit(n.id)) return cycleMsg
+  }
+  return null
+}
+
 const DEFAULT_NODES: WorkflowNode[] = [
   { id: "script-1", type: "script", promptId: "", dependsOn: [] },
   { id: "storyboard-1", type: "storyboard", promptId: "", dependsOn: ["script-1"] },
@@ -79,6 +111,12 @@ export function WorkflowForm({
         return
       }
       ids.add(n.id)
+    }
+
+    const graphErr = findGraphError(nodes)
+    if (graphErr) {
+      setSubmitError(graphErr)
+      return
     }
 
     setIsSubmitting(true)

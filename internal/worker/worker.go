@@ -819,7 +819,7 @@ func (w *Worker) fail(ctx context.Context, c claimed, cause error) {
 		if err := w.cfg.Todos.MarkFailed(ctx, c.todoID, msg); err != nil {
 			w.cfg.Logger.Error("worker: mark failed failed", "todo", c.todoID, "err", err)
 		}
-		_, _ = w.cfg.Events.Append(ctx, c.projectID, "todo_failed", c.todoID, map[string]any{"error": msg})
+		_, _ = w.cfg.Events.Append(ctx, c.projectID, "todo_failed", c.todoID, map[string]any{"type": c.typ, "error": msg})
 		if _, err := w.cfg.Projects.RefreshStatus(ctx, c.projectID); err != nil {
 			w.cfg.Logger.Warn("worker: refresh status failed", "project", c.projectID, "err", err)
 		}
@@ -1195,7 +1195,7 @@ func (w *Worker) pollAsync(ctx, cctx context.Context, c claimed, asset assets.As
 		if err := w.cfg.Todos.MarkFailed(cctx, c.todoID, reason); err != nil {
 			w.cfg.Logger.Error("worker: async mark failed", "todo", c.todoID, "err", err)
 		}
-		_, _ = w.cfg.Events.Append(cctx, c.projectID, "todo_failed", c.todoID, map[string]any{"error": reason})
+		_, _ = w.cfg.Events.Append(cctx, c.projectID, "todo_failed", c.todoID, map[string]any{"type": c.typ, "error": reason})
 		if _, err := w.cfg.Projects.RefreshStatus(cctx, c.projectID); err == nil && w.allDone(cctx, c.projectID) {
 			_, _, _ = w.cfg.Events.AppendRunDone(cctx, c.projectID)
 		}

@@ -197,6 +197,29 @@ func TestWorkerFailsTodoOnAgentError(t *testing.T) {
 	if nRunDone != 1 {
 		t.Fatalf("want 1 run_done event after terminal failure, got %d", nRunDone)
 	}
+	// todo_failed payload must carry both "type" and "error" (mirrors
+	// todo_ready/started/finished — frontend uses payload.type for stage
+	// coloring).
+	var failPayload []byte
+	_ = pool.QueryRow(ctx,
+		`SELECT payload FROM run_events WHERE project_id=$1 AND kind='todo_failed' LIMIT 1`,
+		projID).Scan(&failPayload)
+	if len(failPayload) == 0 {
+		t.Fatal("no todo_failed event found")
+	}
+	var m map[string]any
+	if err := json.Unmarshal(failPayload, &m); err != nil {
+		t.Fatalf("unmarshal todo_failed payload: %v", err)
+	}
+	if _, ok := m["type"]; !ok {
+		t.Fatalf("todo_failed payload missing 'type' field: %s", failPayload)
+	}
+	if m["type"] != "storyboard" {
+		t.Fatalf("todo_failed payload type=%q want storyboard", m["type"])
+	}
+	if _, ok := m["error"]; !ok {
+		t.Fatalf("todo_failed payload missing 'error' field: %s", failPayload)
+	}
 	// With a terminal failure present, the project status resolves to 'failed'
 	// rather than wedging in 'running'.
 	projStatus, err := projStore.RefreshStatus(ctx, projID)

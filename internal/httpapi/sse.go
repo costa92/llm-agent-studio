@@ -30,14 +30,19 @@ var sseEventNames = map[string]bool{
 	"asset_prescreened": true,
 	"asset_submitted":   true,
 	"run_done":          true,
+	// state frames are written directly by emitState() and never go through this
+	// whitelist; the entry only guards against a DB-sourced event row with
+	// kind="state" being downgraded to a generic "message".
+	"state": true,
 }
 
-// streamEventsHandler streams the run timeline as SSE (spec §9). It replays all
-// historical run_events then polls for new ones, emitting each as a named SSE
-// event (kind = event name) until a run_done event is seen or the client
+// streamEventsHandler streams the run timeline as SSE (spec §9). On connect it
+// emits an authoritative "state" frame first, then replays all historical
+// run_events, polls for new ones, and pushes a fresh "state" frame whenever the
+// state version changes — until a run_done event is seen or the client
 // disconnects. Event names match the UI prototype:
 // planner_started/todo_ready/todo_started/todo_finished/todo_failed/run_done.
-func streamEventsHandler(reader EventReader) http.HandlerFunc {
+func streamEventsHandler(reader EventReader, state StateReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		projectID := r.PathValue("id")
 		planID := r.URL.Query().Get("planId")
@@ -60,6 +65,22 @@ func streamEventsHandler(reader EventReader) http.HandlerFunc {
 				after = n
 			}
 		}
+
+		var lastStateVersion int64 = -1
+		emitState := func() error {
+			st, err := state.LoadState(r.Context(), projectID, planID)
+			if err != nil {
+				return err
+			}
+			if st.Version == lastStateVersion {
+				return nil // unchanged: skip
+			}
+			lastStateVersion = st.Version
+			data, _ := json.Marshal(st)
+			_, _ = io.WriteString(w, "event: state\ndata: "+string(data)+"\n\n")
+			return nil
+		}
+
 		emit := func() (done bool, err error) {
 			evs, lerr := reader.List(r.Context(), projectID, planID, after, 200)
 			if lerr != nil {
@@ -78,6 +99,9 @@ func streamEventsHandler(reader EventReader) http.HandlerFunc {
 				if e.Kind == "run_done" {
 					done = true
 				}
+			}
+			if serr := emitState(); serr != nil {
+				return done, serr
 			}
 			flusher.Flush()
 			return done, nil

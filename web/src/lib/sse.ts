@@ -21,6 +21,7 @@ const NAMED_EVENTS = new Set<string>([
   "asset_prescreened",
   "asset_submitted",
   "run_done",
+  "state",
 ])
 
 // run_done 是终止帧（服务端见到后关闭流）。
@@ -39,6 +40,8 @@ export interface SseHandlers {
   onDone?: (frame: SseFrame) => void
   // 非白名单 kind（服务端以 `message` 事件流出，原 kind 仍在帧里）——仅追加日志，不改节点态。
   onMessage?: (frame: SseFrame) => void
+  // 后端权威状态帧（event: state）——data 是 ProjectState JSON。
+  onState?: (raw: unknown) => void
   // 连接生命周期（SseIndicator：connected/reconnecting/disconnected）。
   onOpen?: () => void
   onError?: (err: unknown) => void
@@ -68,6 +71,11 @@ export function streamRunEvents(
       handlers.onOpen?.()
     },
     onmessage(ev) {
+      // 后端权威状态帧优先分流（data 是 ProjectState JSON，非 SseFrame）。
+      if (ev.event === "state") {
+        handlers.onState?.(JSON.parse(ev.data))
+        return
+      }
       const frame = JSON.parse(ev.data) as SseFrame
       if (NAMED_EVENTS.has(ev.event)) {
         handlers.onEvent(frame)

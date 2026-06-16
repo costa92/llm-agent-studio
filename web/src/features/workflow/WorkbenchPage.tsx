@@ -9,7 +9,8 @@ import { PipGroup } from "@/components/studio/PipGroup"
 import { WarnStrip } from "@/components/studio/WarnStrip"
 import { ErrorStrip } from "@/components/studio/ErrorStrip"
 import type { Project } from "@/lib/types"
-import type { Pip, StageId, TimelineState } from "@/lib/timeline"
+import type { ProjectState, PipState, StageRole } from "@/lib/projectState"
+import type { LogLine, StageId } from "@/lib/timeline"
 import type { SseConnState } from "./useProductionTimeline"
 import { statusLabel, statusVariant } from "@/features/projects/status"
 
@@ -19,6 +20,15 @@ const STAGE_SUB: Record<string, ReactNode> = {
   S2: "ScriptAgent · 剧本生成",
   S3: "StoryboardAgent · 分镜拆解",
   S5: "采纳后入资产库 · admin 门禁",
+}
+
+// 语义 role ↔ 着色 id（S1-S5）。纯前端表现映射。
+const ROLE_TO_STAGE: Record<StageRole, StageId> = {
+  planner: "S1",
+  script: "S2",
+  storyboard: "S3",
+  asset: "S4",
+  review: "S5",
 }
 
 // T3：仅 S2（剧本）/ S3（分镜）可点开抽屉检视产物（S1/S4/S5 无单一可检视文档）。
@@ -34,7 +44,10 @@ const CONN_TO_STATUS: Record<SseConnState, SseStatus> = {
 
 export interface WorkbenchViewProps {
   project: Project
-  timeline: TimelineState
+  // 后端权威工作流状态（徽章/阶段/pip/计数/错误均读此）。
+  state: ProjectState
+  // 左栏事件日志（仅由原始事件流累积）。
+  log: LogLine[]
   conn: SseConnState
   // SSE 是否在跑（完成态隐藏指示器/或显灰）。
   live: boolean
@@ -50,7 +63,7 @@ export interface WorkbenchViewProps {
   // T3：点击可检视阶段（S2/S3）→ 容器打开抽屉。
   onSelectStage?: (stageId: StageId) => void
   // T3：点击已完成 pip → 容器把右栏预览切到该工件。
-  onSelectPip?: (pip: Pip) => void
+  onSelectPip?: (pip: PipState) => void
   // T3：抽屉插槽（容器组装 Sheet + ScriptView/StoryboardView，SSE/轨道保持挂载）。
   drawer?: ReactNode
   // T2：run_done（或 review 态）→「去审核」CTA，容器做 SPA 跳转携 ?project=。
@@ -63,7 +76,8 @@ export interface WorkbenchViewProps {
 // 三栏工作台：左 brief/KV/WarnStrip/EventLog，中制片轨道，右选中工件预览。
 export function WorkbenchView({
   project,
-  timeline,
+  state,
+  log,
   conn,
   live,
   fallbackUsed,
@@ -79,26 +93,27 @@ export function WorkbenchView({
   onBack,
   plannerModelNode,
 }: WorkbenchViewProps) {
-  const { stages, pips, doneAssetCount, pipCount, pendingAssetCount, slateVisible, runStatus } =
-    timeline
+  const { stages, pips, assets, runStatus, status } = state
+  const doneAssetCount = assets.done
+  const pipCount = assets.total
+  const pendingAssetCount = assets.pending
+  // SlateBar：运行中显示，完成/空闲隐藏。
+  const slateVisible = runStatus === "running"
 
   // run_done（或项目 review 态）→ 进入待审核：徽标改「待审核 · N」+「去审核」CTA。
-  // 终止失败态（failed/canceled）必须以项目态徽标优先覆盖——run_done 后徽标原本会改口说
-  // 「待审核 · 0」，误导用户以为有 0 个待审资产（实际是 6/6 跑挂、没东西可审）。
-  const readyForReview = runStatus === "done" || project.status === "review"
+  // 终止失败态（failed/canceled）必须以项目态徽标优先覆盖——否则会误显「待审核 · 0」。
+  // 直接读权威 status/runStatus（不再混算 project.status）。
+  const readyForReview = runStatus === "done" || status === "review"
   const showReviewBadge =
-    runStatus === "done" && project.status !== "failed" && project.status !== "canceled"
+    runStatus === "done" && status !== "failed" && status !== "canceled"
   const badge = showReviewBadge ? (
     <Badge variant="pending">待审核 · {pendingAssetCount}</Badge>
   ) : (
-    <Badge variant={statusVariant(project.status)}>{statusLabel(project.status)}</Badge>
+    <Badge variant={statusVariant(status)}>{statusLabel(status)}</Badge>
   )
 
-  // 错误条：从 timeline.log 取最后一条 todo_failed（reducer 已在文案里嵌入 payload.error），
-  // 红色常驻——把真实原因从「埋在日志里」抬到「工作台一眼可见」。
-  const lastFailedLine = [...timeline.log]
-    .reverse()
-    .find((l) => l.kind === "todo_failed")
+  // 错误条：读权威 state.error（最后一个失败 todo），红色常驻——把真实原因抬到「一眼可见」。
+  const errorText = state.error?.message
 
   return (
     <div className="flex h-full flex-col">
@@ -162,11 +177,11 @@ export function WorkbenchView({
               <WarnStrip>⚠ Planner 输出畸形，已回落默认管线（fallback_used）</WarnStrip>
             </section>
           )}
-          {lastFailedLine && (
+          {errorText && (
             <section className="mb-5">
               <ErrorStrip>
                 <b className="mr-1">运行出错：</b>
-                {lastFailedLine.text}
+                {errorText}
               </ErrorStrip>
             </section>
           )}
@@ -175,7 +190,7 @@ export function WorkbenchView({
               事件日志
             </h4>
             <EventLog
-              lines={timeline.log.map((l) => ({
+              lines={log.map((l) => ({
                 seq: l.seq,
                 text: l.text,
                 emphasis: l.emphasis,
@@ -187,28 +202,39 @@ export function WorkbenchView({
         {/* 中：制片轨道（主视图）。<lg 排首位避免被左栏挤到折叠下方。 */}
         <div className="order-first p-[18px] lg:order-none lg:overflow-y-auto">
           <div className="relative mx-auto max-w-[560px] pl-2">
-            {stages.map((stage, i) => (
-              <TimelineStage
-                key={stage.id}
-                stage={stage}
-                last={i === stages.length - 1}
-                // 仅 S2/S3 可点开抽屉检视产物（容器 gated 拉 script/shots）。
-                onSelect={
-                  onSelectStage && INSPECTABLE_STAGES[stage.id]
-                    ? () => onSelectStage(stage.id)
-                    : undefined
-                }
-                sub={
-                  stage.id === "S4"
-                    ? `素材生成 · ${doneAssetCount}/${pipCount || "?"}`
-                    : STAGE_SUB[stage.id]
-                }
-              >
-                {stage.id === "S4" && pips.length > 0 && (
-                  <PipGroup pips={pips} onSelectPip={onSelectPip} />
-                )}
-              </TimelineStage>
-            ))}
+            {stages.map((stage, i) => {
+              const id = ROLE_TO_STAGE[stage.role]
+              // 适配权威 StageState（role+status）→ TimelineStage 的表现形状。
+              const uiStage = {
+                id,
+                kind: stage.role,
+                status: stage.status,
+                todoId: stage.todoId,
+                linked: stage.status === "done",
+              }
+              return (
+                <TimelineStage
+                  key={id}
+                  stage={uiStage}
+                  last={i === stages.length - 1}
+                  // 仅 S2/S3 可点开抽屉检视产物（容器 gated 拉 script/shots）。
+                  onSelect={
+                    onSelectStage && INSPECTABLE_STAGES[id]
+                      ? () => onSelectStage(id)
+                      : undefined
+                  }
+                  sub={
+                    id === "S4"
+                      ? `素材生成 · ${doneAssetCount}/${pipCount || "?"}`
+                      : STAGE_SUB[id]
+                  }
+                >
+                  {id === "S4" && pips.length > 0 && (
+                    <PipGroup pips={pips} onSelectPip={onSelectPip} />
+                  )}
+                </TimelineStage>
+              )
+            })}
           </div>
         </div>
 

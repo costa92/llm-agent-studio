@@ -1,5 +1,6 @@
 import { useState } from "react"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
+import { useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { getAccessToken } from "@/lib/apiClient"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -18,6 +19,7 @@ import {
   fetchAllEvents,
   useCancel,
   useProject,
+  useProjectState,
   useRun,
   useScript,
   useShots,
@@ -27,8 +29,8 @@ import { useProductionTimeline } from "@/features/workflow/useProductionTimeline
 import { useUpdateProject, usePromptStyles } from "@/features/projects/api"
 import { useOrgTextModels, useOrgImageModels } from "@/features/cost/api"
 import { EditProjectDialog } from "@/features/projects/EditProjectDialog"
-import type { Pip, StageId } from "@/lib/timeline"
-import type { ProjectStatus } from "@/lib/types"
+import type { StageId } from "@/lib/timeline"
+import type { ProjectState, PipState } from "@/lib/projectState"
 
 export const Route = createFileRoute(
   "/_authed/orgs/$org/projects/$id/runs/$runId"
@@ -70,16 +72,19 @@ function RunWorkbenchPage() {
   const run = useRun(id)
   const cancel = useCancel(id)
 
-  const displayStatus = (plan?.status ?? project?.status) as ProjectStatus | undefined
+  // 权威工作流状态（REST 拉取 + SSE state 帧覆盖缓存）。
+  const qc = useQueryClient()
+  const stateQuery = useProjectState(id, runId)
 
-  // 回放 → 续接实时
-  const { state, conn } = useProductionTimeline({
+  // 回放 → 续接实时（日志累积 + state 帧写回缓存）。
+  const { log, conn } = useProductionTimeline({
     projectId: id,
     accessToken: getAccessToken(),
-    status: displayStatus,
+    status: stateQuery.data?.status,
     enabled: project != null,
     fetchAllEvents,
     planId: runId,
+    onState: (s) => qc.setQueryData(["project-state", id, runId], s),
   })
 
   if (projectQuery.isLoading || plansQuery.isLoading) {
@@ -97,10 +102,21 @@ function RunWorkbenchPage() {
     )
   }
 
+  // 权威工作流状态（加载中回落 draft 草态）。
+  const wfState: ProjectState = stateQuery.data ?? {
+    projectId: id,
+    version: 0,
+    status: "draft",
+    runStatus: "idle",
+    stages: [],
+    pips: [],
+    assets: { total: 0, done: 0, pending: 0 },
+  }
+
   // 只能对最新的/且是运行态的进行操作
   const isLatestPlan = !!(plansQuery.data && plansQuery.data.length > 0 && plansQuery.data[0].id === runId)
   const canRun = isLatestPlan
-  const canCancel = isLatestPlan && (displayStatus === "running" || displayStatus === "planning")
+  const canCancel = isLatestPlan && (wfState.status === "running" || wfState.status === "planning")
 
   async function handleRun() {
     try {
@@ -141,7 +157,7 @@ function RunWorkbenchPage() {
     }
   }
 
-  const latestAssetId = [...state.pips]
+  const latestAssetId = [...wfState.pips]
     .reverse()
     .find((p) => p.status === "done" && p.assetId)?.assetId
   const previewAssetId =
@@ -151,7 +167,7 @@ function RunWorkbenchPage() {
     if (stageId === "S2") setSelection({ kind: "script" })
     else if (stageId === "S3") setSelection({ kind: "storyboard" })
   }
-  function handleSelectPip(pip: Pip) {
+  function handleSelectPip(pip: PipState) {
     if (pip.assetId) setSelection({ kind: "asset", assetId: pip.assetId })
   }
 
@@ -189,7 +205,7 @@ function RunWorkbenchPage() {
     </Sheet>
   )
 
-  const isLive = !isTerminal(displayStatus ?? "")
+  const isLive = wfState.runStatus !== "done"
 
   const plannerModelNode = (
     <div className="space-y-1 py-1">
@@ -234,16 +250,10 @@ function RunWorkbenchPage() {
 
   return (
     <WorkbenchView
-      project={{
-        ...project,
-        status: displayStatus ?? "draft",
-        fallbackUsed: showFallback,
-      }}
+      project={{ ...project, fallbackUsed: showFallback }}
       plannerModelNode={plannerModelNode}
-      timeline={{
-        ...state,
-        runStatus: isTerminal(displayStatus ?? "") ? "done" : (displayStatus === "planning" ? "idle" : "running"),
-      }}
+      state={wfState}
+      log={log}
       conn={conn}
       live={isLive}
       fallbackUsed={showFallback || undefined}
@@ -274,8 +284,4 @@ function RunWorkbenchPage() {
       }
     />
   )
-}
-
-function isTerminal(status: string): boolean {
-  return ["completed", "review", "failed", "canceled"].includes(status)
 }
