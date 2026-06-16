@@ -222,6 +222,32 @@ func TestBuildGraph_FanInMultiParent(t *testing.T) {
 	if len(edges) != 2 {
 		t.Fatalf("edges = %+v want 2", edges)
 	}
+	want := map[string]bool{"c->a": true, "c->b": true}
+	for _, e := range edges {
+		delete(want, e.From+"->"+e.To)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing edges %v in %+v", want, edges)
+	}
+}
+
+func TestBuildGraph_FanOut(t *testing.T) {
+	todos := []Todo{
+		{ID: "a", Type: "script", Status: "done", CreatedAt: tAt(1)},
+		{ID: "b", Type: "storyboard", Status: "ready", DependsOn: []string{"a"}, CreatedAt: tAt(2)},
+		{ID: "c", Type: "storyboard", Status: "ready", DependsOn: []string{"a"}, CreatedAt: tAt(3)},
+	}
+	_, edges := buildGraph(todos, map[string]Asset{})
+	if len(edges) != 2 {
+		t.Fatalf("edges = %+v want 2", edges)
+	}
+	want := map[string]bool{"b->a": true, "c->a": true}
+	for _, e := range edges {
+		delete(want, e.From+"->"+e.To)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing edges %v in %+v", want, edges)
+	}
 }
 
 func TestBuildGraph_DropsDanglingEdge(t *testing.T) {

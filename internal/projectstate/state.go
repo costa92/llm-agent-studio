@@ -39,7 +39,7 @@ type GraphNode struct {
 	ID      string `json:"id"`                // todo id
 	Label   string `json:"label"`             // type 派生(如「剧本生成 #1」)
 	Type    string `json:"type"`              // script|storyboard|asset|...
-	Status  string `json:"status"`            // blocked|pending|running|done|failed
+	Status  string `json:"status"`            // blocked|pending(ready)|running|done|failed
 	AssetID string `json:"assetId,omitempty"` // asset 节点的产物 id,供右栏预览
 }
 
