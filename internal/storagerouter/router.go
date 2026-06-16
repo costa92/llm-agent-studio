@@ -26,15 +26,25 @@ import (
 type resolver interface {
 	ResolveForOrg(ctx context.Context, orgID string) (storageconfig.ResolvedStorage, bool, error)
 	ResolveForOrgAndMode(ctx context.Context, orgID string, mode string) (storageconfig.ResolvedStorage, bool, error)
+	// ResolveByID + ConfigIDForOrgAndMode back the write-time-backend serve path:
+	// write-time persists the backend identity (config id / "builtin"); serve reads
+	// that EXACT backend regardless of the org's current storage_mode.
+	ResolveByID(ctx context.Context, id string) (storageconfig.ResolvedStorage, bool, error)
+	ConfigIDForOrgAndMode(ctx context.Context, orgID string, mode string) (string, bool, error)
 }
+
+// builtinConfigID is the sentinel persisted on an asset whose bytes landed in the
+// built-in default localfs store (no storage_configs row). Serve resolves it back
+// to Default. Distinct from "" (legacy, pre-fix rows → fall back to current mode).
+const builtinConfigID = "builtin"
 
 // Config configures a Router. Configs/Build are required for routing; Default is
 // the built-in localfs store (always usable) returned on any miss/error.
 type Config struct {
 	Configs resolver
-	Default blob.BlobStore                                                // 内置 localfs 默认，永远可用
+	Default blob.BlobStore                                                 // 内置 localfs 默认，永远可用
 	Build   func(rs storageconfig.ResolvedStorage) (blob.BlobStore, error) // 由 cmd/studiod 注入
-	Logger  *slog.Logger                                                  // nil → slog.Default()
+	Logger  *slog.Logger                                                   // nil → slog.Default()
 }
 
 // Router resolves+constructs per-org blob stores, caching by config identity.
@@ -85,12 +95,63 @@ func (r *Router) BlobStoreForMode(ctx context.Context, orgID string, mode string
 	if !ok {
 		return r.def, nil
 	}
+	return r.buildCached(orgID, rs), nil
+}
+
+// ConfigIDForMode returns the backend-identity token to PERSIST on an asset at
+// write time for an (org,mode): the resolved storage_configs.id, or the
+// "builtin" sentinel when the (org,mode) resolves to the built-in default store
+// (no config row). Worker / cover handlers call this alongside BlobStoreForMode
+// so the serve path can later re-resolve EXACTLY this backend by id, independent
+// of the org's current storage_mode. NEVER errors-out the caller: on a resolve
+// error it returns "builtin" (the safe write-time default the bytes land in when
+// resolution fails) so write paths keep working.
+func (r *Router) ConfigIDForMode(ctx context.Context, orgID, mode string) (string, error) {
+	if r.configs == nil {
+		return builtinConfigID, nil
+	}
+	id, ok, err := r.configs.ConfigIDForOrgAndMode(ctx, orgID, mode)
+	if err != nil {
+		r.log.Warn("storagerouter: resolve config id failed; persisting builtin sentinel", "org", orgID, "mode", mode, "err", err)
+		return builtinConfigID, nil
+	}
+	if !ok || id == "" {
+		return builtinConfigID, nil
+	}
+	return id, nil
+}
+
+// BlobStoreForConfigID resolves the blob store by an asset's persisted backend
+// token (the serve path). "builtin" → the built-in Default store; a real config
+// id → that EXACTLY (independent of the org's current mode); unknown/disabled id
+// or any error → falls back to Default (never returns nil-meaningfully). The ""
+// (legacy) token is NOT handled here — the handler routes "" to BlobStoreForMode
+// (current-mode fallback) so un-backfilled rows keep working.
+func (r *Router) BlobStoreForConfigID(ctx context.Context, orgID, configID string) (blob.BlobStore, error) {
+	if configID == builtinConfigID || r.configs == nil || r.build == nil {
+		return r.def, nil
+	}
+	rs, ok, err := r.configs.ResolveByID(ctx, configID)
+	if err != nil {
+		r.log.Warn("storagerouter: resolve config by id failed; using default store", "org", orgID, "configID", configID, "err", err)
+		return r.def, nil
+	}
+	if !ok {
+		r.log.Warn("storagerouter: config id not found/disabled; using default store", "org", orgID, "configID", configID)
+		return r.def, nil
+	}
+	return r.buildCached(orgID, rs), nil
+}
+
+// buildCached builds (or returns a cached) blob store for a resolved config,
+// keyed by config identity. On build failure it logs and returns Default.
+func (r *Router) buildCached(orgID string, rs storageconfig.ResolvedStorage) blob.BlobStore {
 	key := identity(rs)
 	// 缓存命中。
 	r.mu.RLock()
 	if bs, hit := r.cache[key]; hit {
 		r.mu.RUnlock()
-		return bs, nil
+		return bs
 	}
 	r.mu.RUnlock()
 	// 缓存未命中 → 构造。
@@ -98,17 +159,17 @@ func (r *Router) BlobStoreForMode(ctx context.Context, orgID string, mode string
 	if berr != nil {
 		r.log.Warn("storagerouter: build org blob store failed; using default store",
 			"org", orgID, "mode", rs.Mode, "bucket", rs.Bucket, "err", berr)
-		return r.def, nil
+		return r.def
 	}
 	r.mu.Lock()
 	// double-check：并发下别人可能已建好同 key。
 	if existing, hit := r.cache[key]; hit {
 		r.mu.Unlock()
-		return existing, nil
+		return existing
 	}
 	r.cache[key] = bs
 	r.mu.Unlock()
-	return bs, nil
+	return bs
 }
 
 // identity 是缓存键：mode|endpoint|region|bucket|accessKeyID|sha256(secret)|useSSL|publicPrefix。

@@ -581,3 +581,85 @@ func TestLoadState_UnknownPlan_Passthrough(t *testing.T) {
 	}
 	assertPassthrough("cross-project", otherPlanID)
 }
+
+// TestLoadState_CustomGraph: 自定义工作流(plan.workflow_id 非空 + 两 todo 带
+// depends_on)→ LoadState 返回 isCustom + 正确 nodes/edges。
+func TestLoadState_CustomGraph(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	orgID := "org_ls_graph_" + uniqueSuffix()
+	p, err := s.Create(ctx, CreateInput{OrgID: orgID, Name: "LS-Graph", CreatedBy: "u"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	wfID := "wf_ls_" + p.ID
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO workflows (id, project_id, name, nodes) VALUES ($1,$2,'wf','[]'::jsonb)`,
+		wfID, p.ID); err != nil {
+		t.Fatalf("insert workflow: %v", err)
+	}
+	planID := "pln_lsg_" + p.ID
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO plans (id, project_id, status, valid, fallback_used, workflow_id, created_at)
+		 VALUES ($1,$2,'running',true,false,$3, now())`, planID, p.ID, wfID); err != nil {
+		t.Fatalf("insert plan: %v", err)
+	}
+	scriptID := "todo_s_" + p.ID
+	boardID := "todo_b_" + p.ID
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO todos (id, project_id, plan_id, type, status, depends_on, created_at)
+		 VALUES ($1,$2,$3,'script','done','{}', now()),
+		        ($4,$2,$3,'storyboard','running',ARRAY[$1], now() + interval '1 second')`,
+		scriptID, p.ID, planID, boardID); err != nil {
+		t.Fatalf("insert todos: %v", err)
+	}
+	st, err := s.LoadState(ctx, p.ID, "")
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if !st.IsCustom {
+		t.Fatalf("IsCustom = false, want true (workflow_id set)")
+	}
+	if len(st.Nodes) != 2 {
+		t.Fatalf("nodes = %+v want 2", st.Nodes)
+	}
+	if len(st.Edges) != 1 || st.Edges[0].From != boardID || st.Edges[0].To != scriptID {
+		t.Fatalf("edges = %+v want one board→script", st.Edges)
+	}
+	if st.Nodes[0].ID != scriptID || st.Nodes[1].ID != boardID {
+		t.Fatalf("node order = %s,%s want script,board", st.Nodes[0].ID, st.Nodes[1].ID)
+	}
+}
+
+// TestLoadState_LegacyCustomEnabled: custom_workflow_enabled=true 但 plan
+// 的 workflow_id 为 NULL(经 runHandler 的项目级自定义路径)→ 仍判 isCustom。
+func TestLoadState_LegacyCustomEnabled(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	orgID := "org_ls_legacy_" + uniqueSuffix()
+	p, err := s.Create(ctx, CreateInput{
+		OrgID: orgID, Name: "LS-Legacy", CreatedBy: "u", CustomWorkflowEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	planID := "pln_lsl_" + p.ID
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO plans (id, project_id, status, valid, fallback_used, created_at)
+		 VALUES ($1,$2,'running',true,false, now())`, planID, p.ID); err != nil {
+		t.Fatalf("insert plan: %v", err)
+	}
+	st, err := s.LoadState(ctx, p.ID, "")
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if !st.IsCustom {
+		t.Fatalf("IsCustom = false, want true (custom_workflow_enabled)")
+	}
+	if len(st.Nodes) != 0 {
+		t.Fatalf("Nodes = %+v want empty", st.Nodes)
+	}
+	if len(st.Edges) != 0 {
+		t.Fatalf("Edges = %+v want empty", st.Edges)
+	}
+}

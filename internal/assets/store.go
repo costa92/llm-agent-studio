@@ -44,6 +44,13 @@ type Asset struct {
 	PrescreenNote  string   `json:"prescreenNote"`
 
 	ExternalJobID string `json:"externalJobId"` // M4 async: provider job handle
+
+	// StorageConfigID records WHICH storage backend the blob bytes were written
+	// to: a storage_configs.id, the "builtin" sentinel (built-in default localfs),
+	// or "" for legacy rows written before this column existed. The serve path
+	// resolves the blob store by THIS token so a later storage_mode switch can't
+	// re-point a historical asset at the wrong (now-empty) backend.
+	StorageConfigID string `json:"storageConfigId"`
 }
 
 // CreateInput is the input to Create / CreateVersion.
@@ -74,13 +81,13 @@ func newID() string {
 	return hex.EncodeToString(b)
 }
 
-const assetCols = `id, project_id, shot_id, todo_id, type, blob_key, url, prompt, style, provider, model, status, version, parent_asset_id, tags, prescreen_score, prescreen_flags, prescreen_note, external_job_id`
+const assetCols = `id, project_id, shot_id, todo_id, type, blob_key, url, prompt, style, provider, model, status, version, parent_asset_id, tags, prescreen_score, prescreen_flags, prescreen_note, external_job_id, storage_config_id`
 
 func scanAsset(row pgx.Row) (Asset, error) {
 	var a Asset
 	err := row.Scan(&a.ID, &a.ProjectID, &a.ShotID, &a.TodoID, &a.Type, &a.BlobKey, &a.URL,
 		&a.Prompt, &a.Style, &a.Provider, &a.Model, &a.Status, &a.Version, &a.ParentAssetID, &a.Tags,
-		&a.PrescreenScore, &a.PrescreenFlags, &a.PrescreenNote, &a.ExternalJobID)
+		&a.PrescreenScore, &a.PrescreenFlags, &a.PrescreenNote, &a.ExternalJobID, &a.StorageConfigID)
 	return a, err
 }
 
@@ -119,10 +126,10 @@ func (s *Store) insert(ctx context.Context, in CreateInput, version int, parentI
 	}
 	if _, err := s.pool.Exec(ctx,
 		`INSERT INTO assets (`+assetCols+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
 		a.ID, a.ProjectID, a.ShotID, a.TodoID, a.Type, a.BlobKey, a.URL, a.Prompt, a.Style,
 		a.Provider, a.Model, a.Status, a.Version, a.ParentAssetID, a.Tags,
-		a.PrescreenScore, a.PrescreenFlags, a.PrescreenNote, a.ExternalJobID); err != nil {
+		a.PrescreenScore, a.PrescreenFlags, a.PrescreenNote, a.ExternalJobID, a.StorageConfigID); err != nil {
 		return Asset{}, fmt.Errorf("assets: insert: %w", err)
 	}
 	return a, nil
@@ -148,11 +155,14 @@ func (s *Store) Get(ctx context.Context, id string) (Asset, error) {
 // as the TOCTOU-free won/lost arbiter under cross-worker reclaim — only the
 // worker whose SetBlob flips submitted→pending_acceptance emits asset_generated
 // + books the ledger; a loser (won=false) bows out benignly.
-func (s *Store) SetBlob(ctx context.Context, id, blobKey, url, provider, model, newStatus string) (bool, error) {
+// storageConfigID records WHICH backend the bytes landed in (a storage_configs.id
+// or the "builtin" sentinel) so the serve path re-resolves THAT backend regardless
+// of the project's current storage_mode. URL-only/failed transitions pass "".
+func (s *Store) SetBlob(ctx context.Context, id, blobKey, url, provider, model, storageConfigID, newStatus string) (bool, error) {
 	tag, err := s.pool.Exec(ctx,
-		`UPDATE assets SET blob_key=$2, url=$3, provider=$4, model=$5, status=$6
+		`UPDATE assets SET blob_key=$2, url=$3, provider=$4, model=$5, storage_config_id=$6, status=$7
 		 WHERE id=$1 AND status IN ('generating','submitted')`,
-		id, blobKey, url, provider, model, newStatus)
+		id, blobKey, url, provider, model, storageConfigID, newStatus)
 	if err != nil {
 		return false, err
 	}
@@ -162,9 +172,10 @@ func (s *Store) SetBlob(ctx context.Context, id, blobKey, url, provider, model, 
 // SetCoverBlob writes blob_key/url unconditionally (M14 cover assets). Unlike
 // SetBlob there is NO status guard: a cover asset is created status='accepted',
 // so SetBlob's generating/submitted-only guard would no-op. Wraps errors.
-func (s *Store) SetCoverBlob(ctx context.Context, id, blobKey, url string) error {
+func (s *Store) SetCoverBlob(ctx context.Context, id, blobKey, url, storageConfigID string) error {
 	if _, err := s.pool.Exec(ctx,
-		`UPDATE assets SET blob_key=$2, url=$3 WHERE id=$1`, id, blobKey, url); err != nil {
+		`UPDATE assets SET blob_key=$2, url=$3, storage_config_id=$4 WHERE id=$1`,
+		id, blobKey, url, storageConfigID); err != nil {
 		return fmt.Errorf("assets: set cover blob: %w", err)
 	}
 	return nil
@@ -190,14 +201,14 @@ func (s *Store) VersionHistory(ctx context.Context, id string) ([]Asset, error) 
 			UNION
 			SELECT a.id, a.project_id, a.shot_id, a.todo_id, a.type, a.blob_key, a.url, a.prompt,
 			       a.style, a.provider, a.model, a.status, a.version, a.parent_asset_id, a.tags,
-			       a.prescreen_score, a.prescreen_flags, a.prescreen_note, a.external_job_id
+			       a.prescreen_score, a.prescreen_flags, a.prescreen_note, a.external_job_id, a.storage_config_id
 			FROM assets a JOIN up u ON a.id = u.parent_asset_id
 		), down AS (
 			SELECT `+assetCols+` FROM assets WHERE id=$1
 			UNION
 			SELECT a.id, a.project_id, a.shot_id, a.todo_id, a.type, a.blob_key, a.url, a.prompt,
 			       a.style, a.provider, a.model, a.status, a.version, a.parent_asset_id, a.tags,
-			       a.prescreen_score, a.prescreen_flags, a.prescreen_note, a.external_job_id
+			       a.prescreen_score, a.prescreen_flags, a.prescreen_note, a.external_job_id, a.storage_config_id
 			FROM assets a JOIN down d ON a.parent_asset_id = d.id
 		)
 		SELECT `+assetCols+` FROM up
@@ -264,7 +275,7 @@ func (s *Store) Library(ctx context.Context, f LibraryFilter) ([]Asset, string, 
 	args = append(args, limit)
 	q := `SELECT a.id, a.project_id, a.shot_id, a.todo_id, a.type, a.blob_key, a.url, a.prompt,
 		a.style, a.provider, a.model, a.status, a.version, a.parent_asset_id, a.tags,
-		a.prescreen_score, a.prescreen_flags, a.prescreen_note, a.external_job_id
+		a.prescreen_score, a.prescreen_flags, a.prescreen_note, a.external_job_id, a.storage_config_id
 		FROM assets a JOIN projects p ON a.project_id = p.id
 		WHERE ` + strings.Join(conds, " AND ") + `
 		ORDER BY a.id ASC LIMIT $` + fmt.Sprintf("%d", len(args))

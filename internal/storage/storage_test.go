@@ -2,9 +2,17 @@ package storage
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"os"
 	"testing"
 )
+
+func randHex(n int) string {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
 
 func testDSN(t *testing.T) string {
 	t.Helper()
@@ -202,5 +210,78 @@ func TestMigrateCreatesM4Surfaces(t *testing.T) {
 	}
 	if n < 4 {
 		t.Fatalf("per-second pricing not seeded: %d rows, want >= 4", n)
+	}
+}
+
+// TestM15BackfillStorageConfigID covers the m15 backfill: legacy assets
+// (storage_config_id=”) get stamped with the matching enabled storage_configs.id
+// for their project's (org,mode); rows with no matching config (builtin/no-config
+// orgs) get the "builtin" sentinel. The backfill is guarded on =” so re-running
+// migrate over freshly-inserted legacy rows applies it (idempotent).
+func TestM15BackfillStorageConfigID(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, Config{PGURL: testDSN(t)})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	pool := st.Pool()
+
+	suf := func() string { return randHex(6) }
+	cfgOrg := "org-cfg-" + suf()
+	builtinOrg := "org-builtin-" + suf()
+	cfgID := "cfg-" + suf()
+
+	// Configured org: an enabled s3 storage_configs row + a project on mode s3.
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO storage_configs (id, scope, org_id, mode, bucket, endpoint, enabled)
+		 VALUES ($1,'org',$2,'s3','b','https://e',true)`, cfgID, cfgOrg); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	cfgProj := "proj-cfg-" + suf()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO projects (id, org_id, name, created_by, storage_mode) VALUES ($1,$2,'p','u','s3')`,
+		cfgProj, cfgOrg); err != nil {
+		t.Fatalf("seed cfg project: %v", err)
+	}
+	// Builtin org: a project with no storage_configs row (storage_mode '').
+	builtinProj := "proj-builtin-" + suf()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO projects (id, org_id, name, created_by, storage_mode) VALUES ($1,$2,'p','u','')`,
+		builtinProj, builtinOrg); err != nil {
+		t.Fatalf("seed builtin project: %v", err)
+	}
+
+	// Legacy assets: storage_config_id='' (simulate pre-m15 rows).
+	cfgAsset := "asset-cfg-" + suf()
+	builtinAsset := "asset-builtin-" + suf()
+	for _, row := range []struct{ id, proj string }{{cfgAsset, cfgProj}, {builtinAsset, builtinProj}} {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO assets (id, project_id, type, status, blob_key, storage_config_id)
+			 VALUES ($1,$2,'image','accepted','k.png','')`, row.id, row.proj); err != nil {
+			t.Fatalf("seed asset %s: %v", row.id, err)
+		}
+	}
+
+	// Re-run migrate: the guarded backfill claims the freshly-inserted legacy rows.
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("re-migrate (backfill): %v", err)
+	}
+
+	var got string
+	if err := pool.QueryRow(ctx, `SELECT storage_config_id FROM assets WHERE id=$1`, cfgAsset).Scan(&got); err != nil {
+		t.Fatalf("read cfg asset: %v", err)
+	}
+	if got != cfgID {
+		t.Fatalf("configured-org asset should get config id %q, got %q", cfgID, got)
+	}
+	if err := pool.QueryRow(ctx, `SELECT storage_config_id FROM assets WHERE id=$1`, builtinAsset).Scan(&got); err != nil {
+		t.Fatalf("read builtin asset: %v", err)
+	}
+	if got != "builtin" {
+		t.Fatalf("builtin-org asset should get 'builtin' sentinel, got %q", got)
 	}
 }

@@ -127,8 +127,11 @@ export const scriptSchema = z
 export type ScriptDoc = z.infer<typeof scriptSchema>
 
 // GET /api/projects/{id}/script —— 裸 JSON。404 → null（未生成）；非法 JSON → 抛错（视图映射"数据异常"）。
-export async function fetchScript(id: string, planId?: string): Promise<ScriptDoc | null> {
-  const qs = planId ? `?planId=${encodeURIComponent(planId)}` : ""
+export async function fetchScript(id: string, planId?: string, todoId?: string): Promise<ScriptDoc | null> {
+  const params = new URLSearchParams()
+  if (planId) params.set("planId", planId)
+  if (todoId) params.set("todoId", todoId)
+  const qs = params.toString() ? `?${params.toString()}` : ""
   const res = await apiFetch(`/api/projects/${id}/script${qs}`)
   if (res.status === 404) return null
   if (!res.ok) {
@@ -139,10 +142,10 @@ export async function fetchScript(id: string, planId?: string): Promise<ScriptDo
   return scriptSchema.parse(raw)
 }
 
-export function useScript(id: string, planId?: string): UseQueryResult<ScriptDoc | null> {
+export function useScript(id: string, planId?: string, todoId?: string): UseQueryResult<ScriptDoc | null> {
   return useQuery({
-    queryKey: ["script", id, planId ?? ""],
-    queryFn: () => fetchScript(id, planId),
+    queryKey: ["script", id, planId ?? "", todoId ?? ""],
+    queryFn: () => fetchScript(id, planId, todoId),
     enabled: id !== "",
     retry: false,
   })
@@ -160,10 +163,13 @@ export interface Shot {
   [k: string]: unknown
 }
 
-export function useShots(id: string, planId?: string): UseQueryResult<Shot[]> {
-  const qs = planId ? `?planId=${encodeURIComponent(planId)}` : ""
+export function useShots(id: string, planId?: string, todoId?: string): UseQueryResult<Shot[]> {
+  const params = new URLSearchParams()
+  if (planId) params.set("planId", planId)
+  if (todoId) params.set("todoId", todoId)
+  const qs = params.toString() ? `?${params.toString()}` : ""
   return useQuery({
-    queryKey: ["shots", id, planId ?? ""],
+    queryKey: ["shots", id, planId ?? "", todoId ?? ""],
     queryFn: () =>
       apiJSON<ItemsEnvelope<Shot>>(`/api/projects/${id}/shots${qs}`).then(
         (env) => env.items,

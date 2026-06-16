@@ -65,9 +65,9 @@ type Config struct {
 	Storage          *storagerouter.Router     // per-org → global → 内置 localfs 默认 的对象存储路由
 	Assets           *assets.Store
 	Cost             *cost.Store
-	Models           *models.Store       // resolve org default provider+model; nil → registry default
-	Registry         *generate.Registry  // nil → use Asset's bound generator directly
-	Router           *modelrouter.Router // BYOK per-org 模型路由 (chat + media); nil → legacy Models/Registry path
+	Models           *models.Store           // resolve org default provider+model; nil → registry default
+	Registry         *generate.Registry      // nil → use Asset's bound generator directly
+	Router           *modelrouter.Router     // BYOK per-org 模型路由 (chat + media); nil → legacy Models/Registry path
 	CustomExecutors  map[string]TaskExecutor // custom executors registered for task types
 	WorkerID         string
 	GenQuota         int // rolling-24h per-org generation quota; 0 = unlimited (backstop for fan-out)
@@ -641,7 +641,7 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 				// Regenerate todos point at a v2 asset pre-created 'generating'
 				// at HTTP time — terminal-state it or it strands in the library.
 				if in.AssetID != "" {
-					_, _ = w.cfg.Assets.SetBlob(cctx, in.AssetID, "", "", "", "", "failed")
+					_, _ = w.cfg.Assets.SetBlob(cctx, in.AssetID, "", "", "", "", "", "failed")
 				}
 				return "", fmt.Errorf("worker: org %s generation quota exceeded (%d/%d in 24h)", orgID, n, w.cfg.GenQuota)
 			}
@@ -673,7 +673,7 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 	}
 	if gerr != nil {
 		// Mark the asset failed so it isn't stuck 'generating'.
-		_, _ = w.cfg.Assets.SetBlob(cctx, created.id, "", "", "", "", "failed")
+		_, _ = w.cfg.Assets.SetBlob(cctx, created.id, "", "", "", "", "", "failed")
 		return "", gerr
 	}
 
@@ -681,6 +681,9 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 	// 路由对象存储 (per-org → global → 内置 localfs 默认)；router 出错也回落 Default，
 	// 故 BlobStoreFor 极少返回 err，真出错则当 Put 失败处理。
 	blobKey := "assets/" + c.projectID + "/" + created.id + mimeToExt(out.MimeType)
+	// storageConfigID records WHICH backend the bytes landed in so the serve path
+	// re-resolves THAT backend regardless of the project's later storage_mode.
+	var storageConfigID string
 	if len(out.Bytes) > 0 {
 		orgID, _ := w.cfg.Projects.OrgIDForProject(ctx, c.projectID)
 		proj, perr := w.cfg.Projects.Get(ctx, c.projectID)
@@ -690,11 +693,13 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 		}
 		bs, berr := w.cfg.Storage.BlobStoreForMode(ctx, orgID, storageMode)
 		if berr != nil {
-			_, _ = w.cfg.Assets.SetBlob(cctx, created.id, "", "", "", "", "failed")
+			_, _ = w.cfg.Assets.SetBlob(cctx, created.id, "", "", "", "", "", "failed")
 			return "", fmt.Errorf("worker: resolve blob store: %w", berr)
 		}
+		// Resolve the backend identity token alongside the store (same org+mode).
+		storageConfigID, _ = w.cfg.Storage.ConfigIDForMode(ctx, orgID, storageMode)
 		if err := bs.Put(ctx, blobKey, bytesReader(out.Bytes), out.MimeType); err != nil {
-			_, _ = w.cfg.Assets.SetBlob(cctx, created.id, "", "", "", "", "failed")
+			_, _ = w.cfg.Assets.SetBlob(cctx, created.id, "", "", "", "", "", "failed")
 			return "", fmt.Errorf("worker: blob put: %w", err)
 		}
 	} else {
@@ -704,7 +709,7 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 	// detached cctx so a fired CallTimeout cannot strand the asset in 'generating'
 	// or drop the cost ledger row (终审 nit: bookkeeping of completed work must
 	// not inherit the per-call deadline).
-	if _, err := w.cfg.Assets.SetBlob(cctx, created.id, blobKey, out.URL, out.Provider, out.Model, "pending_acceptance"); err != nil {
+	if _, err := w.cfg.Assets.SetBlob(cctx, created.id, blobKey, out.URL, out.Provider, out.Model, storageConfigID, "pending_acceptance"); err != nil {
 		return "", fmt.Errorf("worker: asset set blob: %w", err)
 	}
 
@@ -1291,6 +1296,7 @@ func (w *Worker) completeAsync(cctx context.Context, c claimed, asset assets.Ass
 		data, mime = b, ct
 	}
 	blobKey := "assets/" + c.projectID + "/" + asset.ID + mimeToExt(mime)
+	var storageConfigID string
 	if len(data) > 0 {
 		// 按 asset 所属 org 路由对象存储 (per-org → global → 内置 localfs 默认)。
 		orgID, _ := w.cfg.Projects.OrgIDForProject(cctx, c.projectID)
@@ -1304,6 +1310,8 @@ func (w *Worker) completeAsync(cctx context.Context, c claimed, asset assets.Ass
 			_ = w.cfg.Assets.SetAsyncFailed(cctx, asset.ID)
 			return "", fmt.Errorf("worker: async resolve blob store: %w", berr)
 		}
+		// Record the backend identity so the serve path re-resolves THAT backend.
+		storageConfigID, _ = w.cfg.Storage.ConfigIDForMode(cctx, orgID, storageMode)
 		if err := bs.Put(cctx, blobKey, bytesReader(data), mime); err != nil {
 			_ = w.cfg.Assets.SetAsyncFailed(cctx, asset.ID)
 			return "", fmt.Errorf("worker: async blob put: %w", err)
@@ -1325,7 +1333,7 @@ func (w *Worker) completeAsync(cctx context.Context, c claimed, asset assets.Ass
 	// here via errLostLease BEFORE the emit/ledger, so process treats it like
 	// errRescheduled (NO MarkDone, NO discardCanceledAsset) — no duplicate SSE and
 	// no cancel of the completed, PAID asset.
-	won, err := w.cfg.Assets.SetBlob(cctx, asset.ID, blobKey, res.URL, provider, model, "pending_acceptance")
+	won, err := w.cfg.Assets.SetBlob(cctx, asset.ID, blobKey, res.URL, provider, model, storageConfigID, "pending_acceptance")
 	if err != nil {
 		return "", fmt.Errorf("worker: async set blob: %w", err)
 	}

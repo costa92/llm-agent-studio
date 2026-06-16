@@ -20,6 +20,22 @@ export interface PipState {
   assetId?: string
 }
 
+// GraphNode.status 与 StageStatus2 同域(后端 buildGraph 用 todoStatusToStage)。
+export type GraphNodeStatus = StageStatus2
+
+export interface GraphNode {
+  id: string
+  label: string
+  type: string
+  status: GraphNodeStatus
+  assetId?: string
+}
+
+export interface GraphEdge {
+  from: string
+  to: string
+}
+
 export interface AssetsState {
   total: number
   done: number
@@ -48,4 +64,7 @@ export interface ProjectState {
   pips: PipState[]
   assets: AssetsState
   error?: ProblemError
+  nodes: GraphNode[]
+  edges: GraphEdge[]
+  isCustom: boolean
 }

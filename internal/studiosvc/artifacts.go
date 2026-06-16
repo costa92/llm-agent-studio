@@ -50,11 +50,17 @@ func (a *Artifacts) Todos(ctx context.Context, projectID string, planID string) 
 }
 
 // Script returns the latest script's content_json for a project (ok=false if
-// none yet).
-func (a *Artifacts) Script(ctx context.Context, projectID string, planID string) (json.RawMessage, bool, error) {
+// none yet). When todoID is non-empty, returns the artifact for that specific
+// workflow node only (scoped by scripts.todo_id), ignoring planID. When todoID
+// is empty, falls back to the existing per-planID / latest behavior.
+func (a *Artifacts) Script(ctx context.Context, projectID string, planID string, todoID string) (json.RawMessage, bool, error) {
 	var content []byte
 	var err error
-	if planID == "" {
+	if todoID != "" {
+		err = a.pool.QueryRow(ctx,
+			`SELECT content_json FROM scripts WHERE project_id=$1 AND todo_id=$2 ORDER BY created_at DESC LIMIT 1`,
+			projectID, todoID).Scan(&content)
+	} else if planID == "" {
 		err = a.pool.QueryRow(ctx,
 			`SELECT content_json FROM scripts WHERE project_id=$1 ORDER BY created_at DESC LIMIT 1`,
 			projectID).Scan(&content)
@@ -75,11 +81,18 @@ func (a *Artifacts) Script(ctx context.Context, projectID string, planID string)
 	return content, true, nil
 }
 
-// Shots lists a project's shots ordered by ordering.
-func (a *Artifacts) Shots(ctx context.Context, projectID string, planID string) ([]map[string]any, error) {
+// Shots lists a project's shots ordered by ordering. When todoID is non-empty,
+// returns shots for that specific workflow node only (scoped by shots.todo_id),
+// ignoring planID. When todoID is empty, falls back to the existing per-planID
+// / all-shots behavior.
+func (a *Artifacts) Shots(ctx context.Context, projectID string, planID string, todoID string) ([]map[string]any, error) {
 	var rows pgx.Rows
 	var err error
-	if planID == "" {
+	if todoID != "" {
+		rows, err = a.pool.Query(ctx,
+			`SELECT id, shot_no, camera, scene, action, prompt, duration FROM shots WHERE project_id=$1 AND todo_id=$2 ORDER BY ordering ASC`,
+			projectID, todoID)
+	} else if planID == "" {
 		rows, err = a.pool.Query(ctx,
 			`SELECT id, shot_no, camera, scene, action, prompt, duration FROM shots WHERE project_id=$1 ORDER BY ordering ASC`,
 			projectID)

@@ -44,6 +44,9 @@ function makeState(over: Partial<ProjectState> = {}): ProjectState {
     stages: blockedStages(),
     pips: [],
     assets: { total: 0, done: 0, pending: 0 },
+    nodes: [],
+    edges: [],
+    isCustom: false,
     ...over,
   }
 }
@@ -289,6 +292,27 @@ describe("WorkbenchView (authoritative ProjectState)", () => {
     )
     const alert = screen.getByRole("alert")
     expect(alert).toHaveTextContent(errMsg)
+  })
+
+  it("isCustom=true 渲染 GraphView 而非 5 段轨道", () => {
+    render(
+      <WorkbenchView
+        {...baseWorkbenchProps()}
+        state={makeState({
+          isCustom: true,
+          nodes: [{ id: "a", label: "剧本生成 #1", type: "script", status: "done" }],
+          edges: [],
+        })}
+      />,
+    )
+    expect(document.querySelector('[data-slot="graph"]')).not.toBeNull()
+    expect(document.querySelector('[data-slot="stage"]')).toBeNull()
+  })
+
+  it("isCustom=false 渲染 5 段轨道而非 GraphView", () => {
+    render(<WorkbenchView {...baseWorkbenchProps()} state={makeState({ isCustom: false })} />)
+    expect(document.querySelector('[data-slot="stage"]')).not.toBeNull()
+    expect(document.querySelector('[data-slot="graph"]')).toBeNull()
   })
 })
 

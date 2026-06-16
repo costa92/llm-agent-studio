@@ -406,7 +406,11 @@ func (s *Store) LoadState(ctx context.Context, projectID, planID string) (projec
 	if err != nil {
 		return projectstate.ProjectState{}, err
 	}
-	in := projectstate.Input{ProjectID: projectID, ProjectStatus: p.Status}
+	in := projectstate.Input{
+		ProjectID:             projectID,
+		ProjectStatus:         p.Status,
+		CustomWorkflowEnabled: p.CustomWorkflowEnabled,
+	}
 
 	// version = max event seq for the project (monotonic; 0 if none).
 	// Note: this is project-wide, not scoped to a single plan. It may
@@ -422,16 +426,16 @@ func (s *Store) LoadState(ctx context.Context, projectID, planID string) (projec
 
 	// resolve plan: when planID is provided use that plan (scoped to project);
 	// otherwise fall back to the latest plan for this project.
-	var planRowID string
+	var planRowID, workflowID string
 	var valid, fallbackUsed bool
 	if planID == "" {
 		err = s.pool.QueryRow(ctx,
-			`SELECT id, valid, fallback_used FROM plans WHERE project_id=$1 ORDER BY created_at DESC LIMIT 1`,
-			projectID).Scan(&planRowID, &valid, &fallbackUsed)
+			`SELECT id, valid, fallback_used, COALESCE(workflow_id,'') FROM plans WHERE project_id=$1 ORDER BY created_at DESC LIMIT 1`,
+			projectID).Scan(&planRowID, &valid, &fallbackUsed, &workflowID)
 	} else {
 		err = s.pool.QueryRow(ctx,
-			`SELECT id, valid, fallback_used FROM plans WHERE id=$1 AND project_id=$2`,
-			planID, projectID).Scan(&planRowID, &valid, &fallbackUsed)
+			`SELECT id, valid, fallback_used, COALESCE(workflow_id,'') FROM plans WHERE id=$1 AND project_id=$2`,
+			planID, projectID).Scan(&planRowID, &valid, &fallbackUsed, &workflowID)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return projectstate.Compute(in), nil // no plan / not found: draft passthrough
@@ -441,17 +445,18 @@ func (s *Store) LoadState(ctx context.Context, projectID, planID string) (projec
 	}
 	in.HasPlan = true
 	in.Plan = &projectstate.Plan{PlanID: planRowID, Valid: valid, FallbackUsed: fallbackUsed}
+	in.WorkflowID = workflowID
 
 	// todos of the resolved plan
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, type, status, COALESCE(error,'') FROM todos WHERE plan_id=$1 ORDER BY updated_at ASC`, planRowID)
+		`SELECT id, type, status, COALESCE(error,''), depends_on, created_at FROM todos WHERE plan_id=$1 ORDER BY updated_at ASC`, planRowID)
 	if err != nil {
 		return projectstate.ProjectState{}, fmt.Errorf("project: load state todos: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var t projectstate.Todo
-		if err := rows.Scan(&t.ID, &t.Type, &t.Status, &t.Error); err != nil {
+		if err := rows.Scan(&t.ID, &t.Type, &t.Status, &t.Error, &t.DependsOn, &t.CreatedAt); err != nil {
 			return projectstate.ProjectState{}, fmt.Errorf("project: scan state todo: %w", err)
 		}
 		in.Todos = append(in.Todos, t)

@@ -9,10 +9,11 @@ import { PipGroup } from "@/components/studio/PipGroup"
 import { WarnStrip } from "@/components/studio/WarnStrip"
 import { ErrorStrip } from "@/components/studio/ErrorStrip"
 import type { Project } from "@/lib/types"
-import type { ProjectState, PipState, StageRole } from "@/lib/projectState"
+import type { ProjectState, PipState, StageRole, GraphNode } from "@/lib/projectState"
 import type { LogLine, StageId } from "@/lib/timeline"
 import type { SseConnState } from "./useProductionTimeline"
 import { statusLabel, statusVariant } from "@/features/projects/status"
+import { GraphView } from "./GraphView"
 
 // 每阶段副标题（agent 名 / done/N 计数）。
 const STAGE_SUB: Record<string, ReactNode> = {
@@ -62,6 +63,8 @@ export interface WorkbenchViewProps {
   preview?: ReactNode
   // T3：点击可检视阶段（S2/S3）→ 容器打开抽屉。
   onSelectStage?: (stageId: StageId) => void
+  // 自定义 DAG 节点(asset 节点带 assetId)点击 → 右栏预览。
+  onSelectNode?: (node: GraphNode) => void
   // T3：点击已完成 pip → 容器把右栏预览切到该工件。
   onSelectPip?: (pip: PipState) => void
   // T3：抽屉插槽（容器组装 Sheet + ScriptView/StoryboardView，SSE/轨道保持挂载）。
@@ -88,6 +91,7 @@ export function WorkbenchView({
   preview,
   onSelectStage,
   onSelectPip,
+  onSelectNode,
   drawer,
   onOpenReview,
   onBack,
@@ -201,41 +205,49 @@ export function WorkbenchView({
 
         {/* 中：制片轨道（主视图）。<lg 排首位避免被左栏挤到折叠下方。 */}
         <div className="order-first p-[18px] lg:order-none lg:overflow-y-auto">
-          <div className="relative mx-auto max-w-[560px] pl-2">
-            {stages.map((stage, i) => {
-              const id = ROLE_TO_STAGE[stage.role]
-              // 适配权威 StageState（role+status）→ TimelineStage 的表现形状。
-              const uiStage = {
-                id,
-                kind: stage.role,
-                status: stage.status,
-                todoId: stage.todoId,
-                linked: stage.status === "done",
-              }
-              return (
-                <TimelineStage
-                  key={id}
-                  stage={uiStage}
-                  last={i === stages.length - 1}
-                  // 仅 S2/S3 可点开抽屉检视产物（容器 gated 拉 script/shots）。
-                  onSelect={
-                    onSelectStage && INSPECTABLE_STAGES[id]
-                      ? () => onSelectStage(id)
-                      : undefined
-                  }
-                  sub={
-                    id === "S4"
-                      ? `素材生成 · ${doneAssetCount}/${pipCount || "?"}`
-                      : STAGE_SUB[id]
-                  }
-                >
-                  {id === "S4" && pips.length > 0 && (
-                    <PipGroup pips={pips} onSelectPip={onSelectPip} />
-                  )}
-                </TimelineStage>
-              )
-            })}
-          </div>
+          {state.isCustom ? (
+            <GraphView
+              nodes={state.nodes}
+              edges={state.edges}
+              onSelectNode={onSelectNode}
+            />
+          ) : (
+            <div className="relative mx-auto max-w-[560px] pl-2">
+              {stages.map((stage, i) => {
+                const id = ROLE_TO_STAGE[stage.role]
+                // 适配权威 StageState（role+status）→ TimelineStage 的表现形状。
+                const uiStage = {
+                  id,
+                  kind: stage.role,
+                  status: stage.status,
+                  todoId: stage.todoId,
+                  linked: stage.status === "done",
+                }
+                return (
+                  <TimelineStage
+                    key={id}
+                    stage={uiStage}
+                    last={i === stages.length - 1}
+                    // 仅 S2/S3 可点开抽屉检视产物（容器 gated 拉 script/shots）。
+                    onSelect={
+                      onSelectStage && INSPECTABLE_STAGES[id]
+                        ? () => onSelectStage(id)
+                        : undefined
+                    }
+                    sub={
+                      id === "S4"
+                        ? `素材生成 · ${doneAssetCount}/${pipCount || "?"}`
+                        : STAGE_SUB[id]
+                    }
+                  >
+                    {id === "S4" && pips.length > 0 && (
+                      <PipGroup pips={pips} onSelectPip={onSelectPip} />
+                    )}
+                  </TimelineStage>
+                )
+              })}
+            </div>
+          )}
         </div>
 
         {/* 右：工件预览。 */}

@@ -42,6 +42,11 @@ type AssetLibrary interface {
 type BlobRouter interface {
 	BlobStoreFor(ctx context.Context, orgID string) (blob.BlobStore, error)
 	BlobStoreForMode(ctx context.Context, orgID string, mode string) (blob.BlobStore, error)
+	// BlobStoreForConfigID resolves the store by an asset's persisted backend
+	// token (serve path). ConfigIDForMode returns the token to persist at write
+	// time. Together they decouple serve from the project's CURRENT storage_mode.
+	BlobStoreForConfigID(ctx context.Context, orgID string, configID string) (blob.BlobStore, error)
+	ConfigIDForMode(ctx context.Context, orgID string, mode string) (string, error)
 }
 
 type ProjectReader interface {
@@ -85,7 +90,7 @@ type CoverGenerator interface {
 // bytes land in the blob store (satisfied by *assets.Store).
 type CoverAssetWriter interface {
 	Create(ctx context.Context, in assets.CreateInput) (assets.Asset, error)
-	SetCoverBlob(ctx context.Context, assetID, blobKey, url string) error
+	SetCoverBlob(ctx context.Context, assetID, blobKey, url, storageConfigID string) error
 }
 
 const signedURLTTL = 10 * time.Minute
@@ -365,12 +370,21 @@ func assetContentHandler(lib AssetLibrary, router BlobRouter, ps ProjectReader) 
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		proj, err := ps.Get(r.Context(), a.ProjectID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		// Resolve the blob store from the asset's WRITE-TIME backend identity, NOT
+		// the project's current storage_mode: after an org switches storage type, a
+		// historical asset's bytes still live in the old backend. token=="" is a
+		// legacy (pre-m15) row — fall back to current mode until it's backfilled.
+		var bs blob.BlobStore
+		if a.StorageConfigID == "" {
+			proj, perr := ps.Get(r.Context(), a.ProjectID)
+			if perr != nil {
+				http.Error(w, perr.Error(), http.StatusInternalServerError)
+				return
+			}
+			bs, err = router.BlobStoreForMode(r.Context(), orgID, proj.StorageMode)
+		} else {
+			bs, err = router.BlobStoreForConfigID(r.Context(), orgID, a.StorageConfigID)
 		}
-		bs, err := router.BlobStoreForMode(r.Context(), orgID, proj.StorageMode)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

@@ -23,11 +23,11 @@ import (
 
 // coverProjStub is a full ProjectStore that records SetCover calls.
 type coverProjStub struct {
-	proj         project.Project
-	getErr       error
-	setCoverErr  error
-	coverCalls   []string // assetIDs passed to SetCover
-	orgID        string
+	proj        project.Project
+	getErr      error
+	setCoverErr error
+	coverCalls  []string // assetIDs passed to SetCover
+	orgID       string
 }
 
 func (s *coverProjStub) Create(context.Context, project.CreateInput) (project.Project, error) {
@@ -50,7 +50,7 @@ func (s *coverProjStub) Update(context.Context, string, project.UpdateInput) (pr
 	return project.Project{}, nil
 }
 func (s *coverProjStub) SetStatus(context.Context, string, string) error { return nil }
-func (s *coverProjStub) SetCover(_ context.Context, _ , assetID string) error {
+func (s *coverProjStub) SetCover(_ context.Context, _, assetID string) error {
 	if s.setCoverErr != nil {
 		return s.setCoverErr
 	}
@@ -70,9 +70,9 @@ func (s *coverProjStub) LoadState(context.Context, string, string) (projectstate
 
 // coverAssetWriterStub is an in-memory CoverAssetWriter.
 type coverAssetWriterStub struct {
-	created     []assets.Asset
-	setBlobs    map[string][2]string // assetID -> [blobKey, url]
-	nextID      string
+	created  []assets.Asset
+	setBlobs map[string][2]string // assetID -> [blobKey, url]
+	nextID   string
 }
 
 func (w *coverAssetWriterStub) Create(_ context.Context, in assets.CreateInput) (assets.Asset, error) {
@@ -87,7 +87,7 @@ func (w *coverAssetWriterStub) Create(_ context.Context, in assets.CreateInput) 
 	w.created = append(w.created, a)
 	return a, nil
 }
-func (w *coverAssetWriterStub) SetCoverBlob(_ context.Context, assetID, blobKey, url string) error {
+func (w *coverAssetWriterStub) SetCoverBlob(_ context.Context, assetID, blobKey, url, _ string) error {
 	if w.setBlobs == nil {
 		w.setBlobs = map[string][2]string{}
 	}
@@ -97,8 +97,8 @@ func (w *coverAssetWriterStub) SetCoverBlob(_ context.Context, assetID, blobKey,
 
 // coverGenStub returns a fixed PNG-producing generator (the dev fake).
 type coverGenStub struct {
-	named  generate.MediaGenerator
-	def    generate.MediaGenerator
+	named                 generate.MediaGenerator
+	def                   generate.MediaGenerator
 	gotProvider, gotModel string
 }
 
@@ -118,6 +118,12 @@ func (r *coverBlobRouterStub) BlobStoreFor(context.Context, string) (blob.BlobSt
 }
 func (r *coverBlobRouterStub) BlobStoreForMode(context.Context, string, string) (blob.BlobStore, error) {
 	return r.bs, nil
+}
+func (r *coverBlobRouterStub) BlobStoreForConfigID(context.Context, string, string) (blob.BlobStore, error) {
+	return r.bs, nil
+}
+func (r *coverBlobRouterStub) ConfigIDForMode(context.Context, string, string) (string, error) {
+	return "", nil
 }
 
 // coverLibStub is an AssetLibrary returning a configurable asset.

@@ -414,6 +414,77 @@ func TestMultipleOrgConfigsAndResolution(t *testing.T) {
 	}
 }
 
+// TestResolveAndConfigIDAgreement verifies the fix for the "unreadable cover" bug:
+// when an org has multiple enabled configs (different modes), ResolveForOrgAndMode
+// and ConfigIDForOrgAndMode MUST resolve to the same row. Without ORDER BY in both
+// helper functions, two separate DB queries can return different rows → cover bytes
+// land in backend X but the asset's storage_config_id points to backend Y.
+//
+// The test inserts TWO enabled org-scoped configs (mode="localfs" and mode="s3"),
+// then verifies that the id returned by ConfigIDForOrgAndMode matches the config
+// that ResolveByID returns (i.e., same mode/bucket as the one ResolveForOrgAndMode
+// returned). Mismatch proves the two helpers diverged.
+func TestResolveAndConfigIDAgreement(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	org := "org-agree-" + uniqueSuffix()
+
+	// Insert localfs first (created_at earlier).
+	lfsIn := UpsertInput{Mode: "localfs", PublicPrefix: "/lfs", Enabled: true}
+	lfssc, err := st.UpsertForOrg(ctx, org, lfsIn)
+	if err != nil {
+		t.Fatalf("upsert localfs: %v", err)
+	}
+
+	// Insert s3 second (created_at later → ORDER BY created_at DESC picks this one first).
+	s3In := s3Input("agree-sek")
+	s3In.Bucket = "agree-bucket"
+	s3sc, err := st.UpsertForOrg(ctx, org, s3In)
+	if err != nil {
+		t.Fatalf("upsert s3: %v", err)
+	}
+
+	// Sanity: two distinct rows exist.
+	if lfssc.ID == s3sc.ID {
+		t.Fatalf("expected two distinct config ids, got same: %q", lfssc.ID)
+	}
+
+	// ResolveForOrgAndMode with mode="" resolves "any enabled" for the org.
+	rs, ok, err := st.ResolveForOrgAndMode(ctx, org, "")
+	if err != nil || !ok {
+		t.Fatalf("resolve: ok=%v err=%v", ok, err)
+	}
+
+	// ConfigIDForOrgAndMode with mode="" must return the SAME row's id.
+	resolvedID, ok, err := st.ConfigIDForOrgAndMode(ctx, org, "")
+	if err != nil || !ok {
+		t.Fatalf("configIDForOrgAndMode: ok=%v err=%v", ok, err)
+	}
+
+	// Confirm the returned id is one of our two rows.
+	if resolvedID != lfssc.ID && resolvedID != s3sc.ID {
+		t.Fatalf("configIDForOrgAndMode returned unknown id %q (want %q or %q)", resolvedID, lfssc.ID, s3sc.ID)
+	}
+
+	// Fetch the full config for the id ConfigIDForOrgAndMode returned.
+	refByID, ok, err := st.ResolveByID(ctx, resolvedID)
+	if err != nil || !ok {
+		t.Fatalf("resolveByID(%q): ok=%v err=%v", resolvedID, ok, err)
+	}
+
+	// The core assertion: the two helper functions must agree on which row to pick.
+	// If they disagree, a cover written to rs.Bucket would be sought via refByID.Bucket
+	// → wrong backend → unreadable cover.
+	if refByID.Mode != rs.Mode || refByID.Bucket != rs.Bucket || refByID.Endpoint != rs.Endpoint {
+		t.Fatalf("AGREEMENT FAILURE: ResolveForOrgAndMode returned mode=%q bucket=%q endpoint=%q "+
+			"but ConfigIDForOrgAndMode resolved to mode=%q bucket=%q endpoint=%q — "+
+			"the two helpers diverged; ORDER BY fix missing",
+			rs.Mode, rs.Bucket, rs.Endpoint,
+			refByID.Mode, refByID.Bucket, refByID.Endpoint)
+	}
+}
+
 // Helper uniqueSuffix to avoid test pollution
 func uniqueSuffix() string {
 	b := make([]byte, 4)
@@ -421,3 +492,67 @@ func uniqueSuffix() string {
 	return hex.EncodeToString(b)
 }
 
+// TestResolveByID 验证按 config id 直接解析（serve 路径用：asset 持久化的 backend
+// 身份 → 解析回当时写入的后端，独立于 org 当前 storage_mode）。
+func TestResolveByID(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	org := "org-rbid-" + uniqueSuffix()
+	in := s3Input("sek-rbid")
+	in.Bucket = "rbid-bucket"
+	sc, err := st.UpsertForOrg(ctx, org, in)
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	rs, ok, err := st.ResolveByID(ctx, sc.ID)
+	if err != nil || !ok {
+		t.Fatalf("resolve by id: ok=%v err=%v", ok, err)
+	}
+	if rs.Bucket != "rbid-bucket" || rs.SecretKey != "sek-rbid" || rs.Mode != "s3" {
+		t.Fatalf("resolve by id mismatch: %+v", rs)
+	}
+	// 未知 id → ok=false。
+	if _, ok, err := st.ResolveByID(ctx, "nonexistent-"+uniqueSuffix()); err != nil || ok {
+		t.Fatalf("unknown id: ok=%v err=%v", ok, err)
+	}
+	// disabled id → ok=false (WHERE enabled=true)。
+	dis := in
+	dis.Enabled = false
+	dis.Secret = ""
+	if _, err := st.UpsertForOrg(ctx, org, dis); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if _, ok, err := st.ResolveByID(ctx, sc.ID); err != nil || ok {
+		t.Fatalf("disabled id must be ok=false: ok=%v err=%v", ok, err)
+	}
+}
+
+// TestConfigIDForOrgAndMode 验证写路径要持久化的 token：配置后端返回其 storage_configs.id；
+// 无 config 行（builtin 默认）返回 ""/ok=false，由调用方落 "builtin" sentinel。
+func TestConfigIDForOrgAndMode(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	org := "org-cfgid-" + uniqueSuffix()
+	in := s3Input("sek-cfgid")
+	sc, err := st.UpsertForOrg(ctx, org, in)
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	id, ok, err := st.ConfigIDForOrgAndMode(ctx, org, "s3")
+	if err != nil || !ok {
+		t.Fatalf("config id for mode: ok=%v err=%v", ok, err)
+	}
+	if id != sc.ID {
+		t.Fatalf("want config id %q, got %q", sc.ID, id)
+	}
+	// 无匹配 config → ok=false (builtin)。
+	if _, ok, err := st.ConfigIDForOrgAndMode(ctx, org, "localfs"); err != nil || ok {
+		t.Fatalf("no config for mode must be ok=false: ok=%v err=%v", ok, err)
+	}
+	// org 无任何 config 的另一 mode → ok=false。
+	if _, ok, err := st.ConfigIDForOrgAndMode(ctx, "org-none-"+uniqueSuffix(), "s3"); err != nil || ok {
+		t.Fatalf("unknown org must be ok=false: ok=%v err=%v", ok, err)
+	}
+}

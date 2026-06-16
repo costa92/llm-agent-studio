@@ -242,7 +242,7 @@ func TestSetBlobAdvancesFromSubmitted(t *testing.T) {
 	_ = s.SetSubmitted(ctx, a.ID, "j")
 	// poll-done completion: SetBlob from-guard must accept 'submitted' now, and
 	// report won=true (it advanced exactly one row).
-	won, err := s.SetBlob(ctx, a.ID, "k", "u", "fake", "fake-video-async", "pending_acceptance")
+	won, err := s.SetBlob(ctx, a.ID, "k", "u", "fake", "fake-video-async", "", "pending_acceptance")
 	if err != nil {
 		t.Fatalf("set blob: %v", err)
 	}
@@ -255,11 +255,47 @@ func TestSetBlobAdvancesFromSubmitted(t *testing.T) {
 	}
 	// A second SetBlob on the now-pending_acceptance row is a no-op: won=false (the
 	// F-INT-1 loser signal).
-	won2, err := s.SetBlob(ctx, a.ID, "k2", "u2", "fake", "fake-video-async", "pending_acceptance")
+	won2, err := s.SetBlob(ctx, a.ID, "k2", "u2", "fake", "fake-video-async", "", "pending_acceptance")
 	if err != nil {
 		t.Fatalf("set blob #2: %v", err)
 	}
 	if won2 {
 		t.Fatalf("SetBlob on an already-advanced row must report won=false (F-INT-1 loser signal)")
+	}
+}
+
+// TestSetBlobPersistsStorageConfigID verifies the write path records the backend
+// identity (storage_config_id) so the serve path can re-resolve EXACTLY the
+// backend the bytes landed in, independent of the project's current storage_mode.
+func TestSetBlobPersistsStorageConfigID(t *testing.T) {
+	pool := testPool(t)
+	s := New(pool)
+	ctx := context.Background()
+	pid := seedProject(t, pool, "org-scid")
+	uniq := newID()
+	a, err := s.Create(ctx, CreateInput{
+		ProjectID: pid, ShotID: "shot_" + uniq, TodoID: "todo_" + uniq, Type: "image",
+		Status: "generating",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Fresh row defaults to '' (legacy/unset).
+	if a.StorageConfigID != "" {
+		t.Fatalf("new asset should default storage_config_id='', got %q", a.StorageConfigID)
+	}
+	won, err := s.SetBlob(ctx, a.ID, "k.png", "u", "fake", "m", "cfg-abc123", "pending_acceptance")
+	if err != nil || !won {
+		t.Fatalf("set blob: won=%v err=%v", won, err)
+	}
+	got, err := s.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.StorageConfigID != "cfg-abc123" {
+		t.Fatalf("SetBlob must persist storage_config_id, got %q", got.StorageConfigID)
+	}
+	if got.BlobKey != "k.png" || got.Status != "pending_acceptance" {
+		t.Fatalf("SetBlob other fields: %+v", got)
 	}
 }
