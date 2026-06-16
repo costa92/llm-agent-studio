@@ -422,7 +422,8 @@ func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore,
 		for _, rt := range res.ReadyTodos {
 			_, _ = ev.Append(r.Context(), id, "todo_ready", rt.ID, map[string]any{"type": rt.Type})
 		}
-		_ = ps.SetStatus(r.Context(), id, "running")
+		// status no longer set imperatively to "running" here — it's derived from
+		// todos by projectstate.Compute / RefreshStatus (single source of truth).
 		writeJSON(w, http.StatusAccepted, map[string]any{
 			"planId": res.PlanID, "valid": res.Valid, "fallbackUsed": res.FallbackUsed,
 		})
