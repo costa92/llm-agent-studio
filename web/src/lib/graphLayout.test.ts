@@ -55,4 +55,12 @@ describe("layerize", () => {
     const ids = layers.flat().map((x) => x.id).sort()
     expect(ids).toEqual(["a", "b"])
   })
+
+  it("指向未知节点的边被忽略", () => {
+    const nodes = [n("a")]
+    const edges: GraphEdge[] = [{ from: "a", to: "ghost" }]
+    const layers = layerize(nodes, edges)
+    // ghost 不存在 → 边忽略 → a 仍是唯一根节点。
+    expect(layers.map((l) => l.map((x) => x.id))).toEqual([["a"]])
+  })
 })
