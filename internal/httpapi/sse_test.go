@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/costa92/llm-agent-studio/internal/events"
 	"github.com/costa92/llm-agent-studio/internal/projectstate"
@@ -129,11 +128,12 @@ func TestStreamResumesFromLastEventID(t *testing.T) {
 }
 
 func TestStreamEvents_EmitsInitialStateFrame(t *testing.T) {
-	// The handler must push a "state" frame on the very first emit() call, before
-	// entering the ticker loop. We use a reader with no events (so run_done is
-	// never seen) and cancel the context after the first body write to avoid
-	// blocking the test. The poll-until-nonempty pattern (≤2s timeout) ensures we
-	// observe the initial flush without depending on goroutine scheduling.
+	// The handler runs the first emit() unconditionally before entering the
+	// ticker loop's ctx-check, so it always writes the initial "state" frame.
+	// scriptedReader.List and stateStoreStub.LoadState both ignore the context,
+	// so cancelling up front cannot abort that first emit — it completes, then
+	// the ticker loop's select sees ctx.Done() and returns. Waiting on <-done
+	// therefore guarantees the frame is in the buffer with zero scheduling races.
 	reader := scriptedReader{evs: nil} // no events — handler will not return early
 	st := stateStoreStub{state: projectstate.ProjectState{
 		ProjectID: "p1", Version: 0, Status: "draft", RunStatus: "idle",
@@ -143,24 +143,12 @@ func TestStreamEvents_EmitsInitialStateFrame(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/projects/p1/events/stream", nil)
 	req.SetPathValue("id", "p1")
 	ctx, cancel := context.WithCancel(req.Context())
-	defer cancel()
 	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
 
 	done := make(chan struct{})
 	go func() { h(rec, req); close(done) }()
-
-	// Poll until the first "state" frame has been written (initial emit()
-	// happens synchronously before the ticker loop, but the goroutine needs
-	// to be scheduled). Timeout 2s is generous enough for any CI runner.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if rec.Body.Len() > 0 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	cancel() // stop the ticker loop
+	cancel() // first emit() runs before the ticker loop; this only stops the loop
 	<-done
 
 	body := rec.Body.String()

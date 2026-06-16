@@ -30,7 +30,10 @@ var sseEventNames = map[string]bool{
 	"asset_prescreened": true,
 	"asset_submitted":   true,
 	"run_done":          true,
-	"state":             true,
+	// state frames are written directly by emitState() and never go through this
+	// whitelist; the entry only guards against a DB-sourced event row with
+	// kind="state" being downgraded to a generic "message".
+	"state": true,
 }
 
 // streamEventsHandler streams the run timeline as SSE (spec §9). On connect it
