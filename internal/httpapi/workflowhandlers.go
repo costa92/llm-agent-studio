@@ -151,7 +151,7 @@ func runWorkflowHandler(ps ProjectStore, ws WorkflowStore, pl PlannerPort, ev Ev
 		var nodes []planner.WorkflowNode
 		if len(wf.Nodes) > 0 {
 			if err := json.Unmarshal(wf.Nodes, &nodes); err != nil {
-				http.Error(w, "invalid workflow configuration: "+err.Error(), http.StatusBadRequest)
+				http.Error(w, "invalid workflow: "+err.Error(), http.StatusBadRequest)
 				return
 			}
 		}

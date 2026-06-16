@@ -147,6 +147,24 @@ func TestCreateWorkflow_RejectsCycle(t *testing.T) {
 	}
 }
 
+func TestUpdateWorkflow_RejectsCycle(t *testing.T) {
+	// ws.Update will fail the test if called — cycle must be caught before the store.
+	ws := &cycleRejectingWorkflows{t: t}
+	h := updateWorkflowHandler(ws)
+	body := `{"name":"cycle-wf","nodes":[{"id":"A","type":"script","dependsOn":["B"]},{"id":"B","type":"storyboard","dependsOn":["A"]}]}`
+	req := httptest.NewRequest("PUT", "/api/projects/p1/workflows/w1", strings.NewReader(body))
+	req.SetPathValue("id", "p1")
+	req.SetPathValue("wfId", "w1")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("cyclic workflow should 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "cycle") {
+		t.Fatalf("body should mention \"cycle\", got: %s", rr.Body.String())
+	}
+}
+
 // cycleRejectingWorkflows is a WorkflowStore stub whose Create fails the test
 // (to prove validation happens BEFORE the store write).
 type cycleRejectingWorkflows struct {
