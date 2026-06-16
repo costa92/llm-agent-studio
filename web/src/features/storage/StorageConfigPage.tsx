@@ -160,8 +160,13 @@ export function StorageConfigForm({ initial, onSubmit, isOrgScope, idPrefix = "f
       // 提交成功后刷新表单基线（hasSecret 等由父组件 refetch 重渲染驱动）。
       void sc
     } catch (err) {
-      // 后端 400（缺加密密钥 / 校验失败）等 → 调用方 toast；此处兜底 inline 文案。
-      setSubmitError(err instanceof Error ? "保存失败，请检查参数" : "保存失败")
+      // 后端 400（缺加密密钥 / 校验失败）等 → 优先透传后端 body，文案带具体原因
+      // 比泛化「请检查参数」有用（例如 STUDIO_CONFIG_ENC_KEY 缺失这种只能后端告诉用户的）。
+      if (err instanceof ApiError && err.body) {
+        setSubmitError(`保存失败：${err.body}`)
+      } else {
+        setSubmitError(err instanceof Error ? "保存失败，请检查参数" : "保存失败")
+      }
     }
   })
 
