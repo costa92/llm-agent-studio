@@ -47,6 +47,9 @@ type BlobRouter interface {
 	// time. Together they decouple serve from the project's CURRENT storage_mode.
 	BlobStoreForConfigID(ctx context.Context, orgID string, configID string) (blob.BlobStore, error)
 	ConfigIDForMode(ctx context.Context, orgID string, mode string) (string, error)
+	// ResolveWriteTarget picks the write backend using priority:
+	// project override (projConfigID) → org default → builtin.
+	ResolveWriteTarget(ctx context.Context, orgID, projConfigID string) (blob.BlobStore, string, error)
 }
 
 type ProjectReader interface {

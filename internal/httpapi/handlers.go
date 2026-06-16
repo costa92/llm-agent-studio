@@ -258,6 +258,7 @@ func createProjectHandler(ps ProjectStore) http.HandlerFunc {
 			ImageProvider         string          `json:"imageProvider"`
 			ImageModel            string          `json:"imageModel"`
 			StorageMode           string          `json:"storageMode"`
+			StorageConfigID       string          `json:"storageConfigId"`
 			CustomWorkflowEnabled bool            `json:"customWorkflowEnabled"`
 			WorkflowNodes         json.RawMessage `json:"workflowNodes"`
 		}
@@ -274,6 +275,7 @@ func createProjectHandler(ps ProjectStore) http.HandlerFunc {
 			ImageProvider:         req.ImageProvider,
 			ImageModel:            req.ImageModel,
 			StorageMode:           req.StorageMode,
+			StorageConfigID:       req.StorageConfigID,
 			CustomWorkflowEnabled: req.CustomWorkflowEnabled,
 			WorkflowNodes:         req.WorkflowNodes,
 		})

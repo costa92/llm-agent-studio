@@ -687,17 +687,16 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 	if len(out.Bytes) > 0 {
 		orgID, _ := w.cfg.Projects.OrgIDForProject(ctx, c.projectID)
 		proj, perr := w.cfg.Projects.Get(ctx, c.projectID)
-		var storageMode string
+		projConfigID := ""
 		if perr == nil {
-			storageMode = proj.StorageMode
+			projConfigID = proj.StorageConfigID
 		}
-		bs, berr := w.cfg.Storage.BlobStoreForMode(ctx, orgID, storageMode)
+		bs, storageConfigID2, berr := w.cfg.Storage.ResolveWriteTarget(ctx, orgID, projConfigID)
+		storageConfigID = storageConfigID2
 		if berr != nil {
 			_, _ = w.cfg.Assets.SetBlob(cctx, created.id, "", "", "", "", "", "failed")
 			return "", fmt.Errorf("worker: resolve blob store: %w", berr)
 		}
-		// Resolve the backend identity token alongside the store (same org+mode).
-		storageConfigID, _ = w.cfg.Storage.ConfigIDForMode(ctx, orgID, storageMode)
 		if err := bs.Put(ctx, blobKey, bytesReader(out.Bytes), out.MimeType); err != nil {
 			_, _ = w.cfg.Assets.SetBlob(cctx, created.id, "", "", "", "", "", "failed")
 			return "", fmt.Errorf("worker: blob put: %w", err)
@@ -1301,17 +1300,16 @@ func (w *Worker) completeAsync(cctx context.Context, c claimed, asset assets.Ass
 		// 按 asset 所属 org 路由对象存储 (per-org → global → 内置 localfs 默认)。
 		orgID, _ := w.cfg.Projects.OrgIDForProject(cctx, c.projectID)
 		proj, perr := w.cfg.Projects.Get(cctx, c.projectID)
-		var storageMode string
+		projConfigID := ""
 		if perr == nil {
-			storageMode = proj.StorageMode
+			projConfigID = proj.StorageConfigID
 		}
-		bs, berr := w.cfg.Storage.BlobStoreForMode(cctx, orgID, storageMode)
+		bs, scID, berr := w.cfg.Storage.ResolveWriteTarget(cctx, orgID, projConfigID)
+		storageConfigID = scID
 		if berr != nil {
 			_ = w.cfg.Assets.SetAsyncFailed(cctx, asset.ID)
 			return "", fmt.Errorf("worker: async resolve blob store: %w", berr)
 		}
-		// Record the backend identity so the serve path re-resolves THAT backend.
-		storageConfigID, _ = w.cfg.Storage.ConfigIDForMode(cctx, orgID, storageMode)
 		if err := bs.Put(cctx, blobKey, bytesReader(data), mime); err != nil {
 			_ = w.cfg.Assets.SetAsyncFailed(cctx, asset.ID)
 			return "", fmt.Errorf("worker: async blob put: %w", err)

@@ -125,6 +125,9 @@ func (r *coverBlobRouterStub) BlobStoreForConfigID(context.Context, string, stri
 func (r *coverBlobRouterStub) ConfigIDForMode(context.Context, string, string) (string, error) {
 	return "", nil
 }
+func (r *coverBlobRouterStub) ResolveWriteTarget(_ context.Context, _, _ string) (blob.BlobStore, string, error) {
+	return r.bs, "builtin", nil
+}
 
 // coverLibStub is an AssetLibrary returning a configurable asset.
 type coverLibStub struct {
