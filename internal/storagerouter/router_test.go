@@ -386,3 +386,37 @@ func TestResolveWriteTarget_BuiltinWhenNoDefault(t *testing.T) {
 		t.Fatalf("builtin: store=%v want def", bs)
 	}
 }
+
+// TestResolveWriteTarget_OverrideMissingFallsToDefault verifies that when the
+// project-override config id is set but unknown (ResolveByID returns ok=false),
+// ResolveWriteTarget falls through and returns the org DEFAULT config, not
+// builtin and not an error.
+func TestResolveWriteTarget_OverrideMissingFallsToDefault(t *testing.T) {
+	def := &stubBlob{name: "default"}
+	var buf bytes.Buffer
+	r := New(Config{
+		Configs: idResolver{
+			byID: map[string]storageconfig.ResolvedStorage{
+				"cfgD": {Mode: "s3", Bucket: "D"},
+				// "cfgX" is intentionally absent — override is unknown.
+			},
+			idByOrg: map[string]string{"default|org1": "cfgD"},
+		},
+		Default: def,
+		Build: func(rs storageconfig.ResolvedStorage) (blob.BlobStore, error) {
+			return &stubBlob{name: rs.Bucket}, nil
+		},
+		Logger: slog.New(slog.NewTextHandler(&buf, nil)),
+	})
+	bs, id, err := r.ResolveWriteTarget(context.Background(), "org1", "cfgX")
+	if err != nil {
+		t.Fatalf("want nil error, got %v", err)
+	}
+	if id != "cfgD" {
+		t.Fatalf("want default config id cfgD, got %q", id)
+	}
+	url, _ := bs.SignedURL(context.Background(), "", 0)
+	if url != "D" {
+		t.Fatalf("want default store (bucket D), got %q", url)
+	}
+}
