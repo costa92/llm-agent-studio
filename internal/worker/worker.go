@@ -30,6 +30,7 @@ import (
 
 	studioagents "github.com/costa92/llm-agent-studio/internal/agents"
 	"github.com/costa92/llm-agent-studio/internal/assets"
+	"github.com/costa92/llm-agent-studio/internal/blob"
 	"github.com/costa92/llm-agent-studio/internal/cost"
 	"github.com/costa92/llm-agent-studio/internal/events"
 	"github.com/costa92/llm-agent-studio/internal/generate"
@@ -691,8 +692,9 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 		if perr == nil {
 			projConfigID = proj.StorageConfigID
 		}
-		bs, storageConfigID2, berr := w.cfg.Storage.ResolveWriteTarget(ctx, orgID, projConfigID)
-		storageConfigID = storageConfigID2
+		var bs blob.BlobStore
+		var berr error
+		bs, storageConfigID, berr = w.cfg.Storage.ResolveWriteTarget(ctx, orgID, projConfigID)
 		if berr != nil {
 			_, _ = w.cfg.Assets.SetBlob(cctx, created.id, "", "", "", "", "", "failed")
 			return "", fmt.Errorf("worker: resolve blob store: %w", berr)
@@ -1304,8 +1306,9 @@ func (w *Worker) completeAsync(cctx context.Context, c claimed, asset assets.Ass
 		if perr == nil {
 			projConfigID = proj.StorageConfigID
 		}
-		bs, scID, berr := w.cfg.Storage.ResolveWriteTarget(cctx, orgID, projConfigID)
-		storageConfigID = scID
+		var bs blob.BlobStore
+		var berr error
+		bs, storageConfigID, berr = w.cfg.Storage.ResolveWriteTarget(cctx, orgID, projConfigID)
 		if berr != nil {
 			_ = w.cfg.Assets.SetAsyncFailed(cctx, asset.ID)
 			return "", fmt.Errorf("worker: async resolve blob store: %w", berr)
