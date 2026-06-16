@@ -48,6 +48,7 @@ vi.mock("./api", () => ({
 // 全局存储钩子 mock（GlobalStorageSection 用）：返回已配置 config，不发请求。
 const GLOBAL: StorageConfig = {
   id: "sc-global-1",
+  name: "global-default",
   scope: "global",
   orgId: "",
   mode: "s3",
@@ -58,6 +59,7 @@ const GLOBAL: StorageConfig = {
   publicPrefix: "",
   useSsl: true,
   enabled: true,
+  isDefault: true,
   hasSecret: true,
 }
 vi.mock("@/features/storage/api", () => ({

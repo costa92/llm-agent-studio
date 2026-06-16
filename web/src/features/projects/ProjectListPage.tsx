@@ -21,6 +21,7 @@ export type UpdateProjectFields = {
   imageProvider: string
   imageModel: string
   storageMode: string
+  storageConfigId?: string
 }
 
 export interface ProjectListViewProps {

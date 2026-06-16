@@ -10,6 +10,7 @@ afterEach(() => {
 
 const CREATED: StorageConfig = {
   id: "sc-org-1",
+  name: "primary",
   scope: "org",
   orgId: "acme",
   mode: "s3",
@@ -20,12 +21,14 @@ const CREATED: StorageConfig = {
   publicPrefix: "",
   useSsl: true,
   enabled: true,
+  isDefault: true,
   hasSecret: true,
 }
 
 // github 既有配置：owner=accessKeyId / repo=bucket / branch=region。
 const GH_CREATED: StorageConfig = {
   id: "sc-org-gh",
+  name: "github-store",
   scope: "org",
   orgId: "acme",
   mode: "github",
@@ -36,6 +39,7 @@ const GH_CREATED: StorageConfig = {
   publicPrefix: "assets",
   useSsl: true,
   enabled: true,
+  isDefault: false,
   hasSecret: true,
 }
 

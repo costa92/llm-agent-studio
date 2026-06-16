@@ -31,6 +31,7 @@ function jsonResponse(body: unknown): Response {
 
 const GLOBAL: StorageConfig = {
   id: "sc-global-1",
+  name: "global-default",
   scope: "global",
   orgId: "",
   mode: "s3",
@@ -41,6 +42,7 @@ const GLOBAL: StorageConfig = {
   publicPrefix: "",
   useSsl: true,
   enabled: true,
+  isDefault: true,
   hasSecret: true,
 }
 
@@ -68,6 +70,7 @@ describe("global storage hooks → platform endpoint", () => {
       wrapper: wrapper(),
     })
     result.current.mutate({
+      name: "global-default",
       mode: "s3",
       endpoint: "https://s3.amazonaws.com",
       region: "us-east-1",

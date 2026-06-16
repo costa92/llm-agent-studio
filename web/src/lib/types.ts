@@ -34,6 +34,8 @@ export interface Project {
   imageProvider?: string
   imageModel?: string
   storageMode?: string
+  // M10: per-project 存储配置 override；空 = 走 org 默认存储配置。
+  storageConfigId?: string
   customWorkflowEnabled?: boolean
   workflowNodes?: string
   // 封面图：指向一个 image 资产的 id；空串 = 无封面。
@@ -272,6 +274,8 @@ export type StorageMode = "localfs" | "s3" | "oss" | "cos" | "github"
 
 export interface StorageConfig {
   id: string
+  // 配置名称（多配置列表下的展示名）。
+  name: string
   // scope='org' 表示 org 覆盖；'global' 表示全局默认。
   scope: string
   orgId: string
@@ -283,13 +287,17 @@ export interface StorageConfig {
   publicPrefix: string
   useSsl: boolean
   enabled: boolean
+  // 是否为该 org 下的默认存储配置。
+  isDefault: boolean
   // 是否已写入加密 secret；false → 未配置密钥。
   hasSecret: boolean
 }
 
-// PUT 入参：PUT /api/orgs/{org}/storage-config、PUT /api/storage-config/global。
-// secret write-only：空串 = 保留既有 secret；非空 = 重新加密替换、绝不回显。
+// PUT/POST 入参：PUT /api/orgs/{org}/storage-configs/{id}、POST /api/orgs/{org}/storage-configs、
+// PUT /api/storage-config/global。
+// name 为列表模式下的配置名称；secret write-only：空串 = 保留既有 secret；非空 = 重新加密替换、绝不回显。
 export interface UpsertStorageConfigInput {
+  name: string
   mode: StorageMode
   endpoint: string
   region: string
