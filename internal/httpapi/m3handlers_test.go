@@ -132,7 +132,7 @@ func (s stubProjects) OrgIDForProject(_ context.Context, _ string) (string, erro
 func (s stubProjects) ListPlans(_ context.Context, _ string) ([]project.Plan, error) {
 	return nil, nil
 }
-func (s stubProjects) LoadState(_ context.Context, _ string) (projectstate.ProjectState, error) {
+func (s stubProjects) LoadState(_ context.Context, _, _ string) (projectstate.ProjectState, error) {
 	return projectstate.ProjectState{}, nil
 }
 

@@ -13,7 +13,7 @@ import (
 
 func TestStateHandler_ReturnsSnapshot(t *testing.T) {
 	want := projectstate.ProjectState{ProjectID: "p1", Version: 3, Status: "running", RunStatus: "running"}
-	h := stateHandler(stateStoreStub{state: want})
+	h := stateHandler(&stateStoreStub{state: want})
 	req := httptest.NewRequest(http.MethodGet, "/api/projects/p1/state", nil)
 	req.SetPathValue("id", "p1")
 	rec := httptest.NewRecorder()
@@ -41,14 +41,35 @@ func TestStateHandler_NotFound(t *testing.T) {
 	}
 }
 
-type stateStoreStub struct{ state projectstate.ProjectState }
+// TestStateHandler_ForwardsPlanID asserts that ?planId=<id> is forwarded to
+// LoadState so historical runs render their own plan's state, not the latest.
+func TestStateHandler_ForwardsPlanID(t *testing.T) {
+	stub := &stateStoreStub{state: projectstate.ProjectState{ProjectID: "p1"}}
+	h := stateHandler(stub)
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/p1/state?planId=foo", nil)
+	req.SetPathValue("id", "p1")
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200", rec.Code)
+	}
+	if stub.calledWith != "foo" {
+		t.Errorf("LoadState called with planID=%q, want %q", stub.calledWith, "foo")
+	}
+}
 
-func (s stateStoreStub) LoadState(ctx context.Context, id string) (projectstate.ProjectState, error) {
+type stateStoreStub struct {
+	state      projectstate.ProjectState
+	calledWith string // records the planID argument from the last LoadState call
+}
+
+func (s *stateStoreStub) LoadState(ctx context.Context, id, planID string) (projectstate.ProjectState, error) {
+	s.calledWith = planID
 	return s.state, nil
 }
 
 type errStoreStub struct{ err error }
 
-func (s errStoreStub) LoadState(_ context.Context, _ string) (projectstate.ProjectState, error) {
+func (s errStoreStub) LoadState(_ context.Context, _, _ string) (projectstate.ProjectState, error) {
 	return projectstate.ProjectState{}, s.err
 }

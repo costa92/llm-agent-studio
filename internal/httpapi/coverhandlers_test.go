@@ -64,7 +64,7 @@ func (s *coverProjStub) OrgIDForProject(context.Context, string) (string, error)
 func (s *coverProjStub) ListPlans(context.Context, string) ([]project.Plan, error) {
 	return nil, nil
 }
-func (s *coverProjStub) LoadState(context.Context, string) (projectstate.ProjectState, error) {
+func (s *coverProjStub) LoadState(context.Context, string, string) (projectstate.ProjectState, error) {
 	return projectstate.ProjectState{}, nil
 }
 

@@ -63,7 +63,7 @@ type ProjectStore interface {
 	Cancel(ctx context.Context, projectID string) error
 	OrgIDForProject(ctx context.Context, projectID string) (string, error)
 	ListPlans(ctx context.Context, projectID string) ([]project.Plan, error)
-	LoadState(ctx context.Context, projectID string) (projectstate.ProjectState, error)
+	LoadState(ctx context.Context, projectID, planID string) (projectstate.ProjectState, error)
 }
 
 // PlannerPort kicks off planning (satisfied by *planner.Planner). PlanWith
@@ -501,14 +501,17 @@ func listPlansHandler(ps ProjectStore) http.HandlerFunc {
 
 // StateReader is the project-state surface the /state endpoint + SSE need.
 type StateReader interface {
-	LoadState(ctx context.Context, projectID string) (projectstate.ProjectState, error)
+	LoadState(ctx context.Context, projectID, planID string) (projectstate.ProjectState, error)
 }
 
 // stateHandler (GET /api/projects/{id}/state): viewer+. Returns the
 // authoritative semantic snapshot computed by projectstate.Compute.
+// Accepts optional ?planId=<id> to scope the state to a specific run;
+// when omitted, returns the latest run's state (unchanged behavior).
 func stateHandler(sr StateReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		st, err := sr.LoadState(r.Context(), r.PathValue("id"))
+		planID := r.URL.Query().Get("planId")
+		st, err := sr.LoadState(r.Context(), r.PathValue("id"), planID)
 		if errors.Is(err, project.ErrNotFound) {
 			http.Error(w, "project not found", http.StatusNotFound)
 			return

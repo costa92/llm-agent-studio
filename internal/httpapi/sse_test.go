@@ -33,7 +33,7 @@ func TestStreamWhitelistsEventNames(t *testing.T) {
 		{Seq: 1, Kind: "todo_ready", TodoID: "t1"},
 		{Seq: 2, Kind: "evil\nevent: hacked"},
 		{Seq: 3, Kind: "run_done"},
-	}}, stateStoreStub{})
+	}}, &stateStoreStub{})
 	req := httptest.NewRequest("GET", "/api/projects/p1/events/stream", nil)
 	req.SetPathValue("id", "p1")
 	rr := httptest.NewRecorder()
@@ -61,7 +61,7 @@ func TestStreamWhitelistsAssetSubmitted(t *testing.T) {
 		{Seq: 1, Kind: "asset_submitted", TodoID: "t1"},
 		{Seq: 2, Kind: "asset_polling", TodoID: "t1"},
 		{Seq: 3, Kind: "run_done"},
-	}}, stateStoreStub{})
+	}}, &stateStoreStub{})
 	req := httptest.NewRequest("GET", "/api/projects/p1/events/stream", nil)
 	req.SetPathValue("id", "p1")
 	rr := httptest.NewRecorder()
@@ -101,7 +101,7 @@ func TestStreamResumesFromLastEventID(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			h := streamEventsHandler(scriptedReader{evs: evs}, stateStoreStub{})
+			h := streamEventsHandler(scriptedReader{evs: evs}, &stateStoreStub{})
 			req := httptest.NewRequest("GET", "/api/projects/p1/events/stream", nil)
 			req.SetPathValue("id", "p1")
 			if tc.header != "" {
@@ -135,7 +135,7 @@ func TestStreamEvents_EmitsInitialStateFrame(t *testing.T) {
 	// the ticker loop's select sees ctx.Done() and returns. Waiting on <-done
 	// therefore guarantees the frame is in the buffer with zero scheduling races.
 	reader := scriptedReader{evs: nil} // no events — handler will not return early
-	st := stateStoreStub{state: projectstate.ProjectState{
+	st := &stateStoreStub{state: projectstate.ProjectState{
 		ProjectID: "p1", Version: 0, Status: "draft", RunStatus: "idle",
 	}}
 	h := streamEventsHandler(reader, st)

@@ -388,7 +388,7 @@ func TestLoadState_NoPlan_Draft(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	st, err := s.LoadState(ctx, p.ID)
+	st, err := s.LoadState(ctx, p.ID, "")
 	if err != nil {
 		t.Fatalf("LoadState: %v", err)
 	}
@@ -426,7 +426,7 @@ func TestLoadState_WithTodos(t *testing.T) {
 		todoID, p.ID, planID); err != nil {
 		t.Fatalf("insert todo: %v", err)
 	}
-	st, err := s.LoadState(ctx, p.ID)
+	st, err := s.LoadState(ctx, p.ID, "")
 	if err != nil {
 		t.Fatalf("LoadState: %v", err)
 	}
@@ -451,5 +451,113 @@ func TestLoadState_WithTodos(t *testing.T) {
 	}
 	if scriptStage.TodoID != todoID {
 		t.Errorf("script stage TodoID=%q want %q", scriptStage.TodoID, todoID)
+	}
+}
+
+// TestLoadState_SpecificPlan: two plans exist (older has a failed script todo,
+// newer has a running script todo). LoadState with the older plan's ID must
+// reflect the older plan's state; LoadState with "" must reflect the newer
+// plan (latest). Pins the regression fix: historical pages must not show
+// the latest run's state.
+func TestLoadState_SpecificPlan(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	orgID := "org_ls_specific_" + uniqueSuffix()
+	p, err := s.Create(ctx, CreateInput{OrgID: orgID, Name: "LS-Specific", CreatedBy: "u"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// older plan with a failed script todo
+	olderPlanID := "pln_older_" + uniqueSuffix()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO plans (id, project_id, status, valid, fallback_used, created_at)
+		 VALUES ($1, $2, 'failed', true, false, now() - interval '10 minutes')`,
+		olderPlanID, p.ID); err != nil {
+		t.Fatalf("insert older plan: %v", err)
+	}
+	olderTodoID := "todo_older_" + uniqueSuffix()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO todos (id, project_id, plan_id, type, status) VALUES ($1, $2, $3, 'script', 'failed')`,
+		olderTodoID, p.ID, olderPlanID); err != nil {
+		t.Fatalf("insert older todo: %v", err)
+	}
+
+	// newer plan with a running script todo
+	newerPlanID := "pln_newer_" + uniqueSuffix()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO plans (id, project_id, status, valid, fallback_used, created_at)
+		 VALUES ($1, $2, 'running', true, false, now())`,
+		newerPlanID, p.ID); err != nil {
+		t.Fatalf("insert newer plan: %v", err)
+	}
+	newerTodoID := "todo_newer_" + uniqueSuffix()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO todos (id, project_id, plan_id, type, status) VALUES ($1, $2, $3, 'script', 'running')`,
+		newerTodoID, p.ID, newerPlanID); err != nil {
+		t.Fatalf("insert newer todo: %v", err)
+	}
+
+	// LoadState with specific older plan ID must reflect the older plan.
+	older, err := s.LoadState(ctx, p.ID, olderPlanID)
+	if err != nil {
+		t.Fatalf("LoadState(olderPlanID): %v", err)
+	}
+	if older.Plan == nil || older.Plan.PlanID != olderPlanID {
+		t.Errorf("older: Plan.PlanID=%v want %q", older.Plan, olderPlanID)
+	}
+	var olderScript *projectstate.Stage
+	for i := range older.Stages {
+		if older.Stages[i].Role == "script" {
+			olderScript = &older.Stages[i]
+		}
+	}
+	if olderScript == nil {
+		t.Fatalf("older: script stage missing in %+v", older.Stages)
+	}
+	if olderScript.Status != "failed" {
+		t.Errorf("older: script stage status=%q want failed", olderScript.Status)
+	}
+	if olderScript.TodoID != olderTodoID {
+		t.Errorf("older: script stage TodoID=%q want %q", olderScript.TodoID, olderTodoID)
+	}
+
+	// LoadState with "" must reflect the newer (latest) plan.
+	latest, err := s.LoadState(ctx, p.ID, "")
+	if err != nil {
+		t.Fatalf("LoadState(latest): %v", err)
+	}
+	if latest.Plan == nil || latest.Plan.PlanID != newerPlanID {
+		t.Errorf("latest: Plan.PlanID=%v want %q", latest.Plan, newerPlanID)
+	}
+	if latest.RunStatus != "running" {
+		t.Errorf("latest: RunStatus=%q want running", latest.RunStatus)
+	}
+}
+
+// TestLoadState_UnknownPlan_Passthrough: requesting an unknown planID (or a
+// planID that belongs to a different project) must return the draft passthrough
+// state without error (HasPlan==false semantics).
+func TestLoadState_UnknownPlan_Passthrough(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	orgID := "org_ls_unk_" + uniqueSuffix()
+	p, err := s.Create(ctx, CreateInput{OrgID: orgID, Name: "LS-Unknown", CreatedBy: "u"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	st, err := s.LoadState(ctx, p.ID, "nonexistent-plan-id")
+	if err != nil {
+		t.Fatalf("LoadState(unknown): %v", err)
+	}
+	// No plan resolved → draft passthrough.
+	if st.ProjectID != p.ID {
+		t.Errorf("ProjectID=%q want %q", st.ProjectID, p.ID)
+	}
+	if st.Plan != nil {
+		t.Errorf("Plan should be nil for unknown planID, got %+v", st.Plan)
+	}
+	if st.Status != "draft" {
+		t.Errorf("Status=%q want draft", st.Status)
 	}
 }

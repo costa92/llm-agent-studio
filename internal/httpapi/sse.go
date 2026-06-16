@@ -68,7 +68,7 @@ func streamEventsHandler(reader EventReader, state StateReader) http.HandlerFunc
 
 		var lastStateVersion int64 = -1
 		emitState := func() error {
-			st, err := state.LoadState(r.Context(), projectID)
+			st, err := state.LoadState(r.Context(), projectID, planID)
 			if err != nil {
 				return err
 			}
