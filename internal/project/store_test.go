@@ -607,9 +607,9 @@ func TestLoadState_CustomGraph(t *testing.T) {
 	scriptID := "todo_s_" + p.ID
 	boardID := "todo_b_" + p.ID
 	if _, err := pool.Exec(ctx,
-		`INSERT INTO todos (id, project_id, plan_id, type, status, depends_on)
-		 VALUES ($1,$2,$3,'script','done','{}'),
-		        ($4,$2,$3,'storyboard','running',ARRAY[$1])`,
+		`INSERT INTO todos (id, project_id, plan_id, type, status, depends_on, created_at)
+		 VALUES ($1,$2,$3,'script','done','{}', now()),
+		        ($4,$2,$3,'storyboard','running',ARRAY[$1], now() + interval '1 second')`,
 		scriptID, p.ID, planID, boardID); err != nil {
 		t.Fatalf("insert todos: %v", err)
 	}
@@ -625,6 +625,9 @@ func TestLoadState_CustomGraph(t *testing.T) {
 	}
 	if len(st.Edges) != 1 || st.Edges[0].From != boardID || st.Edges[0].To != scriptID {
 		t.Fatalf("edges = %+v want one board→script", st.Edges)
+	}
+	if st.Nodes[0].ID != scriptID || st.Nodes[1].ID != boardID {
+		t.Fatalf("node order = %s,%s want script,board", st.Nodes[0].ID, st.Nodes[1].ID)
 	}
 }
 
@@ -652,5 +655,11 @@ func TestLoadState_LegacyCustomEnabled(t *testing.T) {
 	}
 	if !st.IsCustom {
 		t.Fatalf("IsCustom = false, want true (custom_workflow_enabled)")
+	}
+	if len(st.Nodes) != 0 {
+		t.Fatalf("Nodes = %+v want empty", st.Nodes)
+	}
+	if len(st.Edges) != 0 {
+		t.Fatalf("Edges = %+v want empty", st.Edges)
 	}
 }
