@@ -10,6 +10,7 @@ import {
   useOrgTextModels,
   useOrgImageModels,
 } from "@/features/cost/api"
+import { useStorageConfigs } from "@/features/storage/api"
 import { ProjectListView } from "@/features/projects/ProjectListPage"
 
 // T9：项目列表 + 建项目视图。org 校验由父段布局 orgs.$org.projects.tsx 的 beforeLoad 承担。
@@ -34,6 +35,7 @@ function ProjectsPage() {
   // M5.1/M9: "新建项目"/"编辑"对话框的规划模型 + 图片模型下拉的源数据。
   const textModelsQuery = useOrgTextModels(org)
   const imageModelsQuery = useOrgImageModels(org)
+  const storageConfigsQuery = useStorageConfigs(org)
 
   return (
     <ProjectListView
@@ -52,6 +54,7 @@ function ProjectsPage() {
       styles={stylesQuery.data ?? []}
       textModels={textModelsQuery.data}
       imageModels={imageModelsQuery.data}
+      storageConfigs={storageConfigsQuery.data}
       onCreate={(input) => createProject.mutateAsync(input)}
       onUpdate={(input) => updateProject.mutateAsync(input)}
       onOpenProject={(project) =>

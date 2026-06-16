@@ -17,6 +17,7 @@ import {
   useDeleteWorkflow,
 } from "@/features/projects/workflowApi"
 import { useOrgTextModels, useOrgImageModels } from "@/features/cost/api"
+import { useStorageConfigs } from "@/features/storage/api"
 import { EditProjectDialog } from "@/features/projects/EditProjectDialog"
 import { WorkflowDialog } from "@/features/projects/WorkflowDialog"
 import { statusLabel, statusVariant } from "@/features/projects/status"
@@ -44,6 +45,7 @@ function RunsListPage() {
   const textModelsQuery = useOrgTextModels(org)
   const imageModelsQuery = useOrgImageModels(org)
   const stylesQuery = usePromptStyles()
+  const storageConfigsQuery = useStorageConfigs(org)
 
   // 工作流：一个项目可有多条 DAG 工作流，各自独立运行。
   const workflowsQuery = useWorkflows(id)
@@ -176,6 +178,7 @@ function RunsListPage() {
               textModels={textModelsQuery.data}
               imageModels={imageModelsQuery.data}
               styles={stylesQuery.data}
+              storageConfigs={storageConfigsQuery.data}
               onSubmit={(input) =>
                 updateProject.mutateAsync({ id: project.id, ...input })
               }

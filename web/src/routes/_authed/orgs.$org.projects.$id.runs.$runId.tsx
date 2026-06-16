@@ -28,6 +28,7 @@ import {
 import { useProductionTimeline } from "@/features/workflow/useProductionTimeline"
 import { useUpdateProject, usePromptStyles } from "@/features/projects/api"
 import { useOrgTextModels, useOrgImageModels } from "@/features/cost/api"
+import { useStorageConfigs } from "@/features/storage/api"
 import { EditProjectDialog } from "@/features/projects/EditProjectDialog"
 import type { StageId } from "@/lib/timeline"
 import type { ProjectState, PipState, GraphNode } from "@/lib/projectState"
@@ -58,6 +59,7 @@ function RunWorkbenchPage() {
   const textModelsQuery = useOrgTextModels(org)
   const imageModelsQuery = useOrgImageModels(org)
   const stylesQuery = usePromptStyles()
+  const storageConfigsQuery = useStorageConfigs(org)
 
   // 选中态
   const [selection, setSelection] = useState<Selection>(null)
@@ -252,6 +254,7 @@ function RunWorkbenchPage() {
           textModels={textModelsQuery.data}
           imageModels={imageModelsQuery.data}
           styles={stylesQuery.data}
+          storageConfigs={storageConfigsQuery.data}
           onSubmit={(input) =>
             updateProject.mutateAsync({ id: project.id, ...input })
           }

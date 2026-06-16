@@ -33,7 +33,7 @@ import type {
 } from "@/lib/types"
 
 // mode 标签：localfs（本地磁盘）+ 三家对象存储（S3 兼容 / 阿里云 OSS / 腾讯云 COS）+ GitHub 仓库。
-const MODE_LABELS: Record<StorageMode, string> = {
+export const MODE_LABELS: Record<StorageMode, string> = {
   localfs: "本地磁盘",
   s3: "Amazon S3 / S3 兼容",
   oss: "阿里云 OSS",
