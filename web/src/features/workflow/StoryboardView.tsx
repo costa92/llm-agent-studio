@@ -7,7 +7,7 @@ export interface StoryboardViewProps {
   isError: boolean
 }
 
-// 分镜栅格：auto-fill minmax(150–170px)。每格 shot 编号 + 镜头描述 + prompt 摘要。
+// 分镜栅格：auto-fill minmax(150px,1fr)——列宽拉伸填满容器（窄抽屉里不留右侧空白）。每格 shot 编号 + 镜头描述 + prompt 摘要。
 // 真实形态见 internal/agents/storyboard.go（shotNo/camera/scene/action/prompt/duration）。
 export function StoryboardView({ shots, isLoading, isError }: StoryboardViewProps) {
   if (isLoading) {
@@ -35,7 +35,7 @@ export function StoryboardView({ shots, isLoading, isError }: StoryboardViewProp
   }
 
   return (
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,170px))] gap-3 p-6">
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3 p-6">
       {shots.map((shot, i) => (
         <div
           key={shot.shotNo ?? i}
