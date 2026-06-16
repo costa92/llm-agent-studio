@@ -23,7 +23,7 @@ import (
 // STUDIO_CONFIG_ENC_KEY)，无法静态加密，故拒绝 (不静默丢弃 secret)。
 var ErrEncUnavailable = errors.New("storageconfig: secret storage requires STUDIO_CONFIG_ENC_KEY")
 
-// ErrNotFound 表示按 org 定位的配置不存在。DeleteForOrg 影响 0 行时返回它。
+// ErrNotFound 表示按 org 定位的配置不存在。Delete 影响 0 行时返回它。
 var ErrNotFound = errors.New("storageconfig: config not found")
 
 // ErrInUse 表示配置被 asset 引用，不可删除。
@@ -64,7 +64,7 @@ type ResolvedStorage struct {
 	UseSSL       bool
 }
 
-// UpsertInput 是 UpsertGlobal/UpsertForOrg 的入参。Secret 走 keep-or-replace 语义：
+// UpsertInput 是 Create/Update 的入参。Secret 走 keep-or-replace 语义：
 // 空 → 保留既有 secret_enc 不动；非空 → 重新加密替换 (box 未启用时返回 ErrEncUnavailable)。
 type UpsertInput struct {
 	Mode         string
@@ -169,7 +169,6 @@ func (s *Store) UpsertGlobal(ctx context.Context, in UpsertInput) (StorageConfig
 		newID(), in.Mode, in.Endpoint, in.Region, in.Bucket, in.AccessKeyID, enc, in.UseSSL, in.PublicPrefix, in.Enabled, replace, in.Name)
 	return scanConfig(row)
 }
-
 
 // scanConfig 把 RETURNING/SELECT 行扫进公开 DTO (列序固定)。
 func scanConfig(row pgx.Row) (StorageConfig, error) {
@@ -334,24 +333,24 @@ func (s *Store) DefaultConfigID(ctx context.Context, orgID string) (string, bool
 }
 
 // Delete 按 id 删除一条 org 配置。守卫：被 asset 引用 → 拒(返回 ErrInUse)。
-// 成功后清空指向它的 project 覆盖。
+// 成功后清空指向它的 project 覆盖。ref-count 与 DELETE 在同一事务内执行，避免 TOCTOU。
 func (s *Store) Delete(ctx context.Context, orgID, id string) error {
 	if orgID == "" || id == "" {
 		return fmt.Errorf("storageconfig: orgID+id required")
-	}
-	var refs int
-	if err := s.pool.QueryRow(ctx,
-		`SELECT count(*) FROM assets WHERE storage_config_id=$1`, id).Scan(&refs); err != nil {
-		return fmt.Errorf("storageconfig: ref check: %w", err)
-	}
-	if refs > 0 {
-		return ErrInUse
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	var refs int
+	if err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM assets WHERE storage_config_id=$1`, id).Scan(&refs); err != nil {
+		return fmt.Errorf("storageconfig: ref check: %w", err)
+	}
+	if refs > 0 {
+		return ErrInUse
+	}
 	tag, err := tx.Exec(ctx,
 		`DELETE FROM storage_configs WHERE id=$1 AND org_id=$2 AND scope='org'`, id, orgID)
 	if err != nil {
