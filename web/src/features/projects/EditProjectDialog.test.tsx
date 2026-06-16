@@ -163,4 +163,29 @@ describe("EditProjectForm", () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
     expect(onSubmit.mock.calls[0][0]).toMatchObject({ storageConfigId: "sc1" })
   })
+
+  it("submits storageConfigId as empty string when 继承组织默认 is selected", async () => {
+    // 项目已绑定配置 sc1，用户改回继承默认，提交应发送 ""。
+    const onSubmit = vi.fn().mockResolvedValue(makeProject())
+    const user = userEvent.setup()
+
+    render(
+      <EditProjectForm
+        project={makeProject({ storageConfigId: "sc1" })}
+        styles={styles}
+        storageConfigs={storageConfigs}
+        onSubmit={onSubmit}
+      />,
+    )
+
+    // 打开下拉，选择「继承组织默认」。
+    const trigger = screen.getByRole("combobox", { name: /存储配置/ })
+    await user.click(trigger)
+    await user.click(await screen.findByRole("option", { name: "继承组织默认" }))
+
+    await user.click(screen.getByRole("button", { name: "保存" }))
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({ storageConfigId: "" })
+  })
 })

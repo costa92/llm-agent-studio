@@ -28,7 +28,7 @@ import { MODE_LABELS } from "@/features/storage/StorageConfigPage"
 
 // 项目详情页"编辑项目信息"入口——弹框。
 // 允许修改基本信息（名称/创意需求/内容类型/目标平台/风格）以及
-// plannerProvider / plannerModel / imageProvider / imageModel / storageMode。
+// plannerProvider / plannerModel / imageProvider / imageModel / storageConfigId。
 // 模型/存储留空 = 走 org 默认。
 
 // 内容类型 / 目标平台与 CreateProjectDialog 保持一致（后端只存字符串，无白名单）。
@@ -371,7 +371,11 @@ export function EditProjectForm({
           )}
         />
         <p className="text-[11.5px] text-text-3">
-          当前：{project.storageConfigId ? project.storageConfigId : "继承组织默认"}。保存后下一次资源生成或加载起生效。
+          当前：{(() => {
+            if (!project.storageConfigId) return "继承组织默认"
+            const c = storageConfigs?.find((c) => c.id === project.storageConfigId)
+            return c ? `${c.name}（${MODE_LABELS[c.mode]}）` : project.storageConfigId
+          })()}。保存后下一次资源生成或加载起生效。
         </p>
       </div>
 
