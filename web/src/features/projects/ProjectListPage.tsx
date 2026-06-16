@@ -3,7 +3,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Badge } from "@/components/studio/Badge"
 import { Button } from "@/components/studio/Button"
 import { AssetThumb } from "@/features/workflow/AssetThumb.tsx"
-import type { CreateProjectInput, ModelConfig, Project, Style } from "@/lib/types"
+import type { CreateProjectInput, ModelConfig, Project, StorageConfig, Style } from "@/lib/types"
 import { statusLabel, statusVariant } from "./status"
 import { CreateProjectDialog } from "./CreateProjectDialog"
 import { CoverDialog } from "./CoverDialog"
@@ -20,7 +20,7 @@ export type UpdateProjectFields = {
   plannerModel: string
   imageProvider: string
   imageModel: string
-  storageMode: string
+  storageConfigId: string
 }
 
 export interface ProjectListViewProps {
@@ -37,6 +37,8 @@ export interface ProjectListViewProps {
   textModels?: ModelConfig[]
   /** M9：org 下 kind=image 的启用模型，供"编辑"对话框的图片模型下拉。 */
   imageModels?: ModelConfig[]
+  /** org 下的存储配置列表，供"编辑"对话框的存储配置下拉。 */
+  storageConfigs?: StorageConfig[]
   onCreate: (input: CreateProjectInput) => Promise<Project>
   /** 编辑项目信息（卡片「编辑」按钮）。id + 整表单字段 → 更新后的 Project。 */
   onUpdate: (input: { id: string } & UpdateProjectFields) => Promise<Project>
@@ -59,6 +61,7 @@ export function ProjectListView({
   styles,
   textModels,
   imageModels,
+  storageConfigs,
   onCreate,
   onUpdate,
   onOpenProject,
@@ -153,6 +156,7 @@ export function ProjectListView({
                     textModels={textModels}
                     imageModels={imageModels}
                     styles={styles}
+                    storageConfigs={storageConfigs}
                     onSubmit={(input) => onUpdate({ id: project.id, ...input })}
                     onSuccess={() => toast.success("项目信息已更新")}
                     trigger={

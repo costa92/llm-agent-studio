@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { render, screen, waitFor } from "@testing-library/react"
+import { render, screen, waitFor, fireEvent } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import type { StorageConfig } from "@/lib/types"
-import { StorageConfigForm, StorageConfigView } from "./StorageConfigPage"
+import { StorageConfigForm, StorageConfigsTable } from "./StorageConfigPage"
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -10,6 +10,7 @@ afterEach(() => {
 
 const CREATED: StorageConfig = {
   id: "sc-org-1",
+  name: "primary",
   scope: "org",
   orgId: "acme",
   mode: "s3",
@@ -20,12 +21,14 @@ const CREATED: StorageConfig = {
   publicPrefix: "",
   useSsl: true,
   enabled: true,
+  isDefault: true,
   hasSecret: true,
 }
 
 // github 既有配置：owner=accessKeyId / repo=bucket / branch=region。
 const GH_CREATED: StorageConfig = {
   id: "sc-org-gh",
+  name: "github-store",
   scope: "org",
   orgId: "acme",
   mode: "github",
@@ -36,6 +39,7 @@ const GH_CREATED: StorageConfig = {
   publicPrefix: "assets",
   useSsl: true,
   enabled: true,
+  isDefault: false,
   hasSecret: true,
 }
 
@@ -129,11 +133,13 @@ describe("StorageConfigForm mode-conditional fields", () => {
     const onSubmit = vi.fn().mockResolvedValue(CREATED)
     const user = userEvent.setup()
     render(<StorageConfigForm initial={null} onSubmit={onSubmit} isOrgScope />)
+    // name 字段为必填，先填写配置名称
+    await user.type(screen.getByLabelText(/配置名称/), "test-config")
     await user.click(screen.getByRole("button", { name: "保存" }))
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
     expect(onSubmit).toHaveBeenCalledWith(
-      expect.objectContaining({ mode: "localfs", secret: "" }),
+      expect.objectContaining({ mode: "localfs", secret: "", name: "test-config" }),
     )
   })
 })
@@ -203,51 +209,27 @@ describe("StorageConfigForm write-only secret", () => {
   })
 })
 
-// View：仅 org 区（全局默认存储已迁至平台管理页）。org 区删除确认（仅确认才调 onOrgDelete）。
-function renderView(overrides?: {
-  orgConfig?: StorageConfig | null
-  onOrgDelete?: () => Promise<void>
-}) {
-  // 注意：用 "orgConfig" in overrides 判定，避免 null ?? CREATED 把显式 null 当未传。
-  const orgConfig =
-    overrides && "orgConfig" in overrides ? overrides.orgConfig : CREATED
-  return render(
-    <StorageConfigView
-      orgConfig={orgConfig}
-      orgLoading={false}
-      orgError={false}
-      onOrgRetry={vi.fn()}
-      onOrgSubmit={vi.fn().mockResolvedValue(CREATED)}
-      onOrgDelete={overrides?.onOrgDelete ?? vi.fn().mockResolvedValue(undefined)}
-    />,
-  )
-}
-
-describe("StorageConfigView", () => {
-  it("renders only the org section, not the global section (moved to /platform)", () => {
-    renderView()
-    expect(screen.getByText("本组织存储 (Amazon S3 / S3 兼容)")).toBeInTheDocument()
-    // 全局默认存储已迁至平台管理页，不再出现在 org 页。
-    expect(screen.queryByText("全局默认存储")).not.toBeInTheDocument()
+describe("StorageConfigsTable", () => {
+  it("渲染每条配置一行,含名称/类型/默认徽标", () => {
+    render(<StorageConfigsTable configs={[
+      { id:"c1", mode:"s3", name:"主桶", bucket:"b1", enabled:true, isDefault:true, hasSecret:true, scope:"org", orgId:"o", endpoint:"", region:"", accessKeyId:"", publicPrefix:"", useSsl:true },
+      { id:"c2", mode:"github", name:"仓库", bucket:"repo", enabled:false, isDefault:false, hasSecret:false, scope:"org", orgId:"o", endpoint:"", region:"", accessKeyId:"owner", publicPrefix:"", useSsl:true },
+    ]} onCreate={()=>{}} onEdit={()=>{}} onDelete={()=>{}} onSetDefault={()=>{}} />)
+    expect(screen.getByText("主桶")).toBeInTheDocument()
+    expect(screen.getByText("仓库")).toBeInTheDocument()
+    expect(document.querySelectorAll('[data-slot="sc-row"]')).toHaveLength(2)
+    // c1 是默认配置，应显示"默认"徽标（<span> badge）；c2 不是默认，应有"设为默认"按钮
+    // 表头 <th> 也含"默认"文本，故用 getAllByText 并断言至少 2 个（表头 + 徽标）
+    expect(screen.getAllByText("默认").length).toBeGreaterThanOrEqual(2)
+    expect(screen.getAllByRole("button", { name: /设为默认/ })).toHaveLength(1)
   })
 
-  it("deletes the org config only after confirming, not on cancel", async () => {
-    const onOrgDelete = vi.fn().mockResolvedValue(undefined)
-    const user = userEvent.setup()
-    renderView({ onOrgDelete })
-
-    await user.click(screen.getByRole("button", { name: "删除本组织存储配置" }))
-    expect(screen.getByText("确认删除本组织存储配置？")).toBeInTheDocument()
-    await user.click(screen.getByRole("button", { name: "取消" }))
-    expect(onOrgDelete).not.toHaveBeenCalled()
-
-    await user.click(screen.getByRole("button", { name: "删除本组织存储配置" }))
-    await user.click(screen.getByRole("button", { name: "确认删除" }))
-    await waitFor(() => expect(onOrgDelete).toHaveBeenCalledTimes(1))
-  })
-
-  it("disables the org delete button when org config is null", () => {
-    renderView({ orgConfig: null })
-    expect(screen.getByRole("button", { name: "删除本组织存储配置" })).toBeDisabled()
+  it("点非默认行的「设为默认」触发回调", () => {
+    const onSetDefault = vi.fn()
+    render(<StorageConfigsTable configs={[
+      { id:"c2", mode:"github", name:"仓库", bucket:"repo", enabled:true, isDefault:false, hasSecret:false, scope:"org", orgId:"o", endpoint:"", region:"", accessKeyId:"owner", publicPrefix:"", useSsl:true },
+    ]} onCreate={()=>{}} onEdit={()=>{}} onDelete={()=>{}} onSetDefault={onSetDefault} />)
+    fireEvent.click(screen.getByRole("button", { name: /设为默认/ }))
+    expect(onSetDefault).toHaveBeenCalled()
   })
 })

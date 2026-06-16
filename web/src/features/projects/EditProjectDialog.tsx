@@ -23,11 +23,12 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/studio/Button"
-import type { ModelConfig, Project, Style } from "@/lib/types"
+import type { ModelConfig, Project, StorageConfig, Style } from "@/lib/types"
+import { MODE_LABELS } from "@/features/storage/StorageConfigPage"
 
 // 项目详情页"编辑项目信息"入口——弹框。
 // 允许修改基本信息（名称/创意需求/内容类型/目标平台/风格）以及
-// plannerProvider / plannerModel / imageProvider / imageModel / storageMode。
+// plannerProvider / plannerModel / imageProvider / imageModel / storageConfigId。
 // 模型/存储留空 = 走 org 默认。
 
 // 内容类型 / 目标平台与 CreateProjectDialog 保持一致（后端只存字符串，无白名单）。
@@ -44,7 +45,7 @@ const formSchema = z.object({
   plannerModel: z.string(),
   imageProvider: z.string(),
   imageModel: z.string(),
-  storageMode: z.string(),
+  storageConfigId: z.string(),
 })
 
 type FormValues = z.infer<typeof formSchema>
@@ -55,6 +56,8 @@ export interface EditProjectFormProps {
   imageModels?: ModelConfig[]
   /** GET /api/prompt-styles 的风格列表，供风格下拉。 */
   styles?: Style[]
+  /** org 下的存储配置列表，供存储配置下拉（继承默认 or 指定配置）。 */
+  storageConfigs?: StorageConfig[]
   onSubmit: (input: {
     name: string
     description: string
@@ -65,7 +68,7 @@ export interface EditProjectFormProps {
     plannerModel: string
     imageProvider: string
     imageModel: string
-    storageMode: string
+    storageConfigId: string
   }) => Promise<Project>
   onSuccess?: (project: Project) => void
 }
@@ -75,6 +78,7 @@ export function EditProjectForm({
   textModels,
   imageModels,
   styles,
+  storageConfigs,
   onSubmit,
   onSuccess,
 }: EditProjectFormProps) {
@@ -97,7 +101,7 @@ export function EditProjectForm({
       plannerModel: project.plannerModel ?? "",
       imageProvider: project.imageProvider ?? "",
       imageModel: project.imageModel ?? "",
-      storageMode: project.storageMode ?? "",
+      storageConfigId: project.storageConfigId ?? "",
     },
   })
 
@@ -115,7 +119,7 @@ export function EditProjectForm({
         plannerModel: values.plannerModel,
         imageProvider: values.imageProvider,
         imageModel: values.imageModel,
-        storageMode: values.storageMode,
+        storageConfigId: values.storageConfigId,
       })
       onSuccess?.(updated)
     } catch {
@@ -341,10 +345,10 @@ export function EditProjectForm({
       )}
 
       <div className="flex flex-col gap-1.5">
-        <Label htmlFor="edit-storageMode">存储方式</Label>
+        <Label htmlFor="edit-storageConfigId">存储配置</Label>
         <Controller
           control={control}
-          name="storageMode"
+          name="storageConfigId"
           render={({ field }) => (
             <Select
               value={field.value || "__default__"}
@@ -352,22 +356,26 @@ export function EditProjectForm({
                 field.onChange(v === "__default__" ? "" : v)
               }}
             >
-              <SelectTrigger id="edit-storageMode" aria-invalid={false}>
-                <SelectValue placeholder="使用组织默认" />
+              <SelectTrigger id="edit-storageConfigId" aria-invalid={false}>
+                <SelectValue placeholder="继承组织默认" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="__default__">使用组织默认</SelectItem>
-                <SelectItem value="localfs">本地磁盘 (localfs)</SelectItem>
-                <SelectItem value="s3">Amazon S3 / S3 兼容 (s3)</SelectItem>
-                <SelectItem value="oss">阿里云 OSS (oss)</SelectItem>
-                <SelectItem value="cos">腾讯云 COS (cos)</SelectItem>
-                <SelectItem value="github">GitHub 仓库 (github)</SelectItem>
+                <SelectItem value="__default__">继承组织默认</SelectItem>
+                {storageConfigs?.filter((c) => c.enabled).map((c) => (
+                  <SelectItem key={c.id} value={c.id}>
+                    {c.name}（{MODE_LABELS[c.mode]}）
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           )}
         />
         <p className="text-[11.5px] text-text-3">
-          当前：{project.storageMode ? project.storageMode : "组织默认"}。保存后下一次资源生成或加载起生效。
+          当前：{(() => {
+            if (!project.storageConfigId) return "继承组织默认"
+            const c = storageConfigs?.find((c) => c.id === project.storageConfigId)
+            return c ? `${c.name}（${MODE_LABELS[c.mode]}）` : project.storageConfigId
+          })()}。保存后下一次资源生成或加载起生效。
         </p>
       </div>
 

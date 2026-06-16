@@ -31,6 +31,9 @@ type resolver interface {
 	// that EXACT backend regardless of the org's current storage_mode.
 	ResolveByID(ctx context.Context, id string) (storageconfig.ResolvedStorage, bool, error)
 	ConfigIDForOrgAndMode(ctx context.Context, orgID string, mode string) (string, bool, error)
+	// DefaultConfigID returns the org's default storage config id (if any).
+	// Used by ResolveWriteTarget to fall back from project override to org default.
+	DefaultConfigID(ctx context.Context, orgID string) (string, bool, error)
 }
 
 // builtinConfigID is the sentinel persisted on an asset whose bytes landed in the
@@ -141,6 +144,41 @@ func (r *Router) BlobStoreForConfigID(ctx context.Context, orgID, configID strin
 		return r.def, nil
 	}
 	return r.buildCached(orgID, rs), nil
+}
+
+// ResolveWriteTarget 决定一次写入落到哪个后端 + 要持久化的 config id token。
+// 优先级：项目覆盖(projConfigID 非空且 enabled) → org 默认 → builtin。
+// 返回 (store, configID)；configID 写进 asset.storage_config_id。
+//
+// 该函数当前永不返回非 nil 的 error——任何查询失败或 miss 都会静默回落到
+// builtin，error 返回值预留给未来需要向调用方传递错误的场景（前向兼容）。
+func (r *Router) ResolveWriteTarget(ctx context.Context, orgID, projConfigID string) (blob.BlobStore, string, error) {
+	if r.configs == nil || r.build == nil {
+		return r.def, builtinConfigID, nil
+	}
+	if projConfigID != "" {
+		rs, ok, err := r.configs.ResolveByID(ctx, projConfigID)
+		if err != nil {
+			r.log.Warn("storagerouter: resolve project override config failed; falling through to org default",
+				"org", orgID, "projConfigID", projConfigID, "err", err)
+		} else if ok {
+			return r.buildCached(orgID, rs), projConfigID, nil
+		}
+	}
+	id, ok, err := r.configs.DefaultConfigID(ctx, orgID)
+	if err != nil {
+		r.log.Warn("storagerouter: resolve default config id failed; falling through to builtin",
+			"org", orgID, "err", err)
+	} else if ok {
+		rs, ok2, err2 := r.configs.ResolveByID(ctx, id)
+		if err2 != nil {
+			r.log.Warn("storagerouter: resolve default config by id failed; falling through to builtin",
+				"org", orgID, "defaultConfigID", id, "err", err2)
+		} else if ok2 {
+			return r.buildCached(orgID, rs), id, nil
+		}
+	}
+	return r.def, builtinConfigID, nil
 }
 
 // buildCached builds (or returns a cached) blob store for a resolved config,

@@ -111,7 +111,10 @@ func (g *coverGenStub) MediaGeneratorForNamed(_ context.Context, _, _, provider,
 }
 
 // coverBlobRouterStub hands out a single in-memory blob store.
-type coverBlobRouterStub struct{ bs *blob.Fake }
+type coverBlobRouterStub struct {
+	bs               *blob.Fake
+	gotProjConfigID  string
+}
 
 func (r *coverBlobRouterStub) BlobStoreFor(context.Context, string) (blob.BlobStore, error) {
 	return r.bs, nil
@@ -124,6 +127,10 @@ func (r *coverBlobRouterStub) BlobStoreForConfigID(context.Context, string, stri
 }
 func (r *coverBlobRouterStub) ConfigIDForMode(context.Context, string, string) (string, error) {
 	return "", nil
+}
+func (r *coverBlobRouterStub) ResolveWriteTarget(_ context.Context, _, projConfigID string) (blob.BlobStore, string, error) {
+	r.gotProjConfigID = projConfigID
+	return r.bs, "builtin", nil
 }
 
 // coverLibStub is an AssetLibrary returning a configurable asset.
@@ -210,7 +217,7 @@ func TestCoverSetValid(t *testing.T) {
 // --- coverGenerate test --------------------------------------------------
 
 func TestCoverGenerateHappy(t *testing.T) {
-	ps := &coverProjStub{proj: project.Project{ID: "p1", OrgID: "o1", Name: "Promo", Style: "cyberpunk"}, orgID: "o1"}
+	ps := &coverProjStub{proj: project.Project{ID: "p1", OrgID: "o1", Name: "Promo", Style: "cyberpunk", StorageConfigID: "cfgZ"}, orgID: "o1"}
 	aw := &coverAssetWriterStub{nextID: "asset-1"}
 	gen := &coverGenStub{def: generate.NewDevFakeGenerator()}
 	bs := blob.NewFake()
@@ -258,6 +265,10 @@ func TestCoverGenerateHappy(t *testing.T) {
 	// Ledger recorded.
 	if len(cs.recorded) != 1 {
 		t.Fatalf("expected 1 ledger record, got %d", len(cs.recorded))
+	}
+	// BlobRouter received the project's StorageConfigID.
+	if br.gotProjConfigID != "cfgZ" {
+		t.Fatalf("ResolveWriteTarget gotProjConfigID = %q, want cfgZ", br.gotProjConfigID)
 	}
 }
 
@@ -321,7 +332,7 @@ func TestCoverUploadOversize(t *testing.T) {
 }
 
 func TestCoverUploadValidPNG(t *testing.T) {
-	ps := &coverProjStub{proj: project.Project{ID: "p1", OrgID: "o1"}, orgID: "o1"}
+	ps := &coverProjStub{proj: project.Project{ID: "p1", OrgID: "o1", StorageConfigID: "cfgZ"}, orgID: "o1"}
 	aw := &coverAssetWriterStub{nextID: "asset-up"}
 	bs := blob.NewFake()
 	br := &coverBlobRouterStub{bs: bs}
@@ -358,5 +369,9 @@ func TestCoverUploadValidPNG(t *testing.T) {
 	}
 	if !bytes.Equal(data, pngBytes) {
 		t.Fatalf("stored bytes (%d) != original png (%d)", len(data), len(pngBytes))
+	}
+	// BlobRouter received the project's StorageConfigID.
+	if br.gotProjConfigID != "cfgZ" {
+		t.Fatalf("ResolveWriteTarget gotProjConfigID = %q, want cfgZ", br.gotProjConfigID)
 	}
 }

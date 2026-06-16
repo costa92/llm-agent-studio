@@ -663,3 +663,42 @@ func TestLoadState_LegacyCustomEnabled(t *testing.T) {
 		t.Fatalf("Edges = %+v want empty", st.Edges)
 	}
 }
+
+// TestProject_StorageConfigIDRoundTrip: storage_config_id persists through
+// Create and is readable back via Get and ListByOrg.
+func TestProject_StorageConfigIDRoundTrip(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	orgID := "o_" + uniqueSuffix()
+	p, err := s.Create(ctx, CreateInput{
+		OrgID: orgID, Name: "P", CreatedBy: "u", StorageConfigID: "cfg9",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if p.StorageConfigID != "cfg9" {
+		t.Fatalf("create returned StorageConfigID=%q want cfg9", p.StorageConfigID)
+	}
+	got, err := s.Get(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.StorageConfigID != "cfg9" {
+		t.Fatalf("get roundtrip StorageConfigID=%q want cfg9", got.StorageConfigID)
+	}
+	items, _, err := s.ListByOrg(ctx, orgID, 10, "")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(items) != 1 || items[0].StorageConfigID != "cfg9" {
+		t.Fatalf("list roundtrip StorageConfigID=%q want cfg9", items[0].StorageConfigID)
+	}
+	// Update should persist a new value.
+	upd, err := s.Update(ctx, p.ID, UpdateInput{Name: "P", StorageConfigID: "cfg42"})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if upd.StorageConfigID != "cfg42" {
+		t.Fatalf("update StorageConfigID=%q want cfg42", upd.StorageConfigID)
+	}
+}

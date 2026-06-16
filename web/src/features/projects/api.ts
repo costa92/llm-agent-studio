@@ -47,7 +47,7 @@ export function useCreateProject(
 
 // PUT /api/projects/{id} → Project（editor+）。
 // 允许编辑项目基本信息（名称/创意需求/内容类型/目标平台/风格）+ 规划/图片模型 +
-// 存储方式；成功后失效 project + run-history Query。name 为空 → 后端 400。
+// 存储配置；成功后失效 project + run-history Query。name 为空 → 后端 400。
 export function useUpdateProject(
   org: string,
 ): UseMutationResult<
@@ -64,7 +64,7 @@ export function useUpdateProject(
     plannerModel: string
     imageProvider: string
     imageModel: string
-    storageMode: string
+    storageConfigId: string
   }
 > {
   const queryClient = useQueryClient()

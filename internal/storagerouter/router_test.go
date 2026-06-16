@@ -45,6 +45,9 @@ func (f fakeResolver) ResolveByID(context.Context, string) (storageconfig.Resolv
 func (f fakeResolver) ConfigIDForOrgAndMode(context.Context, string, string) (string, bool, error) {
 	return "", f.ok, f.err
 }
+func (f fakeResolver) DefaultConfigID(context.Context, string) (string, bool, error) {
+	return "", false, nil
+}
 
 func TestBlobStoreForBuildsFromConfig(t *testing.T) {
 	def := &stubBlob{name: "default"}
@@ -180,6 +183,9 @@ func (orgVaryingResolver) ResolveByID(_ context.Context, id string) (storageconf
 func (orgVaryingResolver) ConfigIDForOrgAndMode(_ context.Context, orgID, mode string) (string, bool, error) {
 	return orgID, true, nil
 }
+func (orgVaryingResolver) DefaultConfigID(context.Context, string) (string, bool, error) {
+	return "", false, nil
+}
 
 func TestBlobStoreForNeverNilWhenDefaultSet(t *testing.T) {
 	def := &stubBlob{name: "default"}
@@ -215,6 +221,10 @@ func (r idResolver) ResolveByID(_ context.Context, id string) (storageconfig.Res
 }
 func (r idResolver) ConfigIDForOrgAndMode(_ context.Context, orgID, mode string) (string, bool, error) {
 	id, ok := r.idByOrg[orgID+"|"+mode]
+	return id, ok, nil
+}
+func (r idResolver) DefaultConfigID(_ context.Context, orgID string) (string, bool, error) {
+	id, ok := r.idByOrg["default|"+orgID]
 	return id, ok, nil
 }
 
@@ -306,5 +316,107 @@ func TestServeIndependentOfCurrentMode(t *testing.T) {
 	byMode, _ := r.BlobStoreForMode(ctx, "org", "oss")
 	if byMode != storeY {
 		t.Fatalf("current mode resolves to Y as expected, got %v", byMode)
+	}
+}
+
+func TestResolveWriteTarget_ProjectOverrideWinsOverDefault(t *testing.T) {
+	def := &stubBlob{name: "default"}
+	r := New(Config{
+		Configs: idResolver{
+			byID: map[string]storageconfig.ResolvedStorage{
+				"cfgX": {Mode: "s3", Bucket: "X"},
+				"cfgD": {Mode: "s3", Bucket: "D"},
+			},
+			idByOrg: map[string]string{"default|org1": "cfgD"},
+		},
+		Default: def,
+		Build: func(rs storageconfig.ResolvedStorage) (blob.BlobStore, error) {
+			return &stubBlob{name: rs.Bucket}, nil
+		},
+	})
+	bs, id, err := r.ResolveWriteTarget(context.Background(), "org1", "cfgX")
+	if err != nil || id != "cfgX" {
+		t.Fatalf("override: id=%q err=%v want cfgX", id, err)
+	}
+	url, _ := bs.SignedURL(context.Background(), "", 0)
+	if url != "X" {
+		t.Fatalf("override: store bucket=%q want X", url)
+	}
+}
+
+func TestResolveWriteTarget_FallsBackToDefault(t *testing.T) {
+	def := &stubBlob{name: "default"}
+	r := New(Config{
+		Configs: idResolver{
+			byID:    map[string]storageconfig.ResolvedStorage{"cfgD": {Mode: "s3", Bucket: "D"}},
+			idByOrg: map[string]string{"default|org1": "cfgD"},
+		},
+		Default: def,
+		Build: func(rs storageconfig.ResolvedStorage) (blob.BlobStore, error) {
+			return &stubBlob{name: rs.Bucket}, nil
+		},
+	})
+	bs, id, err := r.ResolveWriteTarget(context.Background(), "org1", "")
+	if err != nil || id != "cfgD" {
+		t.Fatalf("default: id=%q err=%v want cfgD", id, err)
+	}
+	url, _ := bs.SignedURL(context.Background(), "", 0)
+	if url != "D" {
+		t.Fatalf("default: store bucket=%q want D", url)
+	}
+}
+
+func TestResolveWriteTarget_BuiltinWhenNoDefault(t *testing.T) {
+	def := &stubBlob{name: "default"}
+	r := New(Config{
+		Configs: idResolver{
+			byID:    map[string]storageconfig.ResolvedStorage{},
+			idByOrg: map[string]string{}, // no default entry
+		},
+		Default: def,
+		Build: func(rs storageconfig.ResolvedStorage) (blob.BlobStore, error) {
+			return &stubBlob{name: rs.Bucket}, nil
+		},
+	})
+	bs, id, err := r.ResolveWriteTarget(context.Background(), "org1", "")
+	if err != nil || id != builtinConfigID {
+		t.Fatalf("builtin: id=%q err=%v want builtin", id, err)
+	}
+	if bs != def {
+		t.Fatalf("builtin: store=%v want def", bs)
+	}
+}
+
+// TestResolveWriteTarget_OverrideMissingFallsToDefault verifies that when the
+// project-override config id is set but unknown (ResolveByID returns ok=false),
+// ResolveWriteTarget falls through and returns the org DEFAULT config, not
+// builtin and not an error.
+func TestResolveWriteTarget_OverrideMissingFallsToDefault(t *testing.T) {
+	def := &stubBlob{name: "default"}
+	var buf bytes.Buffer
+	r := New(Config{
+		Configs: idResolver{
+			byID: map[string]storageconfig.ResolvedStorage{
+				"cfgD": {Mode: "s3", Bucket: "D"},
+				// "cfgX" is intentionally absent — override is unknown.
+			},
+			idByOrg: map[string]string{"default|org1": "cfgD"},
+		},
+		Default: def,
+		Build: func(rs storageconfig.ResolvedStorage) (blob.BlobStore, error) {
+			return &stubBlob{name: rs.Bucket}, nil
+		},
+		Logger: slog.New(slog.NewTextHandler(&buf, nil)),
+	})
+	bs, id, err := r.ResolveWriteTarget(context.Background(), "org1", "cfgX")
+	if err != nil {
+		t.Fatalf("want nil error, got %v", err)
+	}
+	if id != "cfgD" {
+		t.Fatalf("want default config id cfgD, got %q", id)
+	}
+	url, _ := bs.SignedURL(context.Background(), "", 0)
+	if url != "D" {
+		t.Fatalf("want default store (bucket D), got %q", url)
 	}
 }

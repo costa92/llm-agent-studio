@@ -90,13 +90,12 @@ func coverGenerateHandler(ps ProjectStore, aw CoverAssetWriter, cg CoverGenerato
 		}
 
 		blobKey := "assets/" + id + "/" + created.ID + mimeToExt(res.MimeType)
-		bs, err := br.BlobStoreFor(r.Context(), proj.OrgID)
+		// Record which backend the cover bytes land in (serve re-resolves THAT one).
+		bs, storageConfigID, err := br.ResolveWriteTarget(r.Context(), proj.OrgID, proj.StorageConfigID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		// Record which backend the cover bytes land in (serve re-resolves THAT one).
-		storageConfigID, _ := br.ConfigIDForMode(r.Context(), proj.OrgID, "")
 		if err := bs.Put(r.Context(), blobKey, bytes.NewReader(res.Bytes), res.MimeType); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -189,13 +188,12 @@ func coverUploadHandler(ps ProjectStore, aw CoverAssetWriter, br BlobRouter) htt
 		}
 
 		blobKey := "assets/" + id + "/" + created.ID + mimeToExt(ct)
-		bs, err := br.BlobStoreFor(r.Context(), proj.OrgID)
+		// Record which backend the cover bytes land in (serve re-resolves THAT one).
+		bs, storageConfigID, err := br.ResolveWriteTarget(r.Context(), proj.OrgID, proj.StorageConfigID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		// Record which backend the cover bytes land in (serve re-resolves THAT one).
-		storageConfigID, _ := br.ConfigIDForMode(r.Context(), proj.OrgID, "")
 		// We consumed up to 512 bytes for sniffing — re-join them with the rest.
 		full := io.MultiReader(bytes.NewReader(sniff), file)
 		if err := bs.Put(r.Context(), blobKey, full, ct); err != nil {

@@ -385,10 +385,28 @@ var m15Migrations = []string{
 	`UPDATE assets SET storage_config_id = 'builtin' WHERE storage_config_id = ''`,
 }
 
-// Migrate applies the M1 + M2 + M3 + M4 + M5 + M6 + M7 + M8 + M9 + M10 + M11 + M12 + M13 + M14 + M15 migrations in order. Idempotent.
+// m16Migrations: org 存储多配置(去 org×mode 唯一约束 + name/is_default + projects 覆盖列)。
+var m16Migrations = []string{
+	`ALTER TABLE storage_configs ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE storage_configs ADD COLUMN IF NOT EXISTS is_default BOOLEAN NOT NULL DEFAULT false`,
+	`DROP INDEX IF EXISTS storage_configs_org_mode_uniq`,
+	`ALTER TABLE projects ADD COLUMN IF NOT EXISTS storage_config_id TEXT NOT NULL DEFAULT ''`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS storage_configs_one_org_default
+	 ON storage_configs (org_id) WHERE scope='org' AND is_default=true`,
+	`UPDATE storage_configs sc SET is_default=true
+	 WHERE sc.scope='org' AND sc.enabled=true
+	   AND sc.id = (SELECT id FROM storage_configs x
+	                WHERE x.scope='org' AND x.org_id=sc.org_id AND x.enabled=true
+	                ORDER BY created_at ASC LIMIT 1)
+	   AND NOT EXISTS (SELECT 1 FROM storage_configs y
+	                   WHERE y.scope='org' AND y.org_id=sc.org_id AND y.is_default=true)`,
+	`UPDATE storage_configs SET name=mode WHERE name=''`,
+}
+
+// Migrate applies the M1 + M2 + M3 + M4 + M5 + M6 + M7 + M8 + M9 + M10 + M11 + M12 + M13 + M14 + M15 + M16 migrations in order. Idempotent.
 func (s *Storage) Migrate(ctx context.Context) error {
-	all := append(append(append(append(append(append(append(append(append(append(append(append(append(append(append([]string{},
-		m1Migrations...), m2Migrations...), m3Migrations...), m4Migrations...), m5Migrations...), m6Migrations...), m7Migrations...), m8Migrations...), m9Migrations...), m10Migrations...), m11Migrations...), m12Migrations...), m13Migrations...), m14Migrations...), m15Migrations...)
+	all := append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append([]string{},
+		m1Migrations...), m2Migrations...), m3Migrations...), m4Migrations...), m5Migrations...), m6Migrations...), m7Migrations...), m8Migrations...), m9Migrations...), m10Migrations...), m11Migrations...), m12Migrations...), m13Migrations...), m14Migrations...), m15Migrations...), m16Migrations...)
 	for _, stmt := range all {
 		if _, err := s.pool.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("storage: migrate: %w", err)

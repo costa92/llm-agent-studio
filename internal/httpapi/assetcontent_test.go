@@ -44,6 +44,10 @@ func (r *recordingBlobRouter) ConfigIDForMode(_ context.Context, _ string, _ str
 	return "", nil
 }
 
+func (r *recordingBlobRouter) ResolveWriteTarget(_ context.Context, _ string, _ string) (blob.BlobStore, string, error) {
+	return r.bs, "builtin", nil
+}
+
 // fixedAssetLib is a minimal AssetLibrary stub that returns a pre-configured asset.
 type fixedAssetLib struct {
 	a   assets.Asset
