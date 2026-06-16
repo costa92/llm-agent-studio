@@ -3,6 +3,7 @@ import { useForm, useWatch } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
 import { Loader2 } from "lucide-react"
+import { toast } from "sonner"
 import {
   Dialog,
   DialogContent,
@@ -17,6 +18,14 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/studio/Button"
 import { Button as UiButton } from "@/components/ui/button"
 import { Badge } from "@/components/studio/Badge"
+import { ApiError } from "@/lib/apiClient"
+import {
+  useStorageConfigs,
+  useCreateStorageConfig,
+  useUpdateStorageConfig,
+  useDeleteStorageConfig,
+  useSetDefaultStorageConfig,
+} from "./api"
 import type {
   StorageConfig,
   StorageMode,
@@ -43,6 +52,7 @@ const MODES: StorageMode[] = ["localfs", "s3", "oss", "cos", "github"]
 // secret 永远可空：空 = 保留既有 secret（已配置时）；非空 = 替换。
 const formSchema = z
   .object({
+    name: z.string().trim().min(1, "请填写配置名称"),
     mode: z.enum(["localfs", "s3", "oss", "cos", "github"]),
     endpoint: z.string().trim(),
     region: z.string().trim(),
@@ -77,10 +87,11 @@ const formSchema = z
 
 type FormValues = z.infer<typeof formSchema>
 
-// initial → 表单默认值。secret 始终留空（空 = 保保留既有）；hasSecret 决定提示文案。
-function defaultsFor(initial: StorageConfig | null | undefined, activeMode?: StorageMode): FormValues {
+// initial → 表单默认值。secret 始终留空（空 = 保留既有）；hasSecret 决定提示文案。
+function defaultsFor(initial: StorageConfig | null | undefined): FormValues {
   return {
-    mode: initial?.mode ?? activeMode ?? "localfs",
+    name: initial?.name ?? "",
+    mode: initial?.mode ?? "localfs",
     endpoint: initial?.endpoint ?? "",
     region: initial?.region ?? "",
     bucket: initial?.bucket ?? "",
@@ -95,15 +106,16 @@ function defaultsFor(initial: StorageConfig | null | undefined, activeMode?: Sto
 export interface StorageConfigFormProps {
   // 既有配置（用于预填 + hasSecret 提示）；null = 尚未配置。
   initial: StorageConfig | null | undefined
-  // 提交 → PUT（org 或 global）；返回 Promise 让表单 await，400 由调用方 toast。
+  // 提交 → POST（新建）或 PUT（更新）；返回 Promise 让表单 await，400 由调用方 toast。
   onSubmit: (input: UpsertStorageConfigInput) => Promise<StorageConfig>
-  // org 覆盖区显示「禁用 = 回退全局」提示；全局区不显示。
+  // org 覆盖区显示「停用 = 回退全局」提示；全局区不显示。
   isOrgScope: boolean
-  activeMode?: StorageMode
+  // id 前缀，避免同页多表单 id 冲突。默认 "form"。
+  idPrefix?: string
 }
 
-// 单个存储配置表单：mode 下拉 + per-mode 条件字段 + write-only secret。
-export function StorageConfigForm({ initial, onSubmit, isOrgScope, activeMode }: StorageConfigFormProps) {
+// 单个存储配置表单：name + mode 下拉 + per-mode 条件字段 + write-only secret。
+export function StorageConfigForm({ initial, onSubmit, isOrgScope, idPrefix = "form" }: StorageConfigFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null)
   const {
     register,
@@ -113,15 +125,15 @@ export function StorageConfigForm({ initial, onSubmit, isOrgScope, activeMode }:
     formState: { errors, isSubmitting },
   } = useForm<FormValues>({
     resolver: zodResolver(formSchema),
-    defaultValues: defaultsFor(initial, activeMode),
+    defaultValues: defaultsFor(initial),
   })
 
   const mode = useWatch({ control, name: "mode" })
   const useSsl = useWatch({ control, name: "useSsl" })
   const enabled = useWatch({ control, name: "enabled" })
 
-  // 同页有两个表单（本组织 + 全局）；按 scope 给字段 id 加前缀，避免重复 id 破坏 label 关联。
-  const fid = (s: string) => `${isOrgScope ? "org" : "global"}-sc-${s}`
+  // 同页有多个表单时按 idPrefix 给字段 id 加前缀，避免重复 id 破坏 label 关联。
+  const fid = (s: string) => `${idPrefix}-sc-${s}`
   const isLocal = mode === "localfs"
   const isGithub = mode === "github"
   // 哪些 mode 暴露对象存储字段（endpoint/bucket/accessKey/secret）。github 字段集不同，单独分支。
@@ -134,6 +146,7 @@ export function StorageConfigForm({ initial, onSubmit, isOrgScope, activeMode }:
     setSubmitError(null)
     try {
       const sc = await onSubmit({
+        name: values.name.trim(),
         mode: values.mode,
         endpoint: values.endpoint.trim(),
         region: values.region.trim(),
@@ -166,8 +179,22 @@ export function StorageConfigForm({ initial, onSubmit, isOrgScope, activeMode }:
   return (
     <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
       <div className="flex flex-col gap-1.5">
+        <Label htmlFor={fid("name")}>配置名称</Label>
+        <input
+          id={fid("name")}
+          placeholder="如 主存储桶"
+          aria-invalid={errors.name != null}
+          {...register("name")}
+          className={fieldClass}
+        />
+        {errors.name && (
+          <p className="text-[12px] text-danger">{errors.name.message}</p>
+        )}
+      </div>
+
+      <div className="flex flex-col gap-1.5">
         <Label htmlFor={fid("mode")}>存储类型 (mode)</Label>
-        <select id={fid("mode")} {...register("mode")} className={fieldClass} disabled={isOrgScope && activeMode !== undefined}>
+        <select id={fid("mode")} {...register("mode")} className={fieldClass}>
           {MODES.map((m) => (
             <option key={m} value={m}>
               {MODE_LABELS[m]}
@@ -419,118 +446,156 @@ export function StorageConfigForm({ initial, onSubmit, isOrgScope, activeMode }:
   )
 }
 
-// 区块外壳：标题 + 描述 + loading/error 占位 + 表单。
-interface SectionProps {
-  title: string
-  description: string
-  config: StorageConfig | null | undefined
-  isLoading: boolean
-  isError: boolean
-  onRetry: () => void
-  onSubmit: (input: UpsertStorageConfigInput) => Promise<StorageConfig>
-  isOrgScope: boolean
-  activeMode: StorageMode
-  // org 区的删除入口（confirm dialog 在外层管理）；global 区不传。
-  onRequestDelete?: () => void
-  canDelete?: boolean
+// 关键字段展示：按 mode 返回最具代表性的一个字段值。
+function keyField(config: StorageConfig): string {
+  switch (config.mode) {
+    case "s3":
+    case "oss":
+    case "cos":
+      return config.bucket
+    case "github":
+      return `${config.accessKeyId}/${config.bucket}`
+    case "localfs":
+      return config.publicPrefix || "—"
+  }
 }
 
-function StorageSection({
-  title,
-  description,
-  config,
-  isLoading,
-  isError,
-  onRetry,
-  onSubmit,
-  isOrgScope,
-  activeMode,
-  onRequestDelete,
-  canDelete,
-}: SectionProps) {
-  return (
-    <section className="flex flex-col gap-3 rounded-xl border border-line bg-bg-surface p-5">
-      <header className="flex items-center justify-between gap-3">
-        <div className="flex flex-col gap-1">
-          <h2 className="font-heading text-[15px] font-semibold text-text-1">{title}</h2>
-          <p className="text-[12px] text-text-3">{description}</p>
-        </div>
-        <span className="flex items-center gap-2">
-          {!isLoading && config && (
-            <Badge variant={config.enabled ? "running" : "pending"}>
-              {config.enabled ? "已启用" : "已停用"}
-            </Badge>
-          )}
-          {!isLoading && config == null && (
-            <Badge variant="pending">未配置</Badge>
-          )}
-          {isOrgScope && onRequestDelete && (
-            <UiButton
-              variant="ghost"
-              size="sm"
-              aria-label="删除本组织存储配置"
-              disabled={!canDelete}
-              onClick={onRequestDelete}
-            >
-              删除
-            </UiButton>
-          )}
-        </span>
-      </header>
+export interface StorageConfigsTableProps {
+  configs: StorageConfig[]
+  onCreate: () => void
+  onEdit: (config: StorageConfig) => void
+  onDelete: (config: StorageConfig) => void
+  onSetDefault: (config: StorageConfig) => void
+}
 
-      {isError ? (
-        <div className="flex flex-col items-center gap-3 py-10 text-center">
-          <p className="text-text-2">存储配置加载失败</p>
-          <Button variant="ghost" onClick={onRetry}>
-            重试
-          </Button>
-        </div>
-      ) : isLoading ? (
-        <div className="flex flex-col gap-3">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <Skeleton key={i} className="h-10 rounded-lg" />
+export function StorageConfigsTable({
+  configs,
+  onCreate,
+  onEdit,
+  onDelete,
+  onSetDefault,
+}: StorageConfigsTableProps) {
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex justify-end">
+        <UiButton size="sm" onClick={onCreate}>
+          新增配置
+        </UiButton>
+      </div>
+      <table className="w-full text-[13px] text-text-1">
+        <thead>
+          <tr className="border-b border-line text-left text-[12px] text-text-3">
+            <th className="pb-2 pr-4 font-medium">名称</th>
+            <th className="pb-2 pr-4 font-medium">类型</th>
+            <th className="pb-2 pr-4 font-medium">关键字段</th>
+            <th className="pb-2 pr-4 font-medium">启用</th>
+            <th className="pb-2 pr-4 font-medium">默认</th>
+            <th className="pb-2 pr-4 font-medium">密钥</th>
+            <th className="pb-2 font-medium">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {configs.map((config) => (
+            <tr key={config.id} data-slot="sc-row" className="border-b border-line/50">
+              <td className="py-2 pr-4">{config.name}</td>
+              <td className="py-2 pr-4">{MODE_LABELS[config.mode]}</td>
+              <td className="py-2 pr-4 font-mono text-[12px] text-text-2">{keyField(config)}</td>
+              <td className="py-2 pr-4">
+                <Badge variant={config.enabled ? "running" : "pending"}>
+                  {config.enabled ? "已启用" : "已停用"}
+                </Badge>
+              </td>
+              <td className="py-2 pr-4">
+                {config.isDefault ? (
+                  <Badge variant="done">默认</Badge>
+                ) : (
+                  <UiButton size="sm" onClick={() => onSetDefault(config)}>
+                    设为默认
+                  </UiButton>
+                )}
+              </td>
+              <td className="py-2 pr-4">
+                {config.hasSecret ? <Badge variant="done">已配置</Badge> : null}
+              </td>
+              <td className="py-2">
+                <span className="flex items-center gap-2">
+                  <UiButton size="sm" onClick={() => onEdit(config)}>
+                    编辑
+                  </UiButton>
+                  <UiButton size="sm" variant="destructive" onClick={() => onDelete(config)}>
+                    删除
+                  </UiButton>
+                </span>
+              </td>
+            </tr>
           ))}
-        </div>
-      ) : (
-        // key 绑 config 同一性：org 删除回退（config 变 null）后重置表单为默认 localfs。
-        <StorageConfigForm
-          key={`${config?.id ?? "empty"}-${activeMode || "default"}`}
-          initial={config}
-          onSubmit={onSubmit}
-          isOrgScope={isOrgScope}
-          activeMode={activeMode}
-        />
-      )}
-    </section>
+        </tbody>
+      </table>
+    </div>
   )
 }
 
 export interface StorageConfigViewProps {
-  // org 覆盖配置（null = 未配置，回退全局）。
-  orgConfig: StorageConfig | null | undefined
-  orgLoading: boolean
-  orgError: boolean
-  activeMode?: "s3" | "oss" | "cos" | "github"
-  onActiveModeChange?: (mode: "s3" | "oss" | "cos" | "github") => void
-  onOrgRetry: () => void
-  onOrgSubmit: (input: UpsertStorageConfigInput) => Promise<StorageConfig>
-  onOrgDelete: () => Promise<void>
+  org: string
 }
 
-// 组织存储配置页（admin-only）：仅本组织存储覆盖（可删除回退全局）。
-// 全局默认存储已迁至平台管理页（/platform，平台超级管理员专属）。
-export function StorageConfigView({
-  orgConfig,
-  orgLoading,
-  orgError,
-  activeMode = "s3",
-  onActiveModeChange = () => {},
-  onOrgRetry,
-  onOrgSubmit,
-  onOrgDelete,
-}: StorageConfigViewProps) {
-  // 删除确认弹窗开合（mirror 模型配置退回确认模式）。
-  const [confirmDelete, setConfirmDelete] = useState(false)
+// 组织存储配置页（admin-only）：多配置列表 + 新增/编辑/删除/设为默认。
+export function StorageConfigView({ org }: StorageConfigViewProps) {
+  const configsQuery = useStorageConfigs(org)
+  const createMutation = useCreateStorageConfig(org)
+  const updateMutation = useUpdateStorageConfig(org)
+  const deleteMutation = useDeleteStorageConfig(org)
+  const setDefaultMutation = useSetDefaultStorageConfig(org)
+
+  const [dialogMode, setDialogMode] = useState<"create" | "edit" | null>(null)
+  const [editTarget, setEditTarget] = useState<StorageConfig | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<StorageConfig | null>(null)
+
+  function openCreate() {
+    setEditTarget(null)
+    setDialogMode("create")
+  }
+
+  function openEdit(config: StorageConfig) {
+    setEditTarget(config)
+    setDialogMode("edit")
+  }
+
+  function closeDialog() {
+    setDialogMode(null)
+    setEditTarget(null)
+  }
+
+  async function handleFormSubmit(input: UpsertStorageConfigInput): Promise<StorageConfig> {
+    if (dialogMode === "create") {
+      const sc = await createMutation.mutateAsync(input)
+      toast.success("存储配置已创建")
+      closeDialog()
+      return sc
+    } else {
+      const sc = await updateMutation.mutateAsync({ id: editTarget!.id, input })
+      toast.success("存储配置已更新")
+      closeDialog()
+      return sc
+    }
+  }
+
+  function handleDelete(config: StorageConfig) {
+    setDeleteTarget(config)
+  }
+
+  function confirmDelete() {
+    if (!deleteTarget) return
+    const id = deleteTarget.id
+    setDeleteTarget(null)
+    deleteMutation.mutateAsync(id).catch((err: unknown) => {
+      if (err instanceof ApiError && err.status === 409) {
+        toast.error("该存储有历史素材引用，请改用停用")
+      } else {
+        toast.error("删除失败")
+      }
+    })
+  }
 
   return (
     <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-6 p-6">
@@ -542,62 +607,64 @@ export function StorageConfigView({
         </p>
       </header>
 
-      {/* Tabs */}
-      <div className="flex border-b border-line gap-2">
-        {(["s3", "oss", "cos", "github"] as const).map((m) => (
-          <button
-            key={m}
-            onClick={() => onActiveModeChange(m)}
-            className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-[2px] transition-colors ${
-              activeMode === m
-                ? "border-amber text-amber"
-                : "border-transparent text-text-3 hover:text-text-1"
-            }`}
-          >
-            {MODE_LABELS[m]}
-          </button>
-        ))}
-      </div>
+      {configsQuery.isError ? (
+        <div className="flex flex-col items-center gap-3 py-10 text-center">
+          <p className="text-text-2">存储配置加载失败</p>
+          <Button variant="ghost" onClick={() => void configsQuery.refetch()}>
+            重试
+          </Button>
+        </div>
+      ) : configsQuery.isLoading ? (
+        <div className="flex flex-col gap-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} className="h-10 rounded-lg" />
+          ))}
+        </div>
+      ) : (
+        <StorageConfigsTable
+          configs={configsQuery.data ?? []}
+          onCreate={openCreate}
+          onEdit={openEdit}
+          onDelete={handleDelete}
+          onSetDefault={(config) => setDefaultMutation.mutate(config.id)}
+        />
+      )}
 
-      <StorageSection
-        title={`本组织存储 (${MODE_LABELS[activeMode]})`}
-        description={`配置本组织的 ${MODE_LABELS[activeMode]} 后端。未配置或停用时回退到全局默认。`}
-        config={orgConfig}
-        isLoading={orgLoading}
-        isError={orgError}
-        onRetry={onOrgRetry}
-        onSubmit={onOrgSubmit}
-        isOrgScope={true}
-        activeMode={activeMode}
-        onRequestDelete={() => setConfirmDelete(true)}
-        canDelete={orgConfig != null}
-      />
-
-      {/* 删除确认弹窗：仅「确认删除」才调 onOrgDelete；「取消」零副作用。 */}
-      <Dialog
-        open={confirmDelete}
-        onOpenChange={(open) => {
-          if (!open) setConfirmDelete(false)
-        }}
-      >
+      {/* 新增/编辑 Dialog */}
+      <Dialog open={dialogMode !== null} onOpenChange={(open) => { if (!open) closeDialog() }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>确认删除本组织存储配置？</DialogTitle>
+            <DialogTitle>{dialogMode === "create" ? "新增存储配置" : "编辑存储配置"}</DialogTitle>
             <DialogDescription>
-              删除后本组织将回退到全局默认存储。此操作无法撤销，确认要删除吗？
+              {dialogMode === "create"
+                ? "填写新存储配置的参数，密钥仅加密存储、不回显。"
+                : "修改存储配置参数；留空密钥字段则保持不变。"}
+            </DialogDescription>
+          </DialogHeader>
+          <StorageConfigForm
+            key={dialogMode === "create" ? "new" : (editTarget?.id ?? "edit")}
+            initial={editTarget}
+            onSubmit={handleFormSubmit}
+            isOrgScope
+            idPrefix={dialogMode === "create" ? "new" : (editTarget?.id ?? "edit")}
+          />
+        </DialogContent>
+      </Dialog>
+
+      {/* 删除确认 Dialog */}
+      <Dialog open={deleteTarget !== null} onOpenChange={(open) => { if (!open) setDeleteTarget(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>确认删除存储配置？</DialogTitle>
+            <DialogDescription>
+              删除「{deleteTarget?.name}」后无法撤销。如该存储有历史素材引用，建议改用停用。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <UiButton variant="outline" onClick={() => setConfirmDelete(false)}>
+            <UiButton variant="outline" onClick={() => setDeleteTarget(null)}>
               取消
             </UiButton>
-            <UiButton
-              variant="destructive"
-              onClick={() => {
-                setConfirmDelete(false)
-                void onOrgDelete()
-              }}
-            >
+            <UiButton variant="destructive" onClick={confirmDelete}>
               确认删除
             </UiButton>
           </DialogFooter>
