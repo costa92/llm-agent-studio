@@ -127,6 +127,80 @@ func TestRunWorkflowHandlerEmptyNodes(t *testing.T) {
 	}
 }
 
+// TestCreateWorkflow_RejectsCycle verifies that save-time validation rejects a
+// cyclic graph with 400 and does NOT call WorkflowStore.Create.
+func TestCreateWorkflow_RejectsCycle(t *testing.T) {
+	// ws.Create will fail the test if called — cycle must be caught before the store.
+	ws := &cycleRejectingWorkflows{t: t}
+	h := createWorkflowHandler(ws)
+	// A↔B cycle.
+	body := `{"name":"cycle-wf","nodes":[{"id":"A","type":"script","dependsOn":["B"]},{"id":"B","type":"storyboard","dependsOn":["A"]}]}`
+	req := httptest.NewRequest("POST", "/api/projects/p1/workflows", strings.NewReader(body))
+	req.SetPathValue("id", "p1")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("cyclic workflow should 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "cycle") {
+		t.Fatalf("body should mention \"cycle\", got: %s", rr.Body.String())
+	}
+}
+
+// cycleRejectingWorkflows is a WorkflowStore stub whose Create fails the test
+// (to prove validation happens BEFORE the store write).
+type cycleRejectingWorkflows struct {
+	t *testing.T
+}
+
+func (s *cycleRejectingWorkflows) Create(_ context.Context, _, _ string, _ json.RawMessage) (workflows.Workflow, error) {
+	s.t.Fatal("Create must not be called when the graph is invalid")
+	return workflows.Workflow{}, nil
+}
+func (s *cycleRejectingWorkflows) Get(_ context.Context, _, id string) (workflows.Workflow, error) {
+	return workflows.Workflow{ID: id}, nil
+}
+func (s *cycleRejectingWorkflows) ListByProject(_ context.Context, _ string) ([]workflows.Workflow, error) {
+	return nil, nil
+}
+func (s *cycleRejectingWorkflows) Update(_ context.Context, _, id, name string, nodes json.RawMessage) (workflows.Workflow, error) {
+	s.t.Fatal("Update must not be called when the graph is invalid")
+	return workflows.Workflow{}, nil
+}
+func (s *cycleRejectingWorkflows) Delete(_ context.Context, _, _ string) error { return nil }
+
+// trackingAppender records how many times Append was called so tests can assert
+// "no planner_started was emitted".
+type trackingAppender struct{ count int }
+
+func (a *trackingAppender) Append(_ context.Context, _, _, _ string, _ any) (int64, error) {
+	a.count++
+	return int64(a.count), nil
+}
+
+// TestRunWorkflow_CyclicReturns400 verifies that running a workflow with a
+// cyclic graph returns 400 (not 500) and does NOT emit planner_started.
+func TestRunWorkflow_CyclicReturns400(t *testing.T) {
+	// WorkflowStore returns a workflow whose nodes form a cycle.
+	ws := &stubWorkflows{got: workflows.Workflow{
+		Name:  "cyclic-wf",
+		Nodes: json.RawMessage(`[{"id":"A","type":"script","dependsOn":["B"]},{"id":"B","type":"storyboard","dependsOn":["A"]}]`),
+	}}
+	ev := &trackingAppender{}
+	h := runWorkflowHandler(stubProjects{orgID: "o1"}, ws, &recordingPlanner{}, ev, &stubCost{count: 0}, 100)
+	req := httptest.NewRequest("POST", "/api/projects/p1/workflows/wfCycle/run", nil)
+	req.SetPathValue("id", "p1")
+	req.SetPathValue("wfId", "wfCycle")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("cyclic run should 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if ev.count != 0 {
+		t.Fatalf("planner_started must not be emitted for cyclic run (got %d Append calls)", ev.count)
+	}
+}
+
 func (rp *recordingPlanner) PlanCustom(_ context.Context, _, workflowID string, _ planner.Brief, _ []planner.WorkflowNode) (planner.Result, error) {
 	rp.gotWorkflowID = workflowID
 	return planner.Result{PlanID: "pl", Valid: true, ReadyTodos: []planner.ReadyTodo{{ID: "t1", Type: "script"}}}, nil

@@ -155,7 +155,7 @@ func TestValidateCustomGraph(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateCustomGraph(tc.nodes)
+			err := ValidateCustomGraph(tc.nodes)
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
@@ -169,6 +169,32 @@ func TestValidateCustomGraph(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestValidateCustomGraph_Exported verifies the exported ValidateCustomGraph is
+// callable from outside the package and delegates correctly to the same logic.
+func TestValidateCustomGraph_Exported(t *testing.T) {
+	// Cyclic 2-node graph: A depends on B, B depends on A.
+	cyclic := []WorkflowNode{
+		{ID: "A", Type: "script", DependsOn: []string{"B"}},
+		{ID: "B", Type: "storyboard", DependsOn: []string{"A"}},
+	}
+	err := ValidateCustomGraph(cyclic)
+	if err == nil {
+		t.Fatal("expected cycle error, got nil")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("error should mention \"cycle\", got: %v", err)
+	}
+
+	// Valid linear graph: script → storyboard.
+	linear := []WorkflowNode{
+		{ID: "A", Type: "script"},
+		{ID: "B", Type: "storyboard", DependsOn: []string{"A"}},
+	}
+	if err := ValidateCustomGraph(linear); err != nil {
+		t.Fatalf("valid linear graph should return nil, got: %v", err)
 	}
 }
 

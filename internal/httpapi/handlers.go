@@ -373,6 +373,23 @@ func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore,
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
+		// Early validation for project-level custom workflows: catch invalid graphs
+		// (including cycles) before any side effects (SetStatus, planner_started).
+		// PlanCustom also validates, but doing it here maps the error to 400 and
+		// avoids a dangling "planning" status + spurious planner_started event.
+		var customNodes []planner.WorkflowNode
+		if p.CustomWorkflowEnabled && len(p.WorkflowNodes) > 0 {
+			if err := json.Unmarshal(p.WorkflowNodes, &customNodes); err != nil {
+				http.Error(w, "invalid workflow: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if len(customNodes) > 0 {
+				if err := planner.ValidateCustomGraph(customNodes); err != nil {
+					http.Error(w, "invalid workflow: "+err.Error(), http.StatusBadRequest)
+					return
+				}
+			}
+		}
 		if over, err := quotaExceeded(r.Context(), cs, quota, p.OrgID); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -391,15 +408,9 @@ func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore,
 		}
 		var res planner.Result
 		if p.CustomWorkflowEnabled {
-			var nodes []planner.WorkflowNode
-			if len(p.WorkflowNodes) > 0 {
-				if err := json.Unmarshal(p.WorkflowNodes, &nodes); err != nil {
-					http.Error(w, "invalid custom workflow configuration: "+err.Error(), http.StatusBadRequest)
-					return
-				}
-			}
+			// customNodes already validated and populated above; use them directly.
 			// Legacy project-level custom run: no first-class workflow → NULL workflow_id.
-			res, err = pl.PlanCustom(r.Context(), id, "", brief, nodes)
+			res, err = pl.PlanCustom(r.Context(), id, "", brief, customNodes)
 		} else {
 			// M5.1: per-project 规划模型 override 优先于 org 默认。如果 project 上
 			// 配了 planner_provider+planner_model，runHandler 拿这个去 modelrouter
