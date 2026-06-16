@@ -87,8 +87,8 @@ type ChatRouter interface {
 // ArtifactReader reads todos/script/shots for the artifact endpoints.
 type ArtifactReader interface {
 	Todos(ctx context.Context, projectID string, planID string) ([]map[string]any, error)
-	Script(ctx context.Context, projectID string, planID string) (json.RawMessage, bool, error)
-	Shots(ctx context.Context, projectID string, planID string) ([]map[string]any, error)
+	Script(ctx context.Context, projectID string, planID string, todoID string) (json.RawMessage, bool, error)
+	Shots(ctx context.Context, projectID string, planID string, todoID string) ([]map[string]any, error)
 	Assets(ctx context.Context, projectID, planID, status string) ([]map[string]any, error)
 }
 
@@ -551,7 +551,8 @@ func todosHandler(ar ArtifactReader) http.HandlerFunc {
 func scriptHandler(ar ArtifactReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		planID := r.URL.Query().Get("planId")
-		content, ok, err := ar.Script(r.Context(), r.PathValue("id"), planID)
+		todoID := r.URL.Query().Get("todoId")
+		content, ok, err := ar.Script(r.Context(), r.PathValue("id"), planID, todoID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -568,7 +569,8 @@ func scriptHandler(ar ArtifactReader) http.HandlerFunc {
 func shotsHandler(ar ArtifactReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		planID := r.URL.Query().Get("planId")
-		items, err := ar.Shots(r.Context(), r.PathValue("id"), planID)
+		todoID := r.URL.Query().Get("todoId")
+		items, err := ar.Shots(r.Context(), r.PathValue("id"), planID, todoID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
