@@ -312,6 +312,50 @@ func (s *Store) ResolveForOrg(ctx context.Context, orgID string) (ResolvedStorag
 	return s.ResolveForOrgAndMode(ctx, orgID, "")
 }
 
+// ResolveByID 按 storage_configs.id 直接解析生效配置 (含解密后的 SecretKey)，供
+// serve 路径使用：asset 在写入时持久化了它落地的后端身份 (config id)，读回时按该
+// id 解析回 EXACTLY 那个后端，独立于 org 当前的 storage_mode。只命中 enabled=true
+// 行；未知/已禁用 id → ok=false (调用方回落)。这是 ResolveForOrgAndMode 的 by-id 同伴，
+// 行→ResolvedStorage 映射 (含 secret 解密) 完全一致 (复用 resolveOne)。
+func (s *Store) ResolveByID(ctx context.Context, id string) (ResolvedStorage, bool, error) {
+	return s.resolveOne(ctx, `WHERE id=$1 AND enabled=true`, id)
+}
+
+// ConfigIDForOrgAndMode 返回写路径要持久化的 token：某 (org,mode) 解析到的
+// storage_configs.id，精度匹配 ResolveForOrgAndMode 的 per-org → global 回落顺序。
+// 无匹配 config 行 (即将落 builtin 内置默认) → ok=false，由调用方落 "builtin" sentinel。
+// 只看 enabled=true 行 (与 resolve 一致)。
+func (s *Store) ConfigIDForOrgAndMode(ctx context.Context, orgID, mode string) (string, bool, error) {
+	if mode == "" {
+		// 与 ResolveForOrgAndMode 的 mode=="" 分支一致：org 任意启用 → 否则 global 任意启用。
+		if orgID != "" {
+			if id, ok, err := s.configIDOne(ctx, `WHERE scope='org' AND org_id=$1 AND enabled=true`, orgID); err != nil || ok {
+				return id, ok, err
+			}
+		}
+		return s.configIDOne(ctx, `WHERE scope='global' AND enabled=true`)
+	}
+	if orgID != "" {
+		if id, ok, err := s.configIDOne(ctx, `WHERE scope='org' AND org_id=$1 AND mode=$2 AND enabled=true`, orgID, mode); err != nil || ok {
+			return id, ok, err
+		}
+	}
+	return s.configIDOne(ctx, `WHERE scope='global' AND mode=$1 AND enabled=true`, mode)
+}
+
+// configIDOne 跑一条 WHERE 子句的 SELECT id。无行 → ok=false。
+func (s *Store) configIDOne(ctx context.Context, where string, args ...any) (string, bool, error) {
+	q := `SELECT id FROM storage_configs ` + where + ` LIMIT 1`
+	var id string
+	if err := s.pool.QueryRow(ctx, q, args...).Scan(&id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("storageconfig: config id: %w", err)
+	}
+	return id, true, nil
+}
+
 // resolveOne 跑一条 WHERE 子句的 SELECT 并解密 secret。无行 → ok=false。
 func (s *Store) resolveOne(ctx context.Context, where string, args ...any) (ResolvedStorage, bool, error) {
 	q := `SELECT mode, endpoint, region, bucket, access_key_id, secret_enc, use_ssl, public_prefix

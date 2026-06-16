@@ -421,3 +421,67 @@ func uniqueSuffix() string {
 	return hex.EncodeToString(b)
 }
 
+// TestResolveByID 验证按 config id 直接解析（serve 路径用：asset 持久化的 backend
+// 身份 → 解析回当时写入的后端，独立于 org 当前 storage_mode）。
+func TestResolveByID(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	org := "org-rbid-" + uniqueSuffix()
+	in := s3Input("sek-rbid")
+	in.Bucket = "rbid-bucket"
+	sc, err := st.UpsertForOrg(ctx, org, in)
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	rs, ok, err := st.ResolveByID(ctx, sc.ID)
+	if err != nil || !ok {
+		t.Fatalf("resolve by id: ok=%v err=%v", ok, err)
+	}
+	if rs.Bucket != "rbid-bucket" || rs.SecretKey != "sek-rbid" || rs.Mode != "s3" {
+		t.Fatalf("resolve by id mismatch: %+v", rs)
+	}
+	// 未知 id → ok=false。
+	if _, ok, err := st.ResolveByID(ctx, "nonexistent-"+uniqueSuffix()); err != nil || ok {
+		t.Fatalf("unknown id: ok=%v err=%v", ok, err)
+	}
+	// disabled id → ok=false (WHERE enabled=true)。
+	dis := in
+	dis.Enabled = false
+	dis.Secret = ""
+	if _, err := st.UpsertForOrg(ctx, org, dis); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if _, ok, err := st.ResolveByID(ctx, sc.ID); err != nil || ok {
+		t.Fatalf("disabled id must be ok=false: ok=%v err=%v", ok, err)
+	}
+}
+
+// TestConfigIDForOrgAndMode 验证写路径要持久化的 token：配置后端返回其 storage_configs.id；
+// 无 config 行（builtin 默认）返回 ""/ok=false，由调用方落 "builtin" sentinel。
+func TestConfigIDForOrgAndMode(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	org := "org-cfgid-" + uniqueSuffix()
+	in := s3Input("sek-cfgid")
+	sc, err := st.UpsertForOrg(ctx, org, in)
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	id, ok, err := st.ConfigIDForOrgAndMode(ctx, org, "s3")
+	if err != nil || !ok {
+		t.Fatalf("config id for mode: ok=%v err=%v", ok, err)
+	}
+	if id != sc.ID {
+		t.Fatalf("want config id %q, got %q", sc.ID, id)
+	}
+	// 无匹配 config → ok=false (builtin)。
+	if _, ok, err := st.ConfigIDForOrgAndMode(ctx, org, "localfs"); err != nil || ok {
+		t.Fatalf("no config for mode must be ok=false: ok=%v err=%v", ok, err)
+	}
+	// org 无任何 config 的另一 mode → ok=false。
+	if _, ok, err := st.ConfigIDForOrgAndMode(ctx, "org-none-"+uniqueSuffix(), "s3"); err != nil || ok {
+		t.Fatalf("unknown org must be ok=false: ok=%v err=%v", ok, err)
+	}
+}
