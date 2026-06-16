@@ -31,6 +31,9 @@ type resolver interface {
 	// that EXACT backend regardless of the org's current storage_mode.
 	ResolveByID(ctx context.Context, id string) (storageconfig.ResolvedStorage, bool, error)
 	ConfigIDForOrgAndMode(ctx context.Context, orgID string, mode string) (string, bool, error)
+	// DefaultConfigID returns the org's default storage config id (if any).
+	// Used by ResolveWriteTarget to fall back from project override to org default.
+	DefaultConfigID(ctx context.Context, orgID string) (string, bool, error)
 }
 
 // builtinConfigID is the sentinel persisted on an asset whose bytes landed in the
@@ -141,6 +144,26 @@ func (r *Router) BlobStoreForConfigID(ctx context.Context, orgID, configID strin
 		return r.def, nil
 	}
 	return r.buildCached(orgID, rs), nil
+}
+
+// ResolveWriteTarget 决定一次写入落到哪个后端 + 要持久化的 config id token。
+// 优先级：项目覆盖(projConfigID 非空且 enabled) → org 默认 → builtin。
+// 返回 (store, configID)；configID 写进 asset.storage_config_id。
+func (r *Router) ResolveWriteTarget(ctx context.Context, orgID, projConfigID string) (blob.BlobStore, string, error) {
+	if r.configs == nil || r.build == nil {
+		return r.def, builtinConfigID, nil
+	}
+	if projConfigID != "" {
+		if rs, ok, err := r.configs.ResolveByID(ctx, projConfigID); err == nil && ok {
+			return r.buildCached(orgID, rs), projConfigID, nil
+		}
+	}
+	if id, ok, err := r.configs.DefaultConfigID(ctx, orgID); err == nil && ok {
+		if rs, ok2, err2 := r.configs.ResolveByID(ctx, id); err2 == nil && ok2 {
+			return r.buildCached(orgID, rs), id, nil
+		}
+	}
+	return r.def, builtinConfigID, nil
 }
 
 // buildCached builds (or returns a cached) blob store for a resolved config,
