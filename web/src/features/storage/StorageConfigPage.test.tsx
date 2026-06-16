@@ -218,6 +218,10 @@ describe("StorageConfigsTable", () => {
     expect(screen.getByText("主桶")).toBeInTheDocument()
     expect(screen.getByText("仓库")).toBeInTheDocument()
     expect(document.querySelectorAll('[data-slot="sc-row"]')).toHaveLength(2)
+    // c1 是默认配置，应显示"默认"徽标（<span> badge）；c2 不是默认，应有"设为默认"按钮
+    // 表头 <th> 也含"默认"文本，故用 getAllByText 并断言至少 2 个（表头 + 徽标）
+    expect(screen.getAllByText("默认").length).toBeGreaterThanOrEqual(2)
+    expect(screen.getAllByRole("button", { name: /设为默认/ })).toHaveLength(1)
   })
 
   it("点非默认行的「设为默认」触发回调", () => {
