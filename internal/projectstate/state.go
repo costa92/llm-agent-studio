@@ -7,6 +7,12 @@
 // (S1-S5 numbering, colors, i18n labels). The frontend maps role→layout.
 package projectstate
 
+import (
+	"fmt"
+	"sort"
+	"time"
+)
+
 // Stage status / run status / pip status string domains. Kept as plain strings
 // (JSON-friendly); the frontend mirrors these in lib/projectState.ts and a
 // contract test guards drift.
@@ -26,6 +32,21 @@ type Pip struct {
 	TodoID  string `json:"todoId"`
 	Status  string `json:"status"`
 	AssetID string `json:"assetId,omitempty"`
+}
+
+// GraphNode 是一个 todo 在执行图中的节点(自定义工作流 GraphView 渲染用)。
+type GraphNode struct {
+	ID      string `json:"id"`                // todo id
+	Label   string `json:"label"`             // type 派生(如「剧本生成 #1」)
+	Type    string `json:"type"`              // script|storyboard|asset|...
+	Status  string `json:"status"`            // blocked|pending|running|done|failed
+	AssetID string `json:"assetId,omitempty"` // asset 节点的产物 id,供右栏预览
+}
+
+// GraphEdge 是一条依赖边:From 依赖 To(To 先于 From 执行)。
+type GraphEdge struct {
+	From string `json:"from"`
+	To   string `json:"to"`
 }
 
 // Assets is the authoritative asset tally (frontend no longer counts events).
@@ -63,14 +84,19 @@ type ProjectState struct {
 	Pips      []Pip         `json:"pips"`
 	Assets    Assets        `json:"assets"`
 	Error     *ProblemError `json:"error,omitempty"`
+	Nodes     []GraphNode   `json:"nodes"`
+	Edges     []GraphEdge   `json:"edges"`
+	IsCustom  bool          `json:"isCustom"`
 }
 
 // Todo is the minimal todo projection Compute needs.
 type Todo struct {
-	ID     string
-	Type   string // script|storyboard|asset
-	Status string // ready|running|blocked|done|failed|canceled
-	Error  string
+	ID        string
+	Type      string // script|storyboard|asset
+	Status    string // ready|running|blocked|done|failed|canceled
+	Error     string
+	DependsOn []string
+	CreatedAt time.Time
 }
 
 // Asset is the minimal asset projection Compute needs (asset→its todo).
@@ -82,13 +108,15 @@ type Asset struct {
 
 // Input is everything Compute needs, loaded by project.Store.LoadState.
 type Input struct {
-	ProjectID     string
-	Version       int64
-	ProjectStatus string // persisted project.status (used when no plan exists)
-	HasPlan       bool
-	Plan          *Plan
-	Todos         []Todo
-	Assets        []Asset
+	ProjectID             string
+	Version               int64
+	ProjectStatus         string // persisted project.status (used when no plan exists)
+	HasPlan               bool
+	Plan                  *Plan
+	Todos                 []Todo
+	Assets                []Asset
+	WorkflowID            string
+	CustomWorkflowEnabled bool
 }
 
 const (
@@ -106,6 +134,9 @@ func Compute(in Input) ProjectState {
 		Version:   in.Version,
 		Plan:      in.Plan,
 		Pips:      []Pip{},
+		Nodes:     []GraphNode{},
+		Edges:     []GraphEdge{},
+		IsCustom:  in.WorkflowID != "" || in.CustomWorkflowEnabled,
 	}
 
 	if !in.HasPlan {
@@ -147,6 +178,7 @@ func Compute(in Input) ProjectState {
 	for _, a := range in.Assets {
 		assetByTodo[a.TodoID] = a // last write wins = latest (caller orders asc)
 	}
+	st.Nodes, st.Edges = buildGraph(in.Todos, assetByTodo)
 	scriptStatus, storyboardStatus := "blocked", "blocked"
 	var scriptTodo, storyboardTodo string
 	assetTodoCount := 0
@@ -318,4 +350,67 @@ func blockedStages() []Stage {
 		{Role: roleOrderAsset, Status: "blocked"},
 		{Role: roleOrderReview, Status: "blocked"},
 	}
+}
+
+var graphLabelBase = map[string]string{
+	"script":     "剧本生成",
+	"storyboard": "分镜拆解",
+	"asset":      "素材生成",
+	"planner":    "规划",
+	"review":     "人工审核",
+}
+
+func graphLabel(typ string, n int) string {
+	base, ok := graphLabelBase[typ]
+	if !ok {
+		base = typ
+	}
+	return fmt.Sprintf("%s #%d", base, n)
+}
+
+// buildGraph 把一批 todo 投影成执行图的节点 + 边。节点按 (CreatedAt, ID) 稳定排序
+// ——不能用 LoadState 主查询的 updated_at 序,因为 worker 在 run 过程中持续改 todo
+// 的 updated_at 会让节点位置与 #N 序号在两次快照间漂移。悬挂边(指向不存在 todo)
+// 被丢弃。返回非 nil 空切片(对齐 Pips: []Pip{},JSON 出 [] 而非 null)。
+func buildGraph(todos []Todo, assetByTodo map[string]Asset) ([]GraphNode, []GraphEdge) {
+	nodes := make([]GraphNode, 0, len(todos))
+	edges := make([]GraphEdge, 0)
+
+	sorted := make([]Todo, len(todos))
+	copy(sorted, todos)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if !sorted[i].CreatedAt.Equal(sorted[j].CreatedAt) {
+			return sorted[i].CreatedAt.Before(sorted[j].CreatedAt)
+		}
+		return sorted[i].ID < sorted[j].ID
+	})
+
+	ids := make(map[string]bool, len(sorted))
+	for _, t := range sorted {
+		ids[t.ID] = true
+	}
+
+	typeSeq := map[string]int{}
+	for _, t := range sorted {
+		typeSeq[t.Type]++
+		n := GraphNode{
+			ID:     t.ID,
+			Label:  graphLabel(t.Type, typeSeq[t.Type]),
+			Type:   t.Type,
+			Status: todoStatusToStage(t.Status),
+		}
+		if a, ok := assetByTodo[t.ID]; ok {
+			n.AssetID = a.ID
+		}
+		nodes = append(nodes, n)
+	}
+
+	for _, t := range sorted {
+		for _, dep := range t.DependsOn {
+			if ids[dep] {
+				edges = append(edges, GraphEdge{From: t.ID, To: dep})
+			}
+		}
+	}
+	return nodes, edges
 }
