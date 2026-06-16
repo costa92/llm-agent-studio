@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { WorkflowForm } from "./WorkflowDialog"
+import { WorkflowForm, findGraphError } from "./WorkflowDialog"
 import type { Prompt, Workflow } from "@/lib/types"
 import * as promptApi from "@/features/prompt/api"
 
@@ -235,5 +235,79 @@ describe("WorkflowForm", () => {
 
     expect(await screen.findByText("存在重复的节点 ID: a")).toBeInTheDocument()
     expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it("blocks submit and shows cycle error when nodes form a mutual dependency (A↔B)", async () => {
+    const onSubmit = vi.fn()
+    const user = userEvent.setup()
+
+    const cyclic = makeWorkflow({
+      name: "cyclic",
+      nodes: [
+        { id: "A", type: "script", promptId: "", dependsOn: ["B"] },
+        { id: "B", type: "storyboard", promptId: "", dependsOn: ["A"] },
+      ],
+    })
+    render(<WorkflowForm initial={cyclic} onSubmit={onSubmit} />)
+
+    await user.click(screen.getByRole("button", { name: "保存" }))
+
+    expect(await screen.findByRole("alert")).toBeInTheDocument()
+    const alertText = screen.getByRole("alert").textContent ?? ""
+    expect(alertText).toMatch(/循环依赖/)
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+})
+
+describe("findGraphError", () => {
+  it("returns null for a valid linear graph", () => {
+    const nodes = [
+      { id: "a", dependsOn: [] },
+      { id: "b", dependsOn: ["a"] },
+      { id: "c", dependsOn: ["b"] },
+    ]
+    expect(findGraphError(nodes)).toBeNull()
+  })
+
+  it("returns null for an empty graph", () => {
+    expect(findGraphError([])).toBeNull()
+  })
+
+  it("returns a message for a direct cycle (A↔B)", () => {
+    const nodes = [
+      { id: "A", dependsOn: ["B"] },
+      { id: "B", dependsOn: ["A"] },
+    ]
+    const result = findGraphError(nodes)
+    expect(result).not.toBeNull()
+    expect(result).toMatch(/循环依赖/)
+  })
+
+  it("returns a message for a self-loop (A→A)", () => {
+    const nodes = [{ id: "A", dependsOn: ["A"] }]
+    const result = findGraphError(nodes)
+    expect(result).not.toBeNull()
+    expect(result).toMatch(/循环依赖/)
+  })
+
+  it("returns a message for a longer cycle (A→B→C→A)", () => {
+    const nodes = [
+      { id: "A", dependsOn: ["C"] },
+      { id: "B", dependsOn: ["A"] },
+      { id: "C", dependsOn: ["B"] },
+    ]
+    const result = findGraphError(nodes)
+    expect(result).not.toBeNull()
+    expect(result).toMatch(/循环依赖/)
+  })
+
+  it("returns a message for a dependency on an unknown node", () => {
+    const nodes = [
+      { id: "a", dependsOn: [] },
+      { id: "b", dependsOn: ["unknown-node"] },
+    ]
+    const result = findGraphError(nodes)
+    expect(result).not.toBeNull()
+    expect(result).toContain("unknown-node")
   })
 })
