@@ -161,7 +161,7 @@ func (s *Store) ListByOrg(ctx context.Context, orgID string) ([]Prompt, error) {
 	}
 	defer rows.Close()
 
-	var prompts []Prompt
+	prompts := []Prompt{}
 	for rows.Next() {
 		var p Prompt
 		if err := rows.Scan(&p.ID, &p.OrgID, &p.Name, &p.Content, &p.Style, &p.Kind, &p.IsDefault, &p.CreatedAt, &p.UpdatedAt); err != nil {
