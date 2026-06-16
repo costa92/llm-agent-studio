@@ -17,6 +17,7 @@ import (
 
 	"github.com/costa92/llm-agent-studio/internal/planner"
 	"github.com/costa92/llm-agent-studio/internal/project"
+	"github.com/costa92/llm-agent-studio/internal/projectstate"
 	"github.com/costa92/llm-agent-studio/internal/studiosvc"
 )
 
@@ -62,6 +63,7 @@ type ProjectStore interface {
 	Cancel(ctx context.Context, projectID string) error
 	OrgIDForProject(ctx context.Context, projectID string) (string, error)
 	ListPlans(ctx context.Context, projectID string) ([]project.Plan, error)
+	LoadState(ctx context.Context, projectID string) (projectstate.ProjectState, error)
 }
 
 // PlannerPort kicks off planning (satisfied by *planner.Planner). PlanWith
@@ -493,6 +495,27 @@ func listPlansHandler(ps ProjectStore) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": plans})
+	}
+}
+
+// StateReader is the project-state surface the /state endpoint + SSE need.
+type StateReader interface {
+	LoadState(ctx context.Context, projectID string) (projectstate.ProjectState, error)
+}
+
+// stateHandler (GET /api/projects/{id}/state): viewer+. Returns the
+// authoritative semantic snapshot computed by projectstate.Compute.
+func stateHandler(sr StateReader) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		st, err := sr.LoadState(r.Context(), r.PathValue("id"))
+		if errors.Is(err, project.ErrNotFound) {
+			http.Error(w, "project not found", http.StatusNotFound)
+			return
+		} else if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, st)
 	}
 }
 

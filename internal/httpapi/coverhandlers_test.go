@@ -16,6 +16,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/blob"
 	"github.com/costa92/llm-agent-studio/internal/generate"
 	"github.com/costa92/llm-agent-studio/internal/project"
+	"github.com/costa92/llm-agent-studio/internal/projectstate"
 )
 
 // --- stubs ---------------------------------------------------------------
@@ -62,6 +63,9 @@ func (s *coverProjStub) OrgIDForProject(context.Context, string) (string, error)
 }
 func (s *coverProjStub) ListPlans(context.Context, string) ([]project.Plan, error) {
 	return nil, nil
+}
+func (s *coverProjStub) LoadState(context.Context, string) (projectstate.ProjectState, error) {
+	return projectstate.ProjectState{}, nil
 }
 
 // coverAssetWriterStub is an in-memory CoverAssetWriter.

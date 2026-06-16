@@ -15,6 +15,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/models"
 	"github.com/costa92/llm-agent-studio/internal/planner"
 	"github.com/costa92/llm-agent-studio/internal/project"
+	"github.com/costa92/llm-agent-studio/internal/projectstate"
 )
 
 // stubCost is a canned CostStore for handler tests.
@@ -130,6 +131,9 @@ func (s stubProjects) OrgIDForProject(_ context.Context, _ string) (string, erro
 }
 func (s stubProjects) ListPlans(_ context.Context, _ string) ([]project.Plan, error) {
 	return nil, nil
+}
+func (s stubProjects) LoadState(_ context.Context, _ string) (projectstate.ProjectState, error) {
+	return projectstate.ProjectState{}, nil
 }
 
 type stubPlanner struct{}
