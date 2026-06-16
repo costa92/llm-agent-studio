@@ -359,15 +359,36 @@ var m13Migrations = []string{
 }
 
 // m14Migrations add the per-project cover image link (cover_asset_id → an assets
-// row reused; '' = no cover). additive only.
+// row reused; ” = no cover). additive only.
 var m14Migrations = []string{
 	`ALTER TABLE projects ADD COLUMN IF NOT EXISTS cover_asset_id TEXT NOT NULL DEFAULT ''`,
 }
 
-// Migrate applies the M1 + M2 + M3 + M4 + M5 + M6 + M7 + M8 + M9 + M10 + M11 + M12 + M13 + M14 migrations in order. Idempotent.
+// m15Migrations record per-asset storage backend identity so the serve path
+// reads bytes from the backend they were WRITTEN to, not the project's CURRENT
+// storage_mode (which breaks historical assets after a storage switch). The
+// backfill is run-once / idempotent (guarded on storage_config_id=”).
+var m15Migrations = []string{
+	`ALTER TABLE assets ADD COLUMN IF NOT EXISTS storage_config_id TEXT NOT NULL DEFAULT ''`,
+	// Backfill configured-backend rows FIRST: match each asset's project (org,mode)
+	// to its enabled storage_configs row and stamp that config id. Correct ONLY for
+	// orgs that have NOT switched mode since the asset was written — the only
+	// recoverable case (we cannot know a switched org's historical backend).
+	`UPDATE assets a SET storage_config_id = sc.id
+	 FROM projects p, storage_configs sc
+	 WHERE a.project_id = p.id AND sc.org_id = p.org_id
+	   AND sc.mode = p.storage_mode AND sc.enabled = true
+	   AND a.storage_config_id = ''`,
+	// Builtin sweep SECOND: every remaining unstamped row (projects on builtin
+	// default localfs / no matching config) gets the "builtin" sentinel. Order
+	// matters — configured rows must be claimed before this catch-all.
+	`UPDATE assets SET storage_config_id = 'builtin' WHERE storage_config_id = ''`,
+}
+
+// Migrate applies the M1 + M2 + M3 + M4 + M5 + M6 + M7 + M8 + M9 + M10 + M11 + M12 + M13 + M14 + M15 migrations in order. Idempotent.
 func (s *Storage) Migrate(ctx context.Context) error {
-	all := append(append(append(append(append(append(append(append(append(append(append(append(append(append([]string{},
-		m1Migrations...), m2Migrations...), m3Migrations...), m4Migrations...), m5Migrations...), m6Migrations...), m7Migrations...), m8Migrations...), m9Migrations...), m10Migrations...), m11Migrations...), m12Migrations...), m13Migrations...), m14Migrations...)
+	all := append(append(append(append(append(append(append(append(append(append(append(append(append(append(append([]string{},
+		m1Migrations...), m2Migrations...), m3Migrations...), m4Migrations...), m5Migrations...), m6Migrations...), m7Migrations...), m8Migrations...), m9Migrations...), m10Migrations...), m11Migrations...), m12Migrations...), m13Migrations...), m14Migrations...), m15Migrations...)
 	for _, stmt := range all {
 		if _, err := s.pool.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("storage: migrate: %w", err)
