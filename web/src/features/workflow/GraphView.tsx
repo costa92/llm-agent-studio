@@ -14,7 +14,7 @@ const NODE_COLOR: Record<string, string> = {
 export interface GraphViewProps {
   nodes: GraphNode[]
   edges: GraphEdge[]
-  // asset 节点(带 assetId)点击 → 容器把右栏预览切到该工件。
+  // script/storyboard/asset 节点点击 → 容器打开对应工件抽屉或右栏预览。
   onSelectNode?: (node: GraphNode) => void
 }
 
@@ -65,7 +65,9 @@ function GraphNodeCard({
   const isDone = node.status === "done"
   const isRunning = node.status === "running"
   const isFailed = node.status === "failed"
-  const clickable = !!node.assetId && !!onSelectNode
+  const clickable =
+    !!onSelectNode &&
+    (node.type === "script" || node.type === "storyboard" || !!node.assetId)
 
   const inner = (
     <>

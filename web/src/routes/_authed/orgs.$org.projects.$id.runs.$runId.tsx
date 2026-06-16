@@ -40,8 +40,8 @@ export const Route = createFileRoute(
 
 type Selection =
   | { kind: "asset"; assetId: string }
-  | { kind: "script" }
-  | { kind: "storyboard" }
+  | { kind: "script"; todoId?: string }
+  | { kind: "storyboard"; todoId?: string }
   | null
 
 function RunWorkbenchPage() {
@@ -61,9 +61,17 @@ function RunWorkbenchPage() {
 
   // 选中态
   const [selection, setSelection] = useState<Selection>(null)
-  // 抽屉数据 gated 拉取
-  const scriptQuery = useScript(selection?.kind === "script" ? id : "", runId)
-  const shotsQuery = useShots(selection?.kind === "storyboard" ? id : "", runId)
+  // 抽屉数据 gated 拉取（DAG 节点携带 todoId 时按节点级工件拉取；默认轨道不带 todoId）
+  const scriptQuery = useScript(
+    selection?.kind === "script" ? id : "",
+    runId,
+    selection?.kind === "script" ? selection.todoId : undefined,
+  )
+  const shotsQuery = useShots(
+    selection?.kind === "storyboard" ? id : "",
+    runId,
+    selection?.kind === "storyboard" ? selection.todoId : undefined,
+  )
 
   // run 返回的 fallbackUsed 常驻 WarnStrip。
   const [fallbackUsed, setFallbackUsed] = useState(false)
@@ -174,7 +182,9 @@ function RunWorkbenchPage() {
     if (pip.assetId) setSelection({ kind: "asset", assetId: pip.assetId })
   }
   function handleSelectNode(node: GraphNode) {
-    if (node.assetId) setSelection({ kind: "asset", assetId: node.assetId })
+    if (node.type === "script") setSelection({ kind: "script", todoId: node.id })
+    else if (node.type === "storyboard") setSelection({ kind: "storyboard", todoId: node.id })
+    else if (node.assetId) setSelection({ kind: "asset", assetId: node.assetId })
   }
 
   const drawerKind =
