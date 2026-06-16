@@ -36,7 +36,7 @@ export function GraphView({ nodes, edges, onSelectNode }: GraphViewProps) {
   return (
     <div data-slot="graph" className="mx-auto max-w-[560px]">
       {layers.map((layer, li) => (
-        <div key={li} data-slot="graph-layer" className="relative pb-[30px]">
+        <div key={layer[0].id} data-slot="graph-layer" className="relative pb-[30px]">
           {li > 0 && (
             <span
               aria-hidden
@@ -87,7 +87,7 @@ function GraphNodeCard({
         )}
         <span
           className={cn(
-            "text-[10px] font-bold",
+            "font-sans text-[10px] font-bold",
             isDone ? "text-[#14161a]" : isFailed ? "text-danger" : "text-text-3",
           )}
         >
@@ -104,6 +104,7 @@ function GraphNodeCard({
     return (
       <button
         type="button"
+        aria-label={node.label}
         data-slot="graph-node"
         data-status={node.status}
         onClick={() => onSelectNode!(node)}
