@@ -5,8 +5,8 @@ import { WorkbenchView } from "./WorkbenchPage"
 import { ScriptView } from "./ScriptView"
 import { StoryboardView } from "./StoryboardView"
 import type { ScriptDoc, Shot } from "./api"
-import { foldEvents, initialTimeline } from "@/lib/timeline"
-import type { SseFrame } from "@/lib/types"
+import type { ProjectState, StageState, PipState } from "@/lib/projectState"
+import type { LogLine } from "@/lib/timeline"
 import type { Project } from "@/lib/types"
 
 function makeProject(over: Partial<Project> = {}): Project {
@@ -24,13 +24,34 @@ function makeProject(over: Partial<Project> = {}): Project {
   }
 }
 
-function frame(seq: number, kind: string, todoId = "", payload?: unknown): SseFrame {
-  return { seq, kind, todoId, payload }
+// 全 blocked 的 5 阶段（按权威语义 role 顺序）。
+function blockedStages(): StageState[] {
+  return [
+    { role: "planner", status: "blocked" },
+    { role: "script", status: "blocked" },
+    { role: "storyboard", status: "blocked" },
+    { role: "asset", status: "blocked" },
+    { role: "review", status: "blocked" },
+  ]
+}
+
+function makeState(over: Partial<ProjectState> = {}): ProjectState {
+  return {
+    projectId: "p1",
+    version: 1,
+    status: "running",
+    runStatus: "running",
+    stages: blockedStages(),
+    pips: [],
+    assets: { total: 0, done: 0, pending: 0 },
+    ...over,
+  }
 }
 
 function baseWorkbenchProps() {
   return {
     project: makeProject(),
+    log: [] as LogLine[],
     conn: "connected" as const,
     live: true,
     canRun: true,
@@ -40,17 +61,19 @@ function baseWorkbenchProps() {
   }
 }
 
-describe("WorkbenchView (production timeline)", () => {
-  it("renders the 5 fixed stages and advances as events fold in", () => {
-    // 回放一段事件：规划开始 → 剧本就绪/开始/完成。
-    const state = foldEvents(initialTimeline(), [
-      frame(1, "planner_started"),
-      frame(2, "todo_ready", "t-s", { type: "script" }),
-      frame(3, "todo_started", "t-s", { type: "script" }),
-      frame(4, "todo_finished", "t-s", { type: "script" }),
-    ])
+describe("WorkbenchView (authoritative ProjectState)", () => {
+  it("renders the 5 fixed stages and reflects authoritative statuses", () => {
+    const state = makeState({
+      stages: [
+        { role: "planner", status: "done" },
+        { role: "script", status: "done", todoId: "t-s" },
+        { role: "storyboard", status: "blocked" },
+        { role: "asset", status: "blocked" },
+        { role: "review", status: "blocked" },
+      ],
+    })
 
-    render(<WorkbenchView {...baseWorkbenchProps()} timeline={state} />)
+    render(<WorkbenchView {...baseWorkbenchProps()} state={state} />)
 
     // 5 个固定阶段标题。
     expect(screen.getByText("Planner 规划")).toBeInTheDocument()
@@ -59,8 +82,7 @@ describe("WorkbenchView (production timeline)", () => {
     expect(screen.getByText("素材生成")).toBeInTheDocument()
     expect(screen.getByText("人工审核")).toBeInTheDocument()
 
-    // S1 done（B1：首个 todo_ready 到达即收尾 planner，不再永久卡 running）、
-    // S2 done（todo_finished script）。
+    // S1/S2 done（来自权威 state）。
     const stages = document.querySelectorAll('[data-slot="stage"]')
     expect(stages[0].getAttribute("data-status")).toBe("done")
     expect(stages[1].getAttribute("data-status")).toBe("done")
@@ -68,46 +90,48 @@ describe("WorkbenchView (production timeline)", () => {
     expect(screen.getByText("实时连接")).toBeInTheDocument()
   })
 
-  it("renders the asset pip group with done/N count when storyboard fans out", () => {
-    const state = foldEvents(initialTimeline(), [
-      frame(1, "planner_started"),
-      frame(10, "todo_ready", "a1", { type: "asset" }),
-      frame(11, "todo_ready", "a2", { type: "asset" }),
-      frame(12, "todo_started", "a1", { type: "asset" }),
-      frame(13, "asset_generated", "a1", { assetId: "as1" }),
-    ])
+  it("renders the asset pip group with done/N count from assets tally", () => {
+    const pips: PipState[] = [
+      { todoId: "a1", status: "done", assetId: "as1" },
+      { todoId: "a2", status: "idle" },
+    ]
+    const state = makeState({
+      stages: [
+        { role: "planner", status: "done" },
+        { role: "script", status: "done" },
+        { role: "storyboard", status: "done" },
+        { role: "asset", status: "running" },
+        { role: "review", status: "blocked" },
+      ],
+      pips,
+      assets: { total: 2, done: 1, pending: 1 },
+    })
 
-    render(<WorkbenchView {...baseWorkbenchProps()} timeline={state} />)
+    render(<WorkbenchView {...baseWorkbenchProps()} state={state} />)
 
-    // pip 组：2 个 pip（a1 done / a2 idle）。
-    const pips = document.querySelectorAll('[data-slot="pip"]')
-    expect(pips).toHaveLength(2)
+    const pipEls = document.querySelectorAll('[data-slot="pip"]')
+    expect(pipEls).toHaveLength(2)
     expect(screen.getByText("素材生成 · 1/2")).toBeInTheDocument()
   })
 
-  it("shows 待审核·N badge and hides slate bar after run_done", () => {
-    const state = foldEvents(initialTimeline(), [
-      frame(1, "planner_started"),
-      frame(10, "todo_ready", "a1", { type: "asset" }),
-      frame(12, "todo_started", "a1", { type: "asset" }),
-      frame(13, "asset_generated", "a1", { assetId: "as1" }),
-      frame(99, "run_done"),
-    ])
+  it("shows 待审核·N badge when runStatus done and review", () => {
+    const state = makeState({
+      status: "review",
+      runStatus: "done",
+      pips: [{ todoId: "a1", status: "done", assetId: "as1" }],
+      assets: { total: 1, done: 1, pending: 1 },
+    })
 
-    render(<WorkbenchView {...baseWorkbenchProps()} timeline={state} />)
+    render(<WorkbenchView {...baseWorkbenchProps()} state={state} live={false} />)
 
     expect(screen.getByText("待审核 · 1")).toBeInTheDocument()
-    // SlateBar 隐藏（run_done → slateVisible false）。
+    // SlateBar 隐藏（runStatus done → slateVisible false）。
     expect(document.querySelector('[data-slot="slate-bar"]')).toBeNull()
   })
 
   it("shows the fallback WarnStrip when fallbackUsed", () => {
     render(
-      <WorkbenchView
-        {...baseWorkbenchProps()}
-        timeline={initialTimeline()}
-        fallbackUsed
-      />,
+      <WorkbenchView {...baseWorkbenchProps()} state={makeState()} fallbackUsed />,
     )
     expect(screen.getByRole("status")).toHaveTextContent("回落默认管线")
   })
@@ -116,21 +140,12 @@ describe("WorkbenchView (production timeline)", () => {
     const onRun = vi.fn()
     const user = userEvent.setup()
     const { rerender } = render(
-      <WorkbenchView
-        {...baseWorkbenchProps()}
-        timeline={initialTimeline()}
-        canRun={false}
-      />,
+      <WorkbenchView {...baseWorkbenchProps()} state={makeState()} canRun={false} />,
     )
     expect(screen.queryByRole("button", { name: /运行/ })).not.toBeInTheDocument()
 
     rerender(
-      <WorkbenchView
-        {...baseWorkbenchProps()}
-        timeline={initialTimeline()}
-        canRun
-        onRun={onRun}
-      />,
+      <WorkbenchView {...baseWorkbenchProps()} state={makeState()} canRun onRun={onRun} />,
     )
     await user.click(screen.getByRole("button", { name: /运行/ }))
     expect(onRun).toHaveBeenCalledTimes(1)
@@ -140,19 +155,18 @@ describe("WorkbenchView (production timeline)", () => {
   it("makes S2/S3 stages clickable and fires onSelectStage; S1 stays non-interactive", async () => {
     const onSelectStage = vi.fn()
     const user = userEvent.setup()
-    const state = foldEvents(initialTimeline(), [
-      frame(1, "planner_started"),
-      frame(2, "todo_finished", "t-s", { type: "script" }),
-      frame(3, "todo_finished", "t-b", { type: "storyboard" }),
-    ])
+    const state = makeState({
+      stages: [
+        { role: "planner", status: "done" },
+        { role: "script", status: "done" },
+        { role: "storyboard", status: "done" },
+        { role: "asset", status: "blocked" },
+        { role: "review", status: "blocked" },
+      ],
+    })
     render(
-      <WorkbenchView
-        {...baseWorkbenchProps()}
-        timeline={state}
-        onSelectStage={onSelectStage}
-      />,
+      <WorkbenchView {...baseWorkbenchProps()} state={state} onSelectStage={onSelectStage} />,
     )
-    // S2 剧本生成 渲染为按钮（可访问 / 键盘可达）。
     const scriptStage = screen.getByRole("button", { name: /剧本生成/ })
     await user.click(scriptStage)
     expect(onSelectStage).toHaveBeenCalledWith("S2")
@@ -171,18 +185,19 @@ describe("WorkbenchView (production timeline)", () => {
   it("fires onSelectPip when a done pip is clicked", async () => {
     const onSelectPip = vi.fn()
     const user = userEvent.setup()
-    const state = foldEvents(initialTimeline(), [
-      frame(1, "planner_started"),
-      frame(10, "todo_ready", "a1", { type: "asset" }),
-      frame(12, "todo_started", "a1", { type: "asset" }),
-      frame(13, "asset_generated", "a1", { assetId: "as1" }),
-    ])
+    const state = makeState({
+      stages: [
+        { role: "planner", status: "done" },
+        { role: "script", status: "done" },
+        { role: "storyboard", status: "done" },
+        { role: "asset", status: "running" },
+        { role: "review", status: "blocked" },
+      ],
+      pips: [{ todoId: "a1", status: "done", assetId: "as1" }],
+      assets: { total: 1, done: 1, pending: 1 },
+    })
     render(
-      <WorkbenchView
-        {...baseWorkbenchProps()}
-        timeline={state}
-        onSelectPip={onSelectPip}
-      />,
+      <WorkbenchView {...baseWorkbenchProps()} state={state} onSelectPip={onSelectPip} />,
     )
     const pip = screen.getByRole("button", { name: /a1/ })
     await user.click(pip)
@@ -196,28 +211,28 @@ describe("WorkbenchView (production timeline)", () => {
     render(
       <WorkbenchView
         {...baseWorkbenchProps()}
-        timeline={initialTimeline()}
+        state={makeState()}
         drawer={<div>剧本抽屉内容</div>}
       />,
     )
     expect(screen.getByText("剧本抽屉内容")).toBeInTheDocument()
   })
 
-  // T2：run_done 后徽标旁出现「去审核」CTA，点击触发 onOpenReview（真正的 SPA 跳转由容器实现）。
-  it("renders a review CTA after run_done that fires onOpenReview", async () => {
+  // T2：run_done 后徽标旁出现「去审核」CTA，点击触发 onOpenReview。
+  it("renders a review CTA after run done that fires onOpenReview", async () => {
     const onOpenReview = vi.fn()
     const user = userEvent.setup()
-    const state = foldEvents(initialTimeline(), [
-      frame(1, "planner_started"),
-      frame(10, "todo_ready", "a1", { type: "asset" }),
-      frame(12, "todo_started", "a1", { type: "asset" }),
-      frame(13, "asset_generated", "a1", { assetId: "as1" }),
-      frame(99, "run_done"),
-    ])
+    const state = makeState({
+      status: "review",
+      runStatus: "done",
+      pips: [{ todoId: "a1", status: "done", assetId: "as1" }],
+      assets: { total: 1, done: 1, pending: 1 },
+    })
     render(
       <WorkbenchView
         {...baseWorkbenchProps()}
-        timeline={state}
+        state={state}
+        live={false}
         onOpenReview={onOpenReview}
       />,
     )
@@ -225,20 +240,20 @@ describe("WorkbenchView (production timeline)", () => {
     expect(onOpenReview).toHaveBeenCalledTimes(1)
   })
 
-  // 失败态徽标：project.status='failed' + run_done 到达时，绝不能继续显示「待审核 · 0」
-  // ——会误导用户以为有 0 个待审资产。必须显示项目态的「失败」徽标 + danger 变体。
-  it("shows the 失败 badge (rejected) when project.status is failed, NOT 待审核 · 0", () => {
-    const state = foldEvents(initialTimeline(), [
-      frame(1, "planner_started"),
-      frame(10, "todo_ready", "a1", { type: "asset" }),
-      frame(11, "todo_started", "a1", { type: "asset" }),
-      frame(12, "todo_failed", "a1", { error: "boom" }),
-      frame(99, "run_done"),
-    ])
+  // 失败态徽标：status='failed' + runStatus done 时，绝不能显示「待审核 · 0」。
+  it("shows the 失败 badge (rejected) when status is failed, NOT 待审核 · 0", () => {
+    const state = makeState({
+      status: "failed",
+      runStatus: "done",
+      pips: [{ todoId: "a1", status: "failed" }],
+      assets: { total: 1, done: 0, pending: 0 },
+      error: { todoId: "a1", role: "asset", message: "boom" },
+    })
     render(
       <WorkbenchView
         project={makeProject({ status: "failed" })}
-        timeline={state}
+        state={state}
+        log={[]}
         conn="connected"
         live={false}
         canRun={false}
@@ -248,25 +263,22 @@ describe("WorkbenchView (production timeline)", () => {
       />,
     )
     expect(screen.getByText("失败")).toBeInTheDocument()
-    // 错误徽标绝不能再说「待审核」。
     expect(screen.queryByText(/待审核/)).not.toBeInTheDocument()
   })
 
-  // 错误条：任一 todo_failed 帧的 payload.error 必须在工作台显眼位置（红色条）出现，
-  // 而不是只埋在左侧事件日志里——用户报告的「看不到错误原因」就是缺这个。
-  it("renders an error strip with the last payload.error when any todo failed", () => {
+  // 错误条：state.error.message 必须在工作台显眼位置（红色条）出现。
+  it("renders an error strip with state.error.message", () => {
     const errMsg = "worker: blob put: blob.github: get sha: Get ...: EOF"
-    const state = foldEvents(initialTimeline(), [
-      frame(1, "planner_started"),
-      frame(10, "todo_ready", "a1", { type: "asset" }),
-      frame(11, "todo_started", "a1", { type: "asset" }),
-      frame(12, "todo_failed", "a1", { error: errMsg }),
-      frame(99, "run_done"),
-    ])
+    const state = makeState({
+      status: "failed",
+      runStatus: "done",
+      error: { todoId: "a1", role: "asset", message: errMsg },
+    })
     render(
       <WorkbenchView
         project={makeProject({ status: "failed" })}
-        timeline={state}
+        state={state}
+        log={[]}
         conn="connected"
         live={false}
         canRun={false}
@@ -275,7 +287,6 @@ describe("WorkbenchView (production timeline)", () => {
         isRunning={false}
       />,
     )
-    // 红色错误条（role=alert，区别于 amber 的 WarnStrip role=status）。
     const alert = screen.getByRole("alert")
     expect(alert).toHaveTextContent(errMsg)
   })

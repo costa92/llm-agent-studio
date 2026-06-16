@@ -1,6 +1,6 @@
 import { cva } from "class-variance-authority"
 import { cn } from "@/lib/utils"
-import type { Pip, PipStatus } from "@/lib/timeline"
+import type { PipState as Pip, PipStatus2 as PipStatus } from "@/lib/projectState"
 
 // 原型 .pip：14×14 radius4 1.5px 边框。
 //   done=asset 琥珀实心 / running=琥珀斜条纹 / failed=danger 半透 / idle=line 空框。

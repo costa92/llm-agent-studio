@@ -1,7 +1,19 @@
 import type { ReactNode } from "react"
 import { cva } from "class-variance-authority"
 import { cn } from "@/lib/utils"
-import type { Stage, StageStatus } from "@/lib/timeline"
+import type { StageId } from "@/lib/timeline"
+import type { StageRole, StageStatus2 } from "@/lib/projectState"
+
+// 制片轨道单阶段的表现形状（容器从权威 ProjectState 的 StageState 适配而来）。
+// id = S1-S5（着色定位）；kind = 语义 role（agent 色/标签）；status = 5 态；
+// linked = 连接线着色（done 时着 agent 色）。
+export interface Stage {
+  id: StageId
+  kind: StageRole
+  status: StageStatus2
+  todoId?: string
+  linked: boolean
+}
 
 // 原型 .stage / .node / .tchip：制片轨道单阶段。
 //   node：28px 圆 2px 边框；done=填 agent 色 / running=琥珀边 + 虚线旋转环 / failed=danger。
@@ -31,13 +43,13 @@ const tchipVariants = cva(
           "text-[#1a1408] bg-[repeating-linear-gradient(115deg,var(--amber)_0_8px,#c9882a_8px_16px)]",
         done: "bg-review/13 text-review",
         failed: "bg-danger/13 text-danger",
-      } satisfies Record<StageStatus, string>,
+      } satisfies Record<StageStatus2, string>,
     },
     defaultVariants: { status: "blocked" },
   },
 )
 
-const TCHIP_LABEL: Record<StageStatus, string> = {
+const TCHIP_LABEL: Record<StageStatus2, string> = {
   blocked: "blocked",
   pending: "pending",
   running: "running",

@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest"
 import { render, screen } from "@testing-library/react"
-import { TimelineStage } from "./TimelineStage"
+import { TimelineStage, type Stage } from "./TimelineStage"
 import { PipGroup } from "./PipGroup"
 import { SlateBar } from "./SlateBar"
 import { LineageTrail } from "./LineageTrail"
-import type { Stage } from "@/lib/timeline"
 
 function stage(over: Partial<Stage> = {}): Stage {
   return { id: "S2", kind: "script", status: "running", linked: false, ...over }
