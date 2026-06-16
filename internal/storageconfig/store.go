@@ -26,6 +26,9 @@ var ErrEncUnavailable = errors.New("storageconfig: secret storage requires STUDI
 // ErrNotFound 表示按 org 定位的配置不存在。DeleteForOrg 影响 0 行时返回它。
 var ErrNotFound = errors.New("storageconfig: config not found")
 
+// ErrInUse 表示配置被 asset 引用，不可删除。
+var ErrInUse = errors.New("storageconfig: config in use by assets")
+
 // validModes 是支持的存储后端。
 var validModes = map[string]bool{"localfs": true, "s3": true, "oss": true, "cos": true, "github": true}
 
@@ -44,6 +47,8 @@ type StorageConfig struct {
 	UseSSL       bool   `json:"useSsl"`
 	Enabled      bool   `json:"enabled"`
 	HasSecret    bool   `json:"hasSecret"`
+	Name         string `json:"name"`
+	IsDefault    bool   `json:"isDefault"`
 }
 
 // ResolvedStorage 是运行层 (StorageRouter) 用的解析结果，带解密后的 SecretKey。
@@ -71,6 +76,7 @@ type UpsertInput struct {
 	UseSSL       bool
 	Enabled      bool
 	Secret       string // write-only：空=保留既有 secret_enc；非空=重新加密替换
+	Name         string
 }
 
 // Store persists storage_configs.
@@ -149,8 +155,8 @@ func (s *Store) UpsertGlobal(ctx context.Context, in UpsertInput) (StorageConfig
 	}
 	const q = `
 		INSERT INTO storage_configs
-			(id, scope, org_id, mode, endpoint, region, bucket, access_key_id, secret_enc, use_ssl, public_prefix, enabled)
-		VALUES ($1, 'global', '', $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			(id, scope, org_id, mode, endpoint, region, bucket, access_key_id, secret_enc, use_ssl, public_prefix, enabled, name)
+		VALUES ($1, 'global', '', $2, $3, $4, $5, $6, $7, $8, $9, $10, $12)
 		ON CONFLICT (scope) WHERE scope='global' DO UPDATE SET
 			mode=EXCLUDED.mode, endpoint=EXCLUDED.endpoint, region=EXCLUDED.region,
 			bucket=EXCLUDED.bucket, access_key_id=EXCLUDED.access_key_id,
@@ -158,47 +164,19 @@ func (s *Store) UpsertGlobal(ctx context.Context, in UpsertInput) (StorageConfig
 			use_ssl=EXCLUDED.use_ssl, public_prefix=EXCLUDED.public_prefix,
 			enabled=EXCLUDED.enabled, updated_at=now()
 		RETURNING id, scope, org_id, mode, endpoint, region, bucket, access_key_id,
-			(secret_enc IS NOT NULL) AS has_secret, use_ssl, public_prefix, enabled`
+			(secret_enc IS NOT NULL) AS has_secret, use_ssl, public_prefix, enabled, name, is_default`
 	row := s.pool.QueryRow(ctx, q,
-		newID(), in.Mode, in.Endpoint, in.Region, in.Bucket, in.AccessKeyID, enc, in.UseSSL, in.PublicPrefix, in.Enabled, replace)
+		newID(), in.Mode, in.Endpoint, in.Region, in.Bucket, in.AccessKeyID, enc, in.UseSSL, in.PublicPrefix, in.Enabled, replace, in.Name)
 	return scanConfig(row)
 }
 
-// UpsertForOrg 写 (scope='org', org_id=orgID) 配置。ON CONFLICT 命中 org partial
-// unique index 时 DO UPDATE (keep-or-replace secret)。
-func (s *Store) UpsertForOrg(ctx context.Context, orgID string, in UpsertInput) (StorageConfig, error) {
-	if orgID == "" {
-		return StorageConfig{}, fmt.Errorf("storageconfig: orgID required")
-	}
-	if err := validate(in); err != nil {
-		return StorageConfig{}, err
-	}
-	replace, enc, err := s.encryptSecret(in.Secret)
-	if err != nil {
-		return StorageConfig{}, err
-	}
-	const q = `
-		INSERT INTO storage_configs
-			(id, scope, org_id, mode, endpoint, region, bucket, access_key_id, secret_enc, use_ssl, public_prefix, enabled)
-		VALUES ($1, 'org', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-		ON CONFLICT (org_id, mode) WHERE scope='org' DO UPDATE SET
-			mode=EXCLUDED.mode, endpoint=EXCLUDED.endpoint, region=EXCLUDED.region,
-			bucket=EXCLUDED.bucket, access_key_id=EXCLUDED.access_key_id,
-			secret_enc=CASE WHEN $12 THEN EXCLUDED.secret_enc ELSE storage_configs.secret_enc END,
-			use_ssl=EXCLUDED.use_ssl, public_prefix=EXCLUDED.public_prefix,
-			enabled=EXCLUDED.enabled, updated_at=now()
-		RETURNING id, scope, org_id, mode, endpoint, region, bucket, access_key_id,
-			(secret_enc IS NOT NULL) AS has_secret, use_ssl, public_prefix, enabled`
-	row := s.pool.QueryRow(ctx, q,
-		newID(), orgID, in.Mode, in.Endpoint, in.Region, in.Bucket, in.AccessKeyID, enc, in.UseSSL, in.PublicPrefix, in.Enabled, replace)
-	return scanConfig(row)
-}
 
 // scanConfig 把 RETURNING/SELECT 行扫进公开 DTO (列序固定)。
 func scanConfig(row pgx.Row) (StorageConfig, error) {
 	var sc StorageConfig
 	if err := row.Scan(&sc.ID, &sc.Scope, &sc.OrgID, &sc.Mode, &sc.Endpoint, &sc.Region,
-		&sc.Bucket, &sc.AccessKeyID, &sc.HasSecret, &sc.UseSSL, &sc.PublicPrefix, &sc.Enabled); err != nil {
+		&sc.Bucket, &sc.AccessKeyID, &sc.HasSecret, &sc.UseSSL, &sc.PublicPrefix, &sc.Enabled,
+		&sc.Name, &sc.IsDefault); err != nil {
 		return StorageConfig{}, fmt.Errorf("storageconfig: scan: %w", err)
 	}
 	return sc, nil
@@ -208,7 +186,7 @@ func scanConfig(row pgx.Row) (StorageConfig, error) {
 func (s *Store) GetGlobal(ctx context.Context) (StorageConfig, bool, error) {
 	row := s.pool.QueryRow(ctx,
 		`SELECT id, scope, org_id, mode, endpoint, region, bucket, access_key_id,
-			(secret_enc IS NOT NULL) AS has_secret, use_ssl, public_prefix, enabled
+			(secret_enc IS NOT NULL) AS has_secret, use_ssl, public_prefix, enabled, name, is_default
 		 FROM storage_configs WHERE scope='global' LIMIT 1`)
 	sc, err := scanConfig(row)
 	if err != nil {
@@ -220,58 +198,173 @@ func (s *Store) GetGlobal(ctx context.Context) (StorageConfig, bool, error) {
 	return sc, true, nil
 }
 
-// GetForOrg 读某 org 的指定 mode 配置。如果 mode 为空，则返回该 org 的任意一个配置。无行 → ok=false。
-func (s *Store) GetForOrg(ctx context.Context, orgID string, mode string) (StorageConfig, bool, error) {
-	var row pgx.Row
-	if mode != "" {
-		row = s.pool.QueryRow(ctx,
-			`SELECT id, scope, org_id, mode, endpoint, region, bucket, access_key_id,
-				(secret_enc IS NOT NULL) AS has_secret, use_ssl, public_prefix, enabled
-			 FROM storage_configs WHERE scope='org' AND org_id=$1 AND mode=$2 LIMIT 1`, orgID, mode)
-	} else {
-		row = s.pool.QueryRow(ctx,
-			`SELECT id, scope, org_id, mode, endpoint, region, bucket, access_key_id,
-				(secret_enc IS NOT NULL) AS has_secret, use_ssl, public_prefix, enabled
-			 FROM storage_configs WHERE scope='org' AND org_id=$1 LIMIT 1`, orgID)
-	}
-	sc, err := scanConfig(row)
+// List 返回 org 的所有 org-scope 配置，默认在前。
+func (s *Store) List(ctx context.Context, orgID string) ([]StorageConfig, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, scope, org_id, mode, endpoint, region, bucket, access_key_id,
+			(secret_enc IS NOT NULL), use_ssl, public_prefix, enabled, name, is_default
+		 FROM storage_configs WHERE scope='org' AND org_id=$1
+		 ORDER BY is_default DESC, created_at ASC`, orgID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return StorageConfig{}, false, nil
-		}
-		return StorageConfig{}, false, err
+		return nil, fmt.Errorf("storageconfig: list: %w", err)
 	}
-	return sc, true, nil
+	defer rows.Close()
+	out := []StorageConfig{}
+	for rows.Next() {
+		sc, err := scanConfig(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sc)
+	}
+	return out, rows.Err()
 }
 
-// DeleteForOrg 删某 org 的指定 mode 配置。如果 mode 为空，则删除该 org 的所有配置。
-// 0 行受影响 → ErrNotFound。
-func (s *Store) DeleteForOrg(ctx context.Context, orgID string, mode string) error {
+// Create 插入一条新的 org 配置(纯 INSERT，无 ON CONFLICT —— org×mode 唯一约束已移除)。
+// 若该 org 当前无 enabled 默认，本条自动设为默认。
+func (s *Store) Create(ctx context.Context, orgID string, in UpsertInput) (StorageConfig, error) {
 	if orgID == "" {
-		return fmt.Errorf("storageconfig: orgID required")
+		return StorageConfig{}, fmt.Errorf("storageconfig: orgID required")
 	}
-	var rowsAffected int64
-	var err error
-	if mode != "" {
-		tag, terr := s.pool.Exec(ctx, `DELETE FROM storage_configs WHERE scope='org' AND org_id=$1 AND mode=$2`, orgID, mode)
-		err = terr
-		if terr == nil {
-			rowsAffected = tag.RowsAffected()
+	if err := validate(in); err != nil {
+		return StorageConfig{}, err
+	}
+	_, enc, err := s.encryptSecret(in.Secret)
+	if err != nil {
+		return StorageConfig{}, err
+	}
+	var hasDefault bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM storage_configs WHERE scope='org' AND org_id=$1 AND enabled=true AND is_default=true)`,
+		orgID).Scan(&hasDefault); err != nil {
+		return StorageConfig{}, fmt.Errorf("storageconfig: check default: %w", err)
+	}
+	isDefault := in.Enabled && !hasDefault
+	const q = `
+		INSERT INTO storage_configs
+			(id, scope, org_id, mode, endpoint, region, bucket, access_key_id, secret_enc, use_ssl, public_prefix, enabled, name, is_default)
+		VALUES ($1,'org',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		RETURNING id, scope, org_id, mode, endpoint, region, bucket, access_key_id,
+			(secret_enc IS NOT NULL), use_ssl, public_prefix, enabled, name, is_default`
+	row := s.pool.QueryRow(ctx, q,
+		newID(), orgID, in.Mode, in.Endpoint, in.Region, in.Bucket, in.AccessKeyID, enc,
+		in.UseSSL, in.PublicPrefix, in.Enabled, in.Name, isDefault)
+	return scanConfig(row)
+}
+
+// Update 按 id 更新一条 org 配置(secret 空=保留)。停用时一并清 is_default(避免「停用却默认」)。
+func (s *Store) Update(ctx context.Context, orgID, id string, in UpsertInput) (StorageConfig, error) {
+	if orgID == "" || id == "" {
+		return StorageConfig{}, fmt.Errorf("storageconfig: orgID+id required")
+	}
+	if err := validate(in); err != nil {
+		return StorageConfig{}, err
+	}
+	replace, enc, err := s.encryptSecret(in.Secret)
+	if err != nil {
+		return StorageConfig{}, err
+	}
+	const q = `
+		UPDATE storage_configs SET
+			mode=$3, endpoint=$4, region=$5, bucket=$6, access_key_id=$7,
+			secret_enc=CASE WHEN $8 THEN $9 ELSE secret_enc END,
+			use_ssl=$10, public_prefix=$11, enabled=$12, name=$13,
+			is_default=CASE WHEN $12 THEN is_default ELSE false END,
+			updated_at=now()
+		WHERE id=$1 AND org_id=$2 AND scope='org'
+		RETURNING id, scope, org_id, mode, endpoint, region, bucket, access_key_id,
+			(secret_enc IS NOT NULL), use_ssl, public_prefix, enabled, name, is_default`
+	row := s.pool.QueryRow(ctx, q,
+		id, orgID, in.Mode, in.Endpoint, in.Region, in.Bucket, in.AccessKeyID,
+		replace, enc, in.UseSSL, in.PublicPrefix, in.Enabled, in.Name)
+	sc, err := scanConfig(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return StorageConfig{}, ErrNotFound
+	}
+	return sc, err
+}
+
+// SetDefault 事务：先清零该 org 全部 is_default，再置一(顺序不可反，否则部分唯一索引冲突)。
+// 目标必须 enabled。
+func (s *Store) SetDefault(ctx context.Context, orgID, id string) error {
+	if orgID == "" || id == "" {
+		return fmt.Errorf("storageconfig: orgID+id required")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var enabled bool
+	if err := tx.QueryRow(ctx,
+		`SELECT enabled FROM storage_configs WHERE id=$1 AND org_id=$2 AND scope='org'`, id, orgID).
+		Scan(&enabled); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
 		}
-	} else {
-		tag, terr := s.pool.Exec(ctx, `DELETE FROM storage_configs WHERE scope='org' AND org_id=$1`, orgID)
-		err = terr
-		if terr == nil {
-			rowsAffected = tag.RowsAffected()
-		}
+		return err
+	}
+	if !enabled {
+		return fmt.Errorf("storageconfig: cannot set a disabled config as default")
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE storage_configs SET is_default=false WHERE org_id=$1 AND scope='org'`, orgID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE storage_configs SET is_default=true WHERE id=$1 AND org_id=$2 AND scope='org'`, id, orgID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// DefaultConfigID 返回 org 默认 enabled 配置 id。
+func (s *Store) DefaultConfigID(ctx context.Context, orgID string) (string, bool, error) {
+	var id string
+	err := s.pool.QueryRow(ctx,
+		`SELECT id FROM storage_configs WHERE scope='org' AND org_id=$1 AND enabled=true AND is_default=true LIMIT 1`,
+		orgID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
 	}
 	if err != nil {
-		return fmt.Errorf("storageconfig: delete: %w", err)
+		return "", false, err
 	}
-	if rowsAffected == 0 {
+	return id, true, nil
+}
+
+// Delete 按 id 删除一条 org 配置。守卫：被 asset 引用 → 拒(返回 ErrInUse)。
+// 成功后清空指向它的 project 覆盖。
+func (s *Store) Delete(ctx context.Context, orgID, id string) error {
+	if orgID == "" || id == "" {
+		return fmt.Errorf("storageconfig: orgID+id required")
+	}
+	var refs int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM assets WHERE storage_config_id=$1`, id).Scan(&refs); err != nil {
+		return fmt.Errorf("storageconfig: ref check: %w", err)
+	}
+	if refs > 0 {
+		return ErrInUse
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx,
+		`DELETE FROM storage_configs WHERE id=$1 AND org_id=$2 AND scope='org'`, id, orgID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	return nil
+	if _, err := tx.Exec(ctx,
+		`UPDATE projects SET storage_config_id='' WHERE storage_config_id=$1`, id); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // ResolveForOrgAndMode 解析某 org 在指定 mode 下生效的存储配置 (含解密后的 SecretKey)，供 StorageRouter

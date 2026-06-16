@@ -94,54 +94,60 @@ func TestUpsertGlobalIsSingleton(t *testing.T) {
 	}
 }
 
-func TestUpsertForOrgRoundTrip(t *testing.T) {
+func TestCreateForOrgRoundTrip(t *testing.T) {
 	pool := testPool(t)
 	st := New(pool, testBox(t))
 	ctx := context.Background()
-	sc, err := st.UpsertForOrg(ctx, "org-a", s3Input("sek"))
-	if err != nil {
-		t.Fatalf("upsert org: %v", err)
-	}
-	if sc.Scope != "org" || sc.OrgID != "org-a" || !sc.HasSecret {
-		t.Fatalf("upsert org result: %+v", sc)
-	}
-	got, ok, err := st.GetForOrg(ctx, "org-a", "s3")
-	if err != nil || !ok || got.OrgID != "org-a" {
-		t.Fatalf("get org: %v ok=%v %+v", err, ok, got)
-	}
-	// 第二次 upsert 更新而非新增行。
+	org := "org-a-" + uniqueSuffix()
 	in := s3Input("sek")
-	in.Region = "eu-west-1"
-	if _, err := st.UpsertForOrg(ctx, "org-a", in); err != nil {
-		t.Fatalf("second upsert org: %v", err)
+	in.Name = "main"
+	sc, err := st.Create(ctx, org, in)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
 	}
-	var n int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM storage_configs WHERE scope='org' AND org_id='org-a'`).Scan(&n); err != nil {
-		t.Fatalf("count: %v", err)
+	if sc.Scope != "org" || sc.OrgID != org || !sc.HasSecret {
+		t.Fatalf("create org result: %+v", sc)
 	}
-	if n != 1 {
-		t.Fatalf("per-org must be unique, got %d rows", n)
+	// List returns our row.
+	list, err := st.List(ctx, org)
+	if err != nil || len(list) != 1 || list[0].OrgID != org {
+		t.Fatalf("list: %v ok=%v %+v", err, len(list), list)
 	}
-	got, _, _ = st.GetForOrg(ctx, "org-a", "s3")
-	if got.Region != "eu-west-1" {
-		t.Fatalf("second org upsert must update, region=%q", got.Region)
+	// Update changes region.
+	in2 := s3Input("sek")
+	in2.Name = "main"
+	in2.Region = "eu-west-1"
+	if _, err := st.Update(ctx, org, sc.ID, in2); err != nil {
+		t.Fatalf("update org: %v", err)
+	}
+	list, _ = st.List(ctx, org)
+	if len(list) != 1 {
+		t.Fatalf("after update still 1 row, got %d", len(list))
+	}
+	if list[0].Region != "eu-west-1" {
+		t.Fatalf("update must change region, got %q", list[0].Region)
 	}
 }
 
-func TestUpsertKeepOrReplaceSecret(t *testing.T) {
+func TestUpdateKeepOrReplaceSecret(t *testing.T) {
 	pool := testPool(t)
 	st := New(pool, testBox(t))
 	ctx := context.Background()
-	if _, err := st.UpsertForOrg(ctx, "org-k", s3Input("orig-secret")); err != nil {
+	org := "org-k-" + uniqueSuffix()
+	in := s3Input("orig-secret")
+	in.Name = "k"
+	sc, err := st.Create(ctx, org, in)
+	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	// 空 Secret → 保留既有 secret_enc，改 region。
-	in := s3Input("")
-	in.Region = "ap-1"
-	if _, err := st.UpsertForOrg(ctx, "org-k", in); err != nil {
-		t.Fatalf("keep upsert: %v", err)
+	in2 := s3Input("")
+	in2.Name = "k"
+	in2.Region = "ap-1"
+	if _, err := st.Update(ctx, org, sc.ID, in2); err != nil {
+		t.Fatalf("keep update: %v", err)
 	}
-	rs, ok, err := st.ResolveForOrg(ctx, "org-k")
+	rs, ok, err := st.ResolveForOrg(ctx, org)
 	if err != nil || !ok {
 		t.Fatalf("resolve after keep: %v ok=%v", err, ok)
 	}
@@ -149,29 +155,34 @@ func TestUpsertKeepOrReplaceSecret(t *testing.T) {
 		t.Fatalf("keep: secret=%q region=%q", rs.SecretKey, rs.Region)
 	}
 	// 非空 Secret → 替换。
-	in2 := s3Input("new-secret")
-	if _, err := st.UpsertForOrg(ctx, "org-k", in2); err != nil {
-		t.Fatalf("replace upsert: %v", err)
+	in3 := s3Input("new-secret")
+	in3.Name = "k"
+	if _, err := st.Update(ctx, org, sc.ID, in3); err != nil {
+		t.Fatalf("replace update: %v", err)
 	}
-	rs, ok, err = st.ResolveForOrg(ctx, "org-k")
+	rs, ok, err = st.ResolveForOrg(ctx, org)
 	if err != nil || !ok || rs.SecretKey != "new-secret" {
 		t.Fatalf("replace: ok=%v err=%v secret=%q", ok, err, rs.SecretKey)
 	}
+	_ = pool // used via testPool
 }
 
-func TestGetMissing(t *testing.T) {
+func TestListMissing(t *testing.T) {
 	pool := testPool(t)
 	st := New(pool, testBox(t))
 	ctx := context.Background()
-	if _, ok, err := st.GetForOrg(ctx, "org-nope-"+t.Name(), ""); err != nil || ok {
-		t.Fatalf("missing org: ok=%v err=%v", ok, err)
+	list, err := st.List(ctx, "org-nope-"+uniqueSuffix())
+	if err != nil || len(list) != 0 {
+		t.Fatalf("missing org list: err=%v len=%d", err, len(list))
 	}
+	_ = pool
 }
 
 func TestResolvePrecedence(t *testing.T) {
 	pool := testPool(t)
 	st := New(pool, testBox(t))
 	ctx := context.Background()
+	orgP := "org-p-" + uniqueSuffix()
 	// global enabled.
 	gin := s3Input("global-secret")
 	gin.Bucket = "global-bucket"
@@ -181,52 +192,61 @@ func TestResolvePrecedence(t *testing.T) {
 	// org-p enabled → 取 org。
 	oin := s3Input("org-secret")
 	oin.Bucket = "org-bucket"
-	if _, err := st.UpsertForOrg(ctx, "org-p", oin); err != nil {
+	oin.Name = "p"
+	orgsc, err := st.Create(ctx, orgP, oin)
+	if err != nil {
 		t.Fatalf("org: %v", err)
 	}
-	rs, ok, err := st.ResolveForOrg(ctx, "org-p")
-	if err != nil || !ok || rs.Bucket != "org-bucket" || rs.SecretKey != "org-secret" {
-		t.Fatalf("org-enabled should win: ok=%v err=%v %+v", ok, err, rs)
+	rs, ok, rerr := st.ResolveForOrg(ctx, orgP)
+	if rerr != nil || !ok || rs.Bucket != "org-bucket" || rs.SecretKey != "org-secret" {
+		t.Fatalf("org-enabled should win: ok=%v err=%v %+v", ok, rerr, rs)
 	}
 	// org-p 禁用 → 回落 global。
 	din := oin
 	din.Enabled = false
 	din.Secret = "" // keep secret
-	if _, err := st.UpsertForOrg(ctx, "org-p", din); err != nil {
+	if _, err := st.Update(ctx, orgP, orgsc.ID, din); err != nil {
 		t.Fatalf("disable org: %v", err)
 	}
-	rs, ok, err = st.ResolveForOrg(ctx, "org-p")
-	if err != nil || !ok || rs.Bucket != "global-bucket" || rs.SecretKey != "global-secret" {
-		t.Fatalf("disabled org should fall to global: ok=%v err=%v %+v", ok, err, rs)
+	rs, ok, rerr = st.ResolveForOrg(ctx, orgP)
+	if rerr != nil || !ok || rs.Bucket != "global-bucket" || rs.SecretKey != "global-secret" {
+		t.Fatalf("disabled org should fall to global: ok=%v err=%v %+v", ok, rerr, rs)
 	}
-	// 无 org 行且无 global → ok=false。先删 global。
-	if err := st.DeleteForOrg(ctx, "org-p", ""); err != nil {
-		t.Fatalf("delete org-p: %v", err)
+	// 无 org 行且无 global → ok=false。先删 org rows (via SQL since Delete guards asset refs),
+	// then drop global.
+	if _, err := pool.Exec(ctx, `DELETE FROM storage_configs WHERE scope='org' AND org_id=$1`, orgP); err != nil {
+		t.Fatalf("delete org-p rows: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `DELETE FROM storage_configs WHERE scope='global'`); err != nil {
 		t.Fatalf("drop global: %v", err)
 	}
-	if _, ok, err := st.ResolveForOrg(ctx, "org-p"); err != nil || ok {
+	if _, ok, err := st.ResolveForOrg(ctx, orgP); err != nil || ok {
 		t.Fatalf("no config should be ok=false: ok=%v err=%v", ok, err)
 	}
 }
 
-func TestDeleteForOrg(t *testing.T) {
+func TestDeleteByID(t *testing.T) {
 	pool := testPool(t)
 	st := New(pool, testBox(t))
 	ctx := context.Background()
-	if _, err := st.UpsertForOrg(ctx, "org-d", s3Input("s")); err != nil {
+	org := "org-d-" + uniqueSuffix()
+	in := s3Input("s")
+	in.Name = "d"
+	sc, err := st.Create(ctx, org, in)
+	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := st.DeleteForOrg(ctx, "org-d", "s3"); err != nil {
+	if err := st.Delete(ctx, org, sc.ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if _, ok, _ := st.GetForOrg(ctx, "org-d", "s3"); ok {
-		t.Fatalf("row should be gone")
+	list, _ := st.List(ctx, org)
+	if len(list) != 0 {
+		t.Fatalf("row should be gone, list=%v", list)
 	}
-	if err := st.DeleteForOrg(ctx, "org-d", "s3"); !errors.Is(err, ErrNotFound) {
+	if err := st.Delete(ctx, org, sc.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("re-delete must return ErrNotFound, got %v", err)
 	}
+	_ = pool
 }
 
 func TestValidationBeforeDBAccess(t *testing.T) {
@@ -242,7 +262,7 @@ func TestValidationBeforeDBAccess(t *testing.T) {
 	// s3 缺 bucket。
 	noBucket := s3Input("s")
 	noBucket.Bucket = ""
-	if _, err := st.UpsertForOrg(ctx, "o", noBucket); err == nil {
+	if _, err := st.Create(ctx, "o", noBucket); err == nil {
 		t.Fatalf("s3 without bucket must be rejected")
 	}
 	// github 列复用：缺 repo (bucket) 或 owner (accessKeyId) 必拒 (nil pool 证明
@@ -313,18 +333,20 @@ func TestLocalfsModeNoBucketRequired(t *testing.T) {
 	pool := testPool(t)
 	st := New(pool, testBox(t))
 	ctx := context.Background()
-	in := UpsertInput{Mode: "localfs", PublicPrefix: "/files", UseSSL: true, Enabled: true}
-	sc, err := st.UpsertForOrg(ctx, "org-lfs", in)
+	org := "org-lfs-" + uniqueSuffix()
+	in := UpsertInput{Mode: "localfs", Name: "lfs", PublicPrefix: "/files", UseSSL: true, Enabled: true}
+	sc, err := st.Create(ctx, org, in)
 	if err != nil {
-		t.Fatalf("localfs upsert: %v", err)
+		t.Fatalf("localfs create: %v", err)
 	}
 	if sc.Mode != "localfs" || sc.PublicPrefix != "/files" || sc.HasSecret {
 		t.Fatalf("localfs result: %+v", sc)
 	}
-	rs, ok, err := st.ResolveForOrg(ctx, "org-lfs")
+	rs, ok, err := st.ResolveForOrg(ctx, org)
 	if err != nil || !ok || rs.Mode != "localfs" || rs.PublicPrefix != "/files" {
 		t.Fatalf("resolve localfs: ok=%v err=%v %+v", ok, err, rs)
 	}
+	_ = pool
 }
 
 // github 列复用 round-trip：AccessKeyID=owner, Bucket=repo, Region=branch,
@@ -333,19 +355,20 @@ func TestGithubModeColumnOverload(t *testing.T) {
 	pool := testPool(t)
 	st := New(pool, testBox(t))
 	ctx := context.Background()
+	org := "org-gh-" + uniqueSuffix()
 	in := UpsertInput{
-		Mode: "github", AccessKeyID: "octo", Bucket: "assets-repo", Region: "prod",
+		Mode: "github", Name: "gh", AccessKeyID: "octo", Bucket: "assets-repo", Region: "prod",
 		PublicPrefix: "media", Endpoint: "https://ghe.example.com/api/v3",
 		Secret: "ghp_token", Enabled: true,
 	}
-	sc, err := st.UpsertForOrg(ctx, "org-gh", in)
+	sc, err := st.Create(ctx, org, in)
 	if err != nil {
-		t.Fatalf("github upsert: %v", err)
+		t.Fatalf("github create: %v", err)
 	}
 	if sc.Mode != "github" || sc.AccessKeyID != "octo" || sc.Bucket != "assets-repo" || !sc.HasSecret {
-		t.Fatalf("github upsert result: %+v", sc)
+		t.Fatalf("github create result: %+v", sc)
 	}
-	rs, ok, err := st.ResolveForOrg(ctx, "org-gh")
+	rs, ok, err := st.ResolveForOrg(ctx, org)
 	if err != nil || !ok {
 		t.Fatalf("resolve github: ok=%v err=%v", ok, err)
 	}
@@ -353,6 +376,7 @@ func TestGithubModeColumnOverload(t *testing.T) {
 		rs.PublicPrefix != "media" || rs.Endpoint != "https://ghe.example.com/api/v3" || rs.SecretKey != "ghp_token" {
 		t.Fatalf("github resolve column overload mismatch: %+v", rs)
 	}
+	_ = pool
 }
 
 func TestMultipleOrgConfigsAndResolution(t *testing.T) {
@@ -363,28 +387,40 @@ func TestMultipleOrgConfigsAndResolution(t *testing.T) {
 
 	// Configure S3 for this org.
 	s3In := s3Input("s3sek")
-	if _, err := st.UpsertForOrg(ctx, orgID, s3In); err != nil {
-		t.Fatalf("upsert S3: %v", err)
+	s3In.Name = "s3"
+	s3sc, err := st.Create(ctx, orgID, s3In)
+	if err != nil {
+		t.Fatalf("create S3: %v", err)
 	}
 
 	// Configure GitHub for this org.
 	ghIn := UpsertInput{
-		Mode: "github", AccessKeyID: "octo", Bucket: "assets-repo", Region: "prod",
+		Mode: "github", Name: "gh", AccessKeyID: "octo", Bucket: "assets-repo", Region: "prod",
 		PublicPrefix: "media", Endpoint: "https://api.github.com",
 		Secret: "ghp_token", Enabled: true,
 	}
-	if _, err := st.UpsertForOrg(ctx, orgID, ghIn); err != nil {
-		t.Fatalf("upsert github: %v", err)
+	ghsc, err := st.Create(ctx, orgID, ghIn)
+	if err != nil {
+		t.Fatalf("create github: %v", err)
 	}
 
-	// Verify both configs exist and can be fetched.
-	s3Config, ok, err := st.GetForOrg(ctx, orgID, "s3")
-	if err != nil || !ok || s3Config.Mode != "s3" {
-		t.Fatalf("get s3 config: %v %v", err, ok)
+	// Verify both configs exist via List.
+	list, err := st.List(ctx, orgID)
+	if err != nil || len(list) != 2 {
+		t.Fatalf("list: err=%v len=%d want 2", err, len(list))
 	}
-	ghConfig, ok, err := st.GetForOrg(ctx, orgID, "github")
-	if err != nil || !ok || ghConfig.Mode != "github" {
-		t.Fatalf("get github config: %v %v", err, ok)
+	// Both modes present.
+	var foundS3, foundGH bool
+	for _, c := range list {
+		if c.Mode == "s3" {
+			foundS3 = true
+		}
+		if c.Mode == "github" {
+			foundGH = true
+		}
+	}
+	if !foundS3 || !foundGH {
+		t.Fatalf("expected both modes in list: %+v", list)
 	}
 
 	// Verify resolution with specific mode.
@@ -398,20 +434,28 @@ func TestMultipleOrgConfigsAndResolution(t *testing.T) {
 		t.Fatalf("resolve github: %v %v", err, ok)
 	}
 
-	// Verify delete per mode.
-	if err := st.DeleteForOrg(ctx, orgID, "github"); err != nil {
+	// Verify delete by id (github).
+	if err := st.Delete(ctx, orgID, ghsc.ID); err != nil {
 		t.Fatalf("delete github: %v", err)
 	}
 
 	// GitHub config should be gone, S3 config should still exist.
-	_, ok, _ = st.GetForOrg(ctx, orgID, "github")
-	if ok {
-		t.Fatalf("github config should be deleted")
+	list, _ = st.List(ctx, orgID)
+	for _, c := range list {
+		if c.ID == ghsc.ID {
+			t.Fatalf("github config should be deleted")
+		}
 	}
-	_, ok, _ = st.GetForOrg(ctx, orgID, "s3")
-	if !ok {
+	var stillS3 bool
+	for _, c := range list {
+		if c.ID == s3sc.ID {
+			stillS3 = true
+		}
+	}
+	if !stillS3 {
 		t.Fatalf("s3 config should still exist")
 	}
+	_ = pool
 }
 
 // TestResolveAndConfigIDAgreement verifies the fix for the "unreadable cover" bug:
@@ -431,18 +475,19 @@ func TestResolveAndConfigIDAgreement(t *testing.T) {
 	org := "org-agree-" + uniqueSuffix()
 
 	// Insert localfs first (created_at earlier).
-	lfsIn := UpsertInput{Mode: "localfs", PublicPrefix: "/lfs", Enabled: true}
-	lfssc, err := st.UpsertForOrg(ctx, org, lfsIn)
+	lfsIn := UpsertInput{Mode: "localfs", Name: "lfs", PublicPrefix: "/lfs", Enabled: true}
+	lfssc, err := st.Create(ctx, org, lfsIn)
 	if err != nil {
-		t.Fatalf("upsert localfs: %v", err)
+		t.Fatalf("create localfs: %v", err)
 	}
 
 	// Insert s3 second (created_at later → ORDER BY created_at DESC picks this one first).
 	s3In := s3Input("agree-sek")
+	s3In.Name = "s3"
 	s3In.Bucket = "agree-bucket"
-	s3sc, err := st.UpsertForOrg(ctx, org, s3In)
+	s3sc, err := st.Create(ctx, org, s3In)
 	if err != nil {
-		t.Fatalf("upsert s3: %v", err)
+		t.Fatalf("create s3: %v", err)
 	}
 
 	// Sanity: two distinct rows exist.
@@ -500,10 +545,11 @@ func TestResolveByID(t *testing.T) {
 	ctx := context.Background()
 	org := "org-rbid-" + uniqueSuffix()
 	in := s3Input("sek-rbid")
+	in.Name = "rbid"
 	in.Bucket = "rbid-bucket"
-	sc, err := st.UpsertForOrg(ctx, org, in)
+	sc, err := st.Create(ctx, org, in)
 	if err != nil {
-		t.Fatalf("upsert: %v", err)
+		t.Fatalf("create: %v", err)
 	}
 	rs, ok, err := st.ResolveByID(ctx, sc.ID)
 	if err != nil || !ok {
@@ -520,7 +566,7 @@ func TestResolveByID(t *testing.T) {
 	dis := in
 	dis.Enabled = false
 	dis.Secret = ""
-	if _, err := st.UpsertForOrg(ctx, org, dis); err != nil {
+	if _, err := st.Update(ctx, org, sc.ID, dis); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
 	if _, ok, err := st.ResolveByID(ctx, sc.ID); err != nil || ok {
@@ -536,9 +582,10 @@ func TestConfigIDForOrgAndMode(t *testing.T) {
 	ctx := context.Background()
 	org := "org-cfgid-" + uniqueSuffix()
 	in := s3Input("sek-cfgid")
-	sc, err := st.UpsertForOrg(ctx, org, in)
+	in.Name = "cfgid"
+	sc, err := st.Create(ctx, org, in)
 	if err != nil {
-		t.Fatalf("upsert: %v", err)
+		t.Fatalf("create: %v", err)
 	}
 	id, ok, err := st.ConfigIDForOrgAndMode(ctx, org, "s3")
 	if err != nil || !ok {
@@ -554,5 +601,87 @@ func TestConfigIDForOrgAndMode(t *testing.T) {
 	// org 无任何 config 的另一 mode → ok=false。
 	if _, ok, err := st.ConfigIDForOrgAndMode(ctx, "org-none-"+uniqueSuffix(), "s3"); err != nil || ok {
 		t.Fatalf("unknown org must be ok=false: ok=%v err=%v", ok, err)
+	}
+}
+
+// newStore 返回一个连接到测试 DB 的 Store。
+func newStore(t *testing.T) *Store {
+	t.Helper()
+	pool := testPool(t)
+	return New(pool, testBox(t))
+}
+
+// newStoreAndPool 返回 Store + 底层 pool（供测试直接执行 SQL）。
+func newStoreAndPool(t *testing.T) (*Store, *pgxpool.Pool) {
+	t.Helper()
+	pool := testPool(t)
+	return New(pool, testBox(t)), pool
+}
+
+func TestMultiConfig_CreateListSetDefaultDelete(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	org := "org_mc_" + uniqueSuffix()
+	a, err := s.Create(ctx, org, UpsertInput{Mode: "s3", Name: "主桶", Bucket: "b1", Endpoint: "https://e", Secret: "x", Enabled: true})
+	if err != nil {
+		t.Fatalf("create a: %v", err)
+	}
+	if !a.IsDefault {
+		t.Fatalf("first config must be default")
+	}
+	b, err := s.Create(ctx, org, UpsertInput{Mode: "s3", Name: "备桶", Bucket: "b2", Endpoint: "https://e", Secret: "x", Enabled: true})
+	if err != nil {
+		t.Fatalf("create b: %v", err)
+	}
+	if b.IsDefault {
+		t.Fatalf("second config must not be default")
+	}
+	list, err := s.List(ctx, org)
+	if err != nil || len(list) != 2 {
+		t.Fatalf("list = %v err=%v", list, err)
+	}
+	if list[0].ID != a.ID {
+		t.Fatalf("default should sort first")
+	}
+	if err := s.SetDefault(ctx, org, b.ID); err != nil {
+		t.Fatalf("setdefault: %v", err)
+	}
+	did, ok, _ := s.DefaultConfigID(ctx, org)
+	if !ok || did != b.ID {
+		t.Fatalf("default = %q want %s", did, b.ID)
+	}
+	if err := s.Delete(ctx, org, a.ID); err != nil {
+		t.Fatalf("delete a: %v", err)
+	}
+	list, _ = s.List(ctx, org)
+	if len(list) != 1 {
+		t.Fatalf("after delete len=%d want 1", len(list))
+	}
+}
+
+func TestSetDefault_DisabledRejected(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	org := "org_mcd_" + uniqueSuffix()
+	c, _ := s.Create(ctx, org, UpsertInput{Mode: "s3", Name: "x", Bucket: "b", Endpoint: "https://e", Secret: "x", Enabled: false})
+	if err := s.SetDefault(ctx, org, c.ID); err == nil {
+		t.Fatalf("SetDefault on disabled config must error")
+	}
+}
+
+func TestDelete_GuardedByAssetRef(t *testing.T) {
+	s, pool := newStoreAndPool(t)
+	ctx := context.Background()
+	org := "org_mcg_" + uniqueSuffix()
+	c, _ := s.Create(ctx, org, UpsertInput{Mode: "s3", Name: "x", Bucket: "b", Endpoint: "https://e", Secret: "x", Enabled: true})
+	pid := "p_" + uniqueSuffix()
+	if _, err := pool.Exec(ctx, `INSERT INTO projects (id, org_id, name, status, created_by) VALUES ($1,$2,'p','draft','u')`, pid, org); err != nil {
+		t.Fatalf("ins proj: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO assets (id, project_id, storage_config_id) VALUES ($1,$2,$3)`, "a_"+uniqueSuffix(), pid, c.ID); err != nil {
+		t.Fatalf("ins asset: %v", err)
+	}
+	if err := s.Delete(ctx, org, c.ID); err == nil {
+		t.Fatalf("delete must be refused when assets reference the config")
 	}
 }
