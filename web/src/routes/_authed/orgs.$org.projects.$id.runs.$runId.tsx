@@ -111,6 +111,9 @@ function RunWorkbenchPage() {
     stages: [],
     pips: [],
     assets: { total: 0, done: 0, pending: 0 },
+    nodes: [],
+    edges: [],
+    isCustom: false,
   }
 
   // 只能对最新的/且是运行态的进行操作

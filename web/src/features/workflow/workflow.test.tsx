@@ -44,6 +44,9 @@ function makeState(over: Partial<ProjectState> = {}): ProjectState {
     stages: blockedStages(),
     pips: [],
     assets: { total: 0, done: 0, pending: 0 },
+    nodes: [],
+    edges: [],
+    isCustom: false,
     ...over,
   }
 }

@@ -79,6 +79,9 @@ describe("useProductionTimeline (replay-then-live orchestration)", () => {
       stages: [],
       pips: [],
       assets: { total: 0, done: 0, pending: 0 },
+      nodes: [],
+      edges: [],
+      isCustom: false,
     }
     const sseClient = fakeSse([
       { event: "state", data: JSON.stringify(stateFrame) },
