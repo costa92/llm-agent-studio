@@ -41,6 +41,22 @@ export interface Project {
   // 封面图：指向一个 image 资产的 id；空串 = 无封面。
   // 展示用 AssetThumb assetId={coverAssetId}（走 GET /api/assets/{id}/content）。
   coverAssetId?: string
+  // 儿童绘本：kind 区分项目类型（缺省/'standard' = 标准；'picturebook' = 绘本）；
+  // pictureBookConfig 为绘本参数原始 JSON 字符串（见 PictureBookConfig）。
+  kind?: "standard" | "picturebook"
+  pictureBookConfig?: string
+}
+
+// 儿童绘本生成参数（前端表单态；提交时 JSON.stringify 进 pictureBookConfig 字段）。
+// 字段名严格对齐后端 project.PictureBookConfig 的 json tag。
+export interface PictureBookConfig {
+  ageBand: "" | "0-3" | "3-6" | "6-8"
+  bookType: string
+  illustrationStyle: string
+  narrationStyle: string
+  themes: string[]
+  pageCount: number
+  voice: string
 }
 
 // UI-spec §7.2。
@@ -70,6 +86,9 @@ export interface CreateProjectInput {
   imageModel?: string
   customWorkflowEnabled?: boolean
   workflowNodes?: string
+  // 儿童绘本：kind 选 'picturebook' 时带上 pictureBookConfig（序列化后的配置 JSON）。
+  kind?: "standard" | "picturebook"
+  pictureBookConfig?: string
 }
 
 // runHandler 返回：POST /api/projects/{id}/run → 202。
