@@ -400,8 +400,21 @@ func (w *Worker) runScript(ctx context.Context, c claimed) (string, error) {
 		Brief: in.Brief, ContentType: in.ContentType, Platform: in.TargetPlatform, Style: in.Style,
 		SystemPrompt: in.SystemPrompt,
 	}
+	// 绘本项目透传绘本参数：ScriptAgent 走面向儿童的故事 prompt 并额外产出
+	// characterSheet。整段 ScriptOutput（含 characterSheet）随后被序列化进
+	// content_json，所以 storyboard 端解析该 JSON 即可回灌 characterSheet——无需
+	// 在此单独挑字段存。
+	isPB, cfg, err := w.pictureBookConfig(ctx, c.projectID)
+	if err != nil {
+		return "", err
+	}
+	if isPB {
+		scriptIn.PictureBook = true
+		scriptIn.PBAgeBand = cfg.AgeBand
+		scriptIn.PBBookType = cfg.BookType
+		scriptIn.PBThemes = cfg.Themes
+	}
 	var out studioagents.ScriptOutput
-	var err error
 	if m, ok := w.routedChatModel(ctx, c.projectID); ok {
 		out, err = w.cfg.Script.RunWith(ctx, m, scriptIn)
 	} else {
@@ -418,6 +431,29 @@ func (w *Worker) runScript(ctx context.Context, c claimed) (string, error) {
 		return "", fmt.Errorf("worker: insert script: %w", err)
 	}
 	return "script:" + scriptID, nil
+}
+
+// pictureBookConfig reads the project's kind + picturebook_config and reports
+// whether this is a 绘本 project plus its parsed config. A non-绘本 project (or a
+// missing/empty config) yields (false, zero, nil). A DB error is fatal to the
+// caller (the绘本 data flow depends on it); a config PARSE error degrades to
+// (false, zero, nil) so a malformed config can't wedge a standard run.
+func (w *Worker) pictureBookConfig(ctx context.Context, projectID string) (bool, project.PictureBookConfig, error) {
+	var kind, raw string
+	if err := w.cfg.Pool.QueryRow(ctx,
+		`SELECT kind, picturebook_config FROM projects WHERE id=$1`, projectID).Scan(&kind, &raw); err != nil {
+		return false, project.PictureBookConfig{}, fmt.Errorf("worker: load project kind: %w", err)
+	}
+	if kind != "picturebook" {
+		return false, project.PictureBookConfig{}, nil
+	}
+	cfg, perr := project.ParsePictureBookConfig(raw)
+	if perr != nil {
+		w.cfg.Logger.Warn("worker: parse picturebook_config failed; treating as non-绘本",
+			"project", projectID, "err", perr)
+		return false, project.PictureBookConfig{}, nil
+	}
+	return true, cfg, nil
 }
 
 // runStoryboard reads the latest script for the project, runs the
@@ -467,8 +503,24 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 		ScriptJSON: string(contentJSON), Style: projectStyle,
 		SystemPrompt: storyboardInputJSON.SystemPrompt,
 	}
+	// 绘本项目透传绘本分镜参数 + 回灌 characterSheet。characterSheet 来源：上游
+	// script 的整段 ScriptOutput 已序列化进 content_json（即 ScriptJSON），从中解析
+	// 出 characterSheet 写回 storyboard 输入，保证跨页插图主角一致。
+	isPB, pbCfg, err := w.pictureBookConfig(ctx, c.projectID)
+	if err != nil {
+		return "", err
+	}
+	if isPB {
+		var sc struct {
+			CharacterSheet string `json:"characterSheet"`
+		}
+		_ = json.Unmarshal(contentJSON, &sc)
+		storyboardIn.PictureBook = true
+		storyboardIn.PBMaxWordsPerSpread = pbCfg.MaxWordsPerSpread()
+		storyboardIn.PBIllustrationStyle = pbCfg.IllustrationStyle
+		storyboardIn.PBCharacterSheet = sc.CharacterSheet
+	}
 	var out studioagents.StoryboardOutput
-	var err error
 	if m, ok := w.routedChatModel(ctx, c.projectID); ok {
 		out, err = w.cfg.Storyboard.RunWith(ctx, m, storyboardIn)
 	} else {
@@ -524,6 +576,15 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 			"kind": "image", "duration": sh.Duration,
 		})
 		assetSpecs = append(assetSpecs, todos.DynamicSpec{Type: "asset", InputJSON: input})
+		// 绘本分支：每页除插图外，若该页有旁白（Action 非空，封面/wordless 页为空），
+		// 追加一个 audio asset todo，prompt 取该页旁白、voice 取项目配置。封面页与
+		// 无字页的 Action 为空，自然只产出 image——无需特判。
+		if isPB && strings.TrimSpace(sh.Action) != "" {
+			audioInput, _ := json.Marshal(map[string]any{
+				"shotId": shotID, "shotPrompt": sh.Action, "kind": "audio", "voice": pbCfg.Voice,
+			})
+			assetSpecs = append(assetSpecs, todos.DynamicSpec{Type: "asset", InputJSON: audioInput})
+		}
 	}
 	// planID for the dynamic todos: read it off the storyboard todo so the asset
 	// todos share the same plan lineage.
