@@ -200,6 +200,8 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("POST /api/assets/{id}/accept", asset(roleAdmin, acceptHandler(d.Review)))
 	mux.Handle("POST /api/assets/{id}/reject", asset(roleAdmin, rejectHandler(d.Review)))
 	mux.Handle("POST /api/assets/{id}/regenerate", asset(roleAdmin, regenerateHandler(d.Review, d.AssetLibrary, d.Cost, d.GenQuota)))
+	// 编辑旁白重配音 (绘本 Task 7): same admin gate as regenerate.
+	mux.Handle("POST /api/assets/{id}/narration", asset(roleAdmin, narrationHandler(d.Review, d.AssetLibrary, d.Cost, d.GenQuota)))
 	// Asset library + single asset (viewer+).
 	mux.Handle("GET /api/orgs/{org}/assets", scoped(roleViewer, orgScope, libraryHandler(d.AssetLibrary)))
 	mux.Handle("GET /api/assets/{id}", asset(roleViewer, getAssetHandler(d.AssetLibrary)))
