@@ -10,6 +10,7 @@ import { apiFetch, apiJSON } from "@/lib/apiClient"
 import type {
   ItemsEnvelope,
   Project,
+  RegenerateResponse,
   RunResponse,
   StudioEvent,
 } from "@/lib/types"
@@ -151,9 +152,11 @@ export function useScript(id: string, planId?: string, todoId?: string): UseQuer
   })
 }
 
-// 分镜：GET /api/projects/{id}/shots → {items}（viewer+）。
-// 真实形态（internal/agents/storyboard.go Shot）：{shotNo,camera,scene,action,prompt,duration}。
+// 分镜：GET /api/projects/{id}/shots → {items}（viewer+），后端按 ordering ASC 返回。
+// 真实形态（studiosvc/artifacts.go Shots）：{id,shotNo,camera,scene,action,prompt,duration}。
+// id 用于与项目资产（asset.shotId）配对——绘本阅读器据此把插图/音频归到对应页。
 export interface Shot {
+  id?: string
   shotNo?: number
   camera?: string
   scene?: string
@@ -178,12 +181,31 @@ export function useShots(id: string, planId?: string, todoId?: string): UseQuery
   })
 }
 
+// 项目资产行（studiosvc/artifacts.go ProjectAssets）：
+//   {id, shotId, type, blobKey, url, prompt, style, provider, model, status, version, parentAssetId}。
+//   type ∈ image/audio/video；shotId 关联 shots.id（绘本阅读器据此把插图/音频配到对应页）。
+export interface ProjectAsset {
+  id: string
+  shotId: string
+  type: string
+  blobKey?: string
+  url?: string
+  prompt?: string
+  style?: string
+  provider?: string
+  model?: string
+  status: string
+  version?: number
+  parentAssetId?: string
+  [k: string]: unknown
+}
+
 // 项目维度资产：GET /api/projects/{id}/assets?status= → {items}（viewer+）。
 export function useProjectAssets(
   id: string,
   status?: string,
   planId?: string,
-): UseQueryResult<unknown[]> {
+): UseQueryResult<ProjectAsset[]> {
   const params = new URLSearchParams()
   if (status) params.set("status", status)
   if (planId) params.set("planId", planId)
@@ -191,10 +213,42 @@ export function useProjectAssets(
   return useQuery({
     queryKey: ["project-assets", id, status ?? "", planId ?? ""],
     queryFn: () =>
-      apiJSON<ItemsEnvelope<unknown>>(`/api/projects/${id}/assets${qs}`).then(
+      apiJSON<ItemsEnvelope<ProjectAsset>>(`/api/projects/${id}/assets${qs}`).then(
         (env) => env.items,
       ),
     enabled: id !== "",
+  })
+}
+
+// 单页重生成插图：POST /api/assets/{id}/regenerate（admin）。body {prompt}。
+//   → {newAssetId, todoId, status}。429 配额超限；409 资产非 pending_acceptance。
+export function useRegenerateAsset(): UseMutationResult<
+  RegenerateResponse,
+  Error,
+  { assetId: string; prompt?: string }
+> {
+  return useMutation({
+    mutationFn: ({ assetId, prompt }) =>
+      apiJSON<RegenerateResponse>(`/api/assets/${assetId}/regenerate`, {
+        method: "POST",
+        body: JSON.stringify({ prompt: prompt ?? "" }),
+      }),
+  })
+}
+
+// 编辑旁白重配音：POST /api/assets/{id}/narration（admin）。body {text}。
+//   → {newAssetId, todoId, status}。空 text → 400。
+export function useEditNarration(): UseMutationResult<
+  RegenerateResponse,
+  Error,
+  { assetId: string; text: string }
+> {
+  return useMutation({
+    mutationFn: ({ assetId, text }) =>
+      apiJSON<RegenerateResponse>(`/api/assets/${assetId}/narration`, {
+        method: "POST",
+        body: JSON.stringify({ text }),
+      }),
   })
 }
 

@@ -16,16 +16,21 @@ import { AssetPreviewActions } from "@/features/workflow/AssetPreviewActions"
 import { ScriptView } from "@/features/workflow/ScriptView"
 import { StoryboardView } from "@/features/workflow/StoryboardView"
 import { AssetGalleryModal } from "@/features/workflow/AssetGalleryModal"
+import { PictureBookReader } from "@/features/workflow/PictureBookReader"
+import { assemblePages, isBookReady } from "@/features/workflow/pictureBookPages"
 import { Button } from "@/components/studio/Button"
 import {
   fetchAllEvents,
   useCancel,
   useProject,
   useProjectState,
+  useProjectAssets,
   useRun,
   useScript,
   useShots,
   usePlans,
+  useRegenerateAsset,
+  useEditNarration,
 } from "@/features/workflow/api"
 import { useProductionTimeline } from "@/features/workflow/useProductionTimeline"
 import { useUpdateProject, usePromptStyles } from "@/features/projects/api"
@@ -67,6 +72,15 @@ function RunWorkbenchPage() {
   const [selection, setSelection] = useState<Selection>(null)
   // 素材画廊抽屉开合。
   const [galleryOpen, setGalleryOpen] = useState(false)
+  // 绘本阅读器开合（仅 picturebook 项目）。
+  const [readerOpen, setReaderOpen] = useState(false)
+
+  // 绘本阅读器数据：仅 picturebook 项目拉取该 run 的分镜 + 项目资产（按 shotId 配对成页）。
+  const isPictureBook = project?.kind === "picturebook"
+  const bookShotsQuery = useShots(isPictureBook ? id : "", runId)
+  const bookAssetsQuery = useProjectAssets(isPictureBook ? id : "", undefined, runId)
+  const regenAsset = useRegenerateAsset()
+  const editNarration = useEditNarration()
   // 抽屉数据 gated 拉取（DAG 节点携带 todoId 时按节点级工件拉取；默认轨道不带 todoId）
   const scriptQuery = useScript(
     selection?.kind === "script" ? id : "",
@@ -174,6 +188,37 @@ function RunWorkbenchPage() {
     }
   }
 
+  // 绘本单页重生成插图：用该页 prompt 重生成插图资产，成功后刷新 state/assets。
+  async function handleRegenIllustration(page: {
+    illustrationAssetId?: string
+    prompt?: string
+  }) {
+    if (!page.illustrationAssetId) return
+    try {
+      await regenAsset.mutateAsync({ assetId: page.illustrationAssetId, prompt: page.prompt })
+      toast.success("已开始重新生成插图")
+      void bookAssetsQuery.refetch()
+      void stateQuery.refetch()
+    } catch (err) {
+      const status = (err as { status?: number }).status
+      toast.error(status === 429 ? "配额已用尽，请稍后再试" : "重新生成失败")
+    }
+  }
+
+  // 绘本编辑旁白：用新文本重配音频资产，成功后刷新 assets。
+  async function handleEditNarration(page: { audioAssetId?: string }, newText: string) {
+    if (!page.audioAssetId || !newText.trim()) return
+    try {
+      await editNarration.mutateAsync({ assetId: page.audioAssetId, text: newText })
+      toast.success("已开始重新配音")
+      void bookAssetsQuery.refetch()
+      void stateQuery.refetch()
+    } catch (err) {
+      const status = (err as { status?: number }).status
+      toast.error(status === 429 ? "配额已用尽，请稍后再试" : "重新配音失败")
+    }
+  }
+
   const latestAssetId = [...wfState.pips]
     .reverse()
     .find((p) => p.status === "done" && p.assetId)?.assetId
@@ -183,6 +228,22 @@ function RunWorkbenchPage() {
     .map((p) => p.assetId as string)
   const previewAssetId =
     selection?.kind === "asset" ? selection.assetId : latestAssetId
+
+  // 绘本：组装页序列 + 成书判定 + 灯箱提示词元信息（按 assetId）。
+  const bookShots = bookShotsQuery.data ?? []
+  const bookAssets = bookAssetsQuery.data ?? []
+  const bookTitle = project.name || "绘本"
+  const bookPages = isPictureBook
+    ? assemblePages({ shots: bookShots, assets: bookAssets, title: bookTitle })
+    : []
+  const bookReady = isPictureBook && isBookReady(bookShots, bookAssets)
+  // 相册灯箱提示词：done 资产的 prompt/provider/model（绘本/标准均可用）。
+  const assetMeta: Record<string, { prompt?: string; provider?: string; model?: string }> = {}
+  for (const a of bookAssets) {
+    if (a.status === "done") {
+      assetMeta[a.id] = { prompt: a.prompt, provider: a.provider, model: a.model }
+    }
+  }
 
   function handleSelectStage(stageId: StageId) {
     // 按该阶段对应的 todo 精确取产物：plan 内可能有多个 script/storyboard todo
@@ -239,10 +300,19 @@ function RunWorkbenchPage() {
   )
 
   const galleryTrigger =
-    doneAssetIds.length > 0 ? (
-      <Button variant="ghost" onClick={() => setGalleryOpen(true)}>
-        查看全部素材 ({doneAssetIds.length})
-      </Button>
+    doneAssetIds.length > 0 || bookReady ? (
+      <div className="flex flex-wrap items-center gap-2">
+        {bookReady && (
+          <Button variant="amber" onClick={() => setReaderOpen(true)}>
+            📖 阅读绘本
+          </Button>
+        )}
+        {doneAssetIds.length > 0 && (
+          <Button variant="ghost" onClick={() => setGalleryOpen(true)}>
+            查看全部素材 ({doneAssetIds.length})
+          </Button>
+        )}
+      </div>
     ) : undefined
 
   const isLive = wfState.runStatus !== "done"
@@ -319,9 +389,19 @@ function RunWorkbenchPage() {
           {drawer}
           <AssetGalleryModal
             assetIds={doneAssetIds}
+            metaById={assetMeta}
             open={galleryOpen}
             onOpenChange={setGalleryOpen}
           />
+          {isPictureBook && (
+            <PictureBookReader
+              pages={bookPages}
+              open={readerOpen}
+              onOpenChange={setReaderOpen}
+              onRegenIllustration={handleRegenIllustration}
+              onEditNarration={handleEditNarration}
+            />
+          )}
         </>
       }
       onOpenReview={() =>

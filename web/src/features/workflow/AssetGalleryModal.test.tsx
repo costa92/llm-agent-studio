@@ -11,6 +11,11 @@ vi.mock("./AssetPreviewActions", () => ({
     <div data-testid="actions">{assetId}</div>
   ),
 }))
+vi.mock("./PromptPanel", () => ({
+  PromptPanel: ({ illustrationPrompt }: { illustrationPrompt?: string }) => (
+    <div data-testid="prompt-panel">{illustrationPrompt}</div>
+  ),
+}))
 
 const thumbs = () => Array.from(document.querySelectorAll('[data-slot="gallery-thumb"]'))
 
@@ -35,6 +40,19 @@ describe("AssetGalleryModal", () => {
     // 返回相册 → 回网格态。
     fireEvent.click(screen.getByText("← 返回相册"))
     expect(screen.getByText("全部素材 · 3")).toBeInTheDocument()
+  })
+
+  it("灯箱展开提示词：显示该 asset 的 prompt", () => {
+    render(
+      <AssetGalleryModal
+        assetIds={["a", "b"]}
+        metaById={{ a: { prompt: "一只小猫", provider: "openai", model: "gpt-image-1" } }}
+        open
+        onOpenChange={() => {}}
+      />,
+    )
+    fireEvent.click(thumbs()[0]) // 看 a
+    expect(screen.getByTestId("prompt-panel")).toHaveTextContent("一只小猫")
   })
 
   it("灯箱翻页环绕：下一张从末尾回到首张", () => {

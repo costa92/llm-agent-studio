@@ -8,18 +8,28 @@ import {
 } from "@/components/ui/dialog"
 import { AssetThumb } from "./AssetThumb"
 import { AssetPreviewActions } from "./AssetPreviewActions"
+import { PromptPanel } from "./PromptPanel"
+
+// 灯箱大图下的提示词元信息（按 assetId 取）。缺省则该图不展示提示词面板。
+export interface AssetMeta {
+  prompt?: string
+  provider?: string
+  model?: string
+}
 
 export interface AssetGalleryModalProps {
   // 该 run 已生成（done 且有 assetId）的素材 id，按生成顺序。
   assetIds: string[]
   open: boolean
   onOpenChange: (open: boolean) => void
+  // 可选：按 assetId 提供 prompt/provider/model，灯箱大图下展示提示词面板。
+  metaById?: Record<string, AssetMeta>
 }
 
 // 素材相册：居中模态 + 灯箱。
 //   网格态：缩略图铺满模态，点图进灯箱。
 //   灯箱态：大图 object-contain 不裁切；左右翻页 / ESC 回网格 / 打开·复制。
-export function AssetGalleryModal({ assetIds, open, onOpenChange }: AssetGalleryModalProps) {
+export function AssetGalleryModal({ assetIds, open, onOpenChange, metaById }: AssetGalleryModalProps) {
   const count = assetIds.length
   // 灯箱索引：null = 网格态；数字 = 看大图。
   const [lightbox, setLightbox] = useState<number | null>(null)
@@ -129,6 +139,17 @@ export function AssetGalleryModal({ assetIds, open, onOpenChange }: AssetGallery
               )}
             </div>
             <AssetPreviewActions assetId={assetIds[lightbox]} className="flex justify-center gap-2" />
+            {(() => {
+              const meta = metaById?.[assetIds[lightbox]]
+              return meta && (meta.prompt || meta.provider || meta.model) ? (
+                <PromptPanel
+                  illustrationPrompt={meta.prompt}
+                  provider={meta.provider}
+                  model={meta.model}
+                  className="self-center"
+                />
+              ) : null
+            })()}
           </>
         )}
       </DialogContent>
