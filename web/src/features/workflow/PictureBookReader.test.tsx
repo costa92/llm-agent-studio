@@ -77,6 +77,14 @@ describe("PictureBookReader", () => {
     expect(screen.queryByRole("button", { name: "下一页" })).not.toBeInTheDocument()
   })
 
+  it("空页不渲染也不崩溃（数据未就绪兜底）", () => {
+    // pages 为空时 page=pages[index] 为 undefined；必须早返回，不得读 page.kind。
+    const { container } = render(
+      <PictureBookReader pages={[]} open onOpenChange={() => {}} />,
+    )
+    expect(container).toBeEmptyDOMElement()
+  })
+
   it("重新生成插图 / 编辑旁白入口回调", () => {
     const onRegen = vi.fn()
     const onEdit = vi.fn()

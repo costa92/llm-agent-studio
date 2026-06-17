@@ -102,6 +102,10 @@ export function PictureBookReader({
     }
   }
 
+  // 无页（数据未就绪/组装为空）时不渲染，避免 page.kind 取 undefined 崩溃。
+  // 阅读入口仅在 bookReady 时显示，此处为防御性兜底。
+  if (!page) return null
+
   function renderCover() {
     return (
       <div className="flex flex-col items-center gap-5 py-4">

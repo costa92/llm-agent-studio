@@ -13,7 +13,7 @@ const asset = (over: Partial<ProjectAsset>): ProjectAsset => ({
   id: "x",
   shotId: "",
   type: "image",
-  status: "done",
+  status: "accepted",
   ...over,
 })
 
@@ -48,9 +48,10 @@ describe("assemblePages", () => {
     expect(pages[1].illustrationAssetId).toBe("v2")
   })
 
-  it("非 done 资产被忽略", () => {
+  it("非 accepted 资产被忽略", () => {
     const assets: ProjectAsset[] = [
       asset({ id: "pending", shotId: "s1", type: "image", status: "generating" }),
+      asset({ id: "await", shotId: "s2", type: "image", status: "pending_acceptance" }),
     ]
     const pages = assemblePages({ shots, assets, title: "t" })
     expect(pages[1].illustrationAssetId).toBeUndefined()
@@ -62,14 +63,19 @@ describe("assemblePages", () => {
 })
 
 describe("isBookReady", () => {
-  it("done image 数 ≥ 内容页一半 → 就绪", () => {
-    // 内容页 = 4-2 = 2，需 ≥ 1 张 done image。
-    const assets = [asset({ shotId: "s1", type: "image", status: "done" })]
+  it("accepted image 数 ≥ 内容页一半 → 就绪", () => {
+    // 内容页 = 4-2 = 2，需 ≥ 1 张 accepted image。
+    const assets = [asset({ shotId: "s1", type: "image", status: "accepted" })]
     expect(isBookReady(shots, assets)).toBe(true)
   })
 
-  it("无 done image → 未就绪", () => {
+  it("无 accepted image → 未就绪", () => {
     expect(isBookReady(shots, [])).toBe(false)
+  })
+
+  it("仅 pending_acceptance image → 未就绪", () => {
+    const assets = [asset({ shotId: "s1", type: "image", status: "pending_acceptance" })]
+    expect(isBookReady(shots, assets)).toBe(false)
   })
 
   it("空 shots → 未就绪", () => {
