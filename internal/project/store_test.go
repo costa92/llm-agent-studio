@@ -92,6 +92,35 @@ func TestCreateGetListProject(t *testing.T) {
 	}
 }
 
+// TestProjectKindAndPBConfigRoundTrip: kind + picturebook_config 经 Create 写入，
+// 经 Get 读回（绘本项目）。
+func TestProjectKindAndPBConfigRoundTrip(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	orgID := "org_pb_" + uniqueSuffix()
+	p, err := s.Create(ctx, CreateInput{
+		OrgID: orgID, Name: "PB", CreatedBy: "u",
+		Kind:              "picturebook",
+		PictureBookConfig: `{"ageBand":"3-6","bookType":"narrative"}`,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if p.Kind != "picturebook" {
+		t.Fatalf("create Kind=%q want picturebook", p.Kind)
+	}
+	got, err := s.Get(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Kind != "picturebook" {
+		t.Fatalf("get Kind=%q want picturebook", got.Kind)
+	}
+	if got.PictureBookConfig == "" {
+		t.Fatalf("get PictureBookConfig empty, want persisted JSON")
+	}
+}
+
 // M5.1: Update 改 planner_provider/planner_model，其他字段不动；找不到 id → 404。
 func TestUpdatePlannerOverride(t *testing.T) {
 	s, _ := newStore(t)
