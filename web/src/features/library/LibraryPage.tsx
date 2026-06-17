@@ -181,7 +181,7 @@ export function LibraryView({
           if (!open) onSelect(null)
         }}
       >
-        <SheetContent className="w-[460px] gap-0 overflow-y-auto bg-bg-surface p-0 sm:max-w-[460px]">
+        <SheetContent className="w-full gap-0 overflow-y-auto bg-bg-surface p-0 sm:max-w-[520px]">
           {detailLoading || detail == null ? (
             <div className="p-6">
               <Skeleton className="aspect-square w-full rounded-[10px]" />

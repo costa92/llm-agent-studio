@@ -15,6 +15,8 @@ import { AssetThumb } from "@/features/workflow/AssetThumb.tsx"
 import { AssetPreviewActions } from "@/features/workflow/AssetPreviewActions"
 import { ScriptView } from "@/features/workflow/ScriptView"
 import { StoryboardView } from "@/features/workflow/StoryboardView"
+import { AssetGalleryModal } from "@/features/workflow/AssetGalleryModal"
+import { Button } from "@/components/studio/Button"
 import {
   fetchAllEvents,
   useCancel,
@@ -63,6 +65,8 @@ function RunWorkbenchPage() {
 
   // 选中态
   const [selection, setSelection] = useState<Selection>(null)
+  // 素材画廊抽屉开合。
+  const [galleryOpen, setGalleryOpen] = useState(false)
   // 抽屉数据 gated 拉取（DAG 节点携带 todoId 时按节点级工件拉取；默认轨道不带 todoId）
   const scriptQuery = useScript(
     selection?.kind === "script" ? id : "",
@@ -173,6 +177,10 @@ function RunWorkbenchPage() {
   const latestAssetId = [...wfState.pips]
     .reverse()
     .find((p) => p.status === "done" && p.assetId)?.assetId
+  // 已生成素材（done 且有 assetId），按生成顺序——供「查看全部素材」画廊。
+  const doneAssetIds = wfState.pips
+    .filter((p) => p.status === "done" && p.assetId)
+    .map((p) => p.assetId as string)
   const previewAssetId =
     selection?.kind === "asset" ? selection.assetId : latestAssetId
 
@@ -229,6 +237,13 @@ function RunWorkbenchPage() {
       </SheetContent>
     </Sheet>
   )
+
+  const galleryTrigger =
+    doneAssetIds.length > 0 ? (
+      <Button variant="ghost" onClick={() => setGalleryOpen(true)}>
+        查看全部素材 ({doneAssetIds.length})
+      </Button>
+    ) : undefined
 
   const isLive = wfState.runStatus !== "done"
 
@@ -298,7 +313,17 @@ function RunWorkbenchPage() {
       onSelectStage={handleSelectStage}
       onSelectPip={handleSelectPip}
       onSelectNode={handleSelectNode}
-      drawer={drawer}
+      galleryTrigger={galleryTrigger}
+      drawer={
+        <>
+          {drawer}
+          <AssetGalleryModal
+            assetIds={doneAssetIds}
+            open={galleryOpen}
+            onOpenChange={setGalleryOpen}
+          />
+        </>
+      }
       onOpenReview={() =>
         navigate({
           to: "/orgs/$org/review",

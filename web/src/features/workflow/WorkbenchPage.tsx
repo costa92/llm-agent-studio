@@ -69,6 +69,8 @@ export interface WorkbenchViewProps {
   onSelectPip?: (pip: PipState) => void
   // T3：抽屉插槽（容器组装 Sheet + ScriptView/StoryboardView，SSE/轨道保持挂载）。
   drawer?: ReactNode
+  // 轨道/图上方的工具条插槽（如「查看全部素材 (N)」入口）；容器组装。
+  galleryTrigger?: ReactNode
   // T2：run_done（或 review 态）→「去审核」CTA，容器做 SPA 跳转携 ?project=。
   onOpenReview?: () => void
   // 顶栏面包屑返回项目列表。
@@ -93,6 +95,7 @@ export function WorkbenchView({
   onSelectPip,
   onSelectNode,
   drawer,
+  galleryTrigger,
   onOpenReview,
   onBack,
   plannerModelNode,
@@ -140,6 +143,7 @@ export function WorkbenchView({
         )}
         {/* 窄屏动作过多时换行而非横向溢出。 */}
         <div className="ml-auto flex flex-wrap items-center justify-end gap-2 sm:gap-3">
+          {galleryTrigger}
           {live && <SseIndicator status={CONN_TO_STATUS[conn]} />}
           {canRun && (
             <>
