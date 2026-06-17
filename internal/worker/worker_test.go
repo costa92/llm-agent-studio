@@ -590,6 +590,80 @@ func TestRunStoryboard_UnsafeNarrationSkipsAudio(t *testing.T) {
 	}
 }
 
+// inconclusiveSafetyStub always returns safe=false WITHOUT a reason — the弱模型/
+// 解析不稳的常见表现。worker 应 fail-open（放行 audio），只在「明确 unsafe 且带理由」时拦。
+type inconclusiveSafetyStub struct{ llm.ScriptedLLM }
+
+func (m *inconclusiveSafetyStub) Generate(_ context.Context, _ llm.Request) (llm.Response, error) {
+	return llm.Response{Text: `{"safe":false}`}, nil
+}
+
+// TestRunStoryboard_InconclusiveNarrationAllowsAudio: safe=false 但无理由 → 不拦，
+// 两个内容页都保留 audio（fail-open，避免弱模型把整本绘本判没声）。
+func TestRunStoryboard_InconclusiveNarrationAllowsAudio(t *testing.T) {
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker tests")
+	}
+	ctx := context.Background()
+	st, err := storage.Open(ctx, storage.Config{PGURL: dsn})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	pool := st.Pool()
+	projID := "pbi_" + randHex3()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO projects (id, org_id, name, created_by, kind, picturebook_config)
+		 VALUES ($1,'o','n','u','picturebook',$2)`,
+		projID, `{"ageBand":"3-6","illustrationStyle":"watercolor","voice":"warm"}`); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	todoStore := todos.New(pool)
+	ids, err := todoStore.CreateGraph(ctx, projID, "pl_pbi_"+projID[4:], []todos.NodeSpec{
+		{LocalID: "s", Type: "script", DependsOn: nil, InputJSON: []byte(`{"brief":"小白兔的故事"}`)},
+		{LocalID: "b", Type: "storyboard", DependsOn: []string{"s"}, InputJSON: []byte(`{}`)},
+	})
+	if err != nil {
+		t.Fatalf("create graph: %v", err)
+	}
+	scriptModel := llm.NewScriptedLLM(llm.WithResponses(llm.Response{
+		Text: `{"title":"小白兔","logline":"勇敢","scenes":[{"heading":"森林","description":"清晨","dialogue":""}],"characterSheet":"小白兔,长耳"}`,
+	}))
+	w := New(Config{
+		Pool: pool, Todos: todoStore, Projects: project.New(pool), Events: events.New(pool),
+		Script:     studioagents.NewScriptAgent(scriptModel),
+		Storyboard: newPictureBookStoryboardAgent(t, 2),
+		Narration:  studioagents.NewNarrationSafety(&inconclusiveSafetyStub{}),
+		Asset: studioagents.NewAssetAgent(prompt.NewBuilder(), generate.NewFakeLooping(generate.GenResult{
+			Bytes: []byte("FAKE"), MimeType: "image/png", Provider: "fake", Model: "fake-img", ImageCount: 1,
+		})),
+		Storage: testStorage(), Assets: assets.New(pool), Cost: cost.New(pool), WorkerID: "test-pbi",
+	})
+	for i := 0; i < 20; i++ {
+		ran, err := w.RunOnce(ctx)
+		if err != nil {
+			t.Fatalf("run once: %v", err)
+		}
+		if !ran {
+			break
+		}
+	}
+	var nAudio int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FILTER (WHERE input_json->>'kind'='audio')
+		 FROM todos WHERE project_id=$1 AND type='asset' AND $2 = ANY(depends_on)`,
+		projID, ids["b"]).Scan(&nAudio); err != nil {
+		t.Fatalf("count audio todos: %v", err)
+	}
+	if nAudio != 2 {
+		t.Fatalf("fail-open: want 2 audio todos (both content pages), got %d", nAudio)
+	}
+}
+
 // TestRunStoryboard_StandardOnlyImage: a standard (non-绘本) project fans out only
 // image asset todos — no audio — proving the绘本 branch is fully gated on kind.
 func TestRunStoryboard_StandardOnlyImage(t *testing.T) {

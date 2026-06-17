@@ -590,7 +590,7 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 				case cerr != nil:
 					w.cfg.Logger.Warn("worker: narration safety check failed; allowing audio (fail-open)",
 						"project", c.projectID, "shot", shotID, "err", cerr)
-				case !v.Safe:
+				case !v.Safe && strings.TrimSpace(v.Reason) != "":
 					_, _ = w.cfg.Events.Append(ctx, c.projectID, "narration_blocked", c.todoID,
 						map[string]any{"shotId": shotID, "reason": v.Reason})
 					w.cfg.Logger.Info("worker: narration blocked by safety check; skipping audio for page",
