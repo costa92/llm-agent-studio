@@ -62,8 +62,9 @@ type Config struct {
 	Script           *studioagents.ScriptAgent
 	Storyboard       *studioagents.StoryboardAgent
 	Asset            *studioagents.AssetAgent
-	Review           *studioagents.ReviewAgent // nil → prescreen disabled
-	Storage          *storagerouter.Router     // per-org → global → 内置 localfs 默认 的对象存储路由
+	Review           *studioagents.ReviewAgent     // nil → prescreen disabled
+	Narration        *studioagents.NarrationSafety // 绘本旁白安全校验；nil → 不校验（放行 audio）
+	Storage          *storagerouter.Router         // per-org → global → 内置 localfs 默认 的对象存储路由
 	Assets           *assets.Store
 	Cost             *cost.Store
 	Models           *models.Store           // resolve org default provider+model; nil → registry default
@@ -580,6 +581,23 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 		// 追加一个 audio asset todo，prompt 取该页旁白、voice 取项目配置。封面页与
 		// 无字页的 Action 为空，自然只产出 image——无需特判。
 		if isPB && strings.TrimSpace(sh.Action) != "" {
+			// 旁白文本安全校验：明确判定 unsafe 时跳过该页 audio（image 仍照常出），
+			// 不阻断整本。降级策略：Narration 未注入或 LLM 调用出错时不拦截（放行
+			// audio）——保守起见，避免外部故障导致整本绘本无声；只在明确 unsafe 时拦。
+			if w.cfg.Narration != nil {
+				v, cerr := w.cfg.Narration.Check(ctx, sh.Action, pbCfg.AgeBand)
+				switch {
+				case cerr != nil:
+					w.cfg.Logger.Warn("worker: narration safety check failed; allowing audio (fail-open)",
+						"project", c.projectID, "shot", shotID, "err", cerr)
+				case !v.Safe:
+					_, _ = w.cfg.Events.Append(ctx, c.projectID, "narration_blocked", c.todoID,
+						map[string]any{"shotId": shotID, "reason": v.Reason})
+					w.cfg.Logger.Info("worker: narration blocked by safety check; skipping audio for page",
+						"project", c.projectID, "shot", shotID, "reason", v.Reason)
+					continue
+				}
+			}
 			audioInput, _ := json.Marshal(map[string]any{
 				"shotId": shotID, "shotPrompt": sh.Action, "kind": "audio", "voice": pbCfg.Voice,
 			})

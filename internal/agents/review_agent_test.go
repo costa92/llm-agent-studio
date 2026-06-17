@@ -2,10 +2,46 @@ package agents
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/costa92/llm-agent-contract/llm"
 )
+
+// reviewCaptureModel records the system prompt so the适龄维度 can be asserted.
+type reviewCaptureModel struct {
+	llm.ScriptedLLM
+	gotSys string
+}
+
+func (m *reviewCaptureModel) Generate(_ context.Context, req llm.Request) (llm.Response, error) {
+	m.gotSys = req.SystemPrompt
+	return llm.Response{Text: `{"score":80,"flags":[],"note":""}`}, nil
+}
+
+// TestReviewAgent_AgeBandAddsAgeAppropriateness: a non-empty AgeBand layers an
+// 适龄性 dimension into the prompt naming the band.
+func TestReviewAgent_AgeBandAddsAgeAppropriateness(t *testing.T) {
+	m := &reviewCaptureModel{}
+	if _, err := NewReviewAgent(m).Run(context.Background(), ReviewInput{Prompt: "x", AgeBand: "3-6"}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(m.gotSys, "3-6") || !strings.Contains(m.gotSys, "适龄") {
+		t.Fatalf("age-appropriateness dimension missing from prompt: %q", m.gotSys)
+	}
+}
+
+// TestReviewAgent_NoAgeBandUnchanged: an empty AgeBand keeps the original prompt
+// (零回归) — no适龄措辞 leaks in.
+func TestReviewAgent_NoAgeBandUnchanged(t *testing.T) {
+	m := &reviewCaptureModel{}
+	if _, err := NewReviewAgent(m).Run(context.Background(), ReviewInput{Prompt: "x"}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if m.gotSys != reviewSystemPrompt {
+		t.Fatalf("empty AgeBand altered the prompt: %q", m.gotSys)
+	}
+}
 
 func TestReviewAgentParsesScore(t *testing.T) {
 	model := llm.NewScriptedLLM(llm.WithResponses(

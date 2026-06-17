@@ -21,6 +21,9 @@ type ReviewInput struct {
 	Provider string
 	Model    string
 	MimeType string
+	// AgeBand 仅绘本变体填充（如 "3-6"）：非空时在 prompt 追加适龄性判断维度；
+	// 空时行为与标准项目完全一致（零回归）。命名对齐 ScriptInput.PBAgeBand 语义。
+	AgeBand string
 }
 
 // ReviewOutput is the advisory prescreen verdict. Score is 0..100 (higher =
@@ -51,8 +54,17 @@ func NewReviewAgent(model llm.ChatModel) *ReviewAgent {
 // org's text model through the ModelRouter and passes it here. Run keeps the
 // bound default for un-routed callers.
 func (a *ReviewAgent) RunWith(ctx context.Context, model llm.ChatModel, in ReviewInput) (ReviewOutput, error) {
+	// 绘本变体：AgeBand 非空时追加适龄性维度，要求一并判断画面是否适合该年龄段
+	// 儿童。空时保持 reviewSystemPrompt 原样（零回归），既有 violence/nudity/
+	// real-persons 预筛不变。
+	sysPrompt := reviewSystemPrompt
+	if in.AgeBand != "" {
+		sysPrompt += fmt.Sprintf(
+			"\nAdditionally judge whether the image is age-appropriate (适龄性) for %s 岁儿童 and reflect any concern in the score and flags.",
+			in.AgeBand)
+	}
 	agent := coreagents.NewSimpleAgent(model, coreagents.SimpleOptions{
-		Name: "review", SystemPrompt: reviewSystemPrompt,
+		Name: "review", SystemPrompt: sysPrompt,
 	})
 	prompt := fmt.Sprintf(
 		"Generation prompt: %s\nStyle: %s\nProvider/model: %s/%s\nMime type: %s",

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/costa92/llm-agent-contract/llm"
@@ -472,6 +473,120 @@ func TestRunStoryboard_PictureBookFansOutImageAndAudio(t *testing.T) {
 	}
 	if nShotsAfter != 3 {
 		t.Fatalf("idempotency: want 3 shots after re-run, got %d", nShotsAfter)
+	}
+}
+
+// narrationSafetyStub is a NarrationSafety-backing model that judges a narration
+// unsafe iff its text contains a marker substring; everything else is safe. Lets
+// the test deterministically block exactly one page regardless of fan-out order.
+type narrationSafetyStub struct {
+	llm.ScriptedLLM
+	unsafeMarker string
+}
+
+func (m *narrationSafetyStub) Generate(_ context.Context, req llm.Request) (llm.Response, error) {
+	var user string
+	for _, msg := range req.Messages {
+		if msg.Role == "user" {
+			user = msg.Content
+		}
+	}
+	if strings.Contains(user, m.unsafeMarker) {
+		return llm.Response{Text: `{"safe":false,"reason":"暴力"}`}, nil
+	}
+	return llm.Response{Text: `{"safe":true}`}, nil
+}
+
+// TestRunStoryboard_UnsafeNarrationSkipsAudio: when the旁白 safety check judges
+// one content page unsafe, that page must lose its audio todo (image still出),
+// while the other content page keeps both image + audio.
+func TestRunStoryboard_UnsafeNarrationSkipsAudio(t *testing.T) {
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker tests")
+	}
+	ctx := context.Background()
+	st, err := storage.Open(ctx, storage.Config{PGURL: dsn})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	pool := st.Pool()
+	projID := "pbu_" + randHex3()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO projects (id, org_id, name, created_by, kind, picturebook_config)
+		 VALUES ($1,'o','n','u','picturebook',$2)`,
+		projID, `{"ageBand":"3-6","illustrationStyle":"watercolor","voice":"warm","themes":["友谊"]}`); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	todoStore := todos.New(pool)
+	ids, err := todoStore.CreateGraph(ctx, projID, "pl_pbu_"+projID[4:], []todos.NodeSpec{
+		{LocalID: "s", Type: "script", DependsOn: nil, InputJSON: []byte(`{"brief":"小白兔的故事"}`)},
+		{LocalID: "b", Type: "storyboard", DependsOn: []string{"s"}, InputJSON: []byte(`{}`)},
+	})
+	if err != nil {
+		t.Fatalf("create graph: %v", err)
+	}
+	scriptModel := llm.NewScriptedLLM(llm.WithResponses(llm.Response{
+		Text: `{"title":"小白兔","logline":"勇敢的小白兔","scenes":[{"heading":"森林","description":"清晨","dialogue":""}],"characterSheet":"小白兔,蓝背带裤,长耳"}`,
+	}))
+	// 1 cover + 2 content pages ("第1页旁白"/"第2页旁白"). Mark page 1 unsafe.
+	storyboard := newPictureBookStoryboardAgent(t, 2)
+	narration := studioagents.NewNarrationSafety(&narrationSafetyStub{unsafeMarker: "第1页旁白"})
+	fakeGen := generate.NewFakeLooping(generate.GenResult{
+		Bytes: []byte("FAKE"), MimeType: "image/png", Provider: "fake", Model: "fake-img", ImageCount: 1,
+	})
+	w := New(Config{
+		Pool:       pool,
+		Todos:      todoStore,
+		Projects:   project.New(pool),
+		Events:     events.New(pool),
+		Script:     studioagents.NewScriptAgent(scriptModel),
+		Storyboard: storyboard,
+		Narration:  narration,
+		Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fakeGen),
+		Storage:    testStorage(),
+		Assets:     assets.New(pool),
+		Cost:       cost.New(pool),
+		WorkerID:   "test-pbu",
+	})
+	for i := 0; i < 20; i++ {
+		ran, err := w.RunOnce(ctx)
+		if err != nil {
+			t.Fatalf("run once: %v", err)
+		}
+		if !ran {
+			break
+		}
+	}
+	// 3 images (cover + 2 content), 1 audio (only the safe content page).
+	var nImage, nAudio int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FILTER (WHERE input_json->>'kind'='image'),
+		        count(*) FILTER (WHERE input_json->>'kind'='audio')
+		 FROM todos WHERE project_id=$1 AND type='asset' AND $2 = ANY(depends_on)`,
+		projID, ids["b"]).Scan(&nImage, &nAudio); err != nil {
+		t.Fatalf("count asset todos: %v", err)
+	}
+	if nImage != 3 {
+		t.Fatalf("want 3 image asset todos (both pages keep image), got %d", nImage)
+	}
+	if nAudio != 1 {
+		t.Fatalf("want 1 audio asset todo (unsafe page skipped), got %d", nAudio)
+	}
+	// The single audio belongs to the SAFE page (第2页旁白), not the blocked one.
+	var audioPrompt string
+	if err := pool.QueryRow(ctx,
+		`SELECT input_json->>'shotPrompt' FROM todos
+		 WHERE project_id=$1 AND type='asset' AND input_json->>'kind'='audio' AND $2 = ANY(depends_on)`,
+		projID, ids["b"]).Scan(&audioPrompt); err != nil {
+		t.Fatalf("query audio prompt: %v", err)
+	}
+	if audioPrompt != "第2页旁白" {
+		t.Fatalf("audio kept for wrong page: %q (want 第2页旁白)", audioPrompt)
 	}
 }
 
