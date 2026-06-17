@@ -62,8 +62,9 @@ type Config struct {
 	Script           *studioagents.ScriptAgent
 	Storyboard       *studioagents.StoryboardAgent
 	Asset            *studioagents.AssetAgent
-	Review           *studioagents.ReviewAgent // nil → prescreen disabled
-	Storage          *storagerouter.Router     // per-org → global → 内置 localfs 默认 的对象存储路由
+	Review           *studioagents.ReviewAgent     // nil → prescreen disabled
+	Narration        *studioagents.NarrationSafety // 绘本旁白安全校验；nil → 不校验（放行 audio）
+	Storage          *storagerouter.Router         // per-org → global → 内置 localfs 默认 的对象存储路由
 	Assets           *assets.Store
 	Cost             *cost.Store
 	Models           *models.Store           // resolve org default provider+model; nil → registry default
@@ -400,8 +401,21 @@ func (w *Worker) runScript(ctx context.Context, c claimed) (string, error) {
 		Brief: in.Brief, ContentType: in.ContentType, Platform: in.TargetPlatform, Style: in.Style,
 		SystemPrompt: in.SystemPrompt,
 	}
+	// 绘本项目透传绘本参数：ScriptAgent 走面向儿童的故事 prompt 并额外产出
+	// characterSheet。整段 ScriptOutput（含 characterSheet）随后被序列化进
+	// content_json，所以 storyboard 端解析该 JSON 即可回灌 characterSheet——无需
+	// 在此单独挑字段存。
+	isPB, cfg, err := w.pictureBookConfig(ctx, c.projectID)
+	if err != nil {
+		return "", err
+	}
+	if isPB {
+		scriptIn.PictureBook = true
+		scriptIn.PBAgeBand = cfg.AgeBand
+		scriptIn.PBBookType = cfg.BookType
+		scriptIn.PBThemes = cfg.Themes
+	}
 	var out studioagents.ScriptOutput
-	var err error
 	if m, ok := w.routedChatModel(ctx, c.projectID); ok {
 		out, err = w.cfg.Script.RunWith(ctx, m, scriptIn)
 	} else {
@@ -418,6 +432,29 @@ func (w *Worker) runScript(ctx context.Context, c claimed) (string, error) {
 		return "", fmt.Errorf("worker: insert script: %w", err)
 	}
 	return "script:" + scriptID, nil
+}
+
+// pictureBookConfig reads the project's kind + picturebook_config and reports
+// whether this is a 绘本 project plus its parsed config. A non-绘本 project (or a
+// missing/empty config) yields (false, zero, nil). A DB error is fatal to the
+// caller (the绘本 data flow depends on it); a config PARSE error degrades to
+// (false, zero, nil) so a malformed config can't wedge a standard run.
+func (w *Worker) pictureBookConfig(ctx context.Context, projectID string) (bool, project.PictureBookConfig, error) {
+	var kind, raw string
+	if err := w.cfg.Pool.QueryRow(ctx,
+		`SELECT kind, picturebook_config FROM projects WHERE id=$1`, projectID).Scan(&kind, &raw); err != nil {
+		return false, project.PictureBookConfig{}, fmt.Errorf("worker: load project kind: %w", err)
+	}
+	if kind != "picturebook" {
+		return false, project.PictureBookConfig{}, nil
+	}
+	cfg, perr := project.ParsePictureBookConfig(raw)
+	if perr != nil {
+		w.cfg.Logger.Warn("worker: parse picturebook_config failed; treating as non-绘本",
+			"project", projectID, "err", perr)
+		return false, project.PictureBookConfig{}, nil
+	}
+	return true, cfg, nil
 }
 
 // runStoryboard reads the latest script for the project, runs the
@@ -467,8 +504,24 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 		ScriptJSON: string(contentJSON), Style: projectStyle,
 		SystemPrompt: storyboardInputJSON.SystemPrompt,
 	}
+	// 绘本项目透传绘本分镜参数 + 回灌 characterSheet。characterSheet 来源：上游
+	// script 的整段 ScriptOutput 已序列化进 content_json（即 ScriptJSON），从中解析
+	// 出 characterSheet 写回 storyboard 输入，保证跨页插图主角一致。
+	isPB, pbCfg, err := w.pictureBookConfig(ctx, c.projectID)
+	if err != nil {
+		return "", err
+	}
+	if isPB {
+		var sc struct {
+			CharacterSheet string `json:"characterSheet"`
+		}
+		_ = json.Unmarshal(contentJSON, &sc)
+		storyboardIn.PictureBook = true
+		storyboardIn.PBMaxWordsPerSpread = pbCfg.MaxWordsPerSpread()
+		storyboardIn.PBIllustrationStyle = pbCfg.IllustrationStyle
+		storyboardIn.PBCharacterSheet = sc.CharacterSheet
+	}
 	var out studioagents.StoryboardOutput
-	var err error
 	if m, ok := w.routedChatModel(ctx, c.projectID); ok {
 		out, err = w.cfg.Storyboard.RunWith(ctx, m, storyboardIn)
 	} else {
@@ -524,6 +577,32 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 			"kind": "image", "duration": sh.Duration,
 		})
 		assetSpecs = append(assetSpecs, todos.DynamicSpec{Type: "asset", InputJSON: input})
+		// 绘本分支：每页除插图外，若该页有旁白（Action 非空，封面/wordless 页为空），
+		// 追加一个 audio asset todo，prompt 取该页旁白、voice 取项目配置。封面页与
+		// 无字页的 Action 为空，自然只产出 image——无需特判。
+		if isPB && strings.TrimSpace(sh.Action) != "" {
+			// 旁白文本安全校验：明确判定 unsafe 时跳过该页 audio（image 仍照常出），
+			// 不阻断整本。降级策略：Narration 未注入或 LLM 调用出错时不拦截（放行
+			// audio）——保守起见，避免外部故障导致整本绘本无声；只在明确 unsafe 时拦。
+			if w.cfg.Narration != nil {
+				v, cerr := w.cfg.Narration.Check(ctx, sh.Action, pbCfg.AgeBand)
+				switch {
+				case cerr != nil:
+					w.cfg.Logger.Warn("worker: narration safety check failed; allowing audio (fail-open)",
+						"project", c.projectID, "shot", shotID, "err", cerr)
+				case !v.Safe && strings.TrimSpace(v.Reason) != "":
+					_, _ = w.cfg.Events.Append(ctx, c.projectID, "narration_blocked", c.todoID,
+						map[string]any{"shotId": shotID, "reason": v.Reason})
+					w.cfg.Logger.Info("worker: narration blocked by safety check; skipping audio for page",
+						"project", c.projectID, "shot", shotID, "reason", v.Reason)
+					continue
+				}
+			}
+			audioInput, _ := json.Marshal(map[string]any{
+				"shotId": shotID, "shotPrompt": sh.Action, "kind": "audio", "voice": pbCfg.Voice,
+			})
+			assetSpecs = append(assetSpecs, todos.DynamicSpec{Type: "asset", InputJSON: audioInput})
+		}
 	}
 	// planID for the dynamic todos: read it off the storyboard todo so the asset
 	// todos share the same plan lineage.
@@ -558,6 +637,7 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 		Style      string `json:"style"`
 		Kind       string `json:"kind"`     // image|video|audio (I3, fan-out/regenerate)
 		Duration   int    `json:"duration"` // media seconds (video frame / audio)
+		Voice      string `json:"voice"`    // TTS voice (绘本 audio fan-out 透传)
 		// regenerate path carries the pre-created v2 asset id (review.Regenerate
 		// already CreateVersion'd it) + an edited prompt. The worker FILLS that
 		// asset in place rather than creating a new row (T11).
@@ -664,6 +744,7 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 
 	agentIn := studioagents.AssetInput{
 		ShotPrompt: firstNonEmpty(in.EditedPrompt, in.ShotPrompt), Style: in.Style,
+		Duration: in.Duration, Voice: in.Voice, // M4 透传 (image 忽略；audio 计费/音色)
 	}
 	var out studioagents.AssetOutput
 	var gerr error
@@ -722,10 +803,12 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 	// Ledger row (spec §6 generations).
 	if w.cfg.Cost != nil {
 		// M3: RecordPriced fills cost_micros from the pricing table (M2 carry #2).
+		// VideoSeconds 复用列承载音频/视频时长 (cost/store.go): image 走 ImageCount 计费，
+		// 非 image 的同步路径 (绘本 audio) 按 in.Duration 秒计 — 否则 audio 漏记成本。
 		_ = w.cfg.Cost.RecordPriced(cctx, cost.Generation{
 			ProjectID: c.projectID, AssetID: created.id, TodoID: c.todoID, Kind: kind,
 			Provider: out.Provider, Model: out.Model, Prompt: out.Prompt,
-			Tokens: out.Tokens, ImageCount: out.ImageCount, LatencyMS: out.LatencyMS,
+			Tokens: out.Tokens, ImageCount: out.ImageCount, VideoSeconds: in.Duration, LatencyMS: out.LatencyMS,
 		})
 	}
 	// Timeline: asset_generated (待审) — spec §9 SSE event.

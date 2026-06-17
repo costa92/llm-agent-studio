@@ -2,10 +2,75 @@ package agents
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/costa92/llm-agent-contract/llm"
 )
+
+// sbCaptureModel records the system prompt it receives and returns a canned
+// shot list, so the picture-book branch's prompt construction can be asserted.
+type sbCaptureModel struct {
+	llm.ScriptedLLM
+	gotSys string
+	text   string
+}
+
+func (m *sbCaptureModel) Generate(_ context.Context, req llm.Request) (llm.Response, error) {
+	m.gotSys = req.SystemPrompt
+	return llm.Response{Text: m.text}, nil
+}
+
+// TestStoryboardAgent_PictureBookCoverAndPrompt: a picture-book input must drive
+// a cover + content + ending spread layout, and fold the illustration style +
+// character sheet into the prompt sent to the model.
+func TestStoryboardAgent_PictureBookCoverAndPrompt(t *testing.T) {
+	m := &sbCaptureModel{text: `{"shots":[` +
+		`{"shotNo":1,"action":"","prompt":"封面：森林全景"},` +
+		`{"shotNo":2,"action":"小白兔出门散步","prompt":"小白兔走在林间小路"},` +
+		`{"shotNo":3,"action":"它们成了好朋友","prompt":"两只兔子拥抱"}]}`}
+	sb := NewStoryboardAgent(m)
+	out, err := sb.Run(context.Background(), StoryboardInput{
+		ScriptJSON:          `{"title":"小白兔"}`,
+		PictureBook:         true,
+		PBIllustrationStyle: "watercolor",
+		PBCharacterSheet:    "小白兔,蓝背带裤,长耳",
+	})
+	if err != nil {
+		t.Fatalf("picture-book run: %v", err)
+	}
+	if len(out.Shots) < 3 {
+		t.Fatalf("want >=3 spreads (cover + content + ending), got %d: %+v", len(out.Shots), out)
+	}
+	if out.Shots[0].Action != "" {
+		t.Fatalf("cover spread should have empty narration, got %q", out.Shots[0].Action)
+	}
+	if !strings.Contains(m.gotSys, "watercolor") {
+		t.Fatalf("illustration style missing from prompt: %q", m.gotSys)
+	}
+	if !strings.Contains(m.gotSys, "小白兔") {
+		t.Fatalf("character sheet missing from prompt: %q", m.gotSys)
+	}
+}
+
+// TestStoryboardAgent_TruncatesOverlongNarration: when PBMaxWordsPerSpread is set,
+// each spread's narration (Action) is truncated by rune count.
+func TestStoryboardAgent_TruncatesOverlongNarration(t *testing.T) {
+	long := strings.Repeat("字", 200)
+	m := &sbCaptureModel{text: `{"shots":[{"shotNo":1,"action":"` + long + `","prompt":"p"}]}`}
+	sb := NewStoryboardAgent(m)
+	out, err := sb.Run(context.Background(), StoryboardInput{
+		ScriptJSON:          "{}",
+		PictureBook:         true,
+		PBMaxWordsPerSpread: 50,
+	})
+	if err != nil {
+		t.Fatalf("truncation run: %v", err)
+	}
+	if got := len([]rune(out.Shots[0].Action)); got > 50 {
+		t.Fatalf("narration not truncated: %d runes", got)
+	}
+}
 
 func TestStoryboardAgentParsesShots(t *testing.T) {
 	model := llm.NewScriptedLLM(llm.WithResponses(llm.Response{

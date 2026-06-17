@@ -270,7 +270,10 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	if cfg.ReviewPrescreen {
 		reviewAgent = studioagents.NewReviewAgent(model) // same (otel-wrapped) chat model
 	}
-	reviewSvc := review.New(assetStore, todoStore)
+	// 绘本旁白安全 guardrail：始终启用（仅对绘本项目的旁白生效），用 env-default
+	// chat model。明确判定 unsafe 才跳过该页 audio，LLM 出错时放行（见 runStoryboard）。
+	narrationSafety := studioagents.NewNarrationSafety(model)
+	reviewSvc := review.New(assetStore, todoStore, st.Pool())
 
 	// SSRF-safe video/audio result puller (spec §9.4): content-type allowlist +
 	// 512MB hard cap (no streaming in M4 — memory ceiling ≈ MaxConcurrent×512MB).
@@ -287,7 +290,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		w := worker.New(worker.Config{
 			Pool: st.Pool(), Todos: todoStore, Projects: projectStore, Events: eventStore,
 			Script: scriptAgent, Storyboard: storyboardAgent,
-			Asset: assetAgent, Review: reviewAgent, Storage: storageRouter, Assets: assetStore, Cost: costStore,
+			Asset: assetAgent, Review: reviewAgent, Narration: narrationSafety, Storage: storageRouter, Assets: assetStore, Cost: costStore,
 			Models: modelStore, Registry: registry, Router: router,
 			WorkerID:                 fmt.Sprintf("studiod-%d", i),
 			GenQuota:                 cfg.OrgDailyGenQuota,

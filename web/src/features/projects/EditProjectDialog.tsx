@@ -23,8 +23,28 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/studio/Button"
-import type { ModelConfig, Project, StorageConfig, Style } from "@/lib/types"
+import { cn } from "@/lib/utils"
+import type {
+  ModelConfig,
+  PictureBookConfig,
+  Project,
+  StorageConfig,
+  Style,
+} from "@/lib/types"
 import { MODE_LABELS } from "@/features/storage/StorageConfigPage"
+import { PictureBookConfigForm } from "./PictureBookConfigForm"
+import { emptyPictureBookConfig } from "./pbConfig"
+
+// 编辑时从 project.pictureBookConfig（原始 JSON）解析初始配置；空/解析失败回退空配置。
+function parsePbConfig(raw?: string): PictureBookConfig {
+  if (!raw) return emptyPictureBookConfig
+  try {
+    const parsed = JSON.parse(raw) as Partial<PictureBookConfig>
+    return { ...emptyPictureBookConfig, ...parsed }
+  } catch {
+    return emptyPictureBookConfig
+  }
+}
 
 // 项目详情页"编辑项目信息"入口——弹框。
 // 允许修改基本信息（名称/创意需求/内容类型/目标平台/风格）以及
@@ -69,6 +89,8 @@ export interface EditProjectFormProps {
     imageProvider: string
     imageModel: string
     storageConfigId: string
+    kind: "standard" | "picturebook"
+    pictureBookConfig: string
   }) => Promise<Project>
   onSuccess?: (project: Project) => void
 }
@@ -83,6 +105,13 @@ export function EditProjectForm({
   onSuccess,
 }: EditProjectFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null)
+  // 项目类型 + 绘本配置走本地 state（不进 rhf；提交时一并带上）。
+  const [kind, setKind] = useState<"standard" | "picturebook">(
+    project.kind === "picturebook" ? "picturebook" : "standard",
+  )
+  const [pbConfig, setPbConfig] = useState<PictureBookConfig>(() =>
+    parsePbConfig(project.pictureBookConfig),
+  )
 
   const {
     register,
@@ -120,6 +149,10 @@ export function EditProjectForm({
         imageProvider: values.imageProvider,
         imageModel: values.imageModel,
         storageConfigId: values.storageConfigId,
+        kind,
+        // 标准项目不带绘本配置（发空串）；绘本项目序列化当前配置。
+        pictureBookConfig:
+          kind === "picturebook" ? JSON.stringify(pbConfig) : "",
       })
       onSuccess?.(updated)
     } catch {
@@ -159,6 +192,39 @@ export function EditProjectForm({
           {...register("description")}
         />
       </div>
+
+      {/* 项目类型：标准 / 儿童绘本。选绘本展开 PictureBookConfigForm。 */}
+      <div className="flex flex-col gap-1.5 sm:col-span-2">
+        <Label>项目类型</Label>
+        <div className="flex gap-2">
+          {(
+            [
+              { v: "standard", label: "标准" },
+              { v: "picturebook", label: "儿童绘本" },
+            ] as const
+          ).map((opt) => (
+            <button
+              key={opt.v}
+              type="button"
+              onClick={() => setKind(opt.v)}
+              className={cn(
+                "rounded-md border px-4 py-[7px] text-[13px] font-medium transition-colors",
+                kind === opt.v
+                  ? "border-amber bg-amber text-[#1a1408]"
+                  : "border-line text-text-2 hover:border-text-3 hover:text-text-1",
+              )}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {kind === "picturebook" && (
+        <div className="sm:col-span-2">
+          <PictureBookConfigForm value={pbConfig} onChange={setPbConfig} />
+        </div>
+      )}
 
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="edit-contentType">内容类型</Label>

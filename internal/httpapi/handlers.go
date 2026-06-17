@@ -261,6 +261,8 @@ func createProjectHandler(ps ProjectStore) http.HandlerFunc {
 			StorageConfigID       string          `json:"storageConfigId"`
 			CustomWorkflowEnabled bool            `json:"customWorkflowEnabled"`
 			WorkflowNodes         json.RawMessage `json:"workflowNodes"`
+			Kind                  string          `json:"kind"`
+			PictureBookConfig     string          `json:"pictureBookConfig"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
 			http.Error(w, "bad request: name required", http.StatusBadRequest)
@@ -278,6 +280,8 @@ func createProjectHandler(ps ProjectStore) http.HandlerFunc {
 			StorageConfigID:       req.StorageConfigID,
 			CustomWorkflowEnabled: req.CustomWorkflowEnabled,
 			WorkflowNodes:         req.WorkflowNodes,
+			Kind:                  req.Kind,
+			PictureBookConfig:     req.PictureBookConfig,
 		})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)

@@ -52,6 +52,10 @@ type Project struct {
 	// M16: per-project storage config override. Empty = use org default → builtin.
 	// Wired through ResolveWriteTarget; worker/cover write paths consult this first.
 	StorageConfigID string `json:"storageConfigId"`
+	// 儿童绘本：Kind 区分项目类型（'standard' / 'picturebook'），
+	// PictureBookConfig 存绘本参数原始 JSON 字符串（见 ParsePictureBookConfig）。
+	Kind              string `json:"kind"`
+	PictureBookConfig string `json:"pictureBookConfig"`
 }
 
 // CreateInput is the input to Create. Brief maps to the description column
@@ -72,6 +76,8 @@ type CreateInput struct {
 	StorageConfigID       string
 	CustomWorkflowEnabled bool
 	WorkflowNodes         json.RawMessage
+	Kind                  string
+	PictureBookConfig     string
 }
 
 // UpdateInput 用于后期修改项目元数据（M5.1/M9 edit 入口）。
@@ -91,6 +97,8 @@ type UpdateInput struct {
 	StorageConfigID       string          `json:"storageConfigId"`
 	CustomWorkflowEnabled bool            `json:"customWorkflowEnabled"`
 	WorkflowNodes         json.RawMessage `json:"workflowNodes"`
+	Kind                  string          `json:"kind"`
+	PictureBookConfig     string          `json:"pictureBookConfig"`
 }
 
 // Store persists projects.
@@ -112,6 +120,10 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Project, error) {
 	if in.OrgID == "" || in.Name == "" || in.CreatedBy == "" {
 		return Project{}, fmt.Errorf("project: OrgID, Name, CreatedBy required")
 	}
+	kind := in.Kind
+	if kind == "" {
+		kind = "standard"
+	}
 	p := Project{
 		ID: newID(), OrgID: in.OrgID, Name: in.Name, Description: in.Brief,
 		ContentType: in.ContentType, TargetPlatform: in.TargetPlatform,
@@ -121,11 +133,12 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Project, error) {
 		StorageMode: in.StorageMode, StorageConfigID: in.StorageConfigID,
 		CustomWorkflowEnabled: in.CustomWorkflowEnabled,
 		WorkflowNodes:         in.WorkflowNodes,
+		Kind:                  kind, PictureBookConfig: in.PictureBookConfig,
 	}
 	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO projects (id, org_id, name, description, content_type, target_platform, style, status, created_by, planner_provider, planner_model, image_provider, image_model, storage_mode, custom_workflow_enabled, workflow_nodes, storage_config_id)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
-		p.ID, p.OrgID, p.Name, p.Description, p.ContentType, p.TargetPlatform, p.Style, p.Status, p.CreatedBy, p.PlannerProvider, p.PlannerModel, p.ImageProvider, p.ImageModel, p.StorageMode, p.CustomWorkflowEnabled, p.WorkflowNodes, p.StorageConfigID); err != nil {
+		`INSERT INTO projects (id, org_id, name, description, content_type, target_platform, style, status, created_by, planner_provider, planner_model, image_provider, image_model, storage_mode, custom_workflow_enabled, workflow_nodes, storage_config_id, kind, picturebook_config)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+		p.ID, p.OrgID, p.Name, p.Description, p.ContentType, p.TargetPlatform, p.Style, p.Status, p.CreatedBy, p.PlannerProvider, p.PlannerModel, p.ImageProvider, p.ImageModel, p.StorageMode, p.CustomWorkflowEnabled, p.WorkflowNodes, p.StorageConfigID, p.Kind, p.PictureBookConfig); err != nil {
 		return Project{}, fmt.Errorf("project: insert: %w", err)
 	}
 	return p, nil
@@ -138,7 +151,8 @@ func (s *Store) Get(ctx context.Context, id string) (Project, error) {
 		`SELECT p.id, p.org_id, p.name, p.description, p.content_type, p.target_platform, p.style, p.status, p.created_by,
 		        COALESCE(pl.fallback_used, false),
 		        p.planner_provider, p.planner_model, p.image_provider, p.image_model, p.storage_mode,
-		        p.custom_workflow_enabled, p.workflow_nodes, p.cover_asset_id, COALESCE(p.storage_config_id, '')
+		        p.custom_workflow_enabled, p.workflow_nodes, p.cover_asset_id, COALESCE(p.storage_config_id, ''),
+		        COALESCE(p.kind, 'standard'), COALESCE(p.picturebook_config, '')
 		 FROM projects p
 		 LEFT JOIN (
 		     SELECT DISTINCT ON (project_id) project_id, fallback_used
@@ -146,7 +160,7 @@ func (s *Store) Get(ctx context.Context, id string) (Project, error) {
 		     ORDER BY project_id, created_at DESC
 		 ) pl ON p.id = pl.project_id
 		 WHERE p.id=$1`, id).
-		Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy, &p.FallbackUsed, &p.PlannerProvider, &p.PlannerModel, &p.ImageProvider, &p.ImageModel, &p.StorageMode, &p.CustomWorkflowEnabled, &p.WorkflowNodes, &p.CoverAssetID, &p.StorageConfigID)
+		Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy, &p.FallbackUsed, &p.PlannerProvider, &p.PlannerModel, &p.ImageProvider, &p.ImageModel, &p.StorageMode, &p.CustomWorkflowEnabled, &p.WorkflowNodes, &p.CoverAssetID, &p.StorageConfigID, &p.Kind, &p.PictureBookConfig)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Project{}, ErrNotFound
 	}
@@ -170,7 +184,7 @@ func (s *Store) ListByOrg(ctx context.Context, orgID string, limit int, cursor s
 		limit = 50
 	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, org_id, name, description, content_type, target_platform, style, status, created_by, planner_provider, planner_model, image_provider, image_model, storage_mode, custom_workflow_enabled, workflow_nodes, cover_asset_id, COALESCE(storage_config_id, '')
+		`SELECT id, org_id, name, description, content_type, target_platform, style, status, created_by, planner_provider, planner_model, image_provider, image_model, storage_mode, custom_workflow_enabled, workflow_nodes, cover_asset_id, COALESCE(storage_config_id, ''), COALESCE(kind, 'standard'), COALESCE(picturebook_config, '')
 		 FROM projects WHERE org_id=$1 AND id>$2 ORDER BY id ASC LIMIT $3`,
 		orgID, cursor, limit)
 	if err != nil {
@@ -180,7 +194,7 @@ func (s *Store) ListByOrg(ctx context.Context, orgID string, limit int, cursor s
 	var out []Project
 	for rows.Next() {
 		var p Project
-		if err := rows.Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy, &p.PlannerProvider, &p.PlannerModel, &p.ImageProvider, &p.ImageModel, &p.StorageMode, &p.CustomWorkflowEnabled, &p.WorkflowNodes, &p.CoverAssetID, &p.StorageConfigID); err != nil {
+		if err := rows.Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy, &p.PlannerProvider, &p.PlannerModel, &p.ImageProvider, &p.ImageModel, &p.StorageMode, &p.CustomWorkflowEnabled, &p.WorkflowNodes, &p.CoverAssetID, &p.StorageConfigID, &p.Kind, &p.PictureBookConfig); err != nil {
 			return nil, "", err
 		}
 		out = append(out, p)
@@ -227,10 +241,14 @@ func (s *Store) Update(ctx context.Context, id string, in UpdateInput) (Project,
 		`UPDATE projects
 		 SET name=$2, description=$3, content_type=$4, target_platform=$5, style=$6,
 		     planner_provider=$7, planner_model=$8, image_provider=$9, image_model=$10, storage_mode=$11,
-		     storage_config_id=$12, updated_at=now()
+		     storage_config_id=$12,
+		     kind=COALESCE(NULLIF($13, ''), kind),
+		     picturebook_config=COALESCE(NULLIF($14, ''), picturebook_config),
+		     updated_at=now()
 		 WHERE id=$1`,
 		id, in.Name, in.Description, in.ContentType, in.TargetPlatform, in.Style,
-		in.PlannerProvider, in.PlannerModel, in.ImageProvider, in.ImageModel, in.StorageMode, in.StorageConfigID)
+		in.PlannerProvider, in.PlannerModel, in.ImageProvider, in.ImageModel, in.StorageMode, in.StorageConfigID,
+		in.Kind, in.PictureBookConfig)
 	if err != nil {
 		return Project{}, fmt.Errorf("project: update: %w", err)
 	}

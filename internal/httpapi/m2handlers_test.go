@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -110,6 +111,61 @@ func (s stubReview) Accept(_ context.Context, _ string) error {
 func (s stubReview) Reject(_ context.Context, _ string) error { return nil }
 func (s stubReview) Regenerate(_ context.Context, _, _ string) (string, string, error) {
 	return "newAsset", "newTodo", nil
+}
+
+// narrationCalled records whether RegenerateNarration ran (and with what text),
+// so the handler test can assert the body's text reached the service.
+type recordingReview struct {
+	stubReview
+	calledText string
+}
+
+func (s *recordingReview) RegenerateNarration(_ context.Context, _, text string) (string, string, error) {
+	s.calledText = text
+	return "newAudio", "newTodo", nil
+}
+
+func (s stubReview) RegenerateNarration(_ context.Context, _, _ string) (string, string, error) {
+	return "newAudio", "newTodo", nil
+}
+
+// stubAssetLib is a no-op AssetLibrary: OrgIDForAsset errors so the handler's
+// quota gate is skipped (quota=0 also means unlimited). The narration/regenerate
+// handlers only touch OrgIDForAsset from this surface.
+type stubAssetLib struct{ AssetLibrary }
+
+func (stubAssetLib) OrgIDForAsset(_ context.Context, _ string) (string, error) {
+	return "", errors.New("no org")
+}
+
+func TestNarrationHandlerOK(t *testing.T) {
+	rv := &recordingReview{}
+	h := narrationHandler(rv, stubAssetLib{}, nil, 0)
+	req := httptest.NewRequest("POST", "/api/assets/abc/narration", strings.NewReader(`{"text":"新旁白"}`))
+	req.SetPathValue("id", "abc")
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if rv.calledText != "新旁白" {
+		t.Fatalf("want RegenerateNarration called with 新旁白, got %q", rv.calledText)
+	}
+}
+
+func TestNarrationHandlerEmptyText400(t *testing.T) {
+	rv := &recordingReview{}
+	h := narrationHandler(rv, stubAssetLib{}, nil, 0)
+	req := httptest.NewRequest("POST", "/api/assets/abc/narration", strings.NewReader(`{"text":""}`))
+	req.SetPathValue("id", "abc")
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", rec.Code)
+	}
+	if rv.calledText != "" {
+		t.Fatalf("RegenerateNarration must not be called on empty text")
+	}
 }
 
 func TestAcceptHandler409OnConflict(t *testing.T) {

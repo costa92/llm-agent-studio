@@ -16,6 +16,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/costa92/llm-agent-studio/internal/assets"
 	"github.com/costa92/llm-agent-studio/internal/todos"
 )
@@ -27,10 +29,13 @@ var ErrConflict = errors.New("review: asset not pending_acceptance")
 type Service struct {
 	assets *assets.Store
 	todos  *todos.Store
+	pool   *pgxpool.Pool // narration regenerate updates shots.action in the same tx
 }
 
 // New builds a Service.
-func New(as *assets.Store, td *todos.Store) *Service { return &Service{assets: as, todos: td} }
+func New(as *assets.Store, td *todos.Store, pool *pgxpool.Pool) *Service {
+	return &Service{assets: as, todos: td, pool: pool}
+}
 
 func newID() string {
 	b := make([]byte, 16)
@@ -105,4 +110,43 @@ func (s *Service) Regenerate(ctx context.Context, assetID, editedPrompt string) 
 		return "", "", fmt.Errorf("review: spawn regenerate todo: %w", err)
 	}
 	return child.ID, todoID, nil
+}
+
+// RegenerateNarration edits a picture-book page's narration and re-runs TTS:
+// it updates the page's shots.action to newText and regenerates the audio asset
+// (kind=audio, versioned) with newText as the new TTS text. The shots.action
+// update and the regenerate are wrapped so shots.action only persists when the
+// regenerate succeeds — keeping the page's narration and its newest audio asset
+// consistent. newText must be non-empty (empty → error, no data touched).
+// Returns (newAssetID, todoID), matching Regenerate.
+func (s *Service) RegenerateNarration(ctx context.Context, audioAssetID, newText string) (string, string, error) {
+	if newText == "" {
+		return "", "", fmt.Errorf("review: narration text required")
+	}
+	a, err := s.assets.Get(ctx, audioAssetID)
+	if err != nil {
+		return "", "", err
+	}
+	// Update the page's narration first, in a tx we only commit once the audio
+	// regenerate succeeds. (Regenerate writes via the pool, not this tx, so the
+	// commit boundary is what keeps shots.action from diverging from a failed
+	// regenerate.)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `UPDATE shots SET action=$1 WHERE id=$2`, newText, a.ShotID); err != nil {
+		return "", "", fmt.Errorf("review: update shot action: %w", err)
+	}
+	// Regenerate keeps the original asset's kind (audio) and versions it; newText
+	// becomes the new TTS text (editedPrompt).
+	newAssetID, todoID, err := s.Regenerate(ctx, audioAssetID, newText)
+	if err != nil {
+		return "", "", err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", "", err
+	}
+	return newAssetID, todoID, nil
 }

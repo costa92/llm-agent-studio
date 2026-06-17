@@ -1170,3 +1170,123 @@ func TestPollDoneDoubleCompleteDoesNotCancelOrDoubleEmit(t *testing.T) {
 		t.Fatalf("asset_generated events = %d, want exactly 1 (F-INT-1: loser double-emitted)", nGen)
 	}
 }
+
+// voiceSpyGen records the GenRequest of its last Generate call so a test can
+// assert the worker forwards the audio voice (绘本 audio 旁白) into GenRequest.
+type voiceSpyGen struct {
+	mu      sync.Mutex
+	lastReq generate.GenRequest
+	ok      generate.GenResult
+	kind    string
+}
+
+func (g *voiceSpyGen) Kind() string { return g.kind }
+func (g *voiceSpyGen) Generate(_ context.Context, req generate.GenRequest) (generate.GenResult, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.lastReq = req
+	return g.ok, nil
+}
+
+// TestRunAsset_AudioRecordsCostAndPrompt: a sync audio asset todo (kind=audio,
+// shotPrompt=旁白, voice=warm) must (1) store the narration as the asset prompt,
+// (2) record a kind='audio' generations row (audio 渲染不漏记成本), and (3) forward
+// the voice into the generator's GenRequest (Task 5 voice 透传).
+func TestRunAsset_AudioRecordsCostAndPrompt(t *testing.T) {
+	pool := assetTestPool(t)
+	ctx := context.Background()
+	var pid string
+	_ = pool.QueryRow(ctx, `INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),'org','p','u') RETURNING id`).Scan(&pid)
+	// Per-second audio pricing so the ledger asserts a real amount (duration=4s).
+	if _, err := pool.Exec(ctx, `INSERT INTO pricing (provider, model, kind, micros_per_second)
+		VALUES ('fake','tts','audio',1000) ON CONFLICT (provider, model) DO NOTHING`); err != nil {
+		t.Fatalf("seed pricing: %v", err)
+	}
+	todoID := newID()
+	input := `{"shotId":"s1","shotPrompt":"小兔子出发了","kind":"audio","voice":"warm","duration":4}`
+	_, _ = pool.Exec(ctx,
+		`INSERT INTO todos (id,project_id,plan_id,type,status,input_json) VALUES ($1,$2,'plan','asset','running',$3)`,
+		todoID, pid, input)
+
+	spy := &voiceSpyGen{kind: "audio", ok: generate.GenResult{Bytes: []byte("MP3"), MimeType: "audio/mpeg", Provider: "fake", Model: "tts"}}
+	w := New(Config{
+		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
+		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), spy),
+		Storage:  testStorage(),
+		Assets:   assets.New(pool),
+		Cost:     cost.New(pool),
+		WorkerID: "test", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
+	})
+	ref, err := w.runAsset(ctx, claimed{todoID: todoID, projectID: pid, typ: "asset", attempts: 1, input: []byte(input)})
+	if err != nil {
+		t.Fatalf("runAsset: %v", err)
+	}
+	if ref == "" {
+		t.Fatalf("expected asset output ref")
+	}
+
+	// (1) asset prompt == narration.
+	var aPrompt, aType string
+	if err := pool.QueryRow(ctx, `SELECT prompt, type FROM assets WHERE project_id=$1`, pid).Scan(&aPrompt, &aType); err != nil {
+		t.Fatalf("load asset: %v", err)
+	}
+	if aPrompt != "小兔子出发了" {
+		t.Fatalf("audio asset prompt = %q, want narration 小兔子出发了", aPrompt)
+	}
+	if aType != "audio" {
+		t.Fatalf("audio asset type = %q, want audio", aType)
+	}
+
+	// (2) one kind='audio' generations row priced by the second (4s * 1000).
+	var kind string
+	var micros int64
+	if err := pool.QueryRow(ctx, `SELECT kind, cost_micros FROM generations WHERE project_id=$1`, pid).Scan(&kind, &micros); err != nil {
+		t.Fatalf("load generation: %v", err)
+	}
+	if kind != "audio" {
+		t.Fatalf("generation kind = %q, want audio", kind)
+	}
+	if micros != 4*1000 {
+		t.Fatalf("audio cost_micros = %d, want %d (4s * 1000/s)", micros, 4*1000)
+	}
+
+	// (3) voice forwarded into GenRequest.
+	if spy.lastReq.Voice != "warm" {
+		t.Fatalf("generator GenRequest.Voice = %q, want warm (voice 透传)", spy.lastReq.Voice)
+	}
+}
+
+// TestRunAsset_ImageEffectivePrompt: the asset prompt persisted for an image todo
+// is the effective shotPrompt (绘本 Task 3/4 已把风格+characterSheet 拼进 storyboard
+// Prompt → image 的 shotPrompt 即有效插图 prompt).
+func TestRunAsset_ImageEffectivePrompt(t *testing.T) {
+	pool := assetTestPool(t)
+	ctx := context.Background()
+	var pid string
+	_ = pool.QueryRow(ctx, `INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),'org','p','u') RETURNING id`).Scan(&pid)
+	todoID := newID()
+	input := `{"shotId":"s1","shotPrompt":"watercolor 小白兔 校门口","kind":"image","duration":0}`
+	_, _ = pool.Exec(ctx,
+		`INSERT INTO todos (id,project_id,plan_id,type,status,input_json) VALUES ($1,$2,'plan','asset','running',$3)`,
+		todoID, pid, input)
+
+	fake := generate.NewFakeLooping(generate.GenResult{Bytes: []byte("PNG"), MimeType: "image/png", Provider: "fake", Model: "m", ImageCount: 1})
+	w := New(Config{
+		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
+		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
+		Storage:  testStorage(),
+		Assets:   assets.New(pool),
+		Cost:     cost.New(pool),
+		WorkerID: "test", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
+	})
+	if _, err := w.runAsset(ctx, claimed{todoID: todoID, projectID: pid, typ: "asset", attempts: 1, input: []byte(input)}); err != nil {
+		t.Fatalf("runAsset: %v", err)
+	}
+	var aPrompt string
+	if err := pool.QueryRow(ctx, `SELECT prompt FROM assets WHERE project_id=$1`, pid).Scan(&aPrompt); err != nil {
+		t.Fatalf("load asset: %v", err)
+	}
+	if aPrompt != "watercolor 小白兔 校门口" {
+		t.Fatalf("image asset prompt = %q, want effective shotPrompt", aPrompt)
+	}
+}

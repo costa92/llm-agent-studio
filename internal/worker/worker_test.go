@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/costa92/llm-agent-contract/llm"
@@ -315,5 +316,427 @@ func TestWorkerCustomExecutor(t *testing.T) {
 	}
 	if outputRef != "translated:content_id_123" {
 		t.Fatalf("expected output_ref 'translated:content_id_123', got %q", outputRef)
+	}
+}
+
+// TestRunStoryboard_PictureBookFansOutImageAndAudio: a kind='picturebook' project
+// fans out one image asset todo per page AND one audio asset todo per page that
+// HAS narration (Action 非空). The封面 page (Action="") is image-only. The audio
+// todo's input must carry kind='audio', shotPrompt=该页旁白, voice=项目 voice.
+func TestRunStoryboard_PictureBookFansOutImageAndAudio(t *testing.T) {
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker tests")
+	}
+	ctx := context.Background()
+	st, err := storage.Open(ctx, storage.Config{PGURL: dsn})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	pool := st.Pool()
+	projID := "pb_" + randHex3()
+	// kind='picturebook' + a config carrying a voice. ParsePictureBookConfig fills
+	// age-band defaults (ageBand 3-6 → MaxWordsPerSpread 50); the voice feeds the
+	// audio fan-out.
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO projects (id, org_id, name, created_by, kind, picturebook_config)
+		 VALUES ($1,'o','n','u','picturebook',$2)`,
+		projID, `{"ageBand":"3-6","illustrationStyle":"watercolor","voice":"warm","themes":["友谊"]}`); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	todoStore := todos.New(pool)
+	ids, err := todoStore.CreateGraph(ctx, projID, "pl_pb_"+projID[3:], []todos.NodeSpec{
+		{LocalID: "s", Type: "script", DependsOn: nil, InputJSON: []byte(`{"brief":"小白兔的故事"}`)},
+		{LocalID: "b", Type: "storyboard", DependsOn: []string{"s"}, InputJSON: []byte(`{}`)},
+	})
+	if err != nil {
+		t.Fatalf("create graph: %v", err)
+	}
+	// Script returns a绘本 ScriptOutput with a characterSheet so the回灌 path has
+	// something to carry into the storyboard.
+	scriptModel := llm.NewScriptedLLM(llm.WithResponses(llm.Response{
+		Text: `{"title":"小白兔","logline":"勇敢的小白兔","scenes":[{"heading":"森林","description":"清晨","dialogue":""}],"characterSheet":"小白兔,蓝背带裤,长耳"}`,
+	}))
+	// Storyboard: 1 cover (Action="") + 2 content pages (Action set) → 3 images, 2 audio.
+	storyboard := newPictureBookStoryboardAgent(t, 2)
+	fakeGen := generate.NewFakeLooping(generate.GenResult{
+		Bytes: []byte("FAKE"), MimeType: "image/png", Provider: "fake", Model: "fake-img", ImageCount: 1,
+	})
+	w := New(Config{
+		Pool:       pool,
+		Todos:      todoStore,
+		Projects:   project.New(pool),
+		Events:     events.New(pool),
+		Script:     studioagents.NewScriptAgent(scriptModel),
+		Storyboard: storyboard,
+		Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fakeGen),
+		Storage:    testStorage(),
+		Assets:     assets.New(pool),
+		Cost:       cost.New(pool),
+		WorkerID:   "test-pb",
+	})
+	for i := 0; i < 20; i++ {
+		ran, err := w.RunOnce(ctx)
+		if err != nil {
+			t.Fatalf("run once: %v", err)
+		}
+		if !ran {
+			break
+		}
+	}
+	// 3 shots inserted.
+	var nShots int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM shots WHERE project_id=$1`, projID).Scan(&nShots)
+	if nShots != 3 {
+		t.Fatalf("want 3 shots, got %d", nShots)
+	}
+	// Fan-out: 3 image asset todos + 2 audio asset todos, all depending on the
+	// storyboard todo. Count by the kind embedded in each asset todo's input_json.
+	var nImage, nAudio int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FILTER (WHERE input_json->>'kind'='image'),
+		        count(*) FILTER (WHERE input_json->>'kind'='audio')
+		 FROM todos WHERE project_id=$1 AND type='asset' AND $2 = ANY(depends_on)`,
+		projID, ids["b"]).Scan(&nImage, &nAudio); err != nil {
+		t.Fatalf("count asset todos: %v", err)
+	}
+	if nImage != 3 {
+		t.Fatalf("want 3 image asset todos, got %d", nImage)
+	}
+	if nAudio != 2 {
+		t.Fatalf("want 2 audio asset todos, got %d", nAudio)
+	}
+	// Each audio todo's input: kind=audio, shotPrompt=该页旁白, voice=项目 voice.
+	rows, err := pool.Query(ctx,
+		`SELECT input_json FROM todos
+		 WHERE project_id=$1 AND type='asset' AND input_json->>'kind'='audio' AND $2 = ANY(depends_on)
+		 ORDER BY input_json->>'shotPrompt'`, projID, ids["b"])
+	if err != nil {
+		t.Fatalf("query audio todos: %v", err)
+	}
+	defer rows.Close()
+	var gotPrompts []string
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			t.Fatalf("scan audio input: %v", err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Fatalf("unmarshal audio input: %v", err)
+		}
+		if m["kind"] != "audio" {
+			t.Fatalf("audio todo kind=%v want audio", m["kind"])
+		}
+		if m["voice"] != "warm" {
+			t.Fatalf("audio todo voice=%v want warm", m["voice"])
+		}
+		if sp, _ := m["shotPrompt"].(string); sp == "" {
+			t.Fatalf("audio todo shotPrompt empty: %s", raw)
+		} else {
+			gotPrompts = append(gotPrompts, sp)
+		}
+	}
+	// shotPrompt must be the page's narration (Action), not the illustration prompt.
+	want := []string{"第1页旁白", "第2页旁白"}
+	if len(gotPrompts) != 2 || gotPrompts[0] != want[0] || gotPrompts[1] != want[1] {
+		t.Fatalf("audio shotPrompts=%v want %v", gotPrompts, want)
+	}
+
+	// Idempotency: re-running the (already-done) storyboard todo must not fan out a
+	// second batch. Reset it to ready and run once more; counts must be unchanged.
+	if _, err := pool.Exec(ctx,
+		`UPDATE todos SET status='ready', output_ref='', locked_by='', locked_until=NULL, next_run_at=now() WHERE id=$1`,
+		ids["b"]); err != nil {
+		t.Fatalf("reset storyboard todo: %v", err)
+	}
+	for i := 0; i < 20; i++ {
+		ran, err := w.RunOnce(ctx)
+		if err != nil {
+			t.Fatalf("run once (rerun): %v", err)
+		}
+		if !ran {
+			break
+		}
+	}
+	var nAssetAfter, nShotsAfter int
+	_ = pool.QueryRow(ctx,
+		`SELECT count(*) FROM todos WHERE project_id=$1 AND type='asset' AND $2 = ANY(depends_on)`,
+		projID, ids["b"]).Scan(&nAssetAfter)
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM shots WHERE project_id=$1`, projID).Scan(&nShotsAfter)
+	if nAssetAfter != 5 {
+		t.Fatalf("idempotency: want 5 asset todos after re-run, got %d", nAssetAfter)
+	}
+	if nShotsAfter != 3 {
+		t.Fatalf("idempotency: want 3 shots after re-run, got %d", nShotsAfter)
+	}
+}
+
+// narrationSafetyStub is a NarrationSafety-backing model that judges a narration
+// unsafe iff its text contains a marker substring; everything else is safe. Lets
+// the test deterministically block exactly one page regardless of fan-out order.
+type narrationSafetyStub struct {
+	llm.ScriptedLLM
+	unsafeMarker string
+}
+
+func (m *narrationSafetyStub) Generate(_ context.Context, req llm.Request) (llm.Response, error) {
+	var user string
+	for _, msg := range req.Messages {
+		if msg.Role == "user" {
+			user = msg.Content
+		}
+	}
+	if strings.Contains(user, m.unsafeMarker) {
+		return llm.Response{Text: `{"safe":false,"reason":"暴力"}`}, nil
+	}
+	return llm.Response{Text: `{"safe":true}`}, nil
+}
+
+// TestRunStoryboard_UnsafeNarrationSkipsAudio: when the旁白 safety check judges
+// one content page unsafe, that page must lose its audio todo (image still出),
+// while the other content page keeps both image + audio.
+func TestRunStoryboard_UnsafeNarrationSkipsAudio(t *testing.T) {
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker tests")
+	}
+	ctx := context.Background()
+	st, err := storage.Open(ctx, storage.Config{PGURL: dsn})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	pool := st.Pool()
+	projID := "pbu_" + randHex3()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO projects (id, org_id, name, created_by, kind, picturebook_config)
+		 VALUES ($1,'o','n','u','picturebook',$2)`,
+		projID, `{"ageBand":"3-6","illustrationStyle":"watercolor","voice":"warm","themes":["友谊"]}`); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	todoStore := todos.New(pool)
+	ids, err := todoStore.CreateGraph(ctx, projID, "pl_pbu_"+projID[4:], []todos.NodeSpec{
+		{LocalID: "s", Type: "script", DependsOn: nil, InputJSON: []byte(`{"brief":"小白兔的故事"}`)},
+		{LocalID: "b", Type: "storyboard", DependsOn: []string{"s"}, InputJSON: []byte(`{}`)},
+	})
+	if err != nil {
+		t.Fatalf("create graph: %v", err)
+	}
+	scriptModel := llm.NewScriptedLLM(llm.WithResponses(llm.Response{
+		Text: `{"title":"小白兔","logline":"勇敢的小白兔","scenes":[{"heading":"森林","description":"清晨","dialogue":""}],"characterSheet":"小白兔,蓝背带裤,长耳"}`,
+	}))
+	// 1 cover + 2 content pages ("第1页旁白"/"第2页旁白"). Mark page 1 unsafe.
+	storyboard := newPictureBookStoryboardAgent(t, 2)
+	narration := studioagents.NewNarrationSafety(&narrationSafetyStub{unsafeMarker: "第1页旁白"})
+	fakeGen := generate.NewFakeLooping(generate.GenResult{
+		Bytes: []byte("FAKE"), MimeType: "image/png", Provider: "fake", Model: "fake-img", ImageCount: 1,
+	})
+	w := New(Config{
+		Pool:       pool,
+		Todos:      todoStore,
+		Projects:   project.New(pool),
+		Events:     events.New(pool),
+		Script:     studioagents.NewScriptAgent(scriptModel),
+		Storyboard: storyboard,
+		Narration:  narration,
+		Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fakeGen),
+		Storage:    testStorage(),
+		Assets:     assets.New(pool),
+		Cost:       cost.New(pool),
+		WorkerID:   "test-pbu",
+	})
+	for i := 0; i < 20; i++ {
+		ran, err := w.RunOnce(ctx)
+		if err != nil {
+			t.Fatalf("run once: %v", err)
+		}
+		if !ran {
+			break
+		}
+	}
+	// 3 images (cover + 2 content), 1 audio (only the safe content page).
+	var nImage, nAudio int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FILTER (WHERE input_json->>'kind'='image'),
+		        count(*) FILTER (WHERE input_json->>'kind'='audio')
+		 FROM todos WHERE project_id=$1 AND type='asset' AND $2 = ANY(depends_on)`,
+		projID, ids["b"]).Scan(&nImage, &nAudio); err != nil {
+		t.Fatalf("count asset todos: %v", err)
+	}
+	if nImage != 3 {
+		t.Fatalf("want 3 image asset todos (both pages keep image), got %d", nImage)
+	}
+	if nAudio != 1 {
+		t.Fatalf("want 1 audio asset todo (unsafe page skipped), got %d", nAudio)
+	}
+	// The single audio belongs to the SAFE page (第2页旁白), not the blocked one.
+	var audioPrompt string
+	if err := pool.QueryRow(ctx,
+		`SELECT input_json->>'shotPrompt' FROM todos
+		 WHERE project_id=$1 AND type='asset' AND input_json->>'kind'='audio' AND $2 = ANY(depends_on)`,
+		projID, ids["b"]).Scan(&audioPrompt); err != nil {
+		t.Fatalf("query audio prompt: %v", err)
+	}
+	if audioPrompt != "第2页旁白" {
+		t.Fatalf("audio kept for wrong page: %q (want 第2页旁白)", audioPrompt)
+	}
+}
+
+// inconclusiveSafetyStub always returns safe=false WITHOUT a reason — the弱模型/
+// 解析不稳的常见表现。worker 应 fail-open（放行 audio），只在「明确 unsafe 且带理由」时拦。
+type inconclusiveSafetyStub struct{ llm.ScriptedLLM }
+
+func (m *inconclusiveSafetyStub) Generate(_ context.Context, _ llm.Request) (llm.Response, error) {
+	return llm.Response{Text: `{"safe":false}`}, nil
+}
+
+// TestRunStoryboard_InconclusiveNarrationAllowsAudio: safe=false 但无理由 → 不拦，
+// 两个内容页都保留 audio（fail-open，避免弱模型把整本绘本判没声）。
+func TestRunStoryboard_InconclusiveNarrationAllowsAudio(t *testing.T) {
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker tests")
+	}
+	ctx := context.Background()
+	st, err := storage.Open(ctx, storage.Config{PGURL: dsn})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	pool := st.Pool()
+	projID := "pbi_" + randHex3()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO projects (id, org_id, name, created_by, kind, picturebook_config)
+		 VALUES ($1,'o','n','u','picturebook',$2)`,
+		projID, `{"ageBand":"3-6","illustrationStyle":"watercolor","voice":"warm"}`); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	todoStore := todos.New(pool)
+	ids, err := todoStore.CreateGraph(ctx, projID, "pl_pbi_"+projID[4:], []todos.NodeSpec{
+		{LocalID: "s", Type: "script", DependsOn: nil, InputJSON: []byte(`{"brief":"小白兔的故事"}`)},
+		{LocalID: "b", Type: "storyboard", DependsOn: []string{"s"}, InputJSON: []byte(`{}`)},
+	})
+	if err != nil {
+		t.Fatalf("create graph: %v", err)
+	}
+	scriptModel := llm.NewScriptedLLM(llm.WithResponses(llm.Response{
+		Text: `{"title":"小白兔","logline":"勇敢","scenes":[{"heading":"森林","description":"清晨","dialogue":""}],"characterSheet":"小白兔,长耳"}`,
+	}))
+	w := New(Config{
+		Pool: pool, Todos: todoStore, Projects: project.New(pool), Events: events.New(pool),
+		Script:     studioagents.NewScriptAgent(scriptModel),
+		Storyboard: newPictureBookStoryboardAgent(t, 2),
+		Narration:  studioagents.NewNarrationSafety(&inconclusiveSafetyStub{}),
+		Asset: studioagents.NewAssetAgent(prompt.NewBuilder(), generate.NewFakeLooping(generate.GenResult{
+			Bytes: []byte("FAKE"), MimeType: "image/png", Provider: "fake", Model: "fake-img", ImageCount: 1,
+		})),
+		Storage: testStorage(), Assets: assets.New(pool), Cost: cost.New(pool), WorkerID: "test-pbi",
+	})
+	for i := 0; i < 20; i++ {
+		ran, err := w.RunOnce(ctx)
+		if err != nil {
+			t.Fatalf("run once: %v", err)
+		}
+		if !ran {
+			break
+		}
+	}
+	var nAudio int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FILTER (WHERE input_json->>'kind'='audio')
+		 FROM todos WHERE project_id=$1 AND type='asset' AND $2 = ANY(depends_on)`,
+		projID, ids["b"]).Scan(&nAudio); err != nil {
+		t.Fatalf("count audio todos: %v", err)
+	}
+	if nAudio != 2 {
+		t.Fatalf("fail-open: want 2 audio todos (both content pages), got %d", nAudio)
+	}
+}
+
+// TestRunStoryboard_StandardOnlyImage: a standard (non-绘本) project fans out only
+// image asset todos — no audio — proving the绘本 branch is fully gated on kind.
+func TestRunStoryboard_StandardOnlyImage(t *testing.T) {
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker tests")
+	}
+	ctx := context.Background()
+	st, err := storage.Open(ctx, storage.Config{PGURL: dsn})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	pool := st.Pool()
+	projID := "std_" + randHex3()
+	// Default kind='standard'; no picturebook_config.
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO projects (id, org_id, name, created_by) VALUES ($1,'o','n','u')`, projID); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	todoStore := todos.New(pool)
+	ids, err := todoStore.CreateGraph(ctx, projID, "pl_std_"+projID[4:], []todos.NodeSpec{
+		{LocalID: "s", Type: "script", DependsOn: nil, InputJSON: []byte(`{"brief":"coffee ad"}`)},
+		{LocalID: "b", Type: "storyboard", DependsOn: []string{"s"}, InputJSON: []byte(`{}`)},
+	})
+	if err != nil {
+		t.Fatalf("create graph: %v", err)
+	}
+	scriptModel := llm.NewScriptedLLM(llm.WithResponses(llm.Response{
+		Text: `{"title":"Coffee","logline":"a cup","scenes":[{"heading":"INT. CAFE","description":"steam","dialogue":"hi"}]}`,
+	}))
+	// 2 shots, both with Action set — but standard must STILL fan out image only.
+	storyboard := newStoryboardAgentWithShots(t, 2)
+	fakeGen := generate.NewFakeLooping(generate.GenResult{
+		Bytes: []byte("FAKE"), MimeType: "image/png", Provider: "fake", Model: "fake-img", ImageCount: 1,
+	})
+	w := New(Config{
+		Pool:       pool,
+		Todos:      todoStore,
+		Projects:   project.New(pool),
+		Events:     events.New(pool),
+		Script:     studioagents.NewScriptAgent(scriptModel),
+		Storyboard: storyboard,
+		Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fakeGen),
+		Storage:    testStorage(),
+		Assets:     assets.New(pool),
+		Cost:       cost.New(pool),
+		WorkerID:   "test-std",
+	})
+	for i := 0; i < 20; i++ {
+		ran, err := w.RunOnce(ctx)
+		if err != nil {
+			t.Fatalf("run once: %v", err)
+		}
+		if !ran {
+			break
+		}
+	}
+	var nImage, nAudio int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FILTER (WHERE input_json->>'kind'='image'),
+		        count(*) FILTER (WHERE input_json->>'kind'='audio')
+		 FROM todos WHERE project_id=$1 AND type='asset' AND $2 = ANY(depends_on)`,
+		projID, ids["b"]).Scan(&nImage, &nAudio); err != nil {
+		t.Fatalf("count asset todos: %v", err)
+	}
+	if nImage != 2 {
+		t.Fatalf("standard: want 2 image asset todos, got %d", nImage)
+	}
+	if nAudio != 0 {
+		t.Fatalf("standard: want 0 audio asset todos, got %d", nAudio)
 	}
 }

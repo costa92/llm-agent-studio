@@ -23,7 +23,16 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Button } from "@/components/studio/Button"
-import type { CreateProjectInput, ModelConfig, Project, Style } from "@/lib/types"
+import { cn } from "@/lib/utils"
+import type {
+  CreateProjectInput,
+  ModelConfig,
+  PictureBookConfig,
+  Project,
+  Style,
+} from "@/lib/types"
+import { PictureBookConfigForm } from "./PictureBookConfigForm"
+import { emptyPictureBookConfig } from "./pbConfig"
 
 // 内容类型 / 目标平台为前端枚举（后端只存字符串，无白名单约束）；风格取自 GET /api/prompt-styles 的 name。
 const CONTENT_TYPES = ["短视频", "广告片", "动画", "宣传片"] as const
@@ -66,6 +75,11 @@ export function CreateProjectForm({
   onSuccess,
 }: CreateProjectFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null)
+  // 项目类型 + 绘本配置走本地 state（不进 rhf）；提交时一并带上。
+  const [kind, setKind] = useState<"standard" | "picturebook">("standard")
+  const [pbConfig, setPbConfig] = useState<PictureBookConfig>(
+    emptyPictureBookConfig,
+  )
   const {
     register,
     handleSubmit,
@@ -105,6 +119,10 @@ export function CreateProjectForm({
         ...(values.imageProvider && values.imageModel
           ? { imageProvider: values.imageProvider, imageModel: values.imageModel }
           : {}),
+        // 绘本项目带 kind + 序列化配置；标准项目不传（后端缺省 = standard）。
+        ...(kind === "picturebook"
+          ? { kind, pictureBookConfig: JSON.stringify(pbConfig) }
+          : {}),
       }
       const project = await onSubmit(input)
       onSuccess?.(project)
@@ -140,6 +158,39 @@ export function CreateProjectForm({
           <p className="text-[12px] text-danger">{errors.brief.message}</p>
         )}
       </div>
+
+      {/* 项目类型：标准 / 儿童绘本。选绘本展开 PictureBookConfigForm。 */}
+      <div className="flex flex-col gap-1.5 sm:col-span-2">
+        <Label>项目类型</Label>
+        <div className="flex gap-2">
+          {(
+            [
+              { v: "standard", label: "标准" },
+              { v: "picturebook", label: "儿童绘本" },
+            ] as const
+          ).map((opt) => (
+            <button
+              key={opt.v}
+              type="button"
+              onClick={() => setKind(opt.v)}
+              className={cn(
+                "rounded-md border px-4 py-[7px] text-[13px] font-medium transition-colors",
+                kind === opt.v
+                  ? "border-amber bg-amber text-[#1a1408]"
+                  : "border-line text-text-2 hover:border-text-3 hover:text-text-1",
+              )}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {kind === "picturebook" && (
+        <div className="sm:col-span-2">
+          <PictureBookConfigForm value={pbConfig} onChange={setPbConfig} />
+        </div>
+      )}
 
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="contentType">内容类型</Label>
