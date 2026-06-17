@@ -177,8 +177,15 @@ function RunWorkbenchPage() {
     selection?.kind === "asset" ? selection.assetId : latestAssetId
 
   function handleSelectStage(stageId: StageId) {
-    if (stageId === "S2") setSelection({ kind: "script" })
-    else if (stageId === "S3") setSelection({ kind: "storyboard" })
+    // 按该阶段对应的 todo 精确取产物：plan 内可能有多个 script/storyboard todo
+    // （自定义/重跑），不带 todoId 会拉整个 plan 的镜头混在一起、编号重复。
+    if (stageId === "S2") {
+      const todoId = wfState.stages.find((s) => s.role === "script")?.todoId
+      setSelection({ kind: "script", todoId })
+    } else if (stageId === "S3") {
+      const todoId = wfState.stages.find((s) => s.role === "storyboard")?.todoId
+      setSelection({ kind: "storyboard", todoId })
+    }
   }
   function handleSelectPip(pip: PipState) {
     if (pip.assetId) setSelection({ kind: "asset", assetId: pip.assetId })
