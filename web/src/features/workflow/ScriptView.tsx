@@ -43,11 +43,11 @@ export function ScriptView({ script, isLoading, isError }: ScriptViewProps) {
           <h1 className="font-heading text-[22px] font-bold text-text-1">{script.title}</h1>
         )}
         {script.logline && (
-          <p className="mt-1 text-[13px] text-text-2">{script.logline}</p>
+          <p className="mt-1.5 text-[14px] leading-relaxed text-text-2">{script.logline}</p>
         )}
       </header>
       {scenes.length === 0 ? (
-        <p className="text-[12.5px] text-text-3">（剧本暂无场景）</p>
+        <p className="text-[13px] text-text-3">（剧本暂无场景）</p>
       ) : (
         <ol className="flex flex-col gap-4">
           {scenes.map((scene, i) => (
@@ -55,18 +55,24 @@ export function ScriptView({ script, isLoading, isError }: ScriptViewProps) {
               key={i}
               className="rounded-[10px] border border-line bg-bg-surface p-4"
             >
-              {scene.heading && (
-                <h3 className="mb-1.5 font-mono text-[12px] font-semibold text-script">
-                  {scene.heading}
-                </h3>
-              )}
+              {/* 场景序号 chip + 标题，给场景列表清晰的视觉层次。 */}
+              <div className="mb-2 flex items-center gap-2">
+                <span className="grid h-5 min-w-5 place-items-center rounded-full bg-script/15 px-1.5 font-mono text-[11px] font-semibold text-script">
+                  {i + 1}
+                </span>
+                {scene.heading && (
+                  <h3 className="font-mono text-[13px] font-semibold text-script">
+                    {scene.heading}
+                  </h3>
+                )}
+              </div>
               {scene.description && (
-                <p className="text-[12.5px] leading-relaxed text-text-2">
+                <p className="text-[13.5px] leading-relaxed text-text-1">
                   {scene.description}
                 </p>
               )}
               {scene.dialogue && (
-                <pre className="mt-2 whitespace-pre-wrap rounded-md border border-line bg-bg-base p-2.5 font-mono text-[11.5px] leading-relaxed text-text-2">
+                <pre className="mt-2.5 whitespace-pre-wrap rounded-md border border-line bg-bg-base p-3 font-mono text-[12.5px] leading-relaxed text-text-2">
                   {scene.dialogue}
                 </pre>
               )}
