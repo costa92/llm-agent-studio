@@ -13,6 +13,9 @@ type AssetInput struct {
 	ShotPrompt string // the storyboard shot's image prompt
 	Style      string // project style → PromptBuilder suffix
 	Size       string // optional provider size hint
+	// M4 加性字段 (image 忽略): 音频/视频时长 (计费 + provider 参数) 与 TTS 音色。
+	Duration int    // media seconds
+	Voice    string // TTS voice (audio only)
 }
 
 // AssetOutput is the generated asset payload + usage (worker persists it).
@@ -46,7 +49,9 @@ func NewAssetAgent(builder *prompt.Builder, gen generate.MediaGenerator) *AssetA
 // generator here. Run keeps the bound default for un-routed callers.
 func (a *AssetAgent) RunWith(ctx context.Context, gen generate.MediaGenerator, in AssetInput) (AssetOutput, error) {
 	built := a.builder.Build(in.ShotPrompt, in.Style)
-	res, err := gen.Generate(ctx, generate.GenRequest{Prompt: built, N: 1, Size: in.Size})
+	res, err := gen.Generate(ctx, generate.GenRequest{
+		Prompt: built, N: 1, Size: in.Size, DurationSeconds: in.Duration, Voice: in.Voice,
+	})
 	if err != nil {
 		return AssetOutput{}, fmt.Errorf("asset: generate: %w", err)
 	}

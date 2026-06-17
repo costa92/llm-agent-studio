@@ -619,6 +619,7 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 		Style      string `json:"style"`
 		Kind       string `json:"kind"`     // image|video|audio (I3, fan-out/regenerate)
 		Duration   int    `json:"duration"` // media seconds (video frame / audio)
+		Voice      string `json:"voice"`    // TTS voice (绘本 audio fan-out 透传)
 		// regenerate path carries the pre-created v2 asset id (review.Regenerate
 		// already CreateVersion'd it) + an edited prompt. The worker FILLS that
 		// asset in place rather than creating a new row (T11).
@@ -725,6 +726,7 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 
 	agentIn := studioagents.AssetInput{
 		ShotPrompt: firstNonEmpty(in.EditedPrompt, in.ShotPrompt), Style: in.Style,
+		Duration: in.Duration, Voice: in.Voice, // M4 透传 (image 忽略；audio 计费/音色)
 	}
 	var out studioagents.AssetOutput
 	var gerr error
@@ -783,10 +785,12 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 	// Ledger row (spec §6 generations).
 	if w.cfg.Cost != nil {
 		// M3: RecordPriced fills cost_micros from the pricing table (M2 carry #2).
+		// VideoSeconds 复用列承载音频/视频时长 (cost/store.go): image 走 ImageCount 计费，
+		// 非 image 的同步路径 (绘本 audio) 按 in.Duration 秒计 — 否则 audio 漏记成本。
 		_ = w.cfg.Cost.RecordPriced(cctx, cost.Generation{
 			ProjectID: c.projectID, AssetID: created.id, TodoID: c.todoID, Kind: kind,
 			Provider: out.Provider, Model: out.Model, Prompt: out.Prompt,
-			Tokens: out.Tokens, ImageCount: out.ImageCount, LatencyMS: out.LatencyMS,
+			Tokens: out.Tokens, ImageCount: out.ImageCount, VideoSeconds: in.Duration, LatencyMS: out.LatencyMS,
 		})
 	}
 	// Timeline: asset_generated (待审) — spec §9 SSE event.
