@@ -109,6 +109,8 @@ func deletePromptHandler(s *prompt.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		// 与其余 delete handler（workflow/model-config/storage/member/platform）一致返回
+		// 200 {ok:true}：前端 apiJSON 对 204 空体调 res.json() 会抛解析错，删除成功却误报失败。
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }

@@ -138,8 +138,8 @@ func TestPromptHandlersCRUD(t *testing.T) {
 		rec := httptest.NewRecorder()
 		h(rec, req)
 
-		if rec.Code != http.StatusNoContent {
-			t.Fatalf("delete code = %d", rec.Code)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ok":true`) {
+			t.Fatalf("delete code = %d, body = %s", rec.Code, rec.Body.String())
 		}
 	}
 
