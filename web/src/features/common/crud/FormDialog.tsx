@@ -62,7 +62,7 @@ export function FormDialog<T extends FieldValues>({
           >
             {children}
             {submitError != null && submitError !== "" && (
-              <p className="text-[12px] text-red-400">{submitError}</p>
+              <p role="alert" className="text-[12px] text-danger">{submitError}</p>
             )}
             <DialogFooter>
               <UiButton type="button" variant="outline" onClick={() => onOpenChange(false)}>

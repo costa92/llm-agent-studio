@@ -37,9 +37,9 @@ describe("StorageModeFields", () => {
     expect(screen.queryByLabelText("密钥输入")).toBeNull()
   })
 
-  it("s3：切换后显示 Endpoint/Bucket/AccessKeyId/密钥输入", async () => {
+  it("s3：从 localfs 切换后显示 Endpoint/Bucket/AccessKeyId/密钥输入", async () => {
     const user = userEvent.setup()
-    render(<Wrapper mode="s3" />)
+    render(<Wrapper mode="localfs" />)
     await user.selectOptions(screen.getByLabelText("存储类型 (mode)"), "s3")
     expect(screen.getByLabelText(/Endpoint（必填）/)).toBeInTheDocument()
     expect(screen.getByLabelText(/Bucket（必填）/)).toBeInTheDocument()
@@ -47,22 +47,35 @@ describe("StorageModeFields", () => {
     expect(screen.getByLabelText("密钥输入")).toBeInTheDocument()
   })
 
-  it("cos：显示 Region（必填）和 Endpoint（可空）", async () => {
+  it("cos：从 localfs 切换后显示 Region（必填）和 Endpoint（可空）", async () => {
     const user = userEvent.setup()
-    render(<Wrapper mode="cos" />)
+    render(<Wrapper mode="localfs" />)
     await user.selectOptions(screen.getByLabelText("存储类型 (mode)"), "cos")
     expect(screen.getByLabelText(/Region（必填）/)).toBeInTheDocument()
     expect(screen.getByLabelText(/Endpoint（可空）/)).toBeInTheDocument()
   })
 
-  it("github：显示 Owner/Repo/Branch，隐藏 s3-only Endpoint（必填/可空）", async () => {
+  it("github：从 localfs 切换後显示 Owner/Repo/Branch，隐藏 s3-only Endpoint（必填/可空）", async () => {
     const user = userEvent.setup()
-    render(<Wrapper mode="github" />)
+    render(<Wrapper mode="localfs" />)
     await user.selectOptions(screen.getByLabelText("存储类型 (mode)"), "github")
     expect(screen.getByLabelText(/Owner/)).toBeInTheDocument()
     expect(screen.getByLabelText(/Repo/)).toBeInTheDocument()
     expect(screen.getByLabelText(/Branch/)).toBeInTheDocument()
-    expect(screen.queryByLabelText(/Endpoint/)).toBeNull()
+    expect(screen.queryByLabelText(/Endpoint（必填）/)).toBeNull()
+    expect(screen.queryByLabelText(/Endpoint（可空）/)).toBeNull()
+  })
+
+  it("oss：从 localfs 切换後显示 Endpoint（必填）/Bucket（必填）/AccessKeyId/密钥输入，不显示 Region", async () => {
+    const user = userEvent.setup()
+    render(<Wrapper mode="localfs" />)
+    await user.selectOptions(screen.getByLabelText("存储类型 (mode)"), "oss")
+    expect(screen.getByLabelText(/Endpoint（必填）/)).toBeInTheDocument()
+    expect(screen.getByLabelText(/Bucket（必填）/)).toBeInTheDocument()
+    expect(screen.getByLabelText(/AccessKeyId/)).toBeInTheDocument()
+    expect(screen.getByLabelText("密钥输入")).toBeInTheDocument()
+    // OSS 不显示 Region
+    expect(screen.queryByLabelText(/Region/)).toBeNull()
   })
 
   it("hasSecret=true 时：密钥输入为 password 类型，显示「已配置密钥」徽标和留空保持不变提示", () => {
@@ -104,6 +117,31 @@ describe("StorageModeFields", () => {
     })()
     render(<methods.Inner />)
     await user.selectOptions(screen.getByLabelText("存储类型 (mode)"), "s3")
+    await user.click(screen.getByRole("button", { name: "保存" }))
+    await waitFor(() => expect(screen.getByText(/请填写 Bucket/)).toBeInTheDocument())
+    expect(screen.getByText(/请填写 Endpoint/)).toBeInTheDocument()
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it("oss：bucket/endpoint 缺失时展示 zod superRefine 错误", async () => {
+    const onSubmit = vi.fn()
+    const user = userEvent.setup()
+    function Inner() {
+      const m = useForm<FormValues>({
+        resolver: zodResolver(formSchema),
+        defaultValues: defaultsFor(null),
+      })
+      return (
+        <FormProvider {...m}>
+          <form onSubmit={m.handleSubmit(onSubmit)}>
+            <StorageModeFields />
+            <button type="submit">保存</button>
+          </form>
+        </FormProvider>
+      )
+    }
+    render(<Inner />)
+    await user.selectOptions(screen.getByLabelText("存储类型 (mode)"), "oss")
     await user.click(screen.getByRole("button", { name: "保存" }))
     await waitFor(() => expect(screen.getByText(/请填写 Bucket/)).toBeInTheDocument())
     expect(screen.getByText(/请填写 Endpoint/)).toBeInTheDocument()
