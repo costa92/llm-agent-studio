@@ -27,7 +27,7 @@ describe("EventLog.schema", () => {
     expect(groups.find((g) => g.emphasis === "S2")?.lines.map((l) => l.seq)).toEqual([2, 4])
     expect(EMPHASIS_TITLE.S2).toBe("剧本")
   })
-  it("latestSummary returns last friendly text + count", () => {
+  it("latestSummary returns last logFor text + count", () => {
     const s = latestSummary([
       { seq: 1, kind: "planner_started", text: "规划开始", emphasis: "S1" },
       { seq: 2, kind: "run_done", text: "运行结束", emphasis: undefined },
