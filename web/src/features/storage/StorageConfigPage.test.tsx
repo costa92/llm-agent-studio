@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { render, screen, waitFor, fireEvent } from "@testing-library/react"
+import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import type { StorageConfig } from "@/lib/types"
-import { StorageConfigForm, StorageConfigsTable } from "./StorageConfigPage"
+import { StorageConfigForm } from "./StorageConfigPage"
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -215,27 +215,3 @@ describe("StorageConfigForm write-only secret", () => {
   })
 })
 
-describe("StorageConfigsTable", () => {
-  it("渲染每条配置一行,含名称/类型/默认徽标", () => {
-    render(<StorageConfigsTable configs={[
-      { id:"c1", mode:"s3", name:"主桶", bucket:"b1", enabled:true, isDefault:true, hasSecret:true, scope:"org", orgId:"o", endpoint:"", region:"", accessKeyId:"", publicPrefix:"", useSsl:true },
-      { id:"c2", mode:"github", name:"仓库", bucket:"repo", enabled:false, isDefault:false, hasSecret:false, scope:"org", orgId:"o", endpoint:"", region:"", accessKeyId:"owner", publicPrefix:"", useSsl:true },
-    ]} onCreate={()=>{}} onEdit={()=>{}} onDelete={()=>{}} onSetDefault={()=>{}} />)
-    expect(screen.getByText("主桶")).toBeInTheDocument()
-    expect(screen.getByText("仓库")).toBeInTheDocument()
-    expect(document.querySelectorAll('[data-slot="sc-row"]')).toHaveLength(2)
-    // c1 是默认配置，应显示"默认"徽标（<span> badge）；c2 不是默认，应有"设为默认"按钮
-    // 表头 <th> 也含"默认"文本，故用 getAllByText 并断言至少 2 个（表头 + 徽标）
-    expect(screen.getAllByText("默认").length).toBeGreaterThanOrEqual(2)
-    expect(screen.getAllByRole("button", { name: /设为默认/ })).toHaveLength(1)
-  })
-
-  it("点非默认行的「设为默认」触发回调", () => {
-    const onSetDefault = vi.fn()
-    render(<StorageConfigsTable configs={[
-      { id:"c2", mode:"github", name:"仓库", bucket:"repo", enabled:true, isDefault:false, hasSecret:false, scope:"org", orgId:"o", endpoint:"", region:"", accessKeyId:"owner", publicPrefix:"", useSsl:true },
-    ]} onCreate={()=>{}} onEdit={()=>{}} onDelete={()=>{}} onSetDefault={onSetDefault} />)
-    fireEvent.click(screen.getByRole("button", { name: /设为默认/ }))
-    expect(onSetDefault).toHaveBeenCalled()
-  })
-})

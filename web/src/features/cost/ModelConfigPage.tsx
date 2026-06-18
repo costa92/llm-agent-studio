@@ -15,8 +15,8 @@ import type {
 } from "@/lib/types"
 import type { ListModelsInput, ListModelsResult } from "@/features/cost/api"
 import { modelConfigErrorMessage } from "./configError"
+import { ModelConfigFields } from "./ModelConfigFields"
 import {
-  ModelConfigFields,
   KIND_LABELS,
   DEFERRED_KINDS,
   defaultsFor,
@@ -24,7 +24,7 @@ import {
   providersFor,
   formSchema,
   type FormValues,
-} from "./ModelConfigFields"
+} from "./ModelConfigFields.schema"
 
 // FormValues → CreateModelConfigInput（params 解析、空 base_url/apiKey 省略）。
 // 非法 params JSON → parseParamsText 抛 Error（调用方按需兜底成 submitError）。

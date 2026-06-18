@@ -3,8 +3,9 @@ import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { FormProvider, useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
-import { StorageModeFields, formSchema, defaultsFor } from "./StorageModeFields"
-import type { FormValues } from "./StorageModeFields"
+import { StorageModeFields } from "./StorageModeFields"
+import { formSchema, defaultsFor } from "./StorageModeFields.schema"
+import type { FormValues } from "./StorageModeFields.schema"
 import type { StorageConfig } from "@/lib/types"
 
 // 最简 FormProvider 包装器：注入 rhf 上下文供 StorageModeFields 的 useFormContext 使用。
@@ -96,26 +97,21 @@ describe("StorageModeFields", () => {
   it("s3：bucket/endpoint 缺失时展示 zod superRefine 错误", async () => {
     const onSubmit = vi.fn()
     const user = userEvent.setup()
-    const methods = (() => {
-      let capturedMethods: ReturnType<typeof useForm<FormValues>> | undefined
-      function Inner() {
-        const m = useForm<FormValues>({
-          resolver: zodResolver(formSchema),
-          defaultValues: defaultsFor(null),
-        })
-        capturedMethods = m
-        return (
-          <FormProvider {...m}>
-            <form onSubmit={m.handleSubmit(onSubmit)}>
-              <StorageModeFields />
-              <button type="submit">保存</button>
-            </form>
-          </FormProvider>
-        )
-      }
-      return { Inner, get: () => capturedMethods }
-    })()
-    render(<methods.Inner />)
+    function Inner() {
+      const m = useForm<FormValues>({
+        resolver: zodResolver(formSchema),
+        defaultValues: defaultsFor(null),
+      })
+      return (
+        <FormProvider {...m}>
+          <form onSubmit={m.handleSubmit(onSubmit)}>
+            <StorageModeFields />
+            <button type="submit">保存</button>
+          </form>
+        </FormProvider>
+      )
+    }
+    render(<Inner />)
     await user.selectOptions(screen.getByLabelText("存储类型 (mode)"), "s3")
     await user.click(screen.getByRole("button", { name: "保存" }))
     await waitFor(() => expect(screen.getByText(/请填写 Bucket/)).toBeInTheDocument())

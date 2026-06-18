@@ -21,13 +21,13 @@ import {
   FormDialog,
   ConfirmDialog,
 } from "../common/crud"
+import { StorageModeFields } from "./StorageModeFields"
 import {
-  StorageModeFields,
   formSchema,
   defaultsFor,
   MODE_LABELS,
-} from "./StorageModeFields"
-import type { FormValues } from "./StorageModeFields"
+  type FormValues,
+} from "./StorageModeFields.schema"
 
 // re-export so existing callers of `import { MODE_LABELS } from "./StorageConfigPage"` still work.
 export { MODE_LABELS }
@@ -132,9 +132,6 @@ export function StorageConfigForm({ initial, onSubmit, isOrgScope, idPrefix = "f
   )
 }
 
-// ─── StorageConfigsTable ──────────────────────────────────────────────────────
-// 保持导出（含 data-slot="sc-row"）：测试直接使用此组件，selector 依赖 data-slot。
-
 // 关键字段展示：按 mode 返回最具代表性的一个字段值。
 function keyField(config: StorageConfig): string {
   switch (config.mode) {
@@ -147,81 +144,6 @@ function keyField(config: StorageConfig): string {
     case "localfs":
       return config.publicPrefix || "—"
   }
-}
-
-export interface StorageConfigsTableProps {
-  configs: StorageConfig[]
-  onCreate: () => void
-  onEdit: (config: StorageConfig) => void
-  onDelete: (config: StorageConfig) => void
-  onSetDefault: (config: StorageConfig) => void
-}
-
-export function StorageConfigsTable({
-  configs,
-  onCreate,
-  onEdit,
-  onDelete,
-  onSetDefault,
-}: StorageConfigsTableProps) {
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex justify-end">
-        <UiButton size="sm" onClick={onCreate}>
-          新增配置
-        </UiButton>
-      </div>
-      <table className="w-full text-[13px] text-text-1">
-        <thead>
-          <tr className="border-b border-line text-left text-[12px] text-text-3">
-            <th className="pb-2 pr-4 font-medium">名称</th>
-            <th className="pb-2 pr-4 font-medium">类型</th>
-            <th className="pb-2 pr-4 font-medium">关键字段</th>
-            <th className="pb-2 pr-4 font-medium">启用</th>
-            <th className="pb-2 pr-4 font-medium">默认</th>
-            <th className="pb-2 pr-4 font-medium">密钥</th>
-            <th className="pb-2 font-medium">操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          {configs.map((config) => (
-            <tr key={config.id} data-slot="sc-row" className="border-b border-line/50">
-              <td className="py-2 pr-4">{config.name}</td>
-              <td className="py-2 pr-4">{MODE_LABELS[config.mode]}</td>
-              <td className="py-2 pr-4 font-mono text-[12px] text-text-2">{keyField(config)}</td>
-              <td className="py-2 pr-4">
-                <Badge variant={config.enabled ? "running" : "pending"}>
-                  {config.enabled ? "已启用" : "已停用"}
-                </Badge>
-              </td>
-              <td className="py-2 pr-4">
-                {config.isDefault ? (
-                  <Badge variant="done">默认</Badge>
-                ) : (
-                  <UiButton size="sm" onClick={() => onSetDefault(config)}>
-                    设为默认
-                  </UiButton>
-                )}
-              </td>
-              <td className="py-2 pr-4">
-                {config.hasSecret ? <Badge variant="done">已配置</Badge> : null}
-              </td>
-              <td className="py-2">
-                <span className="flex items-center gap-2">
-                  <UiButton size="sm" onClick={() => onEdit(config)}>
-                    编辑
-                  </UiButton>
-                  <UiButton size="sm" variant="destructive" onClick={() => onDelete(config)}>
-                    删除
-                  </UiButton>
-                </span>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
 }
 
 // ─── FormDialog name field ────────────────────────────────────────────────────

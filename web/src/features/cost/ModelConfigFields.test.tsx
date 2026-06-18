@@ -5,14 +5,14 @@ import { FormProvider, useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import type { CatalogEntry, ModelConfig } from "@/lib/types"
 import type { ListModelsInput, ListModelsResult } from "./api"
+import { ModelConfigFields } from "./ModelConfigFields"
 import {
-  ModelConfigFields,
   defaultsFor,
   parseParamsText,
   providersFor,
   formSchema,
   type FormValues,
-} from "./ModelConfigFields"
+} from "./ModelConfigFields.schema"
 
 const CATALOG: CatalogEntry[] = [
   { provider: "openai", model: "gpt-image-1", kind: "image", label: "OpenAI GPT-Image-1", available: true },
