@@ -39,18 +39,16 @@ describe("computeRunSummary", () => {
     expect(s.ratio).toBeCloseTo(2 / 5)
     expect(s.runLabel).toBe("生产中")
   })
-  it("falls back to node count for isCustom workflows", () => {
-    const s = computeRunSummary(
-      makeState({
-        isCustom: true,
-        stages: [],
-        nodes: [
-          { id: "a", label: "x", type: "script", status: "done" },
-          { id: "b", label: "y", type: "asset", status: "running" },
-        ],
-        edges: [],
-      }),
-    )
+  it("uses node count for isCustom workflows even when stages are present", () => {
+    const s = computeRunSummary(makeState({
+      isCustom: true,
+      // 后端对有 plan 的自定义工作流同时下发 stages（5 段）与 nodes——必须用 nodes。
+      nodes: [
+        { id: "a", label: "x", type: "script", status: "done" },
+        { id: "b", label: "y", type: "asset", status: "running" },
+      ],
+      edges: [],
+    }))
     expect(s.stagesDone).toBe(1)
     expect(s.stagesTotal).toBe(2)
     expect(s.ratio).toBeCloseTo(0.5)
@@ -65,6 +63,9 @@ describe("computeRunSummary", () => {
     const failed = computeRunSummary(makeState({ runStatus: "done", status: "failed" }))
     expect(failed.runLabel).toBe("失败")
     expect(failed.variant).toBe("rejected")
+    const canceled = computeRunSummary(makeState({ runStatus: "done", status: "canceled" }))
+    expect(canceled.runLabel).toBe("已取消")
+    expect(canceled.variant).toBe("rejected")
   })
 })
 

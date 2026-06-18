@@ -26,7 +26,14 @@ export function RunSummary({ state, className }: RunSummaryProps) {
       <Badge variant={s.variant}>{s.runLabel}</Badge>
       <span className="font-mono text-[12px] text-text-2">{`阶段 ${s.stagesDone}/${s.stagesTotal}`}</span>
       <span className="font-mono text-[12px] text-text-2">{`素材 ${s.assetsDone}/${s.assetsTotal}`}</span>
-      <span className="ml-auto h-2 w-40 max-w-[40%] overflow-hidden rounded-full bg-bg-base">
+      <span
+        role="progressbar"
+        aria-valuenow={Math.round(pct)}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label="运行进度"
+        className="ml-auto h-2 w-40 max-w-[40%] overflow-hidden rounded-full bg-bg-base"
+      >
         <span
           className="block h-full rounded-full bg-amber transition-[width] duration-300"
           style={{ width: `${pct}%` }}

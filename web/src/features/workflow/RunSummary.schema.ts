@@ -31,13 +31,18 @@ function runLabel(state: ProjectState): { label: string; variant: BadgeVariant }
   return { label: "空闲", variant: "pending" }
 }
 
-// 阶段进度：固定管线用 stages；isCustom（stages 为空）退化为节点计数。
+// 阶段进度：固定管线用 stages；isCustom 工作流用图节点计数。
+// 判别依据：state.isCustom。
+// 注意：后端对「有 plan 的自定义工作流」会同时下发 stages 与 nodes，
+// 故必须按 isCustom 判别，不能用 stages.length。
 // GraphNode.status 与 StageStatus2 同域（"done"|"blocked"|"pending"|"running"|"failed"）。
 export function computeRunSummary(state: ProjectState): RunSummaryData {
-  const units =
-    state.stages.length > 0
-      ? state.stages.map((s) => s.status)
-      : state.nodes.map((n) => n.status)
+  // 自定义工作流（isCustom）用图节点计数；固定管线用 5 段 stages。
+  // 注意：后端对「有 plan 的自定义工作流」会同时下发 stages 与 nodes，
+  // 故必须按 isCustom 判别，不能用 stages.length。
+  const units = state.isCustom
+    ? state.nodes.map((n) => n.status)
+    : state.stages.map((s) => s.status)
   const stagesTotal = units.length
   const stagesDone = units.filter((s) => s === "done").length
   const ratio = stagesTotal === 0 ? 0 : stagesDone / stagesTotal
