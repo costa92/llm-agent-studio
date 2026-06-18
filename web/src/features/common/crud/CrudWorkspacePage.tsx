@@ -42,6 +42,7 @@ export function CrudWorkspacePage({
           {headerActions != null && <div className="flex items-center gap-3">{headerActions}</div>}
         </header>
 
+        {/* loading 先判：复刻 LibraryView 原顺序；四态由调用方约定互斥，顺序仅影响巧合并发态。 */}
         {isLoading ? (
           loadingSkeleton != null ? (
             loadingSkeleton

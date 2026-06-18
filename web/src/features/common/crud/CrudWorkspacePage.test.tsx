@@ -74,4 +74,15 @@ describe("CrudWorkspacePage", () => {
     expect(screen.getByTestId("empty")).toBeInTheDocument()
     expect(screen.queryByTestId("body")).not.toBeInTheDocument()
   })
+
+  it("isLoading 无 loadingSkeleton：渲染默认骨架，不渲染 children", () => {
+    render(<CrudWorkspacePage {...baseProps({ isLoading: true })} />)
+    expect(screen.queryByTestId("body")).not.toBeInTheDocument()
+  })
+
+  it("isEmpty 无 emptyState：渲染默认「暂无数据。」文案", () => {
+    render(<CrudWorkspacePage {...baseProps({ isEmpty: true })} />)
+    expect(screen.getByText("暂无数据。")).toBeInTheDocument()
+    expect(screen.queryByTestId("body")).not.toBeInTheDocument()
+  })
 })
