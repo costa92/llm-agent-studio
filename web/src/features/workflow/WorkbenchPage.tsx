@@ -159,6 +159,8 @@ export function WorkbenchView({
         </div>
         <SlateBar visible={slateVisible} />
       </header>
+      {/* RunSummary 表「生产执行」维度（已完成/失败/进度）；与顶栏 HITL 状态徽标
+          （待审核·N）语义不同，二者有意并存——不要当作冗余合并。 */}
       <RunSummary state={state} />
 
       {/* 三栏：≥lg 固定三列（桌面原型）；<lg 单列竖排滚动，制片轨道排首位（order-first）确保不被推到折叠下方。 */}

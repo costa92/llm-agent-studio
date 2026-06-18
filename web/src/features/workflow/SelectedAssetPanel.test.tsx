@@ -10,7 +10,7 @@ import type { AssetDetail, Asset } from "@/lib/types"
 const { toast } = vi.hoisted(() => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }))
-vi.mock("./AssetThumb.tsx", () => ({ AssetThumb: () => <div data-testid="thumb" /> }))
+vi.mock("./AssetThumb", () => ({ AssetThumb: () => <div data-testid="thumb" /> }))
 vi.mock("@/lib/apiClient", () => ({
   apiJSON: vi.fn(),
   getAccessToken: () => "tok",
@@ -72,6 +72,22 @@ describe("SelectedAssetPanel", () => {
     await user.click(screen.getByRole("button", { name: /采纳/ }))
     expect(apiJSON).toHaveBeenCalledWith("/api/assets/as1/accept", { method: "POST" })
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith("已采纳"))
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["asset", "as1"] })
+  })
+  it("calls reject hook, toasts, and refreshes asset detail on success", async () => {
+    const { apiJSON } = await import("@/lib/apiClient")
+    ;(apiJSON as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "as1", status: "rejected" })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const invalidateSpy = vi.spyOn(qc, "invalidateQueries")
+    const user = userEvent.setup()
+    render(
+      <QueryClientProvider client={qc}>
+        <SelectedAssetPanel org="acme" assetId="as1" isAdmin detail={detail()} />
+      </QueryClientProvider>,
+    )
+    await user.click(screen.getByRole("button", { name: /拒绝/ }))
+    expect(apiJSON).toHaveBeenCalledWith("/api/assets/as1/reject", { method: "POST" })
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith("已退回"))
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["asset", "as1"] })
   })
 })
