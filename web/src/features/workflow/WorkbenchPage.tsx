@@ -14,6 +14,7 @@ import type { LogLine, StageId } from "@/lib/timeline"
 import type { SseConnState } from "./useProductionTimeline"
 import { statusLabel, statusVariant } from "@/features/projects/status"
 import { GraphView } from "./GraphView"
+import { RunSummary } from "./RunSummary"
 
 // 每阶段副标题（agent 名 / done/N 计数）。
 const STAGE_SUB: Record<string, ReactNode> = {
@@ -158,6 +159,9 @@ export function WorkbenchView({
         </div>
         <SlateBar visible={slateVisible} />
       </header>
+      {/* RunSummary 表「生产执行」维度（已完成/失败/进度）；与顶栏 HITL 状态徽标
+          （待审核·N）语义不同，二者有意并存——不要当作冗余合并。 */}
+      <RunSummary state={state} />
 
       {/* 三栏：≥lg 固定三列（桌面原型）；<lg 单列竖排滚动，制片轨道排首位（order-first）确保不被推到折叠下方。 */}
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:grid lg:grid-cols-[280px_1fr_300px] lg:overflow-hidden">
@@ -197,13 +201,7 @@ export function WorkbenchView({
             <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
               事件日志
             </h4>
-            <EventLog
-              lines={log.map((l) => ({
-                seq: l.seq,
-                text: l.text,
-                emphasis: l.emphasis,
-              }))}
-            />
+            <EventLog lines={log} />
           </section>
         </aside>
 
@@ -246,6 +244,11 @@ export function WorkbenchView({
                   >
                     {id === "S4" && pips.length > 0 && (
                       <PipGroup pips={pips} onSelectPip={onSelectPip} />
+                    )}
+                    {id === "S5" && stage.status === "pending" && onOpenReview && (
+                      <Button variant="ghost" className="mt-2" onClick={onOpenReview}>
+                        去审核 →
+                      </Button>
                     )}
                   </TimelineStage>
                 )

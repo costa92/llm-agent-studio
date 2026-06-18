@@ -265,7 +265,8 @@ describe("WorkbenchView (authoritative ProjectState)", () => {
         isRunning={false}
       />,
     )
-    expect(screen.getByText("失败")).toBeInTheDocument()
+    // RunSummary 也渲染「失败」徽标（与 header 各一个）；getAllByText 允许多个。
+    expect(screen.getAllByText("失败").length).toBeGreaterThanOrEqual(1)
     expect(screen.queryByText(/待审核/)).not.toBeInTheDocument()
   })
 
@@ -313,6 +314,32 @@ describe("WorkbenchView (authoritative ProjectState)", () => {
     render(<WorkbenchView {...baseWorkbenchProps()} state={makeState({ isCustom: false })} />)
     expect(document.querySelector('[data-slot="stage"]')).not.toBeNull()
     expect(document.querySelector('[data-slot="graph"]')).toBeNull()
+  })
+
+  // T3：S5 人工审核 pending 阶段内联「去审核 →」CTA，与顶栏共用 onOpenReview。
+  it("renders an inline S5 review CTA wired to the same onOpenReview", async () => {
+    const onOpenReview = vi.fn()
+    const user = userEvent.setup()
+    const state = makeState({
+      status: "review",
+      runStatus: "done",
+      stages: [
+        { role: "planner", status: "done" },
+        { role: "script", status: "done" },
+        { role: "storyboard", status: "done" },
+        { role: "asset", status: "done" },
+        { role: "review", status: "pending" },
+      ],
+      pips: [{ todoId: "a1", status: "done", assetId: "as1" }],
+      assets: { total: 1, done: 1, pending: 1 },
+    })
+    render(
+      <WorkbenchView {...baseWorkbenchProps()} state={state} live={false} onOpenReview={onOpenReview} />,
+    )
+    const ctas = screen.getAllByRole("button", { name: /去审核/ })
+    expect(ctas.length).toBeGreaterThanOrEqual(2)
+    await user.click(ctas[ctas.length - 1])
+    expect(onOpenReview).toHaveBeenCalled()
   })
 })
 

@@ -90,13 +90,17 @@ export function TimelineStage({
       className={cn("relative flex gap-4 pb-[30px]", className)}
       style={{ ["--cur" as string]: meta.color }}
     >
-      {/* 连接线（linked 时着 agent 色）。 */}
+      {/* 连接线（linked 时着 agent 色；pending/unlinked 时虚线灰）。 */}
       {!last && (
         <span
           aria-hidden
+          data-slot="connector"
+          data-linked={stage.linked ? "true" : "false"}
           className={cn(
             "absolute left-[21px] top-[30px] bottom-0 w-0.5",
-            stage.linked ? "bg-[var(--cur)]" : "bg-line",
+            stage.linked
+              ? "bg-[var(--cur)]"
+              : "border-l border-dashed border-line bg-transparent",
           )}
         />
       )}

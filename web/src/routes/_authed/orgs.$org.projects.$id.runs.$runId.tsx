@@ -11,8 +11,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { WorkbenchView } from "@/features/workflow/WorkbenchPage"
-import { AssetThumb } from "@/features/workflow/AssetThumb.tsx"
-import { AssetPreviewActions } from "@/features/workflow/AssetPreviewActions"
+import { SelectedAssetPanel } from "@/features/workflow/SelectedAssetPanel"
 import { ScriptView } from "@/features/workflow/ScriptView"
 import { StoryboardView } from "@/features/workflow/StoryboardView"
 import { AssetGalleryModal } from "@/features/workflow/AssetGalleryModal"
@@ -32,6 +31,8 @@ import {
   useRegenerateAsset,
   useEditNarration,
 } from "@/features/workflow/api"
+import { useAsset } from "@/features/review/api"
+import { useRole } from "@/app/rbac"
 import { useProductionTimeline } from "@/features/workflow/useProductionTimeline"
 import { useUpdateProject, usePromptStyles } from "@/features/projects/api"
 import { useOrgTextModels, useOrgImageModels } from "@/features/cost/api"
@@ -68,6 +69,8 @@ function RunWorkbenchPage() {
   const stylesQuery = usePromptStyles()
   const storageConfigsQuery = useStorageConfigs(org)
 
+  const { isAdmin } = useRole(org)
+
   // 选中态
   const [selection, setSelection] = useState<Selection>(null)
   // 素材画廊抽屉开合。
@@ -103,6 +106,16 @@ function RunWorkbenchPage() {
   // 权威工作流状态（REST 拉取 + SSE state 帧覆盖缓存）。
   const qc = useQueryClient()
   const stateQuery = useProjectState(id, runId)
+
+  // 选中资产详情（hooks 规则：early return 之前无条件调用）。
+  // stateQuery 在 early return 前已拉取，用它的 pips 计算 latestAssetId 以得到完整的 previewAssetId；
+  // useAsset 内部 enabled: id !== "" 防护空串不发请求。
+  const latestAssetIdEarly = [...(stateQuery.data?.pips ?? [])]
+    .reverse()
+    .find((p) => p.status === "done" && p.assetId)?.assetId
+  const previewAssetIdEarly =
+    selection?.kind === "asset" ? selection.assetId : latestAssetIdEarly
+  const previewDetailQuery = useAsset(previewAssetIdEarly ?? "")
 
   // 回放 → 续接实时（日志累积 + state 帧写回缓存）。
   const { log, conn } = useProductionTimeline({
@@ -374,10 +387,12 @@ function RunWorkbenchPage() {
       isRunning={run.isPending || cancel.isPending}
       preview={
         previewAssetId ? (
-          <div className="flex flex-col gap-3">
-            <AssetThumb assetId={previewAssetId} alt="选中素材" className="h-[150px] w-full" />
-            <AssetPreviewActions assetId={previewAssetId} className="flex gap-2" />
-          </div>
+          <SelectedAssetPanel
+            org={org}
+            assetId={previewAssetId}
+            isAdmin={isAdmin}
+            detail={previewDetailQuery.data}
+          />
         ) : undefined
       }
       onSelectStage={handleSelectStage}

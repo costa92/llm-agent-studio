@@ -48,16 +48,16 @@ describe("studio base components", () => {
     expect(screen.getByRole("status")).toHaveTextContent("已降级到备用模型")
   })
 
-  it("EventLog renders empty state then lines", () => {
+  it("EventLog renders empty state then collapsed summary", () => {
     const { rerender } = render(<EventLog lines={[]} />)
     expect(screen.getByText("暂无事件")).toBeInTheDocument()
     rerender(
       <EventLog
-        lines={[{ seq: 1, text: "剧本已生成", emphasis: "S2" }]}
+        lines={[{ seq: 1, kind: "todo_finished", text: "剧本已生成", emphasis: "S2" }]}
       />,
     )
-    expect(screen.getByText("剧本已生成")).toBeInTheDocument()
-    expect(screen.getByText("S2")).toBeInTheDocument()
+    expect(screen.getByText("事件详情")).toBeInTheDocument()
+    expect(screen.getByText(/最新动态/)).toBeInTheDocument()
   })
 
   it("SseIndicator renders status label", () => {
