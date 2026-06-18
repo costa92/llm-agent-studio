@@ -15,6 +15,35 @@ export interface LogLine {
   emphasis?: StageId
 }
 
+// kind → 友好中文短语（左栏事件日志降噪；未命中则回落原始 text）。纯前端表现。
+export const KIND_LABEL: Record<string, string> = {
+  planner_started: "规划开始",
+  todo_ready: "任务就绪",
+  todo_started: "任务开始",
+  todo_finished: "任务完成",
+  todo_failed: "任务失败",
+  asset_generated: "素材已生成",
+  asset_submitted: "素材已提交",
+  asset_prescreened: "素材预筛完成",
+  run_done: "运行结束",
+}
+
+// 阶段限定的更具体短语（emphasis + kind 联合更友好；优先于 KIND_LABEL）。
+const STAGE_KIND_LABEL: Record<string, string> = {
+  "S2:todo_ready": "剧本任务就绪",
+  "S3:todo_ready": "分镜任务就绪",
+  "S4:asset_prescreened": "素材预筛完成",
+}
+
+// 单行 → 友好文案：阶段限定优先 → kind 通用 → 回落原始 text。
+export function friendlyLabel(line: LogLine): string {
+  if (line.emphasis) {
+    const k = STAGE_KIND_LABEL[`${line.emphasis}:${line.kind}`]
+    if (k) return k
+  }
+  return KIND_LABEL[line.kind] ?? line.text
+}
+
 // todo 的 type（payload.type）→ 阶段着色 id。
 const TYPE_TO_STAGE: Record<string, StageId> = {
   script: "S2",

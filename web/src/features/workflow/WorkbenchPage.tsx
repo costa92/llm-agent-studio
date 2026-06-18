@@ -197,13 +197,7 @@ export function WorkbenchView({
             <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
               事件日志
             </h4>
-            <EventLog
-              lines={log.map((l) => ({
-                seq: l.seq,
-                text: l.text,
-                emphasis: l.emphasis,
-              }))}
-            />
+            <EventLog lines={log} />
           </section>
         </aside>
 
