@@ -53,7 +53,7 @@ describe("MembersPage", () => {
 
   it("shows empty state when there are no members", () => {
     renderPage()
-    expect(screen.getByText("还没有成员，通过上方表单添加第一个成员。")).toBeInTheDocument()
+    expect(screen.getByText("暂无成员。")).toBeInTheDocument()
   })
 
   it("calls useAddMember with {email, role} on 添加", async () => {
@@ -83,13 +83,13 @@ describe("MembersPage", () => {
     const user = userEvent.setup()
     renderPage()
 
-    await user.click(screen.getAllByRole("button", { name: "移除" })[0])
+    await user.click(screen.getByRole("button", { name: `移除成员 ${ALICE.email}` }))
     // 确认弹窗出现；取消则不调 remove。
     expect(screen.getByText("确认移除成员？")).toBeInTheDocument()
     await user.click(screen.getByRole("button", { name: "取消" }))
     expect(removeMutateAsync).not.toHaveBeenCalled()
 
-    await user.click(screen.getAllByRole("button", { name: "移除" })[0])
+    await user.click(screen.getByRole("button", { name: `移除成员 ${ALICE.email}` }))
     await user.click(screen.getByRole("button", { name: "确认移除" }))
     await waitFor(() => expect(removeMutateAsync).toHaveBeenCalledTimes(1))
     expect(removeMutateAsync.mock.calls[0][0]).toBe("u1")
@@ -101,7 +101,7 @@ describe("MembersPage", () => {
     removeMutateAsync.mockRejectedValueOnce(new ApiError(409, "cannot remove or demote the last org admin"))
     const user = userEvent.setup()
     renderPage()
-    await user.click(screen.getAllByRole("button", { name: "移除" })[0])
+    await user.click(screen.getByRole("button", { name: `移除成员 ${BOB.email}` }))
     await user.click(screen.getByRole("button", { name: "确认移除" }))
     await waitFor(() =>
       expect(

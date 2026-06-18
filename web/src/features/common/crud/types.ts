@@ -10,6 +10,8 @@ export interface RowAction<T> {
   variant?: "ghost" | "amber" | "destructive"
   hidden?: (item: T) => boolean
   disabled?: (item: T) => boolean
+  // 行内/卡片动作按 item 定制无障碍名，缺省用 label。
+  ariaLabel?: (item: T) => string
 }
 
 // 表格列定义。

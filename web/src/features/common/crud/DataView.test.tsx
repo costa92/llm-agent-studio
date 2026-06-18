@@ -45,6 +45,15 @@ describe("DataView", () => {
     expect(screen.getByText("image")).toBeInTheDocument()
   })
 
+  it("ariaLabel 回调覆盖默认 label", () => {
+    render(
+      <DataView<Row> layout="table" items={rows} getId={(r) => r.id}
+        columns={[{ key: "name", header: "名称", cell: (r) => r.name }]}
+        rowActions={[{ label: "移除", ariaLabel: (r) => `移除 ${r.name}`, onClick: () => {} }]} />,
+    )
+    expect(screen.getByRole("button", { name: "移除 Alpha" })).toBeInTheDocument()
+  })
+
   it("hidden 的行动作不渲染", () => {
     render(
       <DataView<Row> layout="table" items={rows} getId={(r) => r.id}

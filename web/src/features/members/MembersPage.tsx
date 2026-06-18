@@ -36,12 +36,13 @@ export function MembersPage({ org }: { org: string }) {
 
   const crud = useCrudResource<OrgMember>({
     getId: (m) => m.userId,
+    // Members 无创建/编辑弹窗；stub 满足 CrudConfig 接口约束，不会被调用。
     create: async () => {},
     update: async () => {},
     remove: (id) => remove.mutateAsync(id),
     labels: { deleted: "已移除成员" },
     errorMessage: (_action, err) => {
-      const status = (err as any)?.response?.status ?? (err as any)?.status
+      const status = err instanceof ApiError ? err.status : undefined
       if (status === 409) return "不能移除或降级最后一个组织管理员"
       if (status === 404) return "该用户不是本组织成员"
       return "移除失败，请重试"
@@ -99,7 +100,7 @@ export function MembersPage({ org }: { org: string }) {
       isError={members.isError}
       onRetry={() => void members.refetch()}
       isEmpty={!members.data?.length}
-      emptyHint="还没有成员，通过上方表单添加第一个成员。"
+      emptyHint="暂无成员。"
       headerExtra={
         <section className="flex flex-col gap-3 rounded-xl border border-line bg-bg-surface p-5">
           <header className="flex flex-col gap-1">
@@ -180,7 +181,7 @@ export function MembersPage({ org }: { org: string }) {
           },
         ]}
         rowActions={[
-          { label: "移除", onClick: (m) => crud.requestDelete(m) },
+          { label: "移除", ariaLabel: (m) => `移除成员 ${m.email}`, onClick: (m) => crud.requestDelete(m) },
         ]}
       />
       <ConfirmDialog
