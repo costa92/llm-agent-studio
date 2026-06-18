@@ -13,13 +13,23 @@ const pbConfigSchema: z.ZodType<PictureBookConfig> = z.object({
   voice: z.string(),
 })
 
+// 内容类型 / 目标平台为前端枚举（后端只存字符串，无白名单约束）。
+// 单一来源：defaultsFor 取首项作默认，ProjectFields 渲染下拉选项亦取自此。
+export const CONTENT_TYPES = ["短视频", "广告片", "动画", "宣传片"] as const
+export const TARGET_PLATFORMS = ["抖音", "视频号", "B 站", "小红书", "通用"] as const
+
 // 项目创建/编辑共享表单模型。把 kind（项目类型）与 pbConfig（绘本配置）
 // 折入 rhf（原来是各 Dialog 的本地 useState），让单一 onSubmit 拿到全量。
-// name/brief/style 必填（后端缺则 400）；description（Edit 用）与各模型字段为可空字符串。
+// name/style 必填（后端缺则 400）；description（Edit 用）与各模型字段为可空字符串。
+// 注意：brief 在 base 里「放宽」（z.string()），不在此处必填——Edit 的 defaultsFor
+//   永远产出 brief:""（Project 类型无 brief），而 zodResolver v5 会校验整份
+//   form.getValues()；若 base 里 brief.min(1)，Edit resolver 必在 brief 上失败，
+//   handleSubmit 静默不触发（Edit briefRequired=false，错误还被藏起来）→ Edit 变哑弹。
+//   故 brief 必填仅放到 createProjectFormSchema（Create 专用），见下。
 // 注意：不对 pbConfig/kind 加任何 superRefine——现状绘本配置无前端必填校验，本重构不引入新校验。
 export const projectFormSchema = z.object({
   name: z.string().min(1, "请输入项目名称"),
-  brief: z.string().min(1, "请输入创意需求"),
+  brief: z.string(),
   description: z.string(),
   contentType: z.string().min(1, "请选择内容类型"),
   targetPlatform: z.string().min(1, "请选择目标平台"),
@@ -33,10 +43,21 @@ export const projectFormSchema = z.object({
   pbConfig: pbConfigSchema,
 })
 
+// Create 专用 schema：在 base 上把 brief 收紧为必填。值形状与 base 一致，
+// 故仍复用 ProjectFormValues。Edit 用 base（projectFormSchema），Create 用此。
+export const createProjectFormSchema = projectFormSchema.extend({
+  brief: z.string().min(1, "请输入创意需求"),
+})
+
 export type ProjectFormValues = z.infer<typeof projectFormSchema>
 
+// pbConfig 序列化助手：Create/Edit 提交 pictureBookConfig 时统一走此，
+// 避免各处忘记 JSON.stringify 或写法漂移（与现状 JSON.stringify(pbConfig) 等价）。
+export const serializePbConfig = (pb: PictureBookConfig): string =>
+  JSON.stringify(pb)
+
 // 编辑时从 project.pictureBookConfig（原始 JSON）解析；空/解析失败回退空配置。
-function parsePbConfig(raw?: string): PictureBookConfig {
+export function parsePbConfig(raw?: string): PictureBookConfig {
   if (!raw) return emptyPictureBookConfig
   try {
     const parsed = JSON.parse(raw) as Partial<PictureBookConfig>
@@ -56,8 +77,8 @@ export function defaultsFor(
     name: initial?.name ?? "",
     brief: initial?.brief ?? "",
     description: initial?.description ?? "",
-    contentType: initial?.contentType ?? "短视频",
-    targetPlatform: initial?.targetPlatform ?? "抖音",
+    contentType: initial?.contentType ?? CONTENT_TYPES[0],
+    targetPlatform: initial?.targetPlatform ?? TARGET_PLATFORMS[0],
     style: initial?.style ?? "",
     plannerProvider: initial?.plannerProvider ?? "",
     plannerModel: initial?.plannerModel ?? "",

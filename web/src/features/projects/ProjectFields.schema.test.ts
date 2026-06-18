@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest"
-import { projectFormSchema, defaultsFor } from "./ProjectFields.schema"
+import {
+  projectFormSchema,
+  createProjectFormSchema,
+  defaultsFor,
+  serializePbConfig,
+  parsePbConfig,
+} from "./ProjectFields.schema"
 import { emptyPictureBookConfig } from "./pbConfig"
 
 describe("projectFormSchema", () => {
@@ -27,11 +33,31 @@ describe("projectFormSchema", () => {
     }
   })
 
-  it("brief 必填", () => {
-    const r = projectFormSchema.safeParse({ ...base, brief: "" })
+  it("brief 必填（仅 Create schema）", () => {
+    const r = createProjectFormSchema.safeParse({ ...base, brief: "" })
     expect(r.success).toBe(false)
     if (!r.success) {
       expect(r.error.issues.some((i) => i.message === "请输入创意需求")).toBe(true)
+    }
+  })
+
+  // 回归测试：base schema 必须接受空 brief。Edit 走 base + defaultsFor(project)，
+  // 而 Project 类型无 brief→defaultsFor 永远产出 brief:""；zodResolver v5 校验整份
+  // form.getValues()，若 base 里 brief.min(1) 则 Edit resolver 必在 brief 上失败、
+  // handleSubmit 静默不触发（Edit 错误还被藏）→ Edit 变哑弹。此测试锁住该修复。
+  it("base schema 接受空 brief（Edit 场景：defaultsFor(project) 永远 brief=''）", () => {
+    const r = projectFormSchema.safeParse(
+      defaultsFor({
+        name: "旧名",
+        contentType: "短视频",
+        targetPlatform: "抖音",
+        style: "写实",
+        kind: "standard",
+      }),
+    )
+    expect(r.success).toBe(true)
+    if (r.success) {
+      expect(r.data.brief).toBe("")
     }
   })
 
@@ -91,5 +117,25 @@ describe("defaultsFor", () => {
   it("pictureBookConfig 非法 JSON 回退空配置", () => {
     const d = defaultsFor({ pictureBookConfig: "{bad" })
     expect(d.pbConfig).toEqual(emptyPictureBookConfig)
+  })
+})
+
+describe("serializePbConfig", () => {
+  it("round-trip：JSON.parse(serializePbConfig(parsePbConfig(s))) 等于解析结果", () => {
+    const raw = JSON.stringify({
+      ...emptyPictureBookConfig,
+      ageBand: "3-6",
+      bookType: "narrative",
+      pageCount: 16,
+      themes: ["friendship", "courage"],
+    })
+    const parsed = parsePbConfig(raw)
+    expect(JSON.parse(serializePbConfig(parsed))).toEqual(parsed)
+  })
+
+  it("与现状 JSON.stringify(pbConfig) 等价", () => {
+    expect(serializePbConfig(emptyPictureBookConfig)).toBe(
+      JSON.stringify(emptyPictureBookConfig),
+    )
   })
 })

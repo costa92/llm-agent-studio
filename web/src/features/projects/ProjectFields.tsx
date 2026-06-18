@@ -18,11 +18,11 @@ import type {
 } from "@/lib/types"
 import { MODE_LABELS } from "@/features/storage/StorageConfigPage"
 import { PictureBookConfigForm } from "./PictureBookConfigForm"
-import type { ProjectFormValues } from "./ProjectFields.schema"
-
-// 内容类型 / 目标平台为前端枚举（后端只存字符串，无白名单约束）。
-const CONTENT_TYPES = ["短视频", "广告片", "动画", "宣传片"] as const
-const TARGET_PLATFORMS = ["抖音", "视频号", "B 站", "小红书", "通用"] as const
+import {
+  CONTENT_TYPES,
+  TARGET_PLATFORMS,
+  type ProjectFormValues,
+} from "./ProjectFields.schema"
 
 export interface ProjectFieldsProps {
   styles: Style[]
@@ -65,9 +65,8 @@ export function ProjectFields({
   const kind = watch("kind")
 
   // Edit 风格补项：项目当前风格若不在 styles 列表，补一项避免回显丢失。
-  const styleOptions = styles
   const hasCurrentStyle =
-    !project?.style || styleOptions.some((s) => s.name === project.style)
+    !project?.style || styles.some((s) => s.name === project.style)
 
   // 规划下拉显示条件：Edit（alwaysShowPlanner）无条件显示；Create 仅有 text 模型时显示。
   const showPlanner = alwaysShowPlanner || (textModels != null && textModels.length > 0)
@@ -192,7 +191,7 @@ export function ProjectFields({
                 {!hasCurrentStyle && project?.style && (
                   <SelectItem value={project.style}>{project.style}</SelectItem>
                 )}
-                {styleOptions.map((s) => (
+                {styles.map((s) => (
                   <SelectItem key={s.name} value={s.name}>
                     {s.name}
                   </SelectItem>
