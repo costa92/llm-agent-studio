@@ -1,5 +1,4 @@
 import { z } from "zod"
-import type { WorkflowNode } from "@/lib/types"
 
 // 返回第一处问题的中文描述,无问题返回 null。前端与后端 ValidateCustomGraph 同义,
 // 让用户在保存前就看到「循环依赖」,而不是运行时才 400。
@@ -98,6 +97,3 @@ export const workflowFormSchema = z
   })
 
 export type WorkflowFormValues = z.infer<typeof workflowFormSchema>
-
-// 等价于 WorkflowNode[]（运行时一致；类型上 promptText 可选对齐）。
-export type WorkflowFormNode = WorkflowNode

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { WorkflowForm, findGraphError } from "./WorkflowDialog"
+import { WorkflowForm } from "./WorkflowDialog"
+import { findGraphError } from "./WorkflowDialog.schema"
 import type { Prompt, Workflow } from "@/lib/types"
 import * as promptApi from "@/features/prompt/api"
 

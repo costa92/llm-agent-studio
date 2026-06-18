@@ -17,11 +17,7 @@ import { Button } from "@/components/studio/Button"
 import { useBasicPrompts, usePrompts } from "@/features/prompt/api"
 import { WorkflowNodesEditor } from "./WorkflowNodesEditor"
 import { useCreateWorkflow, useUpdateWorkflow } from "./workflowApi"
-import {
-  workflowFormSchema,
-  findGraphError,
-  type WorkflowFormValues,
-} from "./WorkflowDialog.schema"
+import { workflowFormSchema, type WorkflowFormValues } from "./WorkflowDialog.schema"
 import type {
   BasicPrompt,
   CreateWorkflowInput,
@@ -32,8 +28,6 @@ import type {
 
 // 新建/编辑工作流。name 文本框 + WorkflowNodesEditor。
 // 校验：name 非空、≥1 节点、节点 id 非空且唯一（与原 EditProjectDialog 一致）。
-// findGraphError 已移到 WorkflowDialog.schema.ts，此处 re-export 保持测试 import 路径不变。
-export { findGraphError }
 
 const DEFAULT_NODES: WorkflowNode[] = [
   { id: "script-1", type: "script", promptId: "", dependsOn: [] },
@@ -59,6 +53,8 @@ export function WorkflowForm({
   onSuccess,
 }: WorkflowFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null)
+  // superRefine 让 schema 的输入/输出类型收窄，zodResolver 推出的 Resolver 泛型与
+  // useForm 期望的 Resolver<WorkflowFormValues> 不严格匹配，需显式 cast。
   const resolver = zodResolver(
     workflowFormSchema,
   ) as unknown as Resolver<WorkflowFormValues>
