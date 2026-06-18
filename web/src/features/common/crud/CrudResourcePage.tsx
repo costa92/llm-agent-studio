@@ -8,7 +8,7 @@ import type { ZodType } from "zod"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/studio/Button"
 
-interface CrudResourcePageProps {
+export interface CrudResourcePageProps {
   title: string
   description?: ReactNode
   createLabel?: string
@@ -57,7 +57,7 @@ export function CrudResourcePage({
   )
 }
 
-interface SingletonConfigFormProps<T extends FieldValues> {
+export interface SingletonConfigFormProps<T extends FieldValues> {
   title: string
   description?: ReactNode
   // ZodType<T, T> 让 Input=Output=T，满足 zodResolver v5 对 Input extends FieldValues 的要求。
@@ -79,7 +79,7 @@ export function SingletonConfigForm<T extends FieldValues>({
   const resolver = zodResolver(schema) as unknown as Resolver<T>
   const form = useForm<T>({ resolver, defaultValues: values as DefaultValues<T> })
   useEffect(() => {
-    if (values) form.reset(values)
+    if (values && !form.formState.isDirty) form.reset(values)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [values])
   return (

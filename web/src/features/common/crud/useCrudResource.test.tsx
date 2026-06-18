@@ -57,4 +57,19 @@ describe("useCrudResource", () => {
     await waitFor(() => expect(hook.result.current.submitError).toBe("名称已存在"))
     expect(hook.result.current.dialog).not.toBeNull()
   })
+
+  // Fix 3: edit 模式下 target 为 null 时，submit 应为 no-op，不调 create
+  // 注：useCrudResource 内部保证 openEdit 总传目标，该分支为防御性保护；
+  // 通过公开 API 无法直接触达，故以代码注释记录合约，不写强迫型测试。
+
+  // Fix 4: submit 返回 Promise，调用方可 await
+  it("submit 返回 Promise，resolve 后 dialog 已关闭", async () => {
+    const { hook } = setup()
+    act(() => hook.result.current.openCreate())
+    let p: Promise<void> | undefined
+    act(() => { p = hook.result.current.submit({ name: "新" }) })
+    expect(p).toBeInstanceOf(Promise)
+    await act(async () => { await p })
+    expect(hook.result.current.dialog).toBeNull()
+  })
 })

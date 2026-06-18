@@ -57,4 +57,45 @@ describe("FormDialog", () => {
     )
     expect(screen.getByText("名称已存在")).toBeInTheDocument()
   })
+
+  // Fix 1A: resetKey 变化时重置表单（防止编辑不同行时预填陈旧）
+  it("resetKey 变化触发重置，输入框反映新 defaultValues", async () => {
+    const { rerender } = render(
+      <FormDialog open mode="edit" title="编辑" schema={schema}
+        defaultValues={{ name: "A" }} resetKey="a" onSubmit={() => {}} onOpenChange={() => {}}>
+        <NameField />
+      </FormDialog>,
+    )
+    expect((screen.getByLabelText("名称") as HTMLInputElement).value).toBe("A")
+    rerender(
+      <FormDialog open mode="edit" title="编辑" schema={schema}
+        defaultValues={{ name: "B" }} resetKey="b" onSubmit={() => {}} onOpenChange={() => {}}>
+        <NameField />
+      </FormDialog>,
+    )
+    await waitFor(() =>
+      expect((screen.getByLabelText("名称") as HTMLInputElement).value).toBe("B"),
+    )
+  })
+
+  // Fix 1B: 没有 resetKey 变化时，仅 defaultValues 对象更新不触发重置（合约文档）
+  it("resetKey 不变时，defaultValues 对象更新不触发重置", async () => {
+    const { rerender } = render(
+      <FormDialog open mode="edit" title="编辑" schema={schema}
+        defaultValues={{ name: "A" }} resetKey="same" onSubmit={() => {}} onOpenChange={() => {}}>
+        <NameField />
+      </FormDialog>,
+    )
+    const input = screen.getByLabelText("名称") as HTMLInputElement
+    await userEvent.clear(input)
+    await userEvent.type(input, "typed")
+    rerender(
+      <FormDialog open mode="edit" title="编辑" schema={schema}
+        defaultValues={{ name: "B" }} resetKey="same" onSubmit={() => {}} onOpenChange={() => {}}>
+        <NameField />
+      </FormDialog>,
+    )
+    // resetKey 未变，用户输入应保留
+    expect(input.value).toBe("typed")
+  })
 })

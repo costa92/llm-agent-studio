@@ -18,6 +18,9 @@ interface FormDialogProps<T extends FieldValues> {
   // ZodType<T, T> 让 Input=Output=T，满足 zodResolver v5 对 Input extends FieldValues 的要求。
   schema: ZodType<T, T>
   defaultValues: DefaultValues<T>
+  // 资源页传编辑目标的 id（创建模式传常量如 "create"），resetKey 变化时强制 reset，
+  // 防止对话框保持挂载/open 时切换编辑目标导致预填陈旧。
+  resetKey?: string | number
   submitLabel?: string
   submitting?: boolean
   submitError?: string | null
@@ -28,9 +31,9 @@ interface FormDialogProps<T extends FieldValues> {
 
 // 表单对话框壳：拥有 Dialog 开合 + rhf FormProvider(zodResolver) + 提交/取消/错误。
 // 字段由资源页作为 children 传入，用 useFormContext() 读写。
-// open/mode 变化时 reset，保证创建↔编辑切换预填正确。
+// open/mode/resetKey 变化时 reset，保证创建↔编辑切换、同类型不同目标切换预填正确。
 export function FormDialog<T extends FieldValues>({
-  open, mode, title, schema, defaultValues, submitLabel,
+  open, mode, title, schema, defaultValues, resetKey, submitLabel,
   submitting = false, submitError, onSubmit, onOpenChange, children,
 }: FormDialogProps<T>) {
   // zodResolver v5 + zod v4：resolver 类型推断需要显式 cast 桥接泛型边界。
@@ -39,7 +42,7 @@ export function FormDialog<T extends FieldValues>({
   useEffect(() => {
     if (open) form.reset(defaultValues)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, mode])
+  }, [open, mode, resetKey])
 
   const label = submitLabel ?? (mode === "create" ? "创建" : "保存")
   return (

@@ -22,7 +22,7 @@ function ActionButtons<T>({ item, actions }: { item: T; actions: RowAction<T>[] 
       {actions
         .filter((a) => !a.hidden?.(item))
         .map((a) => (
-          <UiButton key={a.label} variant={a.variant === "amber" ? "default" : a.variant ?? "ghost"}
+          <UiButton key={a.key ?? a.label} variant={a.variant === "amber" ? "default" : a.variant ?? "ghost"}
             size="sm" aria-label={a.label} disabled={a.disabled?.(item)}
             onClick={() => a.onClick(item)}>
             {a.icon}{a.label}

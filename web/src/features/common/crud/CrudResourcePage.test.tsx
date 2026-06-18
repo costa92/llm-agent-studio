@@ -69,4 +69,27 @@ describe("SingletonConfigForm", () => {
     await userEvent.click(screen.getByRole("button", { name: "保存" }))
     expect(onSubmit).toHaveBeenCalledWith({ host: "smtp.x" })
   })
+
+  // Fix 2: 脏值保护——用户正在编辑时，新对象身份的相同 values 不应 reset 覆盖输入
+  it("表单 dirty 时，values 对象新身份不触发 reset（保留正在编辑的值）", async () => {
+    const { rerender } = render(
+      <SingletonConfigForm title="邮件" schema={schema} values={{ host: "smtp.x" }}
+        isLoading={false} onSubmit={() => {}}>
+        <Field />
+      </SingletonConfigForm>,
+    )
+    const input = screen.getByLabelText("主机") as HTMLInputElement
+    // 用户开始编辑，使表单进入 dirty 状态
+    await userEvent.clear(input)
+    await userEvent.type(input, "smtp.edited")
+    // 以相同内容但新对象身份触发 rerender（模拟 react-query 重新拉取）
+    rerender(
+      <SingletonConfigForm title="邮件" schema={schema} values={{ host: "smtp.x" }}
+        isLoading={false} onSubmit={() => {}}>
+        <Field />
+      </SingletonConfigForm>,
+    )
+    // dirty 状态下应保留用户已输入的值
+    expect(input.value).toBe("smtp.edited")
+  })
 })

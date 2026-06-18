@@ -25,7 +25,7 @@ export interface CrudResource<T> {
   requestDelete: (item: T) => void
   cancelDelete: () => void
   confirmDelete: () => void
-  submit: (values: unknown) => void
+  submit: (values: unknown) => Promise<void>
 }
 
 const defaultErr = () => "操作失败，请重试"
@@ -46,15 +46,21 @@ export function useCrudResource<T>(cfg: CrudConfig<T>): CrudResource<T> {
   function requestDelete(item: T) { setDeleteTarget(item) }
   function cancelDelete() { setDeleteTarget(null) }
 
-  function submit(values: unknown) {
-    if (!dialog) return
+  function submit(values: unknown): Promise<void> {
+    if (!dialog) return Promise.resolve()
+    // Fix 3: edit 模式下 target 为 null（防御性保护，正常路径不可达）——no-op，不落 create。
+    if (dialog.mode === "edit" && !dialog.target) {
+      setSubmitting(false)
+      return Promise.resolve()
+    }
     const isEdit = dialog.mode === "edit"
     setSubmitting(true)
     setSubmitError(null)
-    const p = isEdit && dialog.target
-      ? cfg.update(cfg.getId(dialog.target), values)
+    // Fix 4: 返回 promise 链，调用方可 await；.finally 仍保证 submitting 归位。
+    const p = isEdit
+      ? cfg.update(cfg.getId(dialog.target!), values)
       : cfg.create(values)
-    p.then(() => {
+    return p.then(() => {
       toast.success(isEdit ? cfg.labels?.updated ?? "已更新" : cfg.labels?.created ?? "已创建")
       setDialog(null)
     }).catch((err) => {
