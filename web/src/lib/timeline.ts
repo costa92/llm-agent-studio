@@ -32,7 +32,6 @@ export const KIND_LABEL: Record<string, string> = {
 const STAGE_KIND_LABEL: Record<string, string> = {
   "S2:todo_ready": "剧本任务就绪",
   "S3:todo_ready": "分镜任务就绪",
-  "S4:asset_prescreened": "素材预筛完成",
 }
 
 // 单行 → 友好文案：阶段限定优先 → kind 通用 → 回落原始 text。

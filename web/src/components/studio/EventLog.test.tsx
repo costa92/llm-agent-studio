@@ -27,6 +27,16 @@ describe("EventLog.schema", () => {
     expect(groups.find((g) => g.emphasis === "S2")?.lines.map((l) => l.seq)).toEqual([2, 4])
     expect(EMPHASIS_TITLE.S2).toBe("剧本")
   })
+  it("sorts within group by seq even when input is shuffled", () => {
+    const groups = groupByEmphasis([
+      { seq: 4, kind: "todo_finished", text: "完成：script", emphasis: "S2" },
+      { seq: 1, kind: "planner_started", text: "规划开始", emphasis: "S1" },
+      { seq: 2, kind: "todo_ready", text: "todo_ready（script）", emphasis: "S2" },
+    ])
+    // groupByEmphasis 先按 seq 排序再迭代，首次出现顺序由 seq 决定（S1=seq1 先于 S2=seq2）。
+    expect(groups.map((g) => g.emphasis)).toEqual(["S1", "S2"])
+    expect(groups.find((g) => g.emphasis === "S2")?.lines.map((l) => l.seq)).toEqual([2, 4])
+  })
   it("latestSummary returns last logFor text + count", () => {
     const s = latestSummary([
       { seq: 1, kind: "planner_started", text: "规划开始", emphasis: "S1" },
@@ -57,5 +67,7 @@ describe("EventLog (grouped + collapsed)", () => {
     await user.click(screen.getByText("事件详情"))
     expect(screen.getByText("规划")).toBeInTheDocument()
     expect(screen.getByText("剧本")).toBeInTheDocument()
+    // 展开行用 friendlyLabel（todo_finished → 任务完成），区别于折叠态的原始文案。
+    expect(screen.getByText("任务完成")).toBeInTheDocument()
   })
 })
