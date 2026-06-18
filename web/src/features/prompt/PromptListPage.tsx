@@ -235,6 +235,7 @@ export function PromptListPage({ org }: PromptListPageProps) {
   )
 
   return (
+    <>
     <CrudResourcePage
       title="提示词管理"
       description="在这里保存常用的提示词模板，并可一键附加风格后缀。"
@@ -337,39 +338,41 @@ export function PromptListPage({ org }: PromptListPageProps) {
         }}
       />
 
-      {/* 创建 / 编辑对话框 */}
-      <FormDialog<FormValues>
-        open={crud.dialog != null}
-        mode={crud.dialog?.mode ?? "create"}
-        title={crud.dialog?.mode === "edit" ? "编辑提示词" : "添加提示词"}
-        description="配置提示词的名称、基础文本，并可选择附加的渲染风格。"
-        contentClassName="max-w-md"
-        schema={formSchema}
-        defaultValues={dialogDefaultValues}
-        resetKey={editingTarget?.id ?? "create"}
-        submitLabel="保存"
-        submitting={crud.submitting}
-        submitError={crud.submitError}
-        onSubmit={(values) => void crud.submit(values)}
-        onOpenChange={(open) => { if (!open) crud.closeDialog() }}
-      >
-        <PromptFields styles={styles.isLoading ? undefined : (styles.data ?? [])} />
-      </FormDialog>
-
-      {/* 删除确认对话框 */}
-      <ConfirmDialog
-        open={crud.deleteTarget != null}
-        title="确认删除该提示词？"
-        description={
-          crud.deleteTarget
-            ? `删除提示词「${crud.deleteTarget.name}」后无法撤销。确认要删除吗？`
-            : ""
-        }
-        confirmLabel="确认删除"
-        confirming={crud.deleting}
-        onConfirm={crud.confirmDelete}
-        onCancel={crud.cancelDelete}
-      />
     </CrudResourcePage>
+
+    {/* 创建 / 编辑对话框 — 挂载在 CrudResourcePage 外部，确保空态下也可渲染 */}
+    <FormDialog<FormValues>
+      open={crud.dialog != null}
+      mode={crud.dialog?.mode ?? "create"}
+      title={crud.dialog?.mode === "edit" ? "编辑提示词" : "添加提示词"}
+      description="配置提示词的名称、基础文本，并可选择附加的渲染风格。"
+      contentClassName="max-w-md"
+      schema={formSchema}
+      defaultValues={dialogDefaultValues}
+      resetKey={editingTarget?.id ?? "create"}
+      submitLabel="保存"
+      submitting={crud.submitting}
+      submitError={crud.submitError}
+      onSubmit={(values) => void crud.submit(values)}
+      onOpenChange={(open) => { if (!open) crud.closeDialog() }}
+    >
+      <PromptFields styles={styles.isLoading ? undefined : (styles.data ?? [])} />
+    </FormDialog>
+
+    {/* 删除确认对话框 */}
+    <ConfirmDialog
+      open={crud.deleteTarget != null}
+      title="确认删除该提示词？"
+      description={
+        crud.deleteTarget
+          ? `删除提示词「${crud.deleteTarget.name}」后无法撤销。确认要删除吗？`
+          : ""
+      }
+      confirmLabel="确认删除"
+      confirming={crud.deleting}
+      onConfirm={crud.confirmDelete}
+      onCancel={crud.cancelDelete}
+    />
+    </>
   )
 }
