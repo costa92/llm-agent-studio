@@ -22,6 +22,7 @@ import { ProjectFields } from "./ProjectFields"
 import {
   projectFormSchema,
   defaultsFor,
+  serializePbConfig,
   type ProjectFormValues,
 } from "./ProjectFields.schema"
 
@@ -84,7 +85,7 @@ export function EditProjectForm({
         kind: values.kind,
         // 标准项目不带绘本配置（发空串）；绘本项目序列化当前配置（绝不传对象）。
         pictureBookConfig:
-          values.kind === "picturebook" ? JSON.stringify(values.pbConfig) : "",
+          values.kind === "picturebook" ? serializePbConfig(values.pbConfig) : "",
       })
       onSuccess?.(updated)
     } catch {
