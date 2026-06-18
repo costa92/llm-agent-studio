@@ -1,4 +1,5 @@
 import { toast } from "sonner"
+import { useQueryClient } from "@tanstack/react-query"
 import { Button } from "@/components/studio/Button"
 import { cn } from "@/lib/utils"
 import { AssetThumb } from "./AssetThumb.tsx"
@@ -23,18 +24,25 @@ export interface SelectedAssetPanelProps {
 export function SelectedAssetPanel({ org, assetId, isAdmin, detail, className }: SelectedAssetPanelProps) {
   const accept = useAccept(org)
   const reject = useReject(org)
+  const qc = useQueryClient()
   const asset = detail?.asset
   const isPending = asset?.status === "pending_acceptance"
 
   function onAccept() {
     accept.mutate(assetId, {
-      onSuccess: () => toast.success("已采纳"),
+      onSuccess: () => {
+        toast.success("已采纳")
+        void qc.invalidateQueries({ queryKey: ["asset", assetId] })
+      },
       onError: (err) => toast.error(hitlErrorMessage(err)),
     })
   }
   function onReject() {
     reject.mutate(assetId, {
-      onSuccess: () => toast.success("已退回"),
+      onSuccess: () => {
+        toast.success("已退回")
+        void qc.invalidateQueries({ queryKey: ["asset", assetId] })
+      },
       onError: (err) => toast.error(hitlErrorMessage(err)),
     })
   }

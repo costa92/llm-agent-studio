@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import { render, screen } from "@testing-library/react"
+import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { SelectedAssetPanel } from "./SelectedAssetPanel"
@@ -58,12 +58,20 @@ describe("SelectedAssetPanel", () => {
     expect(screen.queryByRole("button", { name: /采纳/ })).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: /复制链接/ })).toBeInTheDocument()
   })
-  it("calls accept hook and toasts on success", async () => {
+  it("calls accept hook, toasts, and refreshes asset detail on success", async () => {
     const { apiJSON } = await import("@/lib/apiClient")
     ;(apiJSON as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "as1", status: "accepted" })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const invalidateSpy = vi.spyOn(qc, "invalidateQueries")
     const user = userEvent.setup()
-    wrap(<SelectedAssetPanel org="acme" assetId="as1" isAdmin detail={detail()} />)
+    render(
+      <QueryClientProvider client={qc}>
+        <SelectedAssetPanel org="acme" assetId="as1" isAdmin detail={detail()} />
+      </QueryClientProvider>,
+    )
     await user.click(screen.getByRole("button", { name: /采纳/ }))
     expect(apiJSON).toHaveBeenCalledWith("/api/assets/as1/accept", { method: "POST" })
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith("已采纳"))
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["asset", "as1"] })
   })
 })
