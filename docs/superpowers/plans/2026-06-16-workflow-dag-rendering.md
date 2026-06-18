@@ -1,6 +1,8 @@
 # Workflow DAG Rendering Implementation Plan (子项目 A)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **✅ DONE** — 已实现并合并到 main(PR #51, `1848272`);任务全部完成,checkbox 于 2026-06-18 回填。
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 让 web 端「agent 执行」如实渲染自定义工作流的真实 DAG(多 script / 分支 / 多父),每个节点带独立 live 状态;默认管线项目渲染与改动前逐像素一致。
 
@@ -42,7 +44,7 @@
 - Modify: `internal/projectstate/state.go`
 - Test: `internal/projectstate/state_test.go`
 
-- [ ] **Step 1: 写失败测试 —— buildGraph 线性/分支/多父/悬挂边/稳定序**
+- [x] **Step 1: 写失败测试 —— buildGraph 线性/分支/多父/悬挂边/稳定序**
 
 追加到 `internal/projectstate/state_test.go` 末尾(同包,可直接调未导出函数):
 
@@ -188,12 +190,12 @@ func TestCompute_PopulatesGraph(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 跑测试,确认编译失败(类型/函数未定义)**
+- [x] **Step 2: 跑测试,确认编译失败(类型/函数未定义)**
 
 Run: `GOWORK=off go test ./internal/projectstate/ -run TestBuildGraph -count=1`
 Expected: 编译失败 —— `undefined: buildGraph`、`Todo.CreatedAt`、`Todo.DependsOn`、`ProjectState.IsCustom`、`Input.WorkflowID` 等。
 
-- [ ] **Step 3: 加类型字段(state.go)**
+- [x] **Step 3: 加类型字段(state.go)**
 
 `internal/projectstate/state.go` 顶部 `package projectstate` 之后加 import:
 
@@ -262,7 +264,7 @@ type Input struct {
 }
 ```
 
-- [ ] **Step 4: 加 buildGraph + graphLabel(state.go)**
+- [x] **Step 4: 加 buildGraph + graphLabel(state.go)**
 
 在 `blockedStages()` 之后加:
 
@@ -331,7 +333,7 @@ func buildGraph(todos []Todo, assetByTodo map[string]Asset) ([]GraphNode, []Grap
 }
 ```
 
-- [ ] **Step 5: Compute 接线(state.go)**
+- [x] **Step 5: Compute 接线(state.go)**
 
 把 `Compute` 开头的初始化改为(加 Nodes/Edges/IsCustom):
 
@@ -353,12 +355,12 @@ func buildGraph(todos []Todo, assetByTodo map[string]Asset) ([]GraphNode, []Grap
 	st.Nodes, st.Edges = buildGraph(in.Todos, assetByTodo)
 ```
 
-- [ ] **Step 6: 跑测试,确认通过**
+- [x] **Step 6: 跑测试,确认通过**
 
 Run: `GOWORK=off go test ./internal/projectstate/ -count=1`
 Expected: PASS(新测试 + 原有 state_test 全过)。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/projectstate/state.go internal/projectstate/state_test.go
@@ -377,7 +379,7 @@ custom_workflow_enabled。"
 - Modify: `internal/project/store.go:404-484`(`LoadState`)
 - Test: `internal/project/store_test.go`
 
-- [ ] **Step 1: 写失败测试 —— DB-backed 自定义工作流图**
+- [x] **Step 1: 写失败测试 —— DB-backed 自定义工作流图**
 
 追加到 `internal/project/store_test.go` 末尾:
 
@@ -459,12 +461,12 @@ func TestLoadState_LegacyCustomEnabled(t *testing.T) {
 
 > 注:`CreateInput` 已有 `CustomWorkflowEnabled bool`(`store.go:69`)。若 `workflows` 表列名/必填项与此 INSERT 不符,以 `internal/storage/storage.go` 的 `workflows` DDL 为准微调 INSERT(只调 SQL,不改断言)。
 
-- [ ] **Step 2: 跑测试,确认失败**
+- [x] **Step 2: 跑测试,确认失败**
 
 Run: `GOWORK=off go test ./internal/project/ -run 'TestLoadState_CustomGraph|TestLoadState_LegacyCustomEnabled' -count=1 -p 1`
 Expected: FAIL —— `IsCustom = false`(LoadState 尚未填新字段)、nodes/edges 为空。
 
-- [ ] **Step 3: 改 LoadState plan 查询取 workflow_id + custom_workflow_enabled**
+- [x] **Step 3: 改 LoadState plan 查询取 workflow_id + custom_workflow_enabled**
 
 `internal/project/store.go`,`in := projectstate.Input{...}` 那行(:409)改为附带 custom 标志:
 
@@ -500,7 +502,7 @@ plan 解析块(:425-435)改为多取 `workflow_id`:
 
 > 注意:`errors.Is(err, pgx.ErrNoRows)` 的 draft 直通分支(:436-438)在 plan 不存在时返回 `Compute(in)` —— 此时 `in.CustomWorkflowEnabled` 已设好,所以「自定义但还没 plan」也会 isCustom=true(符合 spec §6 占位)。无需额外改动。
 
-- [ ] **Step 4: 改 todos 查询取 depends_on + created_at**
+- [x] **Step 4: 改 todos 查询取 depends_on + created_at**
 
 todos 查询(:446-447)改为:
 
@@ -523,17 +525,17 @@ scan 循环(:452-457)改为:
 
 > `depends_on TEXT[]` → pgx v5 直扫 `*[]string`;`created_at TIMESTAMPTZ` → `*time.Time`。主查询保持 `ORDER BY updated_at ASC`(现有折叠/last-failed 语义依赖它);稳定排序由 buildGraph 内部完成。
 
-- [ ] **Step 5: 跑测试,确认通过**
+- [x] **Step 5: 跑测试,确认通过**
 
 Run: `GOWORK=off go test ./internal/project/ -run 'TestLoadState' -count=1 -p 1`
 Expected: PASS(新两个 + 原有 LoadState 测试)。
 
-- [ ] **Step 6: 全后端回归**
+- [x] **Step 6: 全后端回归**
 
 Run: `GOWORK=off go build ./... && GOWORK=off go test ./internal/projectstate/ ./internal/project/ -count=1 -p 1`
 Expected: PASS。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/project/store.go internal/project/store_test.go
@@ -554,7 +556,7 @@ git commit -m "feat(project): LoadState feeds workflow_id/custom_enabled/depends
 - Modify: `web/src/features/workflow/workflow.test.tsx`、`useProductionTimeline.test.tsx`、`api.test.ts`(补字面量字段)
 - Test: `web/src/lib/projectState.contract.test.ts`
 
-- [ ] **Step 1: 写失败测试 —— GraphNode.status 枚举契约**
+- [x] **Step 1: 写失败测试 —— GraphNode.status 枚举契约**
 
 `web/src/lib/projectState.contract.test.ts` 顶部 import 加 `GraphNodeStatus`(下一步定义),并在 `describe` 内追加:
 
@@ -571,12 +573,12 @@ git commit -m "feat(project): LoadState feeds workflow_id/custom_enabled/depends
 import type { StageRole, StageStatus2, RunStatus2, PipStatus2, GraphNodeStatus } from "./projectState"
 ```
 
-- [ ] **Step 2: 跑测试,确认失败**
+- [x] **Step 2: 跑测试,确认失败**
 
 Run: `cd web && npx vitest run src/lib/projectState.contract.test.ts`
 Expected: FAIL —— `GraphNodeStatus` 未导出(类型错误)。
 
-- [ ] **Step 3: 加类型(projectState.ts)**
+- [x] **Step 3: 加类型(projectState.ts)**
 
 `web/src/lib/projectState.ts` 在 `PipState` 之后加:
 
@@ -617,7 +619,7 @@ export interface ProjectState {
 }
 ```
 
-- [ ] **Step 4: 补齐所有 ProjectState 字面量(编译修复)**
+- [x] **Step 4: 补齐所有 ProjectState 字面量(编译修复)**
 
 新增 3 个必填字段后,以下字面量会 tsc 报错,各补 `nodes: [], edges: [], isCustom: false`:
 
@@ -640,12 +642,12 @@ export interface ProjectState {
 
 对 `web/src/features/workflow/workflow.test.tsx`、`web/src/features/workflow/useProductionTimeline.test.tsx`、`web/src/features/workflow/api.test.ts` 里每个构造 `ProjectState`(含 `stages:` 字段)的对象字面量,同样补这三个字段。用 `npx tsc -b` 的报错行定位。
 
-- [ ] **Step 5: 跑契约测试 + 类型检查,确认通过**
+- [x] **Step 5: 跑契约测试 + 类型检查,确认通过**
 
 Run: `cd web && npx vitest run src/lib/projectState.contract.test.ts && npx tsc -b`
 Expected: 契约测试 PASS;tsc 无 ProjectState 缺字段错误。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add web/src/lib/projectState.ts web/src/lib/projectState.contract.test.ts \
@@ -664,7 +666,7 @@ git commit -m "feat(web): mirror GraphNode/GraphEdge/isCustom in projectState"
 - Create: `web/src/lib/graphLayout.ts`
 - Test: `web/src/lib/graphLayout.test.ts`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `web/src/lib/graphLayout.test.ts`:
 
@@ -730,12 +732,12 @@ describe("layerize", () => {
 })
 ```
 
-- [ ] **Step 2: 跑测试,确认失败**
+- [x] **Step 2: 跑测试,确认失败**
 
 Run: `cd web && npx vitest run src/lib/graphLayout.test.ts`
 Expected: FAIL —— 找不到模块 `./graphLayout`。
 
-- [ ] **Step 3: 实现 layerize**
+- [x] **Step 3: 实现 layerize**
 
 `web/src/lib/graphLayout.ts`:
 
@@ -780,12 +782,12 @@ export function layerize(nodes: GraphNode[], edges: GraphEdge[]): GraphNode[][] 
 }
 ```
 
-- [ ] **Step 4: 跑测试,确认通过**
+- [x] **Step 4: 跑测试,确认通过**
 
 Run: `cd web && npx vitest run src/lib/graphLayout.test.ts`
 Expected: PASS(5 个测试)。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add web/src/lib/graphLayout.ts web/src/lib/graphLayout.test.ts
@@ -800,7 +802,7 @@ git commit -m "feat(web): layerize — topological layering for DAG view"
 - Create: `web/src/features/workflow/GraphView.tsx`
 - Test: `web/src/features/workflow/GraphView.test.tsx`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `web/src/features/workflow/GraphView.test.tsx`:
 
@@ -851,12 +853,12 @@ describe("GraphView", () => {
 })
 ```
 
-- [ ] **Step 2: 跑测试,确认失败**
+- [x] **Step 2: 跑测试,确认失败**
 
 Run: `cd web && npx vitest run src/features/workflow/GraphView.test.tsx`
 Expected: FAIL —— 找不到 `./GraphView`。
 
-- [ ] **Step 3: 实现 GraphView**
+- [x] **Step 3: 实现 GraphView**
 
 `web/src/features/workflow/GraphView.tsx`:
 
@@ -989,12 +991,12 @@ function GraphNodeCard({
 }
 ```
 
-- [ ] **Step 4: 跑测试,确认通过**
+- [x] **Step 4: 跑测试,确认通过**
 
 Run: `cd web && npx vitest run src/features/workflow/GraphView.test.tsx`
 Expected: PASS(4 个测试)。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add web/src/features/workflow/GraphView.tsx web/src/features/workflow/GraphView.test.tsx
@@ -1010,7 +1012,7 @@ git commit -m "feat(web): GraphView — layered vertical DAG renderer for custom
 - Modify: `web/src/routes/_authed/orgs.$org.projects.$id.runs.$runId.tsx`
 - Test: `web/src/features/workflow/workflow.test.tsx`
 
-- [ ] **Step 1: 写失败测试 —— 路由分流**
+- [x] **Step 1: 写失败测试 —— 路由分流**
 
 `web/src/features/workflow/workflow.test.tsx` 追加(复用文件内现有 `WorkbenchView` 渲染 helper / fixture;若无 helper,用一个最小 ProjectState 字面量构造,记得带 nodes/edges/isCustom)。新增:
 
@@ -1038,12 +1040,12 @@ it("isCustom=false 渲染 5 段轨道而非 GraphView", () => {
 
 > 实施提示:`renderWorkbench`/`makeState` 用文件里已有的渲染/构造工具;若现有 fixture 没有 `isCustom` 字段,先在 helper 默认值里补 `isCustom: false, nodes: [], edges: []`。`makeState(over)` 浅合并 over。
 
-- [ ] **Step 2: 跑测试,确认失败**
+- [x] **Step 2: 跑测试,确认失败**
 
 Run: `cd web && npx vitest run src/features/workflow/workflow.test.tsx -t "isCustom"`
 Expected: FAIL —— `[data-slot="graph"]` 为 null(WorkbenchView 还没接 GraphView)。
 
-- [ ] **Step 3: WorkbenchView 加 onSelectNode prop + 中栏路由**
+- [x] **Step 3: WorkbenchView 加 onSelectNode prop + 中栏路由**
 
 `web/src/features/workflow/WorkbenchPage.tsx`:
 
@@ -1137,12 +1139,12 @@ export function WorkbenchView({
         </div>
 ```
 
-- [ ] **Step 4: 跑分流测试,确认通过**
+- [x] **Step 4: 跑分流测试,确认通过**
 
 Run: `cd web && npx vitest run src/features/workflow/workflow.test.tsx -t "isCustom"`
 Expected: PASS。
 
-- [ ] **Step 5: 容器接 onSelectNode(runs.$runId.tsx)**
+- [x] **Step 5: 容器接 onSelectNode(runs.$runId.tsx)**
 
 `web/src/routes/_authed/orgs.$org.projects.$id.runs.$runId.tsx`:
 
@@ -1166,12 +1168,12 @@ import type { ProjectState, PipState, GraphNode } from "@/lib/projectState"
       onSelectNode={handleSelectNode}
 ```
 
-- [ ] **Step 6: 前端全量回归**
+- [x] **Step 6: 前端全量回归**
 
 Run: `cd web && npx tsc -b && npx vitest run`
 Expected: tsc 无错;vitest 全绿(含新增测试)。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add web/src/features/workflow/WorkbenchPage.tsx \
@@ -1186,23 +1188,23 @@ git commit -m "feat(web): route Workbench middle column to GraphView when isCust
 
 **Files:** 无(验证)
 
-- [ ] **Step 1: 后端全量**
+- [x] **Step 1: 后端全量**
 
 Run: `cd llm-agent-studio && GOWORK=off go build ./... && GOWORK=off go vet ./... && GOWORK=off go test ./... -count=1 -p 1`
 Expected: 全绿(DB-backed 测试需 `LLM_AGENT_STUDIO_PG_URL` 指向干净库)。
 
-- [ ] **Step 2: 前端全量**
+- [x] **Step 2: 前端全量**
 
 Run: `cd web && npm test`
 Expected: 全绿。
 
-- [ ] **Step 3: 手测(成功标准)**
+- [x] **Step 3: 手测(成功标准)**
 
 按 memory `reference_studio-dev-runtime` 起 studiod :8083 + Vite :5173,登录后:
 1. 跑一个**自定义工作流**(多 script / 分支依赖)→ 中栏出现 `GraphView`,分层渲染、各节点 live 状态正确、asset 节点可点开右栏预览。
 2. 打开一个**默认管线项目**的 run 页 → 中栏仍是原 5 段轨道,与改动前视觉一致。
 
-- [ ] **Step 4: 用 finishing-a-development-branch 收尾**
+- [x] **Step 4: 用 finishing-a-development-branch 收尾**
 
 Run sub-skill: `superpowers:finishing-a-development-branch`(验证测试 → 选 merge/PR)。
 
