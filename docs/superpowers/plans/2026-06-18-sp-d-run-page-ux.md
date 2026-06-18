@@ -1,5 +1,7 @@
 # SP-D 运行页 UX 打磨 Implementation Plan
 
+> **✅ DONE（2026-06-18，PR #64 squash-merge）** — 5 任务全部完成并经 spec+代码质量两段审查 + 最终 holistic review（Ready to merge）。全量 `vitest` 66 文件/441 用例绿、`tsc` 干净、SP-D 触及 17 文件 `eslint` 无 error；浏览器烟雾逐区截图确认 4 区表现正确、行为零回归。下方勾选为完成留痕。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 打磨运行工作台（`WorkbenchView`）的 4 处体验——事件日志可读性、运行总状态/进度概览、DAG/阶段视图、选中资产面板。这是 **有意的视觉/交互改进**（区别于 SP-A/B 的零视觉变化重构），但 **零行为回归**：所有数据、SSE 实时累积、阶段点击抽屉、相册、绘本阅读器、去审核跳转、运行/取消/重跑均不变；只改呈现，复用既有 API。
@@ -59,7 +61,7 @@
 
 ### 步骤
 
-- [ ] **写映射与 helper 的失败测试**：创建 `web/src/components/studio/EventLog.test.tsx`：
+- [x] **写映射与 helper 的失败测试**：创建 `web/src/components/studio/EventLog.test.tsx`：
   ```tsx
   import { describe, it, expect } from "vitest"
   import { render, screen } from "@testing-library/react"
@@ -125,9 +127,9 @@
     })
   })
   ```
-- [ ] **运行测试，确认 FAIL**：`cd web && npx vitest run src/components/studio/EventLog.test.tsx`
+- [x] **运行测试，确认 FAIL**：`cd web && npx vitest run src/components/studio/EventLog.test.tsx`
   期望：`Error: Failed to resolve import "./EventLog.schema"` / `friendlyLabel is not exported` —— FAIL（模块/导出不存在）。
-- [ ] **实现 `timeline.ts` 的 kind→友好文案**：在 `web/src/lib/timeline.ts` 第 16 行（`LogLine` 接口收尾的 `}` 之后）插入：
+- [x] **实现 `timeline.ts` 的 kind→友好文案**：在 `web/src/lib/timeline.ts` 第 16 行（`LogLine` 接口收尾的 `}` 之后）插入：
   ```ts
   // kind → 友好中文短语（左栏事件日志降噪；未命中则回落原始 text）。纯前端表现。
   export const KIND_LABEL: Record<string, string> = {
@@ -158,7 +160,7 @@
     return KIND_LABEL[line.kind] ?? line.text
   }
   ```
-- [ ] **实现 `EventLog.schema.ts`**：创建 `web/src/components/studio/EventLog.schema.ts`：
+- [x] **实现 `EventLog.schema.ts`**：创建 `web/src/components/studio/EventLog.schema.ts`：
   ```ts
   import type { LogLine, StageId } from "@/lib/timeline"
   import { friendlyLabel } from "@/lib/timeline"
@@ -199,7 +201,7 @@
     return { text: friendlyLabel(last), count: lines.length }
   }
   ```
-- [ ] **重写 `EventLog.tsx`**（受控 prop + 折叠 `<details>` + 分组）。整体替换 `web/src/components/studio/EventLog.tsx` 全文为：
+- [x] **重写 `EventLog.tsx`**（受控 prop + 折叠 `<details>` + 分组）。整体替换 `web/src/components/studio/EventLog.tsx` 全文为：
   ```tsx
   import type { ReactNode } from "react"
   import { cn } from "@/lib/utils"
@@ -252,7 +254,7 @@
     )
   }
   ```
-- [ ] **适配 `WorkbenchPage.tsx` 的 EventLog 调用**（补传 `kind`）。在 `web/src/features/workflow/WorkbenchPage.tsx` 把 200-206 行：
+- [x] **适配 `WorkbenchPage.tsx` 的 EventLog 调用**（补传 `kind`）。在 `web/src/features/workflow/WorkbenchPage.tsx` 把 200-206 行：
   ```tsx
             <EventLog
               lines={log.map((l) => ({
@@ -266,7 +268,7 @@
   ```tsx
             <EventLog lines={log} />
   ```
-- [ ] **适配 `studio-base.test.tsx` 的 EventLog 断言**（DOM 真变了 → 调选择器，不弱化）。在 `web/src/components/studio/studio-base.test.tsx` 把 51-61 行的 `it("EventLog renders empty state then lines", …)` 替换为：
+- [x] **适配 `studio-base.test.tsx` 的 EventLog 断言**（DOM 真变了 → 调选择器，不弱化）。在 `web/src/components/studio/studio-base.test.tsx` 把 51-61 行的 `it("EventLog renders empty state then lines", …)` 替换为：
   ```tsx
     it("EventLog renders empty state then collapsed summary", () => {
       const { rerender } = render(<EventLog lines={[]} />)
@@ -282,16 +284,16 @@
     })
   ```
   > 注：原断言 `getByText("剧本已生成")` 在折叠态不再可见（在 `<details>` 内部，但 jsdom 仍渲染 DOM——getByText 仍能命中）。为避免脆弱，改断言 summary 行；分组展开断言归 `EventLog.test.tsx` 专测。`studio-base.test.tsx` 顶部 import 需确认含 `EventLog`（已在 9 行）。
-- [ ] **运行测试，确认 PASS**：
+- [x] **运行测试，确认 PASS**：
   `cd web && npx vitest run src/components/studio/EventLog.test.tsx src/components/studio/studio-base.test.tsx`
   期望：两文件全部用例 PASS。
-- [ ] **运行 workflow 回归（确认 EventLog 调用改动不破 WorkbenchView）**：
+- [x] **运行 workflow 回归（确认 EventLog 调用改动不破 WorkbenchView）**：
   `cd web && npx vitest run src/features/workflow/workflow.test.tsx`
   期望：全绿（workflow.test 传 `log: []`，EventLog 显空态「暂无事件」，无断言依赖日志结构）。
-- [ ] **类型 + lint**：
+- [x] **类型 + lint**：
   `cd web && npx tsc --noEmit && npx eslint src/lib/timeline.ts src/components/studio/EventLog.tsx src/components/studio/EventLog.schema.ts src/components/studio/EventLog.test.tsx src/features/workflow/WorkbenchPage.tsx`
   期望：无 error（含 react-refresh：maps 已分到 `EventLog.schema.ts`，`timeline.ts` 无组件）。
-- [ ] **提交**：
+- [x] **提交**：
   ```bash
   cd web && git add src/lib/timeline.ts src/components/studio/EventLog.tsx src/components/studio/EventLog.schema.ts src/components/studio/EventLog.test.tsx src/components/studio/studio-base.test.tsx src/features/workflow/WorkbenchPage.tsx
   git commit -m "feat(studio/run): group + collapse event log with friendly kind labels
@@ -313,7 +315,7 @@
 
 ### 步骤
 
-- [ ] **写 computeRunSummary 失败测试**：创建 `web/src/features/workflow/RunSummary.test.tsx`：
+- [x] **写 computeRunSummary 失败测试**：创建 `web/src/features/workflow/RunSummary.test.tsx`：
   ```tsx
   import { describe, it, expect } from "vitest"
   import { render, screen } from "@testing-library/react"
@@ -381,9 +383,9 @@
     })
   })
   ```
-- [ ] **运行测试，确认 FAIL**：`cd web && npx vitest run src/features/workflow/RunSummary.test.tsx`
+- [x] **运行测试，确认 FAIL**：`cd web && npx vitest run src/features/workflow/RunSummary.test.tsx`
   期望：`Failed to resolve import "./RunSummary"` —— FAIL。
-- [ ] **实现 `RunSummary.schema.ts`**：创建 `web/src/features/workflow/RunSummary.schema.ts`：
+- [x] **实现 `RunSummary.schema.ts`**：创建 `web/src/features/workflow/RunSummary.schema.ts`：
   ```ts
   import type { ProjectState } from "@/lib/projectState"
   import type { ProjectStatus } from "@/lib/types"
@@ -432,7 +434,7 @@
     }
   }
   ```
-- [ ] **实现 `RunSummary.tsx`**：创建 `web/src/features/workflow/RunSummary.tsx`：
+- [x] **实现 `RunSummary.tsx`**：创建 `web/src/features/workflow/RunSummary.tsx`：
   ```tsx
   import { Badge } from "@/components/studio/Badge"
   import { cn } from "@/lib/utils"
@@ -475,9 +477,9 @@
     )
   }
   ```
-- [ ] **运行测试，确认 PASS**：`cd web && npx vitest run src/features/workflow/RunSummary.test.tsx`
+- [x] **运行测试，确认 PASS**：`cd web && npx vitest run src/features/workflow/RunSummary.test.tsx`
   期望：全绿。
-- [ ] **接入 WorkbenchPage**：在 `web/src/features/workflow/WorkbenchPage.tsx` 顶部 import 区加：
+- [x] **接入 WorkbenchPage**：在 `web/src/features/workflow/WorkbenchPage.tsx` 顶部 import 区加：
   ```tsx
   import { RunSummary } from "./RunSummary"
   ```
@@ -485,12 +487,12 @@
   ```tsx
       <RunSummary state={state} />
   ```
-- [ ] **运行 workflow 回归**：`cd web && npx vitest run src/features/workflow/workflow.test.tsx`
+- [x] **运行 workflow 回归**：`cd web && npx vitest run src/features/workflow/workflow.test.tsx`
   期望：全绿（RunSummary 是新增节点，不改既有徽标/阶段/SlateBar 断言；`shows 待审核·N badge` 用例查 `data-slot="slate-bar"` 为 null 仍成立——SlateBar 未动）。
-- [ ] **类型 + lint**：
+- [x] **类型 + lint**：
   `cd web && npx tsc --noEmit && npx eslint src/features/workflow/RunSummary.tsx src/features/workflow/RunSummary.schema.ts src/features/workflow/RunSummary.test.tsx src/features/workflow/WorkbenchPage.tsx`
   期望：无 error（computeRunSummary 等非组件导出在 `.schema.ts`）。
-- [ ] **提交**：
+- [x] **提交**：
   ```bash
   cd web && git add src/features/workflow/RunSummary.tsx src/features/workflow/RunSummary.schema.ts src/features/workflow/RunSummary.test.tsx src/features/workflow/WorkbenchPage.tsx
   git commit -m "feat(studio/run): add RunSummary progress bar above workbench
@@ -513,7 +515,7 @@
 
 ### 步骤
 
-- [ ] **写连接线 + CTA + pip 热区的失败测试**。在 `web/src/components/studio/timeline-components.test.tsx` 末尾（最后一个 `describe` 收尾的 `})` 之前）追加：
+- [x] **写连接线 + CTA + pip 热区的失败测试**。在 `web/src/components/studio/timeline-components.test.tsx` 末尾（最后一个 `describe` 收尾的 `})` 之前）追加：
   ```tsx
     it("TimelineStage connector is solid when linked, dashed-gray when not", () => {
       const { rerender } = render(<TimelineStage stage={stage({ status: "done", linked: true })} />)
@@ -553,10 +555,10 @@
       expect(onOpenReview).toHaveBeenCalled()
     })
   ```
-- [ ] **运行测试，确认 FAIL**：
+- [x] **运行测试，确认 FAIL**：
   `cd web && npx vitest run src/components/studio/timeline-components.test.tsx src/features/workflow/workflow.test.tsx`
   期望：新增用例 FAIL（`data-slot="connector"` 不存在；内联 CTA 不存在，`getAllByRole` 只找到 1 个）。
-- [ ] **实现 TimelineStage 连接线着色**。在 `web/src/components/studio/TimelineStage.tsx` 把 94-102 行的连接线 `<span>` 替换为（加 `data-slot`/`data-linked` + pending 虚线）：
+- [x] **实现 TimelineStage 连接线着色**。在 `web/src/components/studio/TimelineStage.tsx` 把 94-102 行的连接线 `<span>` 替换为（加 `data-slot`/`data-linked` + pending 虚线）：
   ```tsx
       {/* 连接线：linked（上游 done）实心着 agent 色；否则虚线灰，态分明。 */}
       {!last && (
@@ -573,7 +575,7 @@
         />
       )}
   ```
-- [ ] **实现 PipGroup 热区 + hover**。在 `web/src/components/studio/PipGroup.tsx` 把 selectable 分支的 `<button>`（46-58 行）替换为（外层加大命中区 + hover 环，内层方块保 `data-slot="pip"`/`data-status` 不变）：
+- [x] **实现 PipGroup 热区 + hover**。在 `web/src/components/studio/PipGroup.tsx` 把 selectable 分支的 `<button>`（46-58 行）替换为（外层加大命中区 + hover 环，内层方块保 `data-slot="pip"`/`data-status` 不变）：
   ```tsx
         if (selectable) {
           return (
@@ -595,7 +597,7 @@
         }
   ```
   > 注：`data-slot="pip"` 从 `<button>` 下移到内层 `<span>`，`querySelectorAll('[data-slot="pip"]')` 计数不变（仍每 pip 一个）；`getByRole("button",{name:/a1/})`（aria-label 含 todoId）仍命中外层按钮。
-- [ ] **实现 GraphView 层间连接线着色**（成本可控：上游层全 done → 实心 agent 色，否则灰）。在 `web/src/features/workflow/GraphView.tsx` 把 39-45 行（layer 容器 + 竖线）替换为：
+- [x] **实现 GraphView 层间连接线着色**（成本可控：上游层全 done → 实心 agent 色，否则灰）。在 `web/src/features/workflow/GraphView.tsx` 把 39-45 行（layer 容器 + 竖线）替换为：
   ```tsx
         {layers.map((layer, li) => {
           // 上一层全部 done → 连接线实心（进度已抵达本层）；否则灰。
@@ -621,7 +623,7 @@
         })}
   ```
   > 即把箭头函数体从隐式 return 改为带 `{ … return ( … ) }`。`cn` 已 import（GraphView 第 1 行）。`data-slot="graph"`/`graph-node`/`graph-layer` 不变，GraphView.test 全绿。
-- [ ] **实现 S5 内联 CTA**。在 `web/src/features/workflow/WorkbenchPage.tsx` 的 `TimelineStage` 渲染块（246-250 行的 children）中，S4 pip 之后追加 S5 内联 CTA。把 247-249 行：
+- [x] **实现 S5 内联 CTA**。在 `web/src/features/workflow/WorkbenchPage.tsx` 的 `TimelineStage` 渲染块（246-250 行的 children）中，S4 pip 之后追加 S5 内联 CTA。把 247-249 行：
   ```tsx
                     {id === "S4" && pips.length > 0 && (
                       <PipGroup pips={pips} onSelectPip={onSelectPip} />
@@ -639,13 +641,13 @@
                     )}
   ```
   > `Button` 已 import（WorkbenchPage 第 3 行）。`stage` 是 map 回调参数（权威 `StageState`，含 `status`），`onOpenReview` 是 props（已解构，第 99 行）。
-- [ ] **运行测试，确认 PASS**：
+- [x] **运行测试，确认 PASS**：
   `cd web && npx vitest run src/components/studio/timeline-components.test.tsx src/features/workflow/workflow.test.tsx src/features/workflow/GraphView.test.tsx`
   期望：全绿（含原 pip/stage/graph 断言 + 新增连接线/CTA 断言）。
-- [ ] **类型 + lint**：
+- [x] **类型 + lint**：
   `cd web && npx tsc --noEmit && npx eslint src/components/studio/TimelineStage.tsx src/components/studio/PipGroup.tsx src/features/workflow/GraphView.tsx src/features/workflow/WorkbenchPage.tsx`
   期望：无 error。
-- [ ] **提交**：
+- [x] **提交**：
   ```bash
   cd web && git add src/components/studio/TimelineStage.tsx src/components/studio/PipGroup.tsx src/features/workflow/GraphView.tsx src/features/workflow/WorkbenchPage.tsx src/components/studio/timeline-components.test.tsx src/features/workflow/workflow.test.tsx
   git commit -m "feat(studio/run): clearer DAG coloring + pip hit-area + inline S5 review CTA
@@ -666,7 +668,7 @@
 
 ### 步骤
 
-- [ ] **写 SelectedAssetPanel 失败测试**：创建 `web/src/features/workflow/SelectedAssetPanel.test.tsx`：
+- [x] **写 SelectedAssetPanel 失败测试**：创建 `web/src/features/workflow/SelectedAssetPanel.test.tsx`：
   ```tsx
   import { describe, it, expect, vi, beforeEach } from "vitest"
   import { render, screen } from "@testing-library/react"
@@ -735,9 +737,9 @@
     })
   })
   ```
-- [ ] **运行测试，确认 FAIL**：`cd web && npx vitest run src/features/workflow/SelectedAssetPanel.test.tsx`
+- [x] **运行测试，确认 FAIL**：`cd web && npx vitest run src/features/workflow/SelectedAssetPanel.test.tsx`
   期望：`Failed to resolve import "./SelectedAssetPanel"` —— FAIL。
-- [ ] **实现 `SelectedAssetPanel.tsx`**：创建 `web/src/features/workflow/SelectedAssetPanel.tsx`：
+- [x] **实现 `SelectedAssetPanel.tsx`**：创建 `web/src/features/workflow/SelectedAssetPanel.tsx`：
   ```tsx
   import { toast } from "sonner"
   import { Button } from "@/components/studio/Button"
@@ -820,9 +822,9 @@
     )
   }
   ```
-- [ ] **运行测试，确认 PASS**：`cd web && npx vitest run src/features/workflow/SelectedAssetPanel.test.tsx`
+- [x] **运行测试，确认 PASS**：`cd web && npx vitest run src/features/workflow/SelectedAssetPanel.test.tsx`
   期望：全绿。
-- [ ] **接入路由 preview 槽**。在 `web/src/routes/_authed/orgs.$org.projects.$id.runs.$runId.tsx`：
+- [x] **接入路由 preview 槽**。在 `web/src/routes/_authed/orgs.$org.projects.$id.runs.$runId.tsx`：
   顶部 import 区（40-41 行附近）加：
   ```tsx
   import { useRole } from "@/app/rbac"
@@ -862,13 +864,13 @@
       }
   ```
   > 移除路由对 `AssetThumb`/`AssetPreviewActions` 的直接 import（14-15 行）——它们已 orphan（SelectedAssetPanel 内部用）。删除这两行 import 以清自身产生的孤儿（house 纪律：清自己制造的孤儿）。
-- [ ] **类型 + lint**：
+- [x] **类型 + lint**：
   `cd web && npx tsc --noEmit && npx eslint src/features/workflow/SelectedAssetPanel.tsx src/features/workflow/SelectedAssetPanel.test.tsx src/routes/_authed/orgs.\$org.projects.\$id.runs.\$runId.tsx`
   期望：无 error（路由文件 react-refresh 已关；无未用 import 残留）。
-- [ ] **运行 workflow 回归**（确认 WorkbenchView preview slot 仍渲染）：
+- [x] **运行 workflow 回归**（确认 WorkbenchView preview slot 仍渲染）：
   `cd web && npx vitest run src/features/workflow/workflow.test.tsx`
   期望：全绿（WorkbenchView 的 preview 是 ReactNode 槽，测试未断言其内部结构）。
-- [ ] **提交**：
+- [x] **提交**：
   ```bash
   cd web && git add src/features/workflow/SelectedAssetPanel.tsx src/features/workflow/SelectedAssetPanel.test.tsx "src/routes/_authed/orgs.\$org.projects.\$id.runs.\$runId.tsx"
   git commit -m "feat(studio/run): richer selected-asset panel with inline accept/reject
@@ -886,26 +888,26 @@
 
 ### 步骤
 
-- [ ] **全量类型检查**：`cd web && npx tsc --noEmit`
+- [x] **全量类型检查**：`cd web && npx tsc --noEmit`
   期望：无输出（exit 0）。
-- [ ] **全量 lint**：`cd web && npx eslint .`
+- [x] **全量 lint**：`cd web && npx eslint .`
   期望：无 error（warning 计数不增）。
-- [ ] **全量单测**：`cd web && npx vitest run`
+- [x] **全量单测**：`cd web && npx vitest run`
   期望：全部测试文件 PASS（含 `workflow.test`、`GraphView.test`、`studio-base.test`、`timeline-components.test`、`useProductionTimeline.test`、`PictureBookReader.test`、`AssetGalleryModal.test`、新增 `EventLog.test`/`RunSummary.test`/`SelectedAssetPanel.test`）。
-- [ ] **确认 dev stack 在跑**（按需启动，见 memory「Studio dev runtime」）：studiod :8083 + Vite :5173。
+- [x] **确认 dev stack 在跑**（按需启动，见 memory「Studio dev runtime」）：studiod :8083 + Vite :5173。
   快速探活：`curl -sS -o /dev/null -w "%{http_code}\n" http://localhost:5173`（期望 200）。
-- [ ] **逐区浏览器烟雾截图**：`node /tmp/sp-d-shots.cjs`
+- [x] **逐区浏览器烟雾截图**：`node /tmp/sp-d-shots.cjs`
   期望产出（逐区肉眼核对无行为回归）：
   - `/tmp/sp-d-run-std.png`（标准 run 页）：核对 **RunSummary 概览条**（runStatus + 阶段 X/N + 素材 done/total + 进度条）、**事件日志折叠**（「事件详情」+ 最新动态行）、**TimelineStage 连接线** done 实心 / pending 虚线、**S4 pip** 热区/hover、**S5 内联「去审核」CTA**、**右栏选中资产面板**（更大预览 + 元数据；admin 见采纳/拒绝）。
   - `/tmp/sp-d-run-pb.png`（绘本 run 页）：核对绘本「📖 阅读绘本」入口仍在、阅读器可开（行为不回归）。
   - `/tmp/sp-d-project-detail.png`（项目详情）：核对未受影响（旁证三栏布局未破）。
-- [ ] **手动核对行为零回归清单**（在截图/浏览器中逐项确认）：
+- [x] **手动核对行为零回归清单**（在截图/浏览器中逐项确认）：
   - SSE 实时累积：运行中事件日志「最新动态」随新帧更新、展开分组实时归并。
   - 阶段点击（S2/S3）开抽屉、pip 点击切右栏预览、相册「查看全部素材」、绘本阅读器、顶栏「去审核」跳转、运行/取消/重跑——逐一仍可用。
   - 右栏 pending 资产采纳后队列/库失效（`invalidateAfterHitl`）、409（非 pending）显「该资产已被处理…」。
-- [ ] **若烟雾发现回归**：用 superpowers:systematic-debugging 复现 → 定位 → 修 → 回跑对应单测 + 重截图，再继续。
-- [ ] **完成开发分支**：调用 **superpowers:finishing-a-development-branch**，按其结构化选项决定合并 / PR / 清理（不擅自推送，遵 house git 纪律：仅用户要求时 push）。
-- [ ] **最终提交（收尾，若有 lint/截图脚本等零散改动）**：
+- [x] **若烟雾发现回归**：用 superpowers:systematic-debugging 复现 → 定位 → 修 → 回跑对应单测 + 重截图，再继续。
+- [x] **完成开发分支**：调用 **superpowers:finishing-a-development-branch**，按其结构化选项决定合并 / PR / 清理（不擅自推送，遵 house git 纪律：仅用户要求时 push）。
+- [x] **最终提交（收尾，若有 lint/截图脚本等零散改动）**：
   ```bash
   cd web && git add -A
   git commit -m "chore(studio/run): SP-D run-page UX polish closeout — green tsc/eslint/vitest + smoke"
