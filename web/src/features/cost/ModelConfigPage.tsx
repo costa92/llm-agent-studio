@@ -1,16 +1,3 @@
-import { useState } from "react"
-import { FormProvider, useForm } from "react-hook-form"
-import { zodResolver } from "@hookform/resolvers/zod"
-import { Loader2 } from "lucide-react"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/studio/Button"
 import { Badge } from "@/components/studio/Badge"
@@ -27,6 +14,7 @@ import type {
   ModelConfig,
 } from "@/lib/types"
 import type { ListModelsInput, ListModelsResult } from "@/features/cost/api"
+import { modelConfigErrorMessage } from "./configError"
 import {
   ModelConfigFields,
   KIND_LABELS,
@@ -62,7 +50,7 @@ export interface ModelConfigViewProps {
   isLoading: boolean
   isError: boolean
   onRetry: () => void
-  // 创建（提交 → Promise<ModelConfig>；密钥型 param → 400 由调用方 toast）。
+  // 创建（提交 → Promise<ModelConfig>；拒绝原样透传，错误映射/toast 由本组件 useCrudResource 处理）。
   onCreate: (input: CreateModelConfigInput) => Promise<ModelConfig>
   // 编辑（按 id 更新 → Promise<ModelConfig>；apiKey 留空则后端保留既有密钥）。
   onUpdate: (id: string, input: CreateModelConfigInput) => Promise<ModelConfig>
@@ -95,13 +83,15 @@ export function ModelConfigView({
     create: (v) => onCreate(toInput(v as FormValues)),
     update: (id, v) => onUpdate(id, toInput(v as FormValues)),
     remove: (id) => onDelete(id),
+    labels: { created: "模型配置已保存", updated: "模型配置已更新", deleted: "模型配置已删除" },
     errorMessage: (_action, err) =>
-      // 本地 params JSON 校验 → 显示其文案；其它后端错误由调用方 toast，这里兜底。
+      // 本地 params JSON 校验失败 → 原样显示；其余后端错误 → 复用 modelConfigErrorMessage 映射
+      // （400 密钥型 param / 缺 provider+model / 未配置加密密钥等）。
       err instanceof Error &&
       (err.message === "参数必须是 JSON 对象" ||
         err.message === "参数不是合法 JSON")
         ? err.message
-        : "保存失败，请检查参数",
+        : modelConfigErrorMessage(err),
   })
 
   const editingTarget = crud.dialog?.mode === "edit" ? crud.dialog.target : null
@@ -142,7 +132,7 @@ export function ModelConfigView({
           layout="cards"
           items={items}
           getId={(c) => c.id}
-          gridClassName="grid grid-cols-1 gap-4 md:grid-cols-2"
+          gridClassName="overflow-hidden rounded-xl border border-line bg-bg-surface [&>div:last-child>*]:border-b-0"
           // kind → 本地化标签作为分组 key（DataView 默认渲染 key 文本，故此处直接给中文
           // 标签才能保留「图像/文本/视频…」的视觉；二期 kind 追加「· 二期」）。
           groupBy={(c) =>
@@ -166,7 +156,7 @@ export function ModelConfigView({
             },
           ]}
           renderCard={(c, actions) => (
-            <div className="flex items-center justify-between rounded-xl border border-line bg-bg-surface px-4 py-2.5 text-[12.5px]">
+            <div className="flex items-center justify-between border-b border-line px-4 py-2.5 text-[12.5px]">
               <span className="flex flex-col gap-0.5">
                 <span className="text-text-1">
                   {c.provider} · {c.model}
@@ -235,165 +225,5 @@ export function ModelConfigView({
         onCancel={crud.cancelDelete}
       />
     </>
-  )
-}
-
-// ── 独立创建/编辑表单 + 对话框（供组件级测试 & 复用）────────────────────
-// CreateModelConfigForm 自带 rhf FormProvider，可独立渲染（不依赖外层对话框）。
-
-export interface CreateModelConfigFormProps {
-  catalog: CatalogEntry[]
-  onCreate: (input: CreateModelConfigInput) => Promise<ModelConfig>
-  onSuccess?: (mc: ModelConfig) => void
-  // 编辑模式：传入既有配置 → 表单预填；API key 留空则提交时省略（后端保留既有密钥）。
-  initial?: ModelConfig
-  onListModels?: (input: ListModelsInput) => Promise<ListModelsResult>
-  onRevealKey?: (id: string) => Promise<string>
-}
-
-export function CreateModelConfigForm({
-  catalog,
-  onCreate,
-  onSuccess,
-  initial,
-  onListModels,
-  onRevealKey,
-}: CreateModelConfigFormProps) {
-  const providers = providersFor(catalog)
-  const form = useForm<FormValues>({
-    resolver: zodResolver(formSchema) as never,
-    defaultValues: defaultsFor(initial, providers),
-  })
-  const {
-    handleSubmit,
-    setError,
-    formState: { errors, isSubmitting },
-  } = form
-
-  const submit = handleSubmit(async (values) => {
-    let input: CreateModelConfigInput
-    try {
-      input = toInput(values)
-    } catch (err) {
-      // 非法 params JSON → 本地拦下（不打后端）。
-      setError("root", {
-        message: err instanceof Error ? err.message : "参数不是合法 JSON",
-      })
-      return
-    }
-    try {
-      const mc = await onCreate(input)
-      onSuccess?.(mc)
-    } catch (err) {
-      // 后端 400 等 → 调用方 toast；此处兜底文案。
-      setError("root", {
-        message: err instanceof Error ? "保存失败，请检查参数" : "保存失败",
-      })
-    }
-  })
-
-  return (
-    <FormProvider {...form}>
-      <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
-        <ModelConfigFields
-          catalog={catalog}
-          initial={initial}
-          onListModels={onListModels}
-          onRevealKey={onRevealKey}
-        />
-        {errors.root?.message && (
-          <p role="alert" className="text-[12px] text-danger">
-            {errors.root.message}
-          </p>
-        )}
-        <DialogFooter>
-          <Button type="submit" variant="amber" disabled={isSubmitting}>
-            {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            保存
-          </Button>
-        </DialogFooter>
-      </form>
-    </FormProvider>
-  )
-}
-
-export interface CreateModelConfigDialogProps extends CreateModelConfigFormProps {
-  trigger: React.ReactNode
-}
-
-export function CreateModelConfigDialog({
-  trigger,
-  onSuccess,
-  ...formProps
-}: CreateModelConfigDialogProps) {
-  const [open, setOpen] = useState(false)
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>{trigger}</DialogTrigger>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>添加模型配置</DialogTitle>
-          <DialogDescription>
-            选择 provider（或 OpenAI 兼容端点）与类型，填写 model；可选填 base_url 与 API
-            key（仅写入、加密存储）。
-          </DialogDescription>
-        </DialogHeader>
-        <CreateModelConfigForm
-          {...formProps}
-          onSuccess={(mc) => {
-            setOpen(false)
-            onSuccess?.(mc)
-          }}
-        />
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-export interface EditModelConfigDialogProps {
-  config: ModelConfig
-  catalog: CatalogEntry[]
-  // 按 id 更新（apiKey 留空 → 后端保留既有密钥）。
-  onUpdate: (id: string, input: CreateModelConfigInput) => Promise<ModelConfig>
-  trigger: React.ReactNode
-  onSuccess?: (mc: ModelConfig) => void
-  onListModels?: (input: ListModelsInput) => Promise<ListModelsResult>
-  onRevealKey?: (id: string) => Promise<string>
-}
-
-// 编辑弹窗：复用创建表单，预填既有配置；提交走 onUpdate(id, input)。
-export function EditModelConfigDialog({
-  config,
-  catalog,
-  onUpdate,
-  trigger,
-  onSuccess,
-  onListModels,
-  onRevealKey,
-}: EditModelConfigDialogProps) {
-  const [open, setOpen] = useState(false)
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>{trigger}</DialogTrigger>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>编辑模型配置</DialogTitle>
-          <DialogDescription>
-            修改 provider / 类型 / model / base_url 等；API key 留空保持不变，填写则替换。
-          </DialogDescription>
-        </DialogHeader>
-        <CreateModelConfigForm
-          catalog={catalog}
-          initial={config}
-          onCreate={(input) => onUpdate(config.id, input)}
-          onListModels={onListModels}
-          onRevealKey={onRevealKey}
-          onSuccess={(mc) => {
-            setOpen(false)
-            onSuccess?.(mc)
-          }}
-        />
-      </DialogContent>
-    </Dialog>
   )
 }
