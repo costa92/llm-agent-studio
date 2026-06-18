@@ -60,4 +60,14 @@ describe("timeline presentational components", () => {
     const cur = screen.getByText("v2 当前")
     expect(cur).toHaveAttribute("data-current")
   })
+
+  // T3：连接线 done/linked 时 data-linked="true"，pending/unlinked 时 data-linked="false"。
+  it("TimelineStage connector is solid when linked, dashed-gray when not", () => {
+    const { rerender } = render(<TimelineStage stage={stage({ status: "done", linked: true })} />)
+    const linkedConn = document.querySelector('[data-slot="stage"] [data-slot="connector"]')
+    expect(linkedConn?.getAttribute("data-linked")).toBe("true")
+    rerender(<TimelineStage stage={stage({ status: "pending", linked: false })} />)
+    const pendingConn = document.querySelector('[data-slot="stage"] [data-slot="connector"]')
+    expect(pendingConn?.getAttribute("data-linked")).toBe("false")
+  })
 })

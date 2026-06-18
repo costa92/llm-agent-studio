@@ -50,11 +50,15 @@ export function PipGroup({ pips, onSelectPip, className }: PipGroupProps) {
               type="button"
               aria-label={title}
               onClick={() => onSelectPip(pip)}
-              data-slot="pip"
-              data-status={pip.status}
               title={title}
-              className={cn(pipVariants({ status: pip.status }), "cursor-pointer")}
-            />
+              className="-m-1 cursor-pointer rounded p-1 transition-opacity hover:opacity-80"
+            >
+              <span
+                data-slot="pip"
+                data-status={pip.status}
+                className={pipVariants({ status: pip.status })}
+              />
+            </button>
           )
         }
         return (

@@ -243,6 +243,11 @@ export function WorkbenchView({
                     {id === "S4" && pips.length > 0 && (
                       <PipGroup pips={pips} onSelectPip={onSelectPip} />
                     )}
+                    {id === "S5" && stage.status === "pending" && onOpenReview && (
+                      <Button variant="ghost" className="mt-2" onClick={onOpenReview}>
+                        去审核 →
+                      </Button>
+                    )}
                   </TimelineStage>
                 )
               })}

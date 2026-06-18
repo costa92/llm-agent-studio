@@ -315,6 +315,32 @@ describe("WorkbenchView (authoritative ProjectState)", () => {
     expect(document.querySelector('[data-slot="stage"]')).not.toBeNull()
     expect(document.querySelector('[data-slot="graph"]')).toBeNull()
   })
+
+  // T3：S5 人工审核 pending 阶段内联「去审核 →」CTA，与顶栏共用 onOpenReview。
+  it("renders an inline S5 review CTA wired to the same onOpenReview", async () => {
+    const onOpenReview = vi.fn()
+    const user = userEvent.setup()
+    const state = makeState({
+      status: "review",
+      runStatus: "done",
+      stages: [
+        { role: "planner", status: "done" },
+        { role: "script", status: "done" },
+        { role: "storyboard", status: "done" },
+        { role: "asset", status: "done" },
+        { role: "review", status: "pending" },
+      ],
+      pips: [{ todoId: "a1", status: "done", assetId: "as1" }],
+      assets: { total: 1, done: 1, pending: 1 },
+    })
+    render(
+      <WorkbenchView {...baseWorkbenchProps()} state={state} live={false} onOpenReview={onOpenReview} />,
+    )
+    const ctas = screen.getAllByRole("button", { name: /去审核/ })
+    expect(ctas.length).toBeGreaterThanOrEqual(2)
+    await user.click(ctas[ctas.length - 1])
+    expect(onOpenReview).toHaveBeenCalled()
+  })
 })
 
 describe("ScriptView", () => {
