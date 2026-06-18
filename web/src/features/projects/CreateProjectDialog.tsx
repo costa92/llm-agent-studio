@@ -1,7 +1,6 @@
 import { useState } from "react"
-import { useForm, Controller } from "react-hook-form"
+import { useForm, FormProvider, type Resolver } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
-import { z } from "zod"
 import { Loader2 } from "lucide-react"
 import {
   Dialog,
@@ -12,47 +11,41 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { Textarea } from "@/components/ui/textarea"
 import { Button } from "@/components/studio/Button"
-import { cn } from "@/lib/utils"
 import type {
   CreateProjectInput,
   ModelConfig,
-  PictureBookConfig,
   Project,
   Style,
 } from "@/lib/types"
-import { PictureBookConfigForm } from "./PictureBookConfigForm"
-import { emptyPictureBookConfig } from "./pbConfig"
+import { ProjectFields } from "./ProjectFields"
+import {
+  createProjectFormSchema,
+  defaultsFor,
+  serializePbConfig,
+  type ProjectFormValues,
+} from "./ProjectFields.schema"
 
-// 内容类型 / 目标平台为前端枚举（后端只存字符串，无白名单约束）；风格取自 GET /api/prompt-styles 的 name。
-const CONTENT_TYPES = ["短视频", "广告片", "动画", "宣传片"] as const
-const TARGET_PLATFORMS = ["抖音", "视频号", "B 站", "小红书", "通用"] as const
-
-// name 必填（后端缺则 400）；brief 必填（创意需求驱动 planner）；其余给默认值。
-// M5.1/M9: plannerProvider / plannerModel, imageProvider / imageModel 可选（空 = 走 org 默认）。
-const formSchema = z.object({
-  name: z.string().min(1, "请输入项目名称"),
-  brief: z.string().min(1, "请输入创意需求"),
-  contentType: z.string().min(1, "请选择内容类型"),
-  targetPlatform: z.string().min(1, "请选择目标平台"),
-  style: z.string().min(1, "请选择风格"),
-  plannerProvider: z.string(),
-  plannerModel: z.string(),
-  imageProvider: z.string(),
-  imageModel: z.string(),
-})
-
-type FormValues = z.infer<typeof formSchema>
+// 表单值 → CreateProjectInput。空模型不带（= 后端无 override）；
+// 绘本带 kind + JSON.stringify(pbConfig)（绝不传对象——曾因此 400）；标准不带 kind/pbConfig。
+function toCreateInput(values: ProjectFormValues): CreateProjectInput {
+  return {
+    name: values.name,
+    brief: values.brief,
+    contentType: values.contentType,
+    targetPlatform: values.targetPlatform,
+    style: values.style,
+    ...(values.plannerProvider && values.plannerModel
+      ? { plannerProvider: values.plannerProvider, plannerModel: values.plannerModel }
+      : {}),
+    ...(values.imageProvider && values.imageModel
+      ? { imageProvider: values.imageProvider, imageModel: values.imageModel }
+      : {}),
+    ...(values.kind === "picturebook"
+      ? { kind: "picturebook" as const, pictureBookConfig: serializePbConfig(values.pbConfig) }
+      : {}),
+  }
+}
 
 export interface CreateProjectFormProps {
   styles: Style[]
@@ -66,7 +59,7 @@ export interface CreateProjectFormProps {
   onSuccess?: (project: Project) => void
 }
 
-// 无 Dialog 壳的纯表单，便于单测。提交调 onSubmit，成功调 onSuccess。
+// 无 Dialog 壳的纯表单（测试直接渲染）。提交调 onSubmit，成功调 onSuccess。
 export function CreateProjectForm({
   styles,
   textModels,
@@ -75,56 +68,18 @@ export function CreateProjectForm({
   onSuccess,
 }: CreateProjectFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null)
-  // 项目类型 + 绘本配置走本地 state（不进 rhf）；提交时一并带上。
-  const [kind, setKind] = useState<"standard" | "picturebook">("standard")
-  const [pbConfig, setPbConfig] = useState<PictureBookConfig>(
-    emptyPictureBookConfig,
-  )
-  const {
-    register,
-    handleSubmit,
-    control,
-    formState: { errors, isSubmitting },
-  } = useForm<FormValues>({
-    resolver: zodResolver(formSchema),
-    defaultValues: {
-      name: "",
-      brief: "",
-      contentType: CONTENT_TYPES[0],
-      targetPlatform: TARGET_PLATFORMS[0],
-      // 默认选中首个风格（若已加载）——免去必填空态，且为合理 UX。
-      style: styles[0]?.name ?? "",
-      // M5.1: 规划模型默认空 = 走 org 默认。下拉只显示 org 启用的 text 模型。
-      plannerProvider: "",
-      plannerModel: "",
-      // M9: 图片模型默认空 = 走 org 默认。下拉只显示 org 启用的 image 模型。
-      imageProvider: "",
-      imageModel: "",
-    },
+  // Create 专用 schema（brief 必填）；强转避免 zod infer 类型宽窄不对齐。
+  const resolver = zodResolver(createProjectFormSchema) as unknown as Resolver<ProjectFormValues>
+  const form = useForm<ProjectFormValues>({
+    resolver,
+    // 默认选中首个风格（保留现状 UX：免去必填空态）。
+    defaultValues: { ...defaultsFor(), style: styles[0]?.name ?? "" },
   })
 
-  const submit = handleSubmit(async (values) => {
+  const submit = form.handleSubmit(async (values) => {
     setSubmitError(null)
     try {
-      // 空 = 走 org 默认 → 不传给后端（让后端语义上 = "无 override"）。
-      const input: CreateProjectInput = {
-        name: values.name,
-        brief: values.brief,
-        contentType: values.contentType,
-        targetPlatform: values.targetPlatform,
-        style: values.style,
-        ...(values.plannerProvider && values.plannerModel
-          ? { plannerProvider: values.plannerProvider, plannerModel: values.plannerModel }
-          : {}),
-        ...(values.imageProvider && values.imageModel
-          ? { imageProvider: values.imageProvider, imageModel: values.imageModel }
-          : {}),
-        // 绘本项目带 kind + 序列化配置；标准项目不传（后端缺省 = standard）。
-        ...(kind === "picturebook"
-          ? { kind, pictureBookConfig: JSON.stringify(pbConfig) }
-          : {}),
-      }
-      const project = await onSubmit(input)
+      const project = await onSubmit(toCreateInput(values))
       onSuccess?.(project)
     } catch {
       setSubmitError("创建失败，请重试")
@@ -132,261 +87,29 @@ export function CreateProjectForm({
   })
 
   return (
-    <form
-      onSubmit={submit}
-      className="grid grid-cols-1 gap-4 sm:grid-cols-2"
-      noValidate
-    >
-      <div className="flex flex-col gap-1.5 sm:col-span-2">
-        <Label htmlFor="name">项目名称</Label>
-        <Input id="name" aria-invalid={errors.name != null} {...register("name")} />
-        {errors.name && (
-          <p className="text-[12px] text-danger">{errors.name.message}</p>
-        )}
-      </div>
-
-      <div className="flex flex-col gap-1.5 sm:col-span-2">
-        <Label htmlFor="brief">创意需求</Label>
-        <Textarea
-          id="brief"
-          rows={2}
-          placeholder="用一句话描述你想要的作品"
-          aria-invalid={errors.brief != null}
-          {...register("brief")}
+    <FormProvider {...form}>
+      <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
+        <ProjectFields
+          styles={styles}
+          fieldIdPrefix="create"
+          briefFieldName="brief"
+          briefRequired
+          textModels={textModels}
+          imageModels={imageModels}
         />
-        {errors.brief && (
-          <p className="text-[12px] text-danger">{errors.brief.message}</p>
-        )}
-      </div>
-
-      {/* 项目类型：标准 / 儿童绘本。选绘本展开 PictureBookConfigForm。 */}
-      <div className="flex flex-col gap-1.5 sm:col-span-2">
-        <Label>项目类型</Label>
-        <div className="flex gap-2">
-          {(
-            [
-              { v: "standard", label: "标准" },
-              { v: "picturebook", label: "儿童绘本" },
-            ] as const
-          ).map((opt) => (
-            <button
-              key={opt.v}
-              type="button"
-              onClick={() => setKind(opt.v)}
-              className={cn(
-                "rounded-md border px-4 py-[7px] text-[13px] font-medium transition-colors",
-                kind === opt.v
-                  ? "border-amber bg-amber text-[#1a1408]"
-                  : "border-line text-text-2 hover:border-text-3 hover:text-text-1",
-              )}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {kind === "picturebook" && (
-        <div className="sm:col-span-2">
-          <PictureBookConfigForm value={pbConfig} onChange={setPbConfig} />
-        </div>
-      )}
-
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="contentType">内容类型</Label>
-        <Controller
-          control={control}
-          name="contentType"
-          render={({ field }) => (
-            <Select value={field.value} onValueChange={field.onChange}>
-              <SelectTrigger id="contentType">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {CONTENT_TYPES.map((ct) => (
-                  <SelectItem key={ct} value={ct}>
-                    {ct}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-        />
-      </div>
-
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="targetPlatform">目标平台</Label>
-        <Controller
-          control={control}
-          name="targetPlatform"
-          render={({ field }) => (
-            <Select value={field.value} onValueChange={field.onChange}>
-              <SelectTrigger id="targetPlatform">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {TARGET_PLATFORMS.map((tp) => (
-                  <SelectItem key={tp} value={tp}>
-                    {tp}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-        />
-      </div>
-
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="style">风格</Label>
-        <Controller
-          control={control}
-          name="style"
-          render={({ field }) => (
-            <Select value={field.value} onValueChange={field.onChange}>
-              <SelectTrigger id="style" aria-invalid={errors.style != null}>
-                <SelectValue placeholder="选择风格" />
-              </SelectTrigger>
-              <SelectContent>
-                {styles.map((s) => (
-                  <SelectItem key={s.name} value={s.name}>
-                    {s.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-        />
-        {errors.style && (
-          <p className="text-[12px] text-danger">{errors.style.message}</p>
-        )}
-      </div>
-
-      {/* M5.1: per-project 规划模型。空 = org 默认；下拉只显示 org 真启用的
-          text 模型。org 还没配 text 模型时整个区段隐藏（避免无意义空下拉）。
-          Radix Select.Item 不允许空字符串 value，所以用 "__default__" 哨兵。 */}
-      {textModels && textModels.length > 0 && (
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="plannerModel">规划用模型（可选）</Label>
-          <Controller
-            control={control}
-            name="plannerProvider"
-            render={({ field: provField }) => (
-              <Controller
-                control={control}
-                name="plannerModel"
-                render={({ field: modField }) => (
-                  <Select
-                    value={
-                      provField.value && modField.value
-                        ? `${provField.value}::${modField.value}`
-                        : "__default__"
-                    }
-                    onValueChange={(v) => {
-                      if (v === "__default__") {
-                        provField.onChange("")
-                        modField.onChange("")
-                        return
-                      }
-                      const sep = v.indexOf("::")
-                      if (sep < 0) return
-                      provField.onChange(v.slice(0, sep))
-                      modField.onChange(v.slice(sep + 2))
-                    }}
-                  >
-                    <SelectTrigger id="plannerModel" aria-invalid={false}>
-                      <SelectValue placeholder="使用组织默认" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__default__">使用组织默认</SelectItem>
-                      {textModels.map((m) => {
-                        const key = `${m.provider}::${m.model}`
-                        return (
-                          <SelectItem key={key} value={key}>
-                            {m.provider} · {m.model}
-                            {m.isDefault ? "（默认）" : ""}
-                          </SelectItem>
-                        )
-                      })}
-                    </SelectContent>
-                  </Select>
-                )}
-              />
-            )}
-          />
-          <p className="text-[11.5px] text-text-3">
-            留空 = 走组织默认；选某个模型则本次及后续 run 都用该模型。
+        {submitError && (
+          <p role="alert" className="text-[12px] text-danger">
+            {submitError}
           </p>
-        </div>
-      )}
-
-      {imageModels && imageModels.length > 0 && (
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="imageModel">图片生成模型（可选）</Label>
-          <Controller
-            control={control}
-            name="imageProvider"
-            render={({ field: provField }) => (
-              <Controller
-                control={control}
-                name="imageModel"
-                render={({ field: modField }) => (
-                  <Select
-                    value={
-                      provField.value && modField.value
-                        ? `${provField.value}::${modField.value}`
-                        : "__default__"
-                    }
-                    onValueChange={(v) => {
-                      if (v === "__default__") {
-                        provField.onChange("")
-                        modField.onChange("")
-                        return
-                      }
-                      const sep = v.indexOf("::")
-                      if (sep < 0) return
-                      provField.onChange(v.slice(0, sep))
-                      modField.onChange(v.slice(sep + 2))
-                    }}
-                  >
-                    <SelectTrigger id="imageModel" aria-invalid={false}>
-                      <SelectValue placeholder="使用组织默认" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__default__">使用组织默认</SelectItem>
-                      {imageModels.map((m) => {
-                        const key = `${m.provider}::${m.model}`
-                        return (
-                          <SelectItem key={key} value={key}>
-                            {m.provider} · {m.model}
-                            {m.isDefault ? "（默认）" : ""}
-                          </SelectItem>
-                        )
-                      })}
-                    </SelectContent>
-                  </Select>
-                )}
-              />
-            )}
-          />
-          <p className="text-[11.5px] text-text-3">
-            留空 = 走组织默认；选某个模型则本次及后续 run 都用该模型生成图片。
-          </p>
-        </div>
-      )}
-
-      {submitError && (
-        <p role="alert" className="text-[12px] text-danger sm:col-span-2">
-          {submitError}
-        </p>
-      )}
-
-      <DialogFooter className="sm:col-span-2">
-        <Button type="submit" variant="amber" disabled={isSubmitting}>
-          {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          创建
-        </Button>
-      </DialogFooter>
-    </form>
+        )}
+        <DialogFooter>
+          <Button type="submit" variant="amber" disabled={form.formState.isSubmitting}>
+            {form.formState.isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            创建
+          </Button>
+        </DialogFooter>
+      </form>
+    </FormProvider>
   )
 }
 
@@ -395,10 +118,14 @@ export interface CreateProjectDialogProps extends CreateProjectFormProps {
 }
 
 // Dialog 壳：trigger 打开，创建成功后自动关闭并透传 onSuccess。
+// 保留自有 <Dialog open trigger>（公共 API 不变），内部渲染 CreateProjectForm——不引入 FormDialog（避免双 Dialog）。
 export function CreateProjectDialog({
   trigger,
+  styles,
+  textModels,
+  imageModels,
+  onSubmit,
   onSuccess,
-  ...formProps
 }: CreateProjectDialogProps) {
   const [open, setOpen] = useState(false)
   return (
@@ -410,7 +137,10 @@ export function CreateProjectDialog({
           <DialogDescription>用一句创意需求开始你的第一支作品。</DialogDescription>
         </DialogHeader>
         <CreateProjectForm
-          {...formProps}
+          styles={styles}
+          textModels={textModels}
+          imageModels={imageModels}
+          onSubmit={onSubmit}
           onSuccess={(project) => {
             setOpen(false)
             onSuccess?.(project)
