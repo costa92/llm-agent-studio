@@ -49,7 +49,8 @@ describe("StorageConfigForm mode-conditional fields", () => {
     // localfs（默认）：无 endpoint/bucket/secret，有 publicPrefix。
     expect(screen.queryByLabelText(/Endpoint/)).toBeNull()
     expect(screen.queryByLabelText(/Bucket/)).toBeNull()
-    expect(screen.queryByLabelText(/Secret/)).toBeNull()
+    // RevealSecretInput 使用 aria-label="密钥输入"，localfs 不渲染密钥字段故为 null。
+    expect(screen.queryByLabelText("密钥输入")).toBeNull()
     expect(screen.getByLabelText(/publicPrefix/)).toBeInTheDocument()
   })
 
@@ -61,7 +62,8 @@ describe("StorageConfigForm mode-conditional fields", () => {
     expect(screen.getByLabelText(/Endpoint/)).toBeInTheDocument()
     expect(screen.getByLabelText(/Bucket/)).toBeInTheDocument()
     expect(screen.getByLabelText(/AccessKeyId/)).toBeInTheDocument()
-    expect(screen.getByLabelText(/Secret/)).toBeInTheDocument()
+    // RevealSecretInput aria-label="密钥输入"（取代原 label+htmlFor 的 /Secret/ 关联）。
+    expect(screen.getByLabelText("密钥输入")).toBeInTheDocument()
   })
 
   it("shows region (not endpoint-required) for cos", async () => {
@@ -93,7 +95,8 @@ describe("StorageConfigForm mode-conditional fields", () => {
     expect(screen.getByLabelText(/Owner/)).toBeInTheDocument()
     expect(screen.getByLabelText(/Repo/)).toBeInTheDocument()
     expect(screen.getByLabelText(/Branch/)).toBeInTheDocument()
-    expect(screen.getByLabelText(/Token/)).toBeInTheDocument()
+    // RevealSecretInput aria-label="密钥输入" 取代原 /Token/ label 关联。
+    expect(screen.getByLabelText("密钥输入")).toBeInTheDocument()
     // 隐藏 s3-only 区块：Endpoint（必填/可空标签）与 useSsl 复选框。
     expect(screen.queryByLabelText(/Endpoint/)).toBeNull()
     expect(screen.queryByLabelText(/使用 SSL/)).toBeNull()
@@ -149,7 +152,8 @@ describe("StorageConfigForm write-only secret", () => {
     const user = userEvent.setup()
     render(<StorageConfigForm initial={CREATED} onSubmit={vi.fn()} isOrgScope />)
     // initial.mode=s3 → secret 字段已渲染。
-    const secret = screen.getByLabelText(/Secret/)
+    // RevealSecretInput aria-label="密钥输入" 取代原 /Secret/ label 关联（selector 调整）。
+    const secret = screen.getByLabelText("密钥输入")
     expect(secret).toHaveAttribute("type", "password")
     expect(secret).toHaveValue("")
     expect(screen.getByText(/留空保持不变/)).toBeInTheDocument()
@@ -177,7 +181,8 @@ describe("StorageConfigForm write-only secret", () => {
     const user = userEvent.setup()
     render(<StorageConfigForm initial={GH_CREATED} onSubmit={onSubmit} isOrgScope />)
     // initial.mode=github → Token 字段已渲染，password、留空、keep-blank 文案。
-    const token = screen.getByLabelText(/Token/)
+    // RevealSecretInput aria-label="密钥输入" 取代原 /Token/ label 关联（selector 调整）。
+    const token = screen.getByLabelText("密钥输入")
     expect(token).toHaveAttribute("type", "password")
     expect(token).toHaveValue("")
     expect(screen.getByText(/留空保持不变/)).toBeInTheDocument()
@@ -199,7 +204,8 @@ describe("StorageConfigForm write-only secret", () => {
     const onSubmit = vi.fn().mockResolvedValue(CREATED)
     const user = userEvent.setup()
     render(<StorageConfigForm initial={CREATED} onSubmit={onSubmit} isOrgScope />)
-    await user.type(screen.getByLabelText(/Secret/), "new-secret-key")
+    // RevealSecretInput aria-label="密钥输入" 取代原 /Secret/ label 关联（selector 调整）。
+    await user.type(screen.getByLabelText("密钥输入"), "new-secret-key")
     await user.click(screen.getByRole("button", { name: "保存" }))
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
