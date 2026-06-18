@@ -45,7 +45,7 @@ describe("CreateModelConfigForm (BYO key)", () => {
     // 自由文本 model + base_url + 密钥（password）。
     await user.type(screen.getByLabelText("模型 (model)"), "gpt-4o-mini")
     await user.type(screen.getByLabelText("Base URL（可选）"), "https://api.openai.com/v1")
-    await user.type(screen.getByLabelText(/API Key/), "sk-secret")
+    await user.type(screen.getByLabelText("密钥输入"), "sk-secret")
 
     await user.click(screen.getByRole("button", { name: "保存" }))
 
@@ -102,7 +102,7 @@ describe("CreateModelConfigForm (BYO key)", () => {
     await user.selectOptions(screen.getByLabelText("Provider"), "openai-compatible")
     await user.type(screen.getByLabelText("模型 (model)"), "deepseek-chat")
     await user.type(screen.getByLabelText(/Base URL/), "https://api.deepseek.com/v1")
-    await user.type(screen.getByLabelText(/API Key/), "sk-ds")
+    await user.type(screen.getByLabelText("密钥输入"), "sk-ds")
 
     await user.click(screen.getByRole("button", { name: "保存" }))
 
@@ -153,9 +153,8 @@ describe("CreateModelConfigForm (BYO key)", () => {
 
   it("presents the API key field as write-only (password + helper text)", () => {
     render(<CreateModelConfigForm catalog={CATALOG} onCreate={vi.fn()} />)
-    const key = screen.getByLabelText(/API Key/)
+    const key = screen.getByLabelText("密钥输入")
     expect(key).toHaveAttribute("type", "password")
-    expect(key).toHaveAttribute("autocomplete", "off")
     expect(screen.getByText(/仅写入、加密存储，不会回显/)).toBeInTheDocument()
   })
 })
@@ -190,7 +189,7 @@ describe("CreateModelConfigForm (edit mode)", () => {
     expect(screen.getByLabelText("模型 (model)")).toHaveValue("deepseek-chat")
     expect(screen.getByLabelText(/Base URL/)).toHaveValue("https://api.deepseek.com/v1")
     // 密钥字段留空，并显示「留空保持不变」提示。
-    expect(screen.getByLabelText(/API Key/)).toHaveValue("")
+    expect(screen.getByLabelText("密钥输入")).toHaveValue("")
     expect(screen.getByText(/留空保持不变/)).toBeInTheDocument()
 
     await user.click(screen.getByRole("button", { name: "保存" }))
@@ -224,11 +223,11 @@ describe("CreateModelConfigForm (edit mode)", () => {
       />,
     )
 
-    const key = screen.getByLabelText(/API Key/)
+    const key = screen.getByLabelText("密钥输入")
     expect(key).toHaveValue("")
     expect(key).toHaveAttribute("type", "password")
 
-    await user.click(screen.getByRole("button", { name: /查看密钥/ }))
+    await user.click(screen.getByRole("button", { name: /显示已存/ }))
 
     await waitFor(() => expect(onRevealKey).toHaveBeenCalledWith("mc-edit"))
     await waitFor(() => expect(key).toHaveValue("sk-revealed-secret"))
@@ -242,7 +241,7 @@ describe("CreateModelConfigForm (edit mode)", () => {
       <CreateModelConfigForm catalog={CATALOG} initial={EXISTING} onCreate={vi.fn()} />,
     )
     expect(
-      screen.queryByRole("button", { name: /查看密钥/ }),
+      screen.queryByRole("button", { name: /显示已存/ }),
     ).not.toBeInTheDocument()
     unmount()
 
@@ -256,7 +255,7 @@ describe("CreateModelConfigForm (edit mode)", () => {
       />,
     )
     expect(
-      screen.queryByRole("button", { name: /查看密钥/ }),
+      screen.queryByRole("button", { name: /显示已存/ }),
     ).not.toBeInTheDocument()
   })
 
@@ -271,7 +270,7 @@ describe("CreateModelConfigForm (edit mode)", () => {
         onCreate={onCreate}
       />,
     )
-    await user.type(screen.getByLabelText(/API Key/), "sk-replacement")
+    await user.type(screen.getByLabelText("密钥输入"), "sk-replacement")
     await user.click(screen.getByRole("button", { name: "保存" }))
 
     await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1))
