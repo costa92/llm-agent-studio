@@ -1,4 +1,6 @@
 import { useState } from "react"
+import { useForm, FormProvider, Controller, type Resolver } from "react-hook-form"
+import { zodResolver } from "@hookform/resolvers/zod"
 import { Loader2 } from "lucide-react"
 import {
   Dialog,
@@ -15,6 +17,11 @@ import { Button } from "@/components/studio/Button"
 import { useBasicPrompts, usePrompts } from "@/features/prompt/api"
 import { WorkflowNodesEditor } from "./WorkflowNodesEditor"
 import { useCreateWorkflow, useUpdateWorkflow } from "./workflowApi"
+import {
+  workflowFormSchema,
+  findGraphError,
+  type WorkflowFormValues,
+} from "./WorkflowDialog.schema"
 import type {
   BasicPrompt,
   CreateWorkflowInput,
@@ -25,38 +32,8 @@ import type {
 
 // 新建/编辑工作流。name 文本框 + WorkflowNodesEditor。
 // 校验：name 非空、≥1 节点、节点 id 非空且唯一（与原 EditProjectDialog 一致）。
-
-// 返回第一处问题的中文描述,无问题返回 null。前端与后端 ValidateCustomGraph 同义,
-// 让用户在保存前就看到「循环依赖」,而不是运行时才 400。
-export function findGraphError(nodes: { id: string; dependsOn: string[] }[]): string | null {
-  const ids = new Set(nodes.map((n) => n.id))
-  for (const n of nodes) {
-    for (const dep of n.dependsOn) {
-      if (!ids.has(dep)) return `节点「${n.id}」依赖了不存在的节点「${dep}」`
-    }
-  }
-  // DFS 三色环检测
-  const deps = new Map(nodes.map((n) => [n.id, n.dependsOn]))
-  const color = new Map<string, number>() // 0 white,1 gray,2 black
-  let cycleMsg: string | null = null
-  const visit = (id: string): boolean => {
-    color.set(id, 1)
-    for (const dep of deps.get(id) ?? []) {
-      const c = color.get(dep) ?? 0
-      if (c === 1) {
-        cycleMsg = `工作流存在循环依赖:「${id}」→「${dep}」`
-        return true
-      }
-      if (c === 0 && visit(dep)) return true
-    }
-    color.set(id, 2)
-    return false
-  }
-  for (const n of nodes) {
-    if ((color.get(n.id) ?? 0) === 0 && visit(n.id)) return cycleMsg
-  }
-  return null
-}
+// findGraphError 已移到 WorkflowDialog.schema.ts，此处 re-export 保持测试 import 路径不变。
+export { findGraphError }
 
 const DEFAULT_NODES: WorkflowNode[] = [
   { id: "script-1", type: "script", promptId: "", dependsOn: [] },
@@ -81,95 +58,86 @@ export function WorkflowForm({
   onSubmit,
   onSuccess,
 }: WorkflowFormProps) {
-  const [name, setName] = useState(initial?.name ?? "")
-  const [nodes, setNodes] = useState<WorkflowNode[]>(
-    () => initial?.nodes ?? DEFAULT_NODES,
-  )
   const [submitError, setSubmitError] = useState<string | null>(null)
-  const [isSubmitting, setIsSubmitting] = useState(false)
+  const resolver = zodResolver(
+    workflowFormSchema,
+  ) as unknown as Resolver<WorkflowFormValues>
+  const form = useForm<WorkflowFormValues>({
+    resolver,
+    defaultValues: {
+      name: initial?.name ?? "",
+      nodes: initial?.nodes ?? DEFAULT_NODES,
+    },
+  })
+  const {
+    register,
+    control,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = form
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault()
+  const submit = handleSubmit(async (values) => {
     setSubmitError(null)
-
-    if (!name.trim()) {
-      setSubmitError("请输入工作流名称")
-      return
-    }
-    if (nodes.length === 0) {
-      setSubmitError("工作流必须包含至少一个节点")
-      return
-    }
-    const ids = new Set<string>()
-    for (const n of nodes) {
-      if (!n.id) {
-        setSubmitError("所有节点 ID 不能为空")
-        return
-      }
-      if (ids.has(n.id)) {
-        setSubmitError(`存在重复的节点 ID: ${n.id}`)
-        return
-      }
-      ids.add(n.id)
-    }
-
-    const graphErr = findGraphError(nodes)
-    if (graphErr) {
-      setSubmitError(graphErr)
-      return
-    }
-
-    setIsSubmitting(true)
     try {
-      const saved = await onSubmit({ name: name.trim(), nodes })
+      const saved = await onSubmit({ name: values.name.trim(), nodes: values.nodes })
       onSuccess?.(saved)
     } catch {
       setSubmitError("保存失败，请重试")
-    } finally {
-      setIsSubmitting(false)
     }
-  }
+  })
+
+  // superRefine 首个问题即停 → name 与 nodes 至多一条错误。单条 alert 显示首个文案
+  //（保留现状「一个 role=alert 显示首个错误」呈现与测试断言）。
+  const validationError = errors.name?.message ?? errors.nodes?.message ?? null
+  const shownError = validationError ?? submitError
 
   return (
-    <form
-      onSubmit={submit}
-      className="flex min-h-0 flex-1 flex-col gap-4"
-      noValidate
-    >
-      {/* 名称固定在顶部；节点编辑区随对话框高度自适应滚动；底部按钮固定。 */}
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="workflow-name">工作流名称</Label>
-        <Input
-          id="workflow-name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="e.g. 默认管线"
-        />
-      </div>
+    <FormProvider {...form}>
+      <form
+        onSubmit={submit}
+        className="flex min-h-0 flex-1 flex-col gap-4"
+        noValidate
+      >
+        {/* 名称固定在顶部；节点编辑区随对话框高度自适应滚动；底部按钮固定。 */}
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="workflow-name">工作流名称</Label>
+          <Input
+            id="workflow-name"
+            placeholder="e.g. 默认管线"
+            {...register("name")}
+          />
+        </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-        <WorkflowNodesEditor
-          nodes={nodes}
-          onChange={setNodes}
-          prompts={prompts}
-          basics={basics}
-          org={org}
-        />
-      </div>
+        <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+          <Controller
+            control={control}
+            name="nodes"
+            render={({ field }) => (
+              <WorkflowNodesEditor
+                nodes={field.value}
+                onChange={field.onChange}
+                prompts={prompts}
+                basics={basics}
+                org={org}
+              />
+            )}
+          />
+        </div>
 
-      {submitError && (
-        <p role="alert" className="text-[12px] text-danger">
-          {submitError}
-        </p>
-      )}
+        {shownError && (
+          <p role="alert" className="text-[12px] text-danger">
+            {shownError}
+          </p>
+        )}
 
-      <DialogFooter>
-        <Button type="submit" variant="amber" disabled={isSubmitting}>
-          {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          保存
-        </Button>
-      </DialogFooter>
-    </form>
+        <DialogFooter>
+          <Button type="submit" variant="amber" disabled={isSubmitting}>
+            {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            保存
+          </Button>
+        </DialogFooter>
+      </form>
+    </FormProvider>
   )
 }
 
