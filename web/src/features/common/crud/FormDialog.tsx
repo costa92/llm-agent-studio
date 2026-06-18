@@ -5,8 +5,9 @@ import {
 } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import type { ZodType } from "zod"
+import { Loader2 } from "lucide-react"
 import {
-  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog"
 import { Button } from "@/components/studio/Button"
 import { Button as UiButton } from "@/components/ui/button"
@@ -15,6 +16,8 @@ interface FormDialogProps<T extends FieldValues> {
   open: boolean
   mode: "create" | "edit"
   title: string
+  description?: ReactNode
+  contentClassName?: string
   // ZodType<T, T> 让 Input=Output=T，满足 zodResolver v5 对 Input extends FieldValues 的要求。
   schema: ZodType<T, T>
   defaultValues: DefaultValues<T>
@@ -33,7 +36,7 @@ interface FormDialogProps<T extends FieldValues> {
 // 字段由资源页作为 children 传入，用 useFormContext() 读写。
 // open/mode/resetKey 变化时 reset，保证创建↔编辑切换、同类型不同目标切换预填正确。
 export function FormDialog<T extends FieldValues>({
-  open, mode, title, schema, defaultValues, resetKey, submitLabel,
+  open, mode, title, description, contentClassName, schema, defaultValues, resetKey, submitLabel,
   submitting = false, submitError, onSubmit, onOpenChange, children,
 }: FormDialogProps<T>) {
   // zodResolver v5 + zod v4：resolver 类型推断需要显式 cast 桥接泛型边界。
@@ -47,9 +50,10 @@ export function FormDialog<T extends FieldValues>({
   const label = submitLabel ?? (mode === "create" ? "创建" : "保存")
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className={contentClassName}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
+          {description != null && <DialogDescription>{description}</DialogDescription>}
         </DialogHeader>
         <FormProvider {...form}>
           <form
@@ -65,6 +69,7 @@ export function FormDialog<T extends FieldValues>({
                 取消
               </UiButton>
               <Button type="submit" variant="amber" disabled={submitting}>
+                {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
                 {label}
               </Button>
             </DialogFooter>

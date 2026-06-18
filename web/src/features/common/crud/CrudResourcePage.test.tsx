@@ -49,6 +49,29 @@ describe("CrudResourcePage", () => {
     await userEvent.click(screen.getByRole("button", { name: "新增提示词" }))
     expect(onCreate).toHaveBeenCalled()
   })
+
+  it("isEmpty + emptyState 渲染自定义空态节点，不渲染 emptyHint", () => {
+    render(
+      <CrudResourcePage title="提示词" isLoading={false} isError={false} isEmpty
+        emptyHint="默认提示" emptyState={<div data-testid="custom-empty">自定义空态</div>}>
+        <div data-testid="body" />
+      </CrudResourcePage>,
+    )
+    expect(screen.getByTestId("custom-empty")).toBeInTheDocument()
+    expect(screen.queryByText("默认提示")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("body")).not.toBeInTheDocument()
+  })
+
+  it("isLoading + loadingSkeleton 渲染自定义加载节点", () => {
+    render(
+      <CrudResourcePage title="提示词" isLoading isError={false} isEmpty={false}
+        loadingSkeleton={<div data-testid="custom-loading">加载中…</div>}>
+        <div data-testid="body" />
+      </CrudResourcePage>,
+    )
+    expect(screen.getByTestId("custom-loading")).toBeInTheDocument()
+    expect(screen.queryByTestId("body")).not.toBeInTheDocument()
+  })
 })
 
 describe("SingletonConfigForm", () => {

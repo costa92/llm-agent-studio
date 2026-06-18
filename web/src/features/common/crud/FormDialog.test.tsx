@@ -98,4 +98,15 @@ describe("FormDialog", () => {
     // resetKey 未变，用户输入应保留
     expect(input.value).toBe("typed")
   })
+
+  it("description prop 渲染对话框描述文本", () => {
+    render(
+      <FormDialog open mode="create" title="新建" schema={schema}
+        defaultValues={{ name: "" }} description="配置说明"
+        onSubmit={() => {}} onOpenChange={() => {}}>
+        <NameField />
+      </FormDialog>,
+    )
+    expect(screen.getByText("配置说明")).toBeInTheDocument()
+  })
 })

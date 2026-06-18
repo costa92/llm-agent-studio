@@ -14,6 +14,7 @@ interface DataViewProps<T> {
   renderCard?: (item: T, actions: ReactNode) => ReactNode
   groupBy?: (item: T) => string
   minWidthClass?: string
+  gridClassName?: string
 }
 
 function ActionButtons<T>({ item, actions }: { item: T; actions: RowAction<T>[] }) {
@@ -35,7 +36,7 @@ function ActionButtons<T>({ item, actions }: { item: T; actions: RowAction<T>[] 
 // 双模式列表：table 用 columns + 末列 rowActions；cards 用 renderCard(item, actions) + 可选 groupBy。
 // 空态由上层 CrudResourcePage 负责，这里假定 items 非空。
 export function DataView<T>({
-  items, getId, layout, rowActions = [], columns = [], renderCard, groupBy, minWidthClass,
+  items, getId, layout, rowActions = [], columns = [], renderCard, groupBy, minWidthClass, gridClassName,
 }: DataViewProps<T>) {
   if (layout === "table") {
     return (
@@ -69,6 +70,8 @@ export function DataView<T>({
       </div>
     ))
 
+  const containerClass = gridClassName ?? "flex flex-col gap-3"
+
   if (groupBy) {
     const groups = new Map<string, T[]>()
     for (const item of items) {
@@ -82,11 +85,11 @@ export function DataView<T>({
         {[...groups.entries()].map(([key, list]) => (
           <section key={key} className="flex flex-col gap-3">
             <h3 className="text-[13px] font-semibold text-text-2">{key}</h3>
-            <div className="flex flex-col gap-3">{renderItems(list)}</div>
+            <div className={containerClass}>{renderItems(list)}</div>
           </section>
         ))}
       </div>
     )
   }
-  return <div className="flex flex-col gap-3">{renderItems(items)}</div>
+  return <div className={containerClass}>{renderItems(items)}</div>
 }

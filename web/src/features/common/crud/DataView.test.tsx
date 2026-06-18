@@ -62,4 +62,15 @@ describe("DataView", () => {
     )
     expect(screen.getAllByRole("button", { name: "设默认" })).toHaveLength(1)
   })
+
+  it("cards 模式 gridClassName 应用到卡片容器", () => {
+    const { container } = render(
+      <DataView<Row> layout="cards" items={rows} getId={(r) => r.id}
+        gridClassName="grid grid-cols-2"
+        renderCard={(r) => <div data-testid="card">{r.name}</div>} />,
+    )
+    const wrapper = container.firstElementChild as HTMLElement
+    expect(wrapper.classList.contains("grid")).toBe(true)
+    expect(wrapper.classList.contains("grid-cols-2")).toBe(true)
+  })
 })

@@ -18,6 +18,8 @@ export interface CrudResourcePageProps {
   onRetry?: () => void
   isEmpty: boolean
   emptyHint?: string
+  emptyState?: ReactNode
+  loadingSkeleton?: ReactNode
   headerExtra?: ReactNode
   children: ReactNode
 }
@@ -25,7 +27,7 @@ export interface CrudResourcePageProps {
 // 配置/管理页外壳：页头(标题+描述+新增) + 加载/错误/空态；正常态渲染 children(列表 + 对话框由资源页挂载)。
 export function CrudResourcePage({
   title, description, createLabel, onCreate, isLoading, isError, onRetry,
-  isEmpty, emptyHint = "暂无数据。", headerExtra, children,
+  isEmpty, emptyHint = "暂无数据。", emptyState, loadingSkeleton, headerExtra, children,
 }: CrudResourcePageProps) {
   return (
     <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-6 p-6">
@@ -45,11 +47,15 @@ export function CrudResourcePage({
           {onRetry && <Button variant="ghost" onClick={onRetry}>重试</Button>}
         </div>
       ) : isLoading ? (
-        <div className="flex flex-col gap-3">
-          {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-10 rounded-lg" />)}
-        </div>
+        loadingSkeleton != null ? loadingSkeleton : (
+          <div className="flex flex-col gap-3">
+            {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-10 rounded-lg" />)}
+          </div>
+        )
       ) : isEmpty ? (
-        <p className="py-8 text-center text-[13px] text-text-3">{emptyHint}</p>
+        emptyState != null ? emptyState : (
+          <p className="py-8 text-center text-[13px] text-text-3">{emptyHint}</p>
+        )
       ) : (
         children
       )}
