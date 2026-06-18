@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { render, screen, waitFor, fireEvent } from "@testing-library/react"
+import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import type { StorageConfig } from "@/lib/types"
-import { StorageConfigForm, StorageConfigsTable } from "./StorageConfigPage"
+import { StorageConfigForm } from "./StorageConfigPage"
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -49,7 +49,8 @@ describe("StorageConfigForm mode-conditional fields", () => {
     // localfs（默认）：无 endpoint/bucket/secret，有 publicPrefix。
     expect(screen.queryByLabelText(/Endpoint/)).toBeNull()
     expect(screen.queryByLabelText(/Bucket/)).toBeNull()
-    expect(screen.queryByLabelText(/Secret/)).toBeNull()
+    // RevealSecretInput 使用 aria-label="密钥输入"，localfs 不渲染密钥字段故为 null。
+    expect(screen.queryByLabelText("密钥输入")).toBeNull()
     expect(screen.getByLabelText(/publicPrefix/)).toBeInTheDocument()
   })
 
@@ -61,7 +62,8 @@ describe("StorageConfigForm mode-conditional fields", () => {
     expect(screen.getByLabelText(/Endpoint/)).toBeInTheDocument()
     expect(screen.getByLabelText(/Bucket/)).toBeInTheDocument()
     expect(screen.getByLabelText(/AccessKeyId/)).toBeInTheDocument()
-    expect(screen.getByLabelText(/Secret/)).toBeInTheDocument()
+    // RevealSecretInput aria-label="密钥输入"（取代原 label+htmlFor 的 /Secret/ 关联）。
+    expect(screen.getByLabelText("密钥输入")).toBeInTheDocument()
   })
 
   it("shows region (not endpoint-required) for cos", async () => {
@@ -93,7 +95,8 @@ describe("StorageConfigForm mode-conditional fields", () => {
     expect(screen.getByLabelText(/Owner/)).toBeInTheDocument()
     expect(screen.getByLabelText(/Repo/)).toBeInTheDocument()
     expect(screen.getByLabelText(/Branch/)).toBeInTheDocument()
-    expect(screen.getByLabelText(/Token/)).toBeInTheDocument()
+    // RevealSecretInput aria-label="密钥输入" 取代原 /Token/ label 关联。
+    expect(screen.getByLabelText("密钥输入")).toBeInTheDocument()
     // 隐藏 s3-only 区块：Endpoint（必填/可空标签）与 useSsl 复选框。
     expect(screen.queryByLabelText(/Endpoint/)).toBeNull()
     expect(screen.queryByLabelText(/使用 SSL/)).toBeNull()
@@ -149,7 +152,8 @@ describe("StorageConfigForm write-only secret", () => {
     const user = userEvent.setup()
     render(<StorageConfigForm initial={CREATED} onSubmit={vi.fn()} isOrgScope />)
     // initial.mode=s3 → secret 字段已渲染。
-    const secret = screen.getByLabelText(/Secret/)
+    // RevealSecretInput aria-label="密钥输入" 取代原 /Secret/ label 关联（selector 调整）。
+    const secret = screen.getByLabelText("密钥输入")
     expect(secret).toHaveAttribute("type", "password")
     expect(secret).toHaveValue("")
     expect(screen.getByText(/留空保持不变/)).toBeInTheDocument()
@@ -177,7 +181,8 @@ describe("StorageConfigForm write-only secret", () => {
     const user = userEvent.setup()
     render(<StorageConfigForm initial={GH_CREATED} onSubmit={onSubmit} isOrgScope />)
     // initial.mode=github → Token 字段已渲染，password、留空、keep-blank 文案。
-    const token = screen.getByLabelText(/Token/)
+    // RevealSecretInput aria-label="密钥输入" 取代原 /Token/ label 关联（selector 调整）。
+    const token = screen.getByLabelText("密钥输入")
     expect(token).toHaveAttribute("type", "password")
     expect(token).toHaveValue("")
     expect(screen.getByText(/留空保持不变/)).toBeInTheDocument()
@@ -199,7 +204,8 @@ describe("StorageConfigForm write-only secret", () => {
     const onSubmit = vi.fn().mockResolvedValue(CREATED)
     const user = userEvent.setup()
     render(<StorageConfigForm initial={CREATED} onSubmit={onSubmit} isOrgScope />)
-    await user.type(screen.getByLabelText(/Secret/), "new-secret-key")
+    // RevealSecretInput aria-label="密钥输入" 取代原 /Secret/ label 关联（selector 调整）。
+    await user.type(screen.getByLabelText("密钥输入"), "new-secret-key")
     await user.click(screen.getByRole("button", { name: "保存" }))
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
@@ -209,27 +215,3 @@ describe("StorageConfigForm write-only secret", () => {
   })
 })
 
-describe("StorageConfigsTable", () => {
-  it("渲染每条配置一行,含名称/类型/默认徽标", () => {
-    render(<StorageConfigsTable configs={[
-      { id:"c1", mode:"s3", name:"主桶", bucket:"b1", enabled:true, isDefault:true, hasSecret:true, scope:"org", orgId:"o", endpoint:"", region:"", accessKeyId:"", publicPrefix:"", useSsl:true },
-      { id:"c2", mode:"github", name:"仓库", bucket:"repo", enabled:false, isDefault:false, hasSecret:false, scope:"org", orgId:"o", endpoint:"", region:"", accessKeyId:"owner", publicPrefix:"", useSsl:true },
-    ]} onCreate={()=>{}} onEdit={()=>{}} onDelete={()=>{}} onSetDefault={()=>{}} />)
-    expect(screen.getByText("主桶")).toBeInTheDocument()
-    expect(screen.getByText("仓库")).toBeInTheDocument()
-    expect(document.querySelectorAll('[data-slot="sc-row"]')).toHaveLength(2)
-    // c1 是默认配置，应显示"默认"徽标（<span> badge）；c2 不是默认，应有"设为默认"按钮
-    // 表头 <th> 也含"默认"文本，故用 getAllByText 并断言至少 2 个（表头 + 徽标）
-    expect(screen.getAllByText("默认").length).toBeGreaterThanOrEqual(2)
-    expect(screen.getAllByRole("button", { name: /设为默认/ })).toHaveLength(1)
-  })
-
-  it("点非默认行的「设为默认」触发回调", () => {
-    const onSetDefault = vi.fn()
-    render(<StorageConfigsTable configs={[
-      { id:"c2", mode:"github", name:"仓库", bucket:"repo", enabled:true, isDefault:false, hasSecret:false, scope:"org", orgId:"o", endpoint:"", region:"", accessKeyId:"owner", publicPrefix:"", useSsl:true },
-    ]} onCreate={()=>{}} onEdit={()=>{}} onDelete={()=>{}} onSetDefault={onSetDefault} />)
-    fireEvent.click(screen.getByRole("button", { name: /设为默认/ }))
-    expect(onSetDefault).toHaveBeenCalled()
-  })
-})

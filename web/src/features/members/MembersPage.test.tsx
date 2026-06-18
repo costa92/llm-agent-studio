@@ -9,6 +9,7 @@ import { ApiError } from "@/lib/apiClient"
 const addMutate = vi.fn()
 const setRoleMutate = vi.fn()
 const removeMutate = vi.fn()
+const removeMutateAsync = vi.fn().mockResolvedValue({ ok: true })
 const members = {
   value: { data: [] as OrgMember[], isLoading: false, isError: false, refetch: vi.fn() },
 }
@@ -17,7 +18,7 @@ vi.mock("./api", () => ({
   useOrgMembers: () => members.value,
   useAddMember: () => ({ mutate: addMutate, isPending: false }),
   useSetMemberRole: () => ({ mutate: setRoleMutate, isPending: false }),
-  useRemoveMember: () => ({ mutate: removeMutate, isPending: false }),
+  useRemoveMember: () => ({ mutate: removeMutate, mutateAsync: removeMutateAsync, isPending: false }),
 }))
 
 import { MembersPage } from "./MembersPage"
@@ -82,29 +83,25 @@ describe("MembersPage", () => {
     const user = userEvent.setup()
     renderPage()
 
-    await user.click(screen.getByRole("button", { name: "移除成员 alice@example.com" }))
+    await user.click(screen.getByRole("button", { name: `移除成员 ${ALICE.email}` }))
     // 确认弹窗出现；取消则不调 remove。
     expect(screen.getByText("确认移除成员？")).toBeInTheDocument()
     await user.click(screen.getByRole("button", { name: "取消" }))
-    expect(removeMutate).not.toHaveBeenCalled()
+    expect(removeMutateAsync).not.toHaveBeenCalled()
 
-    await user.click(screen.getByRole("button", { name: "移除成员 alice@example.com" }))
+    await user.click(screen.getByRole("button", { name: `移除成员 ${ALICE.email}` }))
     await user.click(screen.getByRole("button", { name: "确认移除" }))
-    await waitFor(() => expect(removeMutate).toHaveBeenCalledTimes(1))
-    expect(removeMutate.mock.calls[0][0]).toBe("u1")
+    await waitFor(() => expect(removeMutateAsync).toHaveBeenCalledTimes(1))
+    expect(removeMutateAsync.mock.calls[0][0]).toBe("u1")
   })
 
   it("shows last-admin toast on remove 409", async () => {
     members.value = { data: [BOB], isLoading: false, isError: false, refetch: vi.fn() }
-    // mutate(userId, { onError }) → 触发 onError(ApiError 409)。
-    removeMutate.mockImplementation(
-      (_id: string, opts: { onError: (e: unknown) => void }) => {
-        opts.onError(new ApiError(409, "cannot remove or demote the last org admin"))
-      },
-    )
+    // mutateAsync(userId) → rejects with ApiError 409。
+    removeMutateAsync.mockRejectedValueOnce(new ApiError(409, "cannot remove or demote the last org admin"))
     const user = userEvent.setup()
     renderPage()
-    await user.click(screen.getByRole("button", { name: "移除成员 bob@example.com" }))
+    await user.click(screen.getByRole("button", { name: `移除成员 ${BOB.email}` }))
     await user.click(screen.getByRole("button", { name: "确认移除" }))
     await waitFor(() =>
       expect(
