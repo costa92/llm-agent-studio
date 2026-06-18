@@ -39,9 +39,10 @@ export function GraphView({ nodes, edges, onSelectNode }: GraphViewProps) {
         // 上一层全部 done 时连接线着该层首节点 agent 色；否则虚线灰。
         const prevLayer = li > 0 ? layers[li - 1] : null
         const prevAllDone = prevLayer != null && prevLayer.every((n) => n.status === "done")
-        const connColor = prevAllDone
-          ? (NODE_COLOR[prevLayer![0].type] ?? "var(--line)")
-          : undefined
+        const connColor =
+          prevAllDone && prevLayer && prevLayer.length > 0
+            ? (NODE_COLOR[prevLayer[0].type] ?? "var(--line)")
+            : undefined
         return (
           <div key={layer[0].id} data-slot="graph-layer" className="relative pb-[30px]">
             {li > 0 && (

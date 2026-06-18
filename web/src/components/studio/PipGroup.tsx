@@ -51,7 +51,7 @@ export function PipGroup({ pips, onSelectPip, className }: PipGroupProps) {
               aria-label={title}
               onClick={() => onSelectPip(pip)}
               title={title}
-              className="-m-1 cursor-pointer rounded p-1 transition-opacity hover:opacity-80"
+              className="-m-1 cursor-pointer rounded p-1 transition-colors hover:bg-bg-raised"
             >
               <span
                 data-slot="pip"
