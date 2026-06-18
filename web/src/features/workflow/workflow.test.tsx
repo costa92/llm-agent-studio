@@ -265,7 +265,8 @@ describe("WorkbenchView (authoritative ProjectState)", () => {
         isRunning={false}
       />,
     )
-    expect(screen.getByText("失败")).toBeInTheDocument()
+    // RunSummary 也渲染「失败」徽标（与 header 各一个）；getAllByText 允许多个。
+    expect(screen.getAllByText("失败").length).toBeGreaterThanOrEqual(1)
     expect(screen.queryByText(/待审核/)).not.toBeInTheDocument()
   })
 
