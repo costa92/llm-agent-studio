@@ -1,6 +1,8 @@
 # 创建项目工作流:状态单一权威源 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **✅ DONE** — 已实现并合并到 main(PR #50, `a23dc98`);任务全部完成,checkbox 于 2026-06-18 回填。
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 让后端成为工作流状态的唯一权威源:新增 `projectstate.Compute` 纯函数产出语义状态快照,经 REST 端点 + SSE 推送下发;前端删除自有状态推导,只渲染后端快照,事件流仅喂日志。
 
@@ -60,7 +62,7 @@
 - **`todoStatusToStage`**:ready→pending, running→running, done→done, blocked→blocked, failed→failed, canceled→failed。
 - **`todoStatusToPip`**:ready→idle, running→running, done→done, blocked→idle, failed→failed, canceled→failed。
 
-- [ ] **Step 1: 写失败测试 `state_test.go`**
+- [x] **Step 1: 写失败测试 `state_test.go`**
 
 ```go
 package projectstate
@@ -159,12 +161,12 @@ func stageByRole(s ProjectState, role string) Stage {
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd llm-agent-studio && GOWORK=off go test ./internal/projectstate/... -count=1`
 Expected: FAIL — `undefined: Compute` / package has no non-test files。
 
-- [ ] **Step 3: 写 `state.go` 实现**
+- [x] **Step 3: 写 `state.go` 实现**
 
 ```go
 // Package projectstate is the SINGLE authoritative computation of a project
@@ -480,12 +482,12 @@ func blockedStages() []Stage {
 }
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `cd llm-agent-studio && GOWORK=off go test ./internal/projectstate/... -count=1`
 Expected: PASS (all 4 tests)。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 cd llm-agent-studio
@@ -507,7 +509,7 @@ Replaces the split between project.DeriveStatus and frontend reduceTimeline."
 
 注:`project` 包导入 `projectstate`(单向,无环——`projectstate` 不导入 `project`)。
 
-- [ ] **Step 1: 写测试(DB-backed,复用现有 store_test 基建)**
+- [x] **Step 1: 写测试(DB-backed,复用现有 store_test 基建)**
 
 先确认现有 `store_test.go` 的建表/连接 helper 名称:
 Run: `cd llm-agent-studio && grep -n "func Test\|newTestStore\|pgxpool\|t.Skip" internal/project/store_test.go | head`
@@ -533,12 +535,12 @@ func TestLoadState_NoPlan_Draft(t *testing.T) {
 
 > 若 `internal/project` 无 PG 测试基建(只跑逻辑单测),则 LoadState 属"薄 I/O 装载",其纯逻辑已被 Task 1 覆盖。此时改为:Step 1 跳过新测试,在 Task 3 的 handler 测试(用现有 stub ProjectStore)间接覆盖 LoadState 的契约。实现者按现状二选一,并在提交信息注明。
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd llm-agent-studio && GOWORK=off go test ./internal/project/... -run TestLoadState -count=1`
 Expected: FAIL — `s.LoadState undefined`。
 
-- [ ] **Step 3: 实现 `LoadState`**
+- [x] **Step 3: 实现 `LoadState`**
 
 在 `internal/project/store.go` 顶部 import 块加 `"github.com/costa92/llm-agent-studio/internal/projectstate"`。新增方法(放在 `RefreshStatus` 之后):
 
@@ -620,12 +622,12 @@ func (s *Store) LoadState(ctx context.Context, projectID string) (projectstate.P
 
 > 实现者注意:`assets` 表的列名(`created_at`、`todo_id`、`status`)和 `todos` 表的 `type`/`error`/`updated_at` 列名以现有 schema 为准。先 `grep -rn "CREATE TABLE assets\|CREATE TABLE todos" internal/` 或看 migrations 确认列名,不一致则按实际调整 SQL。
 
-- [ ] **Step 4: 运行测试 + 全包构建**
+- [x] **Step 4: 运行测试 + 全包构建**
 
 Run: `cd llm-agent-studio && GOWORK=off go build ./... && GOWORK=off go test ./internal/project/... -count=1`
 Expected: 构建通过;LoadState 测试 PASS(或按 Step 1 降级方案跳过)。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 cd llm-agent-studio
@@ -642,7 +644,7 @@ git commit -m "feat(project): LoadState loads latest plan + computes ProjectStat
 - Modify: `internal/httpapi/httpapi.go`(注册路由)
 - Test: `internal/httpapi/handlers_test.go` 或新建 `statehandlers_test.go`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 先看现有 handler 测试如何构造 stub ProjectStore:
 Run: `cd llm-agent-studio && grep -n "ProjectStore\|fakeProjects\|stubProject" internal/httpapi/*_test.go | head`
@@ -688,12 +690,12 @@ func (s stateStoreStub) LoadState(ctx context.Context, id string) (projectstate.
 }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cd llm-agent-studio && GOWORK=off go test ./internal/httpapi/... -run TestStateHandler -count=1`
 Expected: FAIL — `undefined: stateHandler` / `StateReader`。
 
-- [ ] **Step 3: 实现 handler + 接口 + 路由**
+- [x] **Step 3: 实现 handler + 接口 + 路由**
 
 在 `internal/httpapi/handlers.go` 的 `ProjectStore` 接口(:54-65)末尾加一行:
 
@@ -736,12 +738,12 @@ func stateHandler(sr StateReader) http.HandlerFunc {
 
 (`d.Projects` 已是 `ProjectStore`,新加的 `LoadState` 方法令其同时满足 `StateReader`。)
 
-- [ ] **Step 4: 运行确认通过 + 全包构建**
+- [x] **Step 4: 运行确认通过 + 全包构建**
 
 Run: `cd llm-agent-studio && GOWORK=off go build ./... && GOWORK=off go test ./internal/httpapi/... -run TestStateHandler -count=1`
 Expected: PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 cd llm-agent-studio
@@ -761,7 +763,7 @@ git commit -m "feat(httpapi): GET /api/projects/{id}/state authoritative snapsho
 
 设计:`streamEventsHandler` 既保留现有"原始事件 → 命名 SSE 帧(喂日志)",又在 (a) 连接首帧、(b) 每轮检测到 `version` 变化时,`LoadState` 并发一条 `event: state` 帧(data = ProjectState JSON)。`version` 用 ProjectState.Version(= max seq)做变化判定。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 先看现有 `sse_test.go` 如何驱动 handler + 喂 EventReader:
 Run: `cd llm-agent-studio && grep -n "func Test\|streamEventsHandler\|EventReader\|httptest" internal/httpapi/sse_test.go | head -30`
@@ -799,12 +801,12 @@ func TestStreamEvents_EmitsInitialStateFrame(t *testing.T) {
 
 > 若现有 sse_test 用了 `flushRecorder`/可控 ticker 之类 helper,沿用之以确定性断言;上面的 goroutine+cancel 是无 helper 时的兜底。实现者择现有模式。
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cd llm-agent-studio && GOWORK=off go test ./internal/httpapi/... -run TestStreamEvents_EmitsInitialState -count=1`
 Expected: FAIL — `streamEventsHandler` 签名不符 / 无 `state` 帧。
 
-- [ ] **Step 3: 改 `sse.go`**
+- [x] **Step 3: 改 `sse.go`**
 
 白名单加 `state`(在 `sseEventNames` map 内补一行):
 
@@ -905,7 +907,7 @@ func streamEventsHandler(reader EventReader, state StateReader) http.HandlerFunc
 	mux.Handle("GET /api/projects/{id}/events/stream", proj(roleViewer, streamEventsHandler(d.EventReader, d.Projects)))
 ```
 
-- [ ] **Step 4: `runHandler` 去命令式 `running` 置位**
+- [x] **Step 4: `runHandler` 去命令式 `running` 置位**
 
 在 `internal/httpapi/handlers.go` `runHandler`(:363-428)删除这一行(`_ = ps.SetStatus(r.Context(), id, "running")`,在 `writeJSON` 之前):
 
@@ -913,12 +915,12 @@ func streamEventsHandler(reader EventReader, state StateReader) http.HandlerFunc
 
 > 保留 `RefreshStatus`(worker 用)与 `project.DeriveStatus`(taskboard/health/workflows 仍依赖)不动——它们与 `projectstate.deriveStatus` 逻辑一致;Task 7 的契约测试只覆盖前后端枚举,不强制合并这两个 Go 实现(YAGNI:合并是额外重构,非本计划目标)。在 `deriveStatus` 上方补注释指明二者需手工同步即可。
 
-- [ ] **Step 5: 运行测试 + 全包测试**
+- [x] **Step 5: 运行测试 + 全包测试**
 
 Run: `cd llm-agent-studio && GOWORK=off go build ./... && GOWORK=off go test ./internal/httpapi/... -count=1`
 Expected: 全 PASS(含既有 sse 测试——确认旧断言仍成立;若旧测试断言"首帧是某原始事件",需调整为接受前置的 state 帧)。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 cd llm-agent-studio
@@ -934,7 +936,7 @@ git commit -m "feat(httpapi): SSE pushes authoritative state frames; drop impera
 - Modify: `internal/worker/worker.go`(:809-833 `fail()`、:1193-1202 `terminalFail`)
 - Test: `internal/worker/worker_test.go`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 先看现有 worker 测试如何断言事件载荷:
 Run: `cd llm-agent-studio && grep -n "todo_failed\|Append\|Events\b\|fakeEvents" internal/worker/worker_test.go | head`
@@ -955,12 +957,12 @@ func TestFail_EmitsTypeInPayload(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cd llm-agent-studio && GOWORK=off go test ./internal/worker/... -run TestFail_EmitsType -count=1`
 Expected: FAIL — payload 无 `type` 键。
 
-- [ ] **Step 3: 改两处发射点**
+- [x] **Step 3: 改两处发射点**
 
 `fail()`(:823 一带):
 
@@ -976,12 +978,12 @@ Expected: FAIL — payload 无 `type` 键。
 
 (`c.typ` 在两处闭包均可见——`fail` 接 `claimed`,`pollAsync` 的 `c` 同为 claimed。)
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `cd llm-agent-studio && GOWORK=off go test ./internal/worker/... -count=1`
 Expected: PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 cd llm-agent-studio
@@ -997,7 +999,7 @@ git commit -m "fix(worker): include type in todo_failed payload (align with read
 - Create: `web/src/lib/projectState.ts`
 - Create: `web/src/lib/projectState.contract.test.ts`
 
-- [ ] **Step 1: 写 `projectState.ts`(对齐后端 JSON)**
+- [x] **Step 1: 写 `projectState.ts`(对齐后端 JSON)**
 
 ```ts
 // 对齐后端 internal/projectstate/state.go 的 ProjectState JSON 形状。
@@ -1054,7 +1056,7 @@ export interface ProjectState {
 }
 ```
 
-- [ ] **Step 2: 写契约一致性测试**
+- [x] **Step 2: 写契约一致性测试**
 
 ```ts
 import { describe, it, expect } from "vitest"
@@ -1084,12 +1086,12 @@ describe("ProjectState 枚举契约(与后端 projectstate 对齐)", () => {
 
 > 这是"穷举即测试":新增枚举值必须同时改类型与此处数组,长度断言 + TS 穷举强制双改。比无测试好,且不引 codegen(符合 spec 非目标)。
 
-- [ ] **Step 3: 运行测试**
+- [x] **Step 3: 运行测试**
 
 Run: `cd llm-agent-studio/web && pnpm vitest src/lib/projectState.contract.test.ts --run`
 Expected: PASS(4 tests)。
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 cd llm-agent-studio
@@ -1106,7 +1108,7 @@ git commit -m "feat(web): ProjectState types mirroring backend + enum contract t
 - Modify: `web/src/features/workflow/useProductionTimeline.ts`(改名意图:保留日志累积,新增 state 帧 → 回调)
 - Test: `web/src/features/workflow/api.test.ts` / `useProductionTimeline.test.tsx`
 
-- [ ] **Step 1: 写 `fetchProjectState` + `useProjectState` 测试**
+- [x] **Step 1: 写 `fetchProjectState` + `useProjectState` 测试**
 
 在 `web/src/features/workflow/api.test.ts` 按现有模式(看 `grep -n "fetchEvents\|apiJSON\|vi.mock" api.test.ts`)新增:
 
@@ -1120,12 +1122,12 @@ it("fetchProjectState 拉取 /state", async () => {
 })
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cd llm-agent-studio/web && pnpm vitest src/features/workflow/api.test.ts --run`
 Expected: FAIL — `fetchProjectState` 未导出。
 
-- [ ] **Step 3: 实现 `fetchProjectState` + `useProjectState`**
+- [x] **Step 3: 实现 `fetchProjectState` + `useProjectState`**
 
 在 `web/src/features/workflow/api.ts` import 加 `import type { ProjectState } from "@/lib/projectState"`,并新增:
 
@@ -1148,7 +1150,7 @@ export function useProjectState(id: string, planId?: string): UseQueryResult<Pro
 
 (`useQuery`/`UseQueryResult` 已在该文件 import。)
 
-- [ ] **Step 4: 改 `useProductionTimeline.ts` — 日志累积 + state 帧回调**
+- [x] **Step 4: 改 `useProductionTimeline.ts` — 日志累积 + state 帧回调**
 
 把 hook 的产出从"reduce 出全态"改为"(a) 仅累积日志行 + (b) 把 SSE `state` 帧透出给调用方写缓存"。`SseHandlers` 已有 `onEvent`(命名帧)——后端新增的 `state` 帧 `ev.event==="state"` 不在 `NAMED_EVENTS` 白名单里,会走 `onMessage`。需在 `lib/sse.ts` 把 `state` 也当作专门帧路由。
 
@@ -1226,14 +1228,14 @@ function logReducer(state: LogLine[], action: Action): LogLine[] {
 
 > 去重:日志行用 `seq` 去重(`foldLog` 内置,见 Task 8),替代原 `appliedSeqs`。
 
-- [ ] **Step 5: 运行 hook 测试**
+- [x] **Step 5: 运行 hook 测试**
 
 按现有 `useProductionTimeline.test.tsx`(看其断言)调整:断言对象从 `state.stages` 改为 `log` 行 + `onState` 被调用。
 
 Run: `cd llm-agent-studio/web && pnpm vitest src/features/workflow/useProductionTimeline.test.tsx src/features/workflow/api.test.ts --run`
 Expected: PASS(调整后)。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 cd llm-agent-studio
@@ -1251,7 +1253,7 @@ git commit -m "feat(web): useProjectState + SSE state frame routing; hook accumu
 
 目标:删除 `TimelineState`/`Stage`/`Pip`/`reduceTimeline`/`foldEvents`/`settleAssetStage`/`initialTimeline` 等**状态推导**;保留 `LogLine`、`logFor`、`StageId`、`TYPE_TO_STAGE`(日志 emphasis 着色用),新增 `foldLog`(按 seq 去重累积日志)。
 
-- [ ] **Step 1: 写/改 `timeline.test.ts`**
+- [x] **Step 1: 写/改 `timeline.test.ts`**
 
 ```ts
 import { describe, it, expect } from "vitest"
@@ -1278,12 +1280,12 @@ describe("foldLog 按 seq 去重(重连全量回放幂等)", () => {
 })
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cd llm-agent-studio/web && pnpm vitest src/lib/timeline.test.ts --run`
 Expected: FAIL — `foldLog` 未导出。
 
-- [ ] **Step 3: 重写 `timeline.ts`(只保留日志相关)**
+- [x] **Step 3: 重写 `timeline.ts`(只保留日志相关)**
 
 整文件替换为:
 
@@ -1398,14 +1400,14 @@ export function foldLog(log: LogLine[], frames: SseFrame[]): LogLine[] {
 }
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `cd llm-agent-studio/web && pnpm vitest src/lib/timeline.test.ts --run`
 Expected: PASS。
 
 > 注:此步会破坏仍 import 旧 `TimelineState`/`reduceTimeline` 的文件(WorkbenchPage、container、旧测试)——Task 9 修复它们。本步先让 timeline 单测过即可;整体 `pnpm build` 在 Task 9 末尾绿。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 cd llm-agent-studio
@@ -1426,7 +1428,7 @@ git commit -m "refactor(web): timeline.ts down to log-text + role mapping; state
 
 `WorkbenchViewProps` 删 `timeline: TimelineState`,改为 `state: ProjectState` + `log: LogLine[]`。徽章、阶段图、pip、计数全读 `state`。
 
-- [ ] **Step 1: 改 `workflow.test.tsx` 断言(先红)**
+- [x] **Step 1: 改 `workflow.test.tsx` 断言(先红)**
 
 看现有断言怎么渲染 WorkbenchView(`grep -n "WorkbenchView\|timeline=\|render(" workflow.test.tsx`),把传入的 `timeline={...}` 改为 `state={...}` + `log={[]}`,并构造一个 ProjectState fixture:
 
@@ -1446,12 +1448,12 @@ const sampleState: ProjectState = {
 
 断言:徽章渲染 `state.status` 的 label(`生产中`);run_done/review 态渲染"待审核 · {assets.pending}"。
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cd llm-agent-studio/web && pnpm vitest src/features/workflow/workflow.test.tsx --run`
 Expected: FAIL — 类型/属性不符。
 
-- [ ] **Step 3: 改 `WorkbenchPage.tsx`**
+- [x] **Step 3: 改 `WorkbenchPage.tsx`**
 
 import 改:
 
@@ -1547,7 +1549,7 @@ const STAGE_TO_ROLE: Record<StageId, StageRole> = {
 
 ### 9b. container 删 override,接 `useProjectState` + `useProductionTimeline(log)`
 
-- [ ] **Step 4: 改 container `orgs.$org.projects.$id.runs.$runId.tsx`**
+- [x] **Step 4: 改 container `orgs.$org.projects.$id.runs.$runId.tsx`**
 
 - import 加 `useProjectState`(from api)与 `ProjectState`(from projectState);删对 `TimelineState` 的依赖。
 - 用 query client 把 SSE `state` 帧写回缓存:
@@ -1594,7 +1596,7 @@ const STAGE_TO_ROLE: Record<StageId, StageRole> = {
 - `canCancel` 改读 `wfState.status`(running|planning);`handleSelectPip(pip: PipState)` 类型更新。
 - 删除文件底部 `isTerminal` 工具(改用 `wfState.runStatus === "done"`)及 `displayStatus` 相关行。
 
-- [ ] **Step 5: 运行 workflow 测试 + 全量构建/测试**
+- [x] **Step 5: 运行 workflow 测试 + 全量构建/测试**
 
 Run: `cd llm-agent-studio/web && pnpm vitest src/features/workflow/workflow.test.tsx --run`
 Expected: PASS。
@@ -1605,7 +1607,7 @@ Expected: tsc + vite 构建通过(无残留 `TimelineState`/`reduceTimeline` 引
 Run: `cd llm-agent-studio/web && pnpm test`
 Expected: 全套前端测试 PASS(修掉所有引用旧 timeline API 的测试)。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 cd llm-agent-studio
@@ -1622,17 +1624,17 @@ runStatus/displayStatus overrides removed. Race conditions eliminated."
 
 **Files:** 无(验证 only)
 
-- [ ] **Step 1: 后端全量**
+- [x] **Step 1: 后端全量**
 
 Run: `cd llm-agent-studio && GOWORK=off go build ./... && GOWORK=off go vet ./... && GOWORK=off go test ./... -count=1`
 Expected: 全 PASS。
 
-- [ ] **Step 2: 前端全量**
+- [x] **Step 2: 前端全量**
 
 Run: `cd llm-agent-studio/web && pnpm build && pnpm test`
 Expected: 构建 + 测试全 PASS。
 
-- [ ] **Step 3: 手动一条龙(参考 memory: Studio dev runtime)**
+- [x] **Step 3: 手动一条龙(参考 memory: Studio dev runtime)**
 
 按 `reference_studio-dev-runtime.md`(studiod :8083 + Vite :5173,demo@studio.com/DevReveal#123)起本地栈,跑一个完整 create-project → run 工作流,核对:
 - 工作台徽章/阶段/pip 计数全程与 `GET /api/projects/{id}/state` 返回一致。
@@ -1642,7 +1644,7 @@ Expected: 构建 + 测试全 PASS。
 Run: `cd llm-agent-studio && grep -rn "reduceTimeline\|TimelineState\|settleAssetStage\|appliedSeqs" web/src`
 Expected: 无输出(空)。
 
-- [ ] **Step 4: 最终提交(如有手动修正)**
+- [x] **Step 4: 最终提交(如有手动修正)**
 
 ```bash
 cd llm-agent-studio

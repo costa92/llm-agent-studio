@@ -1,6 +1,8 @@
 # Org Storage Multi-Config Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **✅ DONE** — 已实现并合并到 main(PR #52, `89df978`);任务全部完成,checkbox 于 2026-06-18 回填。
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** org 存储配置从「每 mode 一条 + Tabs 单表单」升级为「任意多条命名配置 + 一条默认」,表格管理(增删改、设默认);写入按「项目覆盖 → org 默认 → global → builtin」解析,读取 serve-by-token 不变。
 
@@ -42,7 +44,7 @@
 
 > 注:本任务把「migration 删唯一索引」与「移除依赖该索引的 `UpsertForOrg`」绑成一个原子改动(spec F1)。
 
-- [ ] **Step 1: 写 m16 migration**
+- [x] **Step 1: 写 m16 migration**
 
 在 `internal/storage/storage.go`,m15Migrations 之后加(并把 `m16Migrations...` 追加进 `Migrate` 的拼接列表,follow m15 写法):
 
@@ -69,7 +71,7 @@ var m16Migrations = []string{
 
 确认 `Migrate` 函数末尾拼接处加 `, m16Migrations...)`(在 m15 之后)。
 
-- [ ] **Step 2: DTO + UpsertInput 加字段**
+- [x] **Step 2: DTO + UpsertInput 加字段**
 
 `internal/storageconfig/store.go`,`StorageConfig` 加(在 `Enabled` 后、`HasSecret` 前后均可):
 ```go
@@ -82,7 +84,7 @@ var m16Migrations = []string{
 ```
 (IsDefault 不进 UpsertInput —— 默认只能经 SetDefault 改。)
 
-- [ ] **Step 3: 更新 scanConfig + 所有 SELECT/RETURNING 列序**
+- [x] **Step 3: 更新 scanConfig + 所有 SELECT/RETURNING 列序**
 
 `scanConfig` 改为(加 name/is_default,放末尾,所有查询的列序须一致):
 ```go
@@ -98,7 +100,7 @@ func scanConfig(row pgx.Row) (StorageConfig, error) {
 ```
 把 `GetGlobal`、`UpsertGlobal` 的 SELECT/RETURNING 子句都补 `, name, is_default` 到末尾(与 scanConfig 列序一致)。`UpsertGlobal` 的 INSERT 列加 `name`(值 `in.Name`),RETURNING 末尾加 `name, is_default`。
 
-- [ ] **Step 4: 写失败测试(List/Create/Update/SetDefault/Delete/DefaultConfigID)**
+- [x] **Step 4: 写失败测试(List/Create/Update/SetDefault/Delete/DefaultConfigID)**
 
 追加到 `internal/storageconfig/store_test.go`(DB-backed;mirror 现有 newStore/skip 风格)。注意先读文件确认 `newStore` helper 名:
 
@@ -155,12 +157,12 @@ func TestDelete_GuardedByAssetRef(t *testing.T) {
 ```
 > 实施提示:确认现有测试 helper。若只有 `newStore(t) *Store`,给删除守卫测试加一个能拿 `*pgxpool.Pool` 的 helper(或复用 `internal/project` 的夹具)。projects/assets 表列以 `internal/storage/storage.go` DDL 为准微调 INSERT。
 
-- [ ] **Step 5: 跑测试确认失败**
+- [x] **Step 5: 跑测试确认失败**
 
 Run: `GOWORK=off go test ./internal/storageconfig/ -run 'MultiConfig|SetDefault_Disabled|Delete_Guarded' -count=1 -p 1`(env exported)
 Expected: 编译失败(List/Create/Update/Delete/SetDefault/DefaultConfigID 未定义)。
 
-- [ ] **Step 6: 实现新 store 方法,移除旧 by-mode 方法**
+- [x] **Step 6: 实现新 store 方法,移除旧 by-mode 方法**
 
 在 `internal/storageconfig/store.go` 实现(用现有 `encryptSecret`/`scanConfig`/`newID`/`validate`):
 
@@ -343,12 +345,12 @@ var ErrInUse = errors.New("storageconfig: config in use by assets")
 
 **删除旧 by-mode 方法** `UpsertForOrg` / `GetForOrg` / `DeleteForOrg`(它们依赖被删的唯一索引 + 不再有调用方 —— Task 3 会换掉 HTTP 调用)。`UpsertGlobal`/`GetGlobal` 保留。
 
-- [ ] **Step 7: 跑测试确认通过**
+- [x] **Step 7: 跑测试确认通过**
 
 Run: `GOWORK=off go test ./internal/storageconfig/ -count=1 -p 1`
 Expected: PASS。(此时 `internal/httpapi` 会编译失败,因为它还调旧方法 —— 下一任务修;本任务只需 storageconfig 包自身测试 + `go build ./internal/storageconfig/` 通过。)
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add internal/storageconfig/store.go internal/storageconfig/store_test.go internal/storage/storage.go
@@ -366,7 +368,7 @@ SetDefault 事务先清后置;Delete 守卫 asset 引用→ErrInUse 并清项目
 - Modify: `internal/storagerouter/router.go`
 - Test: `internal/storagerouter/router_test.go`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 追加到 `internal/storagerouter/router_test.go`(mirror 现有 fake resolver 风格 —— 先读文件看 fake 怎么实现 `resolver` 接口):
 
@@ -405,12 +407,12 @@ func TestResolveWriteTarget_BuiltinWhenNoDefault(t *testing.T) {
 ```
 > 实施提示:扩展现有 fake resolver 加 `DefaultConfigID` 方法 + `defaultID`/`byID` 字段;复用现有 stubStore。若现有测试 fake 未实现新接口方法会编译失败 —— 一并补。
 
-- [ ] **Step 2: 跑确认失败**
+- [x] **Step 2: 跑确认失败**
 
 Run: `GOWORK=off go test ./internal/storagerouter/ -run ResolveWriteTarget -count=1`
 Expected: FAIL(`ResolveWriteTarget`/`DefaultConfigID` 未定义)。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `resolver` 接口加:
 ```go
@@ -444,12 +446,12 @@ func (r *Router) ResolveWriteTarget(ctx context.Context, orgID, projConfigID str
 ```
 > `buildCached` 是现有私有方法。`ResolveByID` 已在 resolver 接口。
 
-- [ ] **Step 4: 跑确认通过**
+- [x] **Step 4: 跑确认通过**
 
 Run: `GOWORK=off go test ./internal/storagerouter/ -count=1`
 Expected: PASS。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/storagerouter/router.go internal/storagerouter/router_test.go
@@ -465,7 +467,7 @@ git commit -m "feat(storagerouter): ResolveWriteTarget — project override → 
 - Modify: `internal/httpapi/httpapi.go`
 - Test: `internal/httpapi/storagehandlers_test.go`(若不存在则新建)
 
-- [ ] **Step 1: 改 StorageConfigStore 接口**
+- [x] **Step 1: 改 StorageConfigStore 接口**
 
 `internal/httpapi/storagehandlers.go` 的 `StorageConfigStore` 接口:移除 `UpsertForOrg`/`GetForOrg`/`DeleteForOrg`;加:
 ```go
@@ -477,7 +479,7 @@ git commit -m "feat(storagerouter): ResolveWriteTarget — project override → 
 ```
 (保留接口里 global 相关方法 `UpsertGlobal`/`GetGlobal` 不动。)
 
-- [ ] **Step 2: 写失败测试 —— 5 端点 + localfs 拒绝 + 删除守卫 409**
+- [x] **Step 2: 写失败测试 —— 5 端点 + localfs 拒绝 + 删除守卫 409**
 
 新建/追加 `internal/httpapi/storagehandlers_test.go`,用一个实现新接口的 stub(只捕获/返回固定值),DB-free。覆盖:
 - `listOrgStorageConfigsHandler` → 200 + items。
@@ -521,12 +523,12 @@ func TestDeleteOrgStorageConfig_InUse409(t *testing.T) {
 ```
 > 实施提示:stub 必须实现接口里**所有**方法(含保留的 global 两个)。确认接口最终方法集。
 
-- [ ] **Step 3: 跑确认失败**
+- [x] **Step 3: 跑确认失败**
 
 Run: `GOWORK=off go test ./internal/httpapi/ -run 'OrgStorageConfig' -count=1`
 Expected: 编译失败(新 handler 未定义)。
 
-- [ ] **Step 4: 实现 5 个 handler**
+- [x] **Step 4: 实现 5 个 handler**
 
 替换旧的 `getOrgStorageConfigHandler`/`putOrgStorageConfigHandler`/`deleteOrgStorageConfigHandler`,新增:
 
@@ -611,7 +613,7 @@ func decodeStorageUpsert(w http.ResponseWriter, r *http.Request) (storageconfig.
 ```
 > 实施提示:read 现有 `putOrgStorageConfigHandler` 拿到精确的 req struct json tag(useSsl 等),把它移植进 decodeStorageUpsert。
 
-- [ ] **Step 5: 改路由(httpapi.go)**
+- [x] **Step 5: 改路由(httpapi.go)**
 
 把 `/api/orgs/{org}/storage-config`(单数,GET/PUT/DELETE)三行替换为:
 ```go
@@ -623,12 +625,12 @@ func decodeStorageUpsert(w http.ResponseWriter, r *http.Request) (storageconfig.
 ```
 global 平台两行不动。
 
-- [ ] **Step 6: 跑测试 + 全后端编译**
+- [x] **Step 6: 跑测试 + 全后端编译**
 
 Run: `GOWORK=off go build ./... && GOWORK=off go test ./internal/httpapi/ -run 'OrgStorageConfig' -count=1`
 Expected: build 干净;新 handler 测试 PASS。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/httpapi/storagehandlers.go internal/httpapi/httpapi.go internal/httpapi/storagehandlers_test.go
@@ -644,7 +646,7 @@ git commit -m "feat(httpapi): storage-configs list/CRUD/default endpoints; 409 o
 - Modify: `internal/worker/worker.go`、`internal/httpapi/coverhandlers.go`
 - Test: `internal/project/store_test.go`、`internal/worker/worker_test.go`(若有写入相关)
 
-- [ ] **Step 1: projects 加 storage_config_id(全列 SQL)**
+- [x] **Step 1: projects 加 storage_config_id(全列 SQL)**
 
 `internal/project/store.go`:
 - `Project` 结构加 `StorageConfigID string`(json `storageConfigId`)。
@@ -656,11 +658,11 @@ git commit -m "feat(httpapi): storage-configs list/CRUD/default endpoints; 409 o
 
 > ⚠ 列序:SELECT 列顺序与 Scan 变量顺序必须逐一对应;把新列统一加在各 SELECT 列表与 Scan 的**同一末尾位置**。
 
-- [ ] **Step 2: 项目 create/update handler 接收 storageConfigId**
+- [x] **Step 2: 项目 create/update handler 接收 storageConfigId**
 
 `internal/httpapi/handlers.go` create 的匿名 req(~260)加 `StorageConfigID string \`json:"storageConfigId"\``;传入 `project.CreateInput{... StorageConfigID: req.StorageConfigID}`。update handler 同步(找 updateProjectHandler 的 req + UpdateInput 装配)。
 
-- [ ] **Step 3: worker 写入用 ResolveWriteTarget**
+- [x] **Step 3: worker 写入用 ResolveWriteTarget**
 
 `internal/worker/worker.go` sync(~688-700):把
 ```go
@@ -675,11 +677,11 @@ git commit -m "feat(httpapi): storage-configs list/CRUD/default endpoints; 409 o
 其中 `projConfigID` 取自已加载的 `proj.StorageConfigID`(perr==nil 时);失败路径 SetBlob("") 不变。把后续用到的 `storageConfigID` 统一为 `ResolveWriteTarget` 的返回值。async path(~1303-1314)同样改。
 > `w.cfg.Storage` 是 `*storagerouter.Router`,已有 `ResolveWriteTarget`。`storageMode`/`ConfigIDForMode`/`BlobStoreForMode` 在写入路径不再用(serve 路径仍用 BlobStoreForMode,勿删 Router 方法)。
 
-- [ ] **Step 4: cover 写入用 ResolveWriteTarget**
+- [x] **Step 4: cover 写入用 ResolveWriteTarget**
 
 `internal/httpapi/coverhandlers.go` 两处(generate ~93/99、upload ~192/198):把 `br.BlobStoreFor(...)` + `br.ConfigIDForMode(...,"")` 改为 `bs, storageConfigID, err := br.ResolveWriteTarget(r.Context(), proj.OrgID, proj.StorageConfigID)`。`CoverBlobRouter`/`BlobRouter` 接口(coverhandlers.go / m2handlers.go)加 `ResolveWriteTarget` 方法签名。
 
-- [ ] **Step 5: 测试(DB-backed)**
+- [x] **Step 5: 测试(DB-backed)**
 
 `internal/project/store_test.go` 加:Create/Get/Update 往返 `StorageConfigID`(存得进取得出)。worker 写入解析的端到端可放到 Task 8 live 验证;此处至少加 project 往返单测。
 
@@ -696,12 +698,12 @@ func TestProject_StorageConfigIDRoundTrip(t *testing.T) {
 }
 ```
 
-- [ ] **Step 6: 验证**
+- [x] **Step 6: 验证**
 
 Run: `GOWORK=off go build ./... && GOWORK=off go test ./internal/project/ ./internal/worker/ ./internal/httpapi/ -count=1 -p 1`
 Expected: build 干净;测试 PASS。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/project/store.go internal/httpapi/handlers.go internal/worker/worker.go internal/httpapi/coverhandlers.go internal/project/store_test.go
@@ -716,11 +718,11 @@ git commit -m "feat(worker,cover,project): write via ResolveWriteTarget; project
 - Modify: `web/src/lib/types.ts`
 - Modify: `web/src/features/storage/api.ts`
 
-- [ ] **Step 1: types**
+- [x] **Step 1: types**
 
 `web/src/lib/types.ts`:`StorageConfig` 接口加 `name: string`、`isDefault: boolean`;`UpsertStorageConfigInput` 加 `name: string`(`isDefault` 不进 upsert)。项目类型(Project / UpdateProjectInput)加 `storageConfigId?: string`。
 
-- [ ] **Step 2: api hooks(改写 storage/api.ts 为复数 + CRUD)**
+- [x] **Step 2: api hooks(改写 storage/api.ts 为复数 + CRUD)**
 
 读现有 `web/src/features/storage/api.ts`(当前 `useOrgStorageConfig`/`useUpsertOrgStorageConfig`/`useDeleteOrgStorageConfig` 单数),替换为:
 ```ts
@@ -764,7 +766,7 @@ export function useSetDefaultStorageConfig(org: string) {
 ```
 > 实施提示:`apiJSON` 签名以现有用法为准(method/body 怎么传)。保留 global 平台 hooks。
 
-- [ ] **Step 3: 验证类型 + commit**
+- [x] **Step 3: 验证类型 + commit**
 
 Run: `cd web && npx tsc -b`(此时 StorageConfigPage 仍引用旧 hooks 会报错 —— 下一任务修;本步只确认 types.ts/api.ts 自身无类型错,或允许 Page 暂时红,在 Task 6 一起绿)。
 为保持每步可编译,可将 Task 5 与 Task 6 合并提交;若分开,Task 5 提交信息注明「Page 在 Task 6 适配」。
@@ -781,11 +783,11 @@ git commit -m "feat(web): storage-configs list/CRUD/setDefault hooks + types nam
 - Modify: `web/src/features/storage/StorageConfigPage.tsx`
 - Test: `web/src/features/storage/StorageConfigPage.test.tsx`
 
-- [ ] **Step 1: 解耦 StorageConfigForm**
+- [x] **Step 1: 解耦 StorageConfigForm**
 
 去掉 `activeMode` 的 mode 锁定(`disabled={isOrgScope && activeMode !== undefined}` → 移除);`isOrgScope` 仅保留「停用=回退默认」提示语义(或改为通用提示);字段 id 前缀改为按传入 `idPrefix`(新建用 `"new"`,编辑用 config id)。在 form schema + 字段区**加 `name`(必填)** 输入(放在 mode 选择之前)。`onSubmit` 入参类型 `UpsertStorageConfigInput` 加 `name`。
 
-- [ ] **Step 2: 写失败测试(表格渲染 + 操作)**
+- [x] **Step 2: 写失败测试(表格渲染 + 操作)**
 
 `StorageConfigPage.test.tsx` 改为测新的表格 View。示例:
 ```tsx
@@ -808,7 +810,7 @@ it("点「设为默认」触发 onSetDefault", () => {
 ```
 > 实施提示:把 View 拆成纯展示组件 `StorageConfigsTable`(props: configs + onEdit/onDelete/onSetDefault/onCreate),便于测;容器接 hooks。`renderTable` 渲染该纯组件。
 
-- [ ] **Step 3: 实现表格 View**
+- [x] **Step 3: 实现表格 View**
 
 重写 `StorageConfigView`(或新 `StorageConfigsTable` + 容器):
 - 顶部「新增配置」按钮 → 打开弹窗(`StorageConfigForm` in Dialog,新建态)。
@@ -818,12 +820,12 @@ it("点「设为默认」触发 onSetDefault", () => {
 
 容器用 `useStorageConfigs/useCreate.../useUpdate.../useDelete.../useSetDefault...`。
 
-- [ ] **Step 4: 验证**
+- [x] **Step 4: 验证**
 
 Run: `cd web && npx tsc -b && npx vitest run src/features/storage/StorageConfigPage.test.tsx`
 Expected: tsc 干净;测试 PASS。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add web/src/features/storage/StorageConfigPage.tsx web/src/features/storage/StorageConfigPage.test.tsx
@@ -838,15 +840,15 @@ git commit -m "feat(web): storage config table + add/edit dialog + set-default"
 - Modify: `web/src/features/projects/EditProjectDialog.tsx`
 - Test: `web/src/features/projects/EditProjectDialog.test.tsx`(若存在;否则加最小测试)
 
-- [ ] **Step 1: 失败测试**
+- [x] **Step 1: 失败测试**
 
 测:给定 org 配置列表,下拉含「继承组织默认」+ 每条配置 name;选中某条 → 提交 `storageConfigId`。
 
-- [ ] **Step 2: 实现**
+- [x] **Step 2: 实现**
 
 `EditProjectDialog.tsx`:把 `storageMode`(`:344-370`)选择器换成存储下拉:用 `useStorageConfigs(org)` 拉列表,选项 `[{value:"", label:"继承组织默认"}, ...configs.map(c => ({value:c.id, label:`${c.name}（${MODE_LABELS[c.mode]}）`}))]`。表单字段 `storageMode` → `storageConfigId`(zod schema + defaults + submit 装配)。`onSubmit` 传 `storageConfigId`。
 
-- [ ] **Step 3: 验证 + commit**
+- [x] **Step 3: 验证 + commit**
 
 Run: `cd web && npx tsc -b && npx vitest run src/features/projects/EditProjectDialog.test.tsx`
 ```bash
@@ -860,24 +862,24 @@ git commit -m "feat(web): project storage dropdown (inherit default / pick confi
 
 **Files:** 无(验证)
 
-- [ ] **Step 1: 后端全量**
+- [x] **Step 1: 后端全量**
 
 Run: `GOWORK=off go build ./... && GOWORK=off go vet ./... && GOWORK=off go test ./... -count=1 -p 1`(fresh PG)
 Expected: 全绿(除既有 `TestEndToEndCustomWorkflow`/`TestTaskBoardScopes`)。
 
-- [ ] **Step 2: 前端全量**
+- [x] **Step 2: 前端全量**
 
 Run: `cd web && npm test && npx tsc -b`
 Expected: 全绿。
 
-- [ ] **Step 3: Live 验证**
+- [x] **Step 3: Live 验证**
 
 重建+重启 studiod(跑 m16),登录后:
 1. 存储页是表格;新增两条配置;设默认切换;删除非引用配置成功、删除被素材引用的配置 → 409「请改用停用」。
 2. 新建项目 → 跑生成 → 素材落 org 默认后端(`asset.storage_config_id` = 默认 id);项目编辑改存储下拉 → 新素材落所选后端。
 3. 切换默认 → 历史素材仍可开(serve-by-token 不变)。
 
-- [ ] **Step 4: finishing-a-development-branch**
+- [x] **Step 4: finishing-a-development-branch**
 
 用 `superpowers:finishing-a-development-branch` 收尾(验证测试 → 合并/PR)。
 
