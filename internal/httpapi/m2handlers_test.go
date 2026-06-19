@@ -293,8 +293,7 @@ func createModelConfigReq(org, body string) *http.Request {
 // and NEVER echoes the apiKey; the list endpoint shows the same; and the stored
 // key is recoverable only via the store's ResolveForOrg (never over HTTP).
 func TestCreateModelConfigBYOKHidesKey(t *testing.T) {
-	pool := modelTestPool(t)
-	st := models.New(pool, modelTestBox(t))
+	st := models.New(modelTestGorm(t), modelTestBox(t))
 	const org = "org-byok-http"
 	const rawKey = "sk-http-byok-secret-123456789"
 	const baseURL = "https://api.example.com/v1"
@@ -344,9 +343,8 @@ func TestCreateModelConfigBYOKHidesKey(t *testing.T) {
 // store's box is disabled returns 400 with the ErrEncUnavailable message (so the
 // UI can tell the admin to set STUDIO_CONFIG_ENC_KEY).
 func TestCreateModelConfig400OnDisabledBox(t *testing.T) {
-	pool := modelTestPool(t)
 	disabled, _ := secretbox.New("") // disabled box
-	st := models.New(pool, disabled)
+	st := models.New(modelTestGorm(t), disabled)
 
 	rr := httptest.NewRecorder()
 	createModelConfigHandler(st)(rr, createModelConfigReq("org-nobox",
@@ -447,8 +445,7 @@ func TestDeleteModelConfigHandler(t *testing.T) {
 // (recoverable only via ResolveForOrg), a PUT with a new apiKey replaces it, and
 // NO response ever echoes a raw key.
 func TestUpdateModelConfigBYOKHidesKey(t *testing.T) {
-	pool := modelTestPool(t)
-	st := models.New(pool, modelTestBox(t))
+	st := models.New(modelTestGorm(t), modelTestBox(t))
 	const org = "org-update-http"
 	const origKey = "sk-http-orig-111"
 	const newKey = "sk-http-new-222"

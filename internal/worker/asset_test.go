@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	"github.com/costa92/llm-agent-contract/llm"
 
@@ -41,6 +42,24 @@ func assetTestPool(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("migrate: %v", err)
 	}
 	return st.Pool()
+}
+
+func assetTestGorm(t *testing.T) *gorm.DB {
+	t.Helper()
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker DB tests")
+	}
+	ctx := context.Background()
+	st, err := storage.Open(ctx, storage.Config{PGURL: dsn})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(st.Close)
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return st.GORM()
 }
 
 func TestRunAssetWritesAssetAndGeneration(t *testing.T) {
@@ -194,7 +213,7 @@ func TestRunAssetRoutesViaOrgDefaultModelConfig(t *testing.T) {
 	reg.SetDefault(defGen)
 	reg.Register("fakeB", "mB", orgGen)
 
-	ms := models.New(pool, nil)
+	ms := models.New(assetTestGorm(t), nil)
 	if _, err := ms.Create(ctx, models.CreateInput{
 		OrgID: orgID, Kind: "image", Provider: "fakeB", Model: "mB", Enabled: true, IsDefault: true,
 	}); err != nil {
@@ -764,7 +783,7 @@ func asyncWorkerSetup(t *testing.T, pool *pgxpool.Pool, pollsToDone int) (*Worke
 	// Seed video per-second pricing so the ledger asserts a real amount.
 	_, _ = pool.Exec(ctx, `INSERT INTO pricing (provider, model, kind, micros_per_second)
 		VALUES ('fake','fake-video-async','video',500000) ON CONFLICT (provider, model) DO NOTHING`)
-	ms := models.New(pool, nil)
+	ms := models.New(assetTestGorm(t), nil)
 	_, _ = ms.Create(ctx, models.CreateInput{OrgID: orgID, Kind: "video", Provider: "fake", Model: "fake-video-async", Enabled: true, IsDefault: true})
 
 	fakeAsync := generate.NewFakeAsync("video", pollsToDone, generate.GenResult{

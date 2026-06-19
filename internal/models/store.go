@@ -7,14 +7,14 @@ package models
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	"github.com/costa92/llm-agent-studio/internal/secretbox"
 )
@@ -164,13 +164,13 @@ type UpdateInput struct {
 
 // Store persists model_configs.
 type Store struct {
-	pool *pgxpool.Pool
-	box  *secretbox.Box
+	db  *gorm.DB
+	box *secretbox.Box
 }
 
 // New builds a Store. box 提供 per-config api key 的静态加解密；nil/disabled box
 // 表示无法存储 key (带非空 APIKey 的 Create 返回 ErrEncUnavailable)。
-func New(pool *pgxpool.Pool, box *secretbox.Box) *Store { return &Store{pool: pool, box: box} }
+func New(db *gorm.DB, box *secretbox.Box) *Store { return &Store{db: db, box: box} }
 
 // KeyForConfig returns the DECRYPTED api key for one config, located by
 // (id AND org_id). Used by (a) the live model-listing endpoint so an admin editing
@@ -181,9 +181,9 @@ func New(pool *pgxpool.Pool, box *secretbox.Box) *Store { return &Store{pool: po
 // org. The bulk list/create/update responses still never carry the key.
 func (s *Store) KeyForConfig(ctx context.Context, orgID, id string) (string, error) {
 	var keyEnc []byte
-	err := s.pool.QueryRow(ctx,
-		`SELECT api_key_enc FROM model_configs WHERE id=$1 AND org_id=$2`, id, orgID).Scan(&keyEnc)
-	if errors.Is(err, pgx.ErrNoRows) {
+	err := s.db.WithContext(ctx).Raw(
+		`SELECT api_key_enc FROM model_configs WHERE id=$1 AND org_id=$2`, id, orgID).Row().Scan(&keyEnc)
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrNotFound
 	}
 	if err != nil {
@@ -236,29 +236,26 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (ModelConfig, error)
 		}
 		keyEnc = enc
 	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return ModelConfig{}, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if in.IsDefault {
-		if _, err := tx.Exec(ctx,
-			`UPDATE model_configs SET is_default=false WHERE org_id=$1 AND kind=$2`, in.OrgID, kind); err != nil {
-			return ModelConfig{}, fmt.Errorf("models: clear default: %w", err)
-		}
-	}
 	mc := ModelConfig{
 		ID: newID(), OrgID: in.OrgID, Kind: kind, Provider: in.Provider, Model: in.Model,
 		Enabled: in.Enabled, IsDefault: in.IsDefault, BaseURL: in.BaseURL,
 		HasAPIKey: keyEnc != nil, Params: in.Params,
 	}
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO model_configs (id, org_id, kind, provider, model, enabled, is_default, base_url, api_key_enc, params_json)
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if in.IsDefault {
+			if res := tx.Exec(
+				`UPDATE model_configs SET is_default=false WHERE org_id=$1 AND kind=$2`, in.OrgID, kind); res.Error != nil {
+				return fmt.Errorf("models: clear default: %w", res.Error)
+			}
+		}
+		if res := tx.Exec(
+			`INSERT INTO model_configs (id, org_id, kind, provider, model, enabled, is_default, base_url, api_key_enc, params_json)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-		mc.ID, mc.OrgID, mc.Kind, mc.Provider, mc.Model, mc.Enabled, mc.IsDefault, mc.BaseURL, keyEnc, mc.Params); err != nil {
-		return ModelConfig{}, fmt.Errorf("models: insert: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
+			mc.ID, mc.OrgID, mc.Kind, mc.Provider, mc.Model, mc.Enabled, mc.IsDefault, mc.BaseURL, keyEnc, mc.Params); res.Error != nil {
+			return fmt.Errorf("models: insert: %w", res.Error)
+		}
+		return nil
+	}); err != nil {
 		return ModelConfig{}, err
 	}
 	return mc, nil
@@ -298,45 +295,44 @@ func (s *Store) Update(ctx context.Context, id, orgID string, in UpdateInput) (M
 		}
 		keyEnc = enc
 	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return ModelConfig{}, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if in.IsDefault {
-		// 清掉同 org+kind 的其它默认 (排除自己，避免随后把自己又设回 false 的竞态)。
-		if _, err := tx.Exec(ctx,
-			`UPDATE model_configs SET is_default=false WHERE org_id=$1 AND kind=$2 AND id<>$3`, orgID, kind, id); err != nil {
-			return ModelConfig{}, fmt.Errorf("models: clear default: %w", err)
+	var mc ModelConfig
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if in.IsDefault {
+			// 清掉同 org+kind 的其它默认 (排除自己，避免随后把自己又设回 false 的竞态)。
+			if res := tx.Exec(
+				`UPDATE model_configs SET is_default=false WHERE org_id=$1 AND kind=$2 AND id<>$3`, orgID, kind, id); res.Error != nil {
+				return fmt.Errorf("models: clear default: %w", res.Error)
+			}
 		}
-	}
-	// api_key_enc 仅在 replaceKey 时写 ($8)，否则用 COALESCE 保留既有值。
-	tag, err := tx.Exec(ctx,
-		`UPDATE model_configs
+		// api_key_enc 仅在 replaceKey 时写 ($8)，否则用 COALESCE 保留既有值。
+		res := tx.Exec(
+			`UPDATE model_configs
 		 SET kind=$3, provider=$4, model=$5, enabled=$6, is_default=$7,
 		     base_url=$8, api_key_enc=CASE WHEN $9 THEN $10 ELSE api_key_enc END, params_json=$11
 		 WHERE id=$1 AND org_id=$2`,
-		id, orgID, kind, in.Provider, in.Model, in.Enabled, in.IsDefault, in.BaseURL, replaceKey, keyEnc, in.Params)
-	if err != nil {
-		return ModelConfig{}, fmt.Errorf("models: update: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return ModelConfig{}, ErrNotFound
-	}
-	// 重新读出以拿到准确的 has_api_key 以及明文 apiKey。
-	var mc ModelConfig
-	var keyEncReload []byte
-	if err := tx.QueryRow(ctx,
-		`SELECT id, org_id, kind, provider, model, enabled, is_default,
+			id, orgID, kind, in.Provider, in.Model, in.Enabled, in.IsDefault, in.BaseURL, replaceKey, keyEnc, in.Params)
+		if res.Error != nil {
+			return fmt.Errorf("models: update: %w", res.Error)
+		}
+		if res.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		// 重新读出以拿到准确的 has_api_key 以及明文 apiKey。
+		var keyEncReload []byte
+		var paramsReload []byte
+		if err := tx.Raw(
+			`SELECT id, org_id, kind, provider, model, enabled, is_default,
 		        COALESCE(base_url,''), api_key_enc, params_json
-		 FROM model_configs WHERE id=$1 AND org_id=$2`, id, orgID).
-		Scan(&mc.ID, &mc.OrgID, &mc.Kind, &mc.Provider, &mc.Model, &mc.Enabled, &mc.IsDefault,
-			&mc.BaseURL, &keyEncReload, &mc.Params); err != nil {
-		return ModelConfig{}, fmt.Errorf("models: reload: %w", err)
-	}
-	mc.HasAPIKey = len(keyEncReload) > 0
-	// 不解密回传明文 key——ModelConfig 是客户端 DTO，只暴露 HasAPIKey (审计: 绝不回传 key)。
-	if err := tx.Commit(ctx); err != nil {
+		 FROM model_configs WHERE id=$1 AND org_id=$2`, id, orgID).Row().
+			Scan(&mc.ID, &mc.OrgID, &mc.Kind, &mc.Provider, &mc.Model, &mc.Enabled, &mc.IsDefault,
+				&mc.BaseURL, &keyEncReload, &paramsReload); err != nil {
+			return fmt.Errorf("models: reload: %w", err)
+		}
+		mc.Params = json.RawMessage(paramsReload)
+		mc.HasAPIKey = len(keyEncReload) > 0
+		// 不解密回传明文 key——ModelConfig 是客户端 DTO，只暴露 HasAPIKey (审计: 绝不回传 key)。
+		return nil
+	}); err != nil {
 		return ModelConfig{}, err
 	}
 	return mc, nil
@@ -347,11 +343,11 @@ func (s *Store) Delete(ctx context.Context, id, orgID string) error {
 	if id == "" || orgID == "" {
 		return fmt.Errorf("models: ID, OrgID required")
 	}
-	tag, err := s.pool.Exec(ctx, `DELETE FROM model_configs WHERE id=$1 AND org_id=$2`, id, orgID)
-	if err != nil {
-		return fmt.Errorf("models: delete: %w", err)
+	res := s.db.WithContext(ctx).Where("id = ? AND org_id = ?", id, orgID).Delete(&modelConfigRow{})
+	if res.Error != nil {
+		return fmt.Errorf("models: delete: %w", res.Error)
 	}
-	if tag.RowsAffected() == 0 {
+	if res.RowsAffected == 0 {
 		return ErrNotFound
 	}
 	return nil
@@ -359,10 +355,10 @@ func (s *Store) Delete(ctx context.Context, id, orgID string) error {
 
 // ListByOrg lists an org's model configs, newest first.
 func (s *Store) ListByOrg(ctx context.Context, orgID string) ([]ModelConfig, error) {
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db.WithContext(ctx).Raw(
 		`SELECT id, org_id, kind, provider, model, enabled, is_default,
 		        COALESCE(base_url,''), api_key_enc, params_json
-		 FROM model_configs WHERE org_id=$1 ORDER BY created_at DESC`, orgID)
+		 FROM model_configs WHERE org_id=$1 ORDER BY created_at DESC`, orgID).Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -371,10 +367,12 @@ func (s *Store) ListByOrg(ctx context.Context, orgID string) ([]ModelConfig, err
 	for rows.Next() {
 		var mc ModelConfig
 		var keyEnc []byte
+		var params []byte
 		if err := rows.Scan(&mc.ID, &mc.OrgID, &mc.Kind, &mc.Provider, &mc.Model, &mc.Enabled, &mc.IsDefault,
-			&mc.BaseURL, &keyEnc, &mc.Params); err != nil {
+			&mc.BaseURL, &keyEnc, &params); err != nil {
 			return nil, err
 		}
+		mc.Params = json.RawMessage(params)
 		mc.HasAPIKey = len(keyEnc) > 0
 		// 不解密回传明文 key——只暴露 HasAPIKey (审计: 绝不回传 key)。
 		out = append(out, mc)
@@ -386,19 +384,21 @@ func (s *Store) ListByOrg(ctx context.Context, orgID string) ([]ModelConfig, err
 // ModelRouter 使用。无启用默认时 ok=false。这是唯一暴露明文 key 的路径，仅服务端
 // 内部调用 (绝不进 HTTP handler)。api_key_enc 为 NULL 时 APIKey 为空。
 func (s *Store) ResolveForOrg(ctx context.Context, orgID, kind string) (ResolvedModel, bool, error) {
-	row := s.pool.QueryRow(ctx,
+	row := s.db.WithContext(ctx).Raw(
 		`SELECT provider, model, COALESCE(base_url,''), api_key_enc, params_json
 		 FROM model_configs
 		 WHERE org_id=$1 AND kind=$2 AND enabled=true AND is_default=true
-		 ORDER BY created_at DESC LIMIT 1`, orgID, kind)
+		 ORDER BY created_at DESC LIMIT 1`, orgID, kind).Row()
 	var rm ResolvedModel
 	var keyEnc []byte
-	if err := row.Scan(&rm.Provider, &rm.Model, &rm.BaseURL, &keyEnc, &rm.Params); err != nil {
-		if err == pgx.ErrNoRows {
+	var params []byte
+	if err := row.Scan(&rm.Provider, &rm.Model, &rm.BaseURL, &keyEnc, &params); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
 			return ResolvedModel{}, false, nil
 		}
 		return ResolvedModel{}, false, fmt.Errorf("models: resolve: %w", err)
 	}
+	rm.Params = json.RawMessage(params)
 	if len(keyEnc) > 0 {
 		if !s.box.Enabled() {
 			return ResolvedModel{}, false, ErrEncUnavailable
@@ -421,19 +421,21 @@ func (s *Store) ResolveForOrgNamed(ctx context.Context, orgID, kind, provider, m
 	if provider == "" || modelName == "" {
 		return ResolvedModel{}, false, nil
 	}
-	row := s.pool.QueryRow(ctx,
+	row := s.db.WithContext(ctx).Raw(
 		`SELECT provider, model, COALESCE(base_url,''), api_key_enc, params_json
 			 FROM model_configs
 			 WHERE org_id=$1 AND kind=$2 AND provider=$3 AND model=$4 AND enabled=true
-			 ORDER BY is_default DESC, created_at DESC LIMIT 1`, orgID, kind, provider, modelName)
+			 ORDER BY is_default DESC, created_at DESC LIMIT 1`, orgID, kind, provider, modelName).Row()
 	var rm ResolvedModel
 	var keyEnc []byte
-	if err := row.Scan(&rm.Provider, &rm.Model, &rm.BaseURL, &keyEnc, &rm.Params); err != nil {
-		if err == pgx.ErrNoRows {
+	var params []byte
+	if err := row.Scan(&rm.Provider, &rm.Model, &rm.BaseURL, &keyEnc, &params); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
 			return ResolvedModel{}, false, nil
 		}
 		return ResolvedModel{}, false, fmt.Errorf("models: resolve named: %w", err)
 	}
+	rm.Params = json.RawMessage(params)
 	if len(keyEnc) > 0 {
 		if !s.box.Enabled() {
 			return ResolvedModel{}, false, ErrEncUnavailable
@@ -450,12 +452,12 @@ func (s *Store) ResolveForOrgNamed(ctx context.Context, orgID, kind, provider, m
 // DefaultForOrg returns the org's default provider+model for a kind. ok=false
 // when no enabled default exists (caller falls back to the registry default).
 func (s *Store) DefaultForOrg(ctx context.Context, orgID, kind string) (provider, model string, ok bool, err error) {
-	row := s.pool.QueryRow(ctx,
+	row := s.db.WithContext(ctx).Raw(
 		`SELECT provider, model FROM model_configs
 		 WHERE org_id=$1 AND kind=$2 AND enabled=true AND is_default=true
-		 ORDER BY created_at DESC LIMIT 1`, orgID, kind)
+		 ORDER BY created_at DESC LIMIT 1`, orgID, kind).Row()
 	if err := row.Scan(&provider, &model); err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return "", "", false, nil
 		}
 		return "", "", false, fmt.Errorf("models: default: %w", err)
