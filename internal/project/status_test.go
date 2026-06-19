@@ -40,6 +40,16 @@ func TestDeriveStatusCompletedWhenNoPending(t *testing.T) {
 	}
 }
 
+func TestDeriveStatusReviewWhenInFlightRegen(t *testing.T) {
+	// All todos done, no pending-acceptance assets, but an in-flight regenerate
+	// child (descendant of a latest-plan asset) is still generating → 'review'
+	// (must not collapse to 'completed').
+	got := DeriveStatus(TodoCounts{Total: 3, Done: 3, PendingAssets: 0, InFlightRegen: 1})
+	if got != "review" {
+		t.Fatalf("want review, got %q", got)
+	}
+}
+
 func TestDeriveStatusRunningIgnoresPending(t *testing.T) {
 	// Active work dominates pending assets.
 	got := DeriveStatus(TodoCounts{Total: 3, Running: 1, Done: 1, PendingAssets: 1})

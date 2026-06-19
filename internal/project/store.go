@@ -354,6 +354,23 @@ func (s *Store) RefreshStatus(ctx context.Context, projectID string) (string, er
 		latestPlanID).Scan(&c.PendingAssets); err != nil {
 		return "", fmt.Errorf("project: tally latest plan pending assets: %w", err)
 	}
+	// HITL regenerate 子资产 todo_id='' → 对上面的 "JOIN todos WHERE plan_id" 盘点
+	// 不可见。以最新 plan 的资产为根，沿 parent_asset_id 递归遍历（chain v2→v3 可能，
+	// 故必须递归），盘点在途 regenerate 后代。以「最新 plan 资产」为根保住多 plan 不
+	// 变式：lineage 根属旧 plan 的 regenerate 子资产不得 gate 当前 review。
+	if err := s.pool.QueryRow(ctx, `
+		WITH RECURSIVE regen AS (
+			SELECT a.id, a.status FROM assets a
+			WHERE a.parent_asset_id IN (
+				SELECT a2.id FROM assets a2 JOIN todos t ON a2.todo_id = t.id WHERE t.plan_id = $1
+			)
+			UNION ALL
+			SELECT a.id, a.status FROM assets a JOIN regen r ON a.parent_asset_id = r.id
+		)
+		SELECT count(*) FILTER (WHERE status IN ('generating','submitted','pending_acceptance')) FROM regen`,
+		latestPlanID).Scan(&c.InFlightRegen); err != nil {
+		return "", fmt.Errorf("project: tally latest plan in-flight regenerate descendants: %w", err)
+	}
 	status := DeriveStatus(c)
 	if err := s.SetStatus(ctx, projectID, status); err != nil {
 		return "", err
@@ -536,18 +553,41 @@ func (s *Store) LoadState(ctx context.Context, projectID, planID string) (projec
 		return projectstate.ProjectState{}, fmt.Errorf("project: load state todos rows: %w", err)
 	}
 
-	// assets of the resolved plan (joined via todos)
+	// assets of the resolved plan (joined via todos), PLUS in-flight HITL
+	// regenerate descendants of those assets. Regenerate children carry
+	// todo_id='' so the JOIN-via-todos set misses them; the recursive CTE walks
+	// parent_asset_id down from this plan's assets so Compute sees the in-flight
+	// signal (todo_id='' + generating/submitted/pending_acceptance) and keeps the
+	// run in 'review'. Rooting at THIS plan's assets preserves the multi-plan
+	// invariant. The two sets are disjoint (plan assets have todo_id<>'';
+	// descendants have todo_id=''), so no double-count; descendants don't match
+	// any todo in assetByTodo, so they never become pips. created_at ordering is
+	// kept for the plan-asset rows (the in-flight descendants only feed the
+	// status tally, not pip layout).
 	arows, err := s.pool.Query(ctx,
-		`SELECT a.id, a.todo_id, a.status FROM assets a
-		 JOIN todos t ON a.todo_id = t.id
-		 WHERE t.plan_id=$1 ORDER BY a.created_at ASC`, planRowID)
+		`WITH RECURSIVE plan_assets AS (
+			SELECT a.id, a.todo_id, a.status, a.created_at FROM assets a
+			JOIN todos t ON a.todo_id = t.id
+			WHERE t.plan_id = $1
+		), regen AS (
+			SELECT a.id, a.todo_id, a.status, a.created_at FROM assets a
+			WHERE a.parent_asset_id IN (SELECT id FROM plan_assets)
+			UNION ALL
+			SELECT a.id, a.todo_id, a.status, a.created_at FROM assets a
+			JOIN regen r ON a.parent_asset_id = r.id
+		)
+		SELECT id, todo_id, status, created_at FROM plan_assets
+		UNION ALL
+		SELECT id, todo_id, status, created_at FROM regen
+		ORDER BY created_at ASC`, planRowID)
 	if err != nil {
 		return projectstate.ProjectState{}, fmt.Errorf("project: load state assets: %w", err)
 	}
 	defer arows.Close()
 	for arows.Next() {
 		var a projectstate.Asset
-		if err := arows.Scan(&a.ID, &a.TodoID, &a.Status); err != nil {
+		var createdAt time.Time
+		if err := arows.Scan(&a.ID, &a.TodoID, &a.Status, &createdAt); err != nil {
 			return projectstate.ProjectState{}, fmt.Errorf("project: scan state asset: %w", err)
 		}
 		in.Assets = append(in.Assets, a)

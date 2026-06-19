@@ -13,6 +13,14 @@ type TodoCounts struct {
 	// is NOT a todo status — it's joined in by RefreshStatus so DeriveStatus can
 	// surface 'review' once todos finish but acceptance is outstanding.
 	PendingAssets int
+	// InFlightRegen is the number of in-flight HITL regenerate descendants
+	// (generating/submitted/pending_acceptance) rooted at the LATEST plan's
+	// assets. Regenerate children carry todo_id='' so they are invisible to every
+	// "JOIN todos WHERE plan_id" tally; RefreshStatus counts them via a recursive
+	// walk over parent_asset_id and feeds the count here so DeriveStatus keeps the
+	// run in 'review' until the new version settles (rooting at latest-plan assets
+	// preserves the multi-plan invariant: an old plan's regenerate must not gate).
+	InFlightRegen int
 }
 
 // DeriveStatus computes the project status from its todo tally (spec §7.3 step
@@ -34,7 +42,7 @@ func DeriveStatus(c TodoCounts) string {
 	}
 	// Todos all done: if assets await HITL acceptance, the run rests in 'review'
 	// (spec §6 status set; §7.3 step 5: review→completed once all accepted).
-	if c.PendingAssets > 0 {
+	if c.PendingAssets > 0 || c.InFlightRegen > 0 {
 		return "review"
 	}
 	if c.Done == c.Total {
