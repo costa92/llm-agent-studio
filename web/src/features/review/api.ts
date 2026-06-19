@@ -46,12 +46,17 @@ export function useAsset(id: string): UseQueryResult<AssetDetail> {
 }
 
 // 采纳/失效后刷新审核队列 + 资产库（UI-spec §7.6：HITL 采纳即失效 review + library）。
+// 另失效 project-state（前缀，仅刷新当前挂载的工作台查询）：accept/reject/regenerate
+// 不发 run_event，SSE 版本门不会推 state 帧，故工作台「待审核 · N」徽标
+//（取自 project-state 的 assets.pending）需主动失效才会刷新，否则停在旧值。
+// review 态下 SSE 不在推帧，REST 重取无版本竞态，安全。
 function invalidateAfterHitl(
   queryClient: ReturnType<typeof useQueryClient>,
   org: string,
 ): void {
   void queryClient.invalidateQueries({ queryKey: ["review-queue", org] })
   void queryClient.invalidateQueries({ queryKey: ["library", org] })
+  void queryClient.invalidateQueries({ queryKey: ["project-state"] })
 }
 
 // 采纳：POST /api/assets/{id}/accept → 200 {id, status:"accepted"}（admin）；
