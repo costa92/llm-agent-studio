@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { fetchAllEvents, fetchProjectState, fetchScript } from "./api"
+import { renderHook, waitFor } from "@testing-library/react"
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
+import { createElement, type ReactNode } from "react"
+import { fetchAllEvents, fetchProjectState, fetchScript, useCancel, useRun } from "./api"
 import { setAccessToken } from "@/lib/apiClient"
 import { jsonResponse } from "@/test/helpers"
 
@@ -7,6 +10,17 @@ afterEach(() => {
   vi.restoreAllMocks()
   setAccessToken(null)
 })
+
+// 每个用例新建一个 QueryClient，并 spy invalidateQueries 以断言失效。
+function setup() {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  const invalidateSpy = vi.spyOn(client, "invalidateQueries")
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client }, children)
+  return { wrapper, invalidateSpy }
+}
 
 describe("fetchAllEvents (keyset replay accumulation)", () => {
   it("accumulates pages by afterSeq until a short page signals the end", async () => {
@@ -102,5 +116,46 @@ describe("fetchScript (bare JSON, 404 → null, tolerant parse)", () => {
     )
     const doc = await fetchScript("p1")
     expect(doc?.title).toBe("x")
+  })
+})
+
+describe("useRun (POST /run)", () => {
+  // 重新运行会新建一个 plan（res.planId），运行页随即导航到新 runId。
+  // isLatestPlan 由 usePlans()[0].id === runId 推导——若不失效 ["plans"]，
+  // 列表仍是旧 plan，新页 isLatestPlan=false → Run/Cancel 静默禁用直至手动刷新。
+  it("invalidates both the project AND the plans list on success", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ planId: "plan9", valid: true, fallbackUsed: false }),
+    )
+    vi.stubGlobal("fetch", fetchMock)
+
+    const { wrapper, invalidateSpy } = setup()
+    const { result } = renderHook(() => useRun("p1"), { wrapper })
+    result.current.mutate()
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe("/api/projects/p1/run")
+    expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("POST")
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["project", "p1"] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["plans", "p1"] })
+  })
+})
+
+describe("useCancel (POST /cancel)", () => {
+  // 取消不新建 plan，isLatestPlan/列表顺序不变，故仅失效项目即可。
+  it("invalidates the project on success", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ status: "canceled" }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    const { wrapper, invalidateSpy } = setup()
+    const { result } = renderHook(() => useCancel("p1"), { wrapper })
+    result.current.mutate()
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe("/api/projects/p1/cancel")
+    expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("POST")
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["project", "p1"] })
   })
 })
