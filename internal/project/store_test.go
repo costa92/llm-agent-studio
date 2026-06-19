@@ -693,41 +693,91 @@ func TestLoadState_LegacyCustomEnabled(t *testing.T) {
 	}
 }
 
+// insertOrgStorageConfig 直接插入一条 org-scope storage_configs 行（测试用），返回其 id。
+// 供「storage_config_id 必须属于本 org」校验的测试构造真实配置。
+func insertOrgStorageConfig(t *testing.T, pool *pgxpool.Pool, id, orgID string) string {
+	t.Helper()
+	// 唯一 mode：迁移表里有 transient 的 (org_id, mode) WHERE scope='org' 唯一索引
+	// （后续迁移会 DROP，但共享测试池每次 newStore 重跑迁移会瞬时重建它）；同 org 同 mode
+	// 会在重建时撞 23505。故每条配置用唯一 mode，彻底回避。
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO storage_configs (id, scope, org_id, mode, enabled) VALUES ($1, 'org', $2, $3, true)`,
+		id, orgID, "m_"+uniqueSuffix()); err != nil {
+		t.Fatalf("insert storage_config: %v", err)
+	}
+	return id
+}
+
 // TestProject_StorageConfigIDRoundTrip: storage_config_id persists through
-// Create and is readable back via Get and ListByOrg.
+// Create and is readable back via Get and ListByOrg. 必须引用本 org 真实存在的配置。
 func TestProject_StorageConfigIDRoundTrip(t *testing.T) {
-	s, _ := newStore(t)
+	s, pool := newStore(t)
 	ctx := context.Background()
 	orgID := "o_" + uniqueSuffix()
+	cfg1 := insertOrgStorageConfig(t, pool, "cfg_"+uniqueSuffix(), orgID)
+	cfg2 := insertOrgStorageConfig(t, pool, "cfg_"+uniqueSuffix(), orgID)
 	p, err := s.Create(ctx, CreateInput{
-		OrgID: orgID, Name: "P", CreatedBy: "u", StorageConfigID: "cfg9",
+		OrgID: orgID, Name: "P", CreatedBy: "u", StorageConfigID: cfg1,
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if p.StorageConfigID != "cfg9" {
-		t.Fatalf("create returned StorageConfigID=%q want cfg9", p.StorageConfigID)
+	if p.StorageConfigID != cfg1 {
+		t.Fatalf("create returned StorageConfigID=%q want %q", p.StorageConfigID, cfg1)
 	}
 	got, err := s.Get(ctx, p.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.StorageConfigID != "cfg9" {
-		t.Fatalf("get roundtrip StorageConfigID=%q want cfg9", got.StorageConfigID)
+	if got.StorageConfigID != cfg1 {
+		t.Fatalf("get roundtrip StorageConfigID=%q want %q", got.StorageConfigID, cfg1)
 	}
 	items, _, err := s.ListByOrg(ctx, orgID, 10, "")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(items) != 1 || items[0].StorageConfigID != "cfg9" {
-		t.Fatalf("list roundtrip StorageConfigID=%q want cfg9", items[0].StorageConfigID)
+	if len(items) != 1 || items[0].StorageConfigID != cfg1 {
+		t.Fatalf("list roundtrip StorageConfigID=%q want %q", items[0].StorageConfigID, cfg1)
 	}
 	// Update should persist a new value.
-	upd, err := s.Update(ctx, p.ID, UpdateInput{Name: "P", StorageConfigID: "cfg42"})
+	upd, err := s.Update(ctx, p.ID, UpdateInput{Name: "P", StorageConfigID: cfg2})
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if upd.StorageConfigID != "cfg42" {
-		t.Fatalf("update StorageConfigID=%q want cfg42", upd.StorageConfigID)
+	if upd.StorageConfigID != cfg2 {
+		t.Fatalf("update StorageConfigID=%q want %q", upd.StorageConfigID, cfg2)
+	}
+}
+
+// TestProject_StorageConfigID_RejectsForeignOrg: 创建/更新项目时 storage_config_id 必须属于
+// 项目自身 org（scope='org'）。引用他 org 的配置 id 应被拒，防跨租户存储写入（资产用他 org 凭证/桶）。
+func TestProject_StorageConfigID_RejectsForeignOrg(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	orgA := "oa_" + uniqueSuffix()
+	orgB := "ob_" + uniqueSuffix()
+	cfgA := insertOrgStorageConfig(t, pool, "cfg_"+uniqueSuffix(), orgA)
+	cfgB := insertOrgStorageConfig(t, pool, "cfg_"+uniqueSuffix(), orgB)
+
+	// Create 引用他 org（orgB）配置 → 拒。
+	if _, err := s.Create(ctx, CreateInput{OrgID: orgA, Name: "P", CreatedBy: "u", StorageConfigID: cfgB}); !errors.Is(err, ErrInvalidStorageConfig) {
+		t.Fatalf("create with foreign storage config: err=%v want ErrInvalidStorageConfig", err)
+	}
+	// Create 本 org 配置 → 成功。
+	p, err := s.Create(ctx, CreateInput{OrgID: orgA, Name: "P", CreatedBy: "u", StorageConfigID: cfgA})
+	if err != nil {
+		t.Fatalf("create with own storage config: %v", err)
+	}
+	// Create 空 = 无 override → 成功。
+	if _, err := s.Create(ctx, CreateInput{OrgID: orgA, Name: "P2", CreatedBy: "u"}); err != nil {
+		t.Fatalf("create with empty storage config: %v", err)
+	}
+	// Update 改成他 org 配置 → 拒。
+	if _, err := s.Update(ctx, p.ID, UpdateInput{Name: "P", StorageConfigID: cfgB}); !errors.Is(err, ErrInvalidStorageConfig) {
+		t.Fatalf("update with foreign storage config: err=%v want ErrInvalidStorageConfig", err)
+	}
+	// Update 本 org 配置 → 成功。
+	if _, err := s.Update(ctx, p.ID, UpdateInput{Name: "P", StorageConfigID: cfgA}); err != nil {
+		t.Fatalf("update with own storage config: %v", err)
 	}
 }

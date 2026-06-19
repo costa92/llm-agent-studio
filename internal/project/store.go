@@ -21,6 +21,10 @@ import (
 // ErrNotFound is returned when a project row does not exist.
 var ErrNotFound = errors.New("project: not found")
 
+// ErrInvalidStorageConfig 表示传入的 storage_config_id 不属于项目所在 org（或不存在）。
+// 防跨租户存储写入：项目只能引用自身 org 的 scope='org' 存储配置（空 = 无 override，走默认）。
+var ErrInvalidStorageConfig = errors.New("project: storage config not found for org")
+
 // Project is a projects row.
 type Project struct {
 	ID             string `json:"id"`
@@ -115,10 +119,34 @@ func newID() string {
 	return hex.EncodeToString(b)
 }
 
+// storageConfigBelongsToOrg 校验 configID 是否为 orgID 的 scope='org' 存储配置。
+// 防跨租户存储写入：项目只能引用自身 org 的存储配置（空 configID 由调用方先行短路）。
+// 刻意只认 scope='org'：scope='global' 是系统级配置、不在 org 存储下拉里、也不作为项目级
+// override（global 是 ResolveWriteTarget 在无 per-project/org 配置时的自动回落），故拒之。
+func (s *Store) storageConfigBelongsToOrg(ctx context.Context, configID, orgID string) (bool, error) {
+	var ok bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM storage_configs WHERE id=$1 AND org_id=$2 AND scope='org')`,
+		configID, orgID).Scan(&ok); err != nil {
+		return false, fmt.Errorf("project: validate storage config: %w", err)
+	}
+	return ok, nil
+}
+
 // Create inserts a project (status='draft').
 func (s *Store) Create(ctx context.Context, in CreateInput) (Project, error) {
 	if in.OrgID == "" || in.Name == "" || in.CreatedBy == "" {
 		return Project{}, fmt.Errorf("project: OrgID, Name, CreatedBy required")
+	}
+	// 存储配置 override 必须属于本 org（防跨租户存储写入）；空 = 无 override，走默认。
+	if in.StorageConfigID != "" {
+		ok, err := s.storageConfigBelongsToOrg(ctx, in.StorageConfigID, in.OrgID)
+		if err != nil {
+			return Project{}, err
+		}
+		if !ok {
+			return Project{}, ErrInvalidStorageConfig
+		}
 	}
 	kind := in.Kind
 	if kind == "" {
@@ -233,6 +261,23 @@ func (s *Store) SetCover(ctx context.Context, projectID, assetID string) error {
 // （其他字段不允许改 — 想改 brief / style / 内容类型只能删了重建，避免污染已有 run 事件 history）。
 // 0 行影响 = 找不到该 id（POST 一致返 404 而非 200）。
 func (s *Store) Update(ctx context.Context, id string, in UpdateInput) (Project, error) {
+	// 存储配置 override 必须属于本项目 org（防跨租户存储写入）；先取项目 org（保留 ErrNotFound 语义）。
+	if in.StorageConfigID != "" {
+		var orgID string
+		if err := s.pool.QueryRow(ctx, `SELECT org_id FROM projects WHERE id=$1`, id).Scan(&orgID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return Project{}, ErrNotFound
+			}
+			return Project{}, fmt.Errorf("project: update: lookup org: %w", err)
+		}
+		ok, err := s.storageConfigBelongsToOrg(ctx, in.StorageConfigID, orgID)
+		if err != nil {
+			return Project{}, err
+		}
+		if !ok {
+			return Project{}, ErrInvalidStorageConfig
+		}
+	}
 	// custom_workflow_enabled / workflow_nodes are intentionally NOT updated here:
 	// custom workflows are now first-class rows in the workflows table (m12), and
 	// the project edit form no longer sends them. Leaving the legacy columns
@@ -241,6 +286,9 @@ func (s *Store) Update(ctx context.Context, id string, in UpdateInput) (Project,
 		`UPDATE projects
 		 SET name=$2, description=$3, content_type=$4, target_platform=$5, style=$6,
 		     planner_provider=$7, planner_model=$8, image_provider=$9, image_model=$10, storage_mode=$11,
+		     -- storage_config_id 无条件写入（非 COALESCE）：编辑表单总会显式发该值，空串=用户选
+		     -- 「继承组织默认」清除 override。若改成 COALESCE(NULLIF...) 反而让用户无法清除已设的 override。
+		     -- 非空值已在上方校验属于本 org（防跨租户）。kind/picturebook 用 COALESCE 是因表单不发它们。
 		     storage_config_id=$12,
 		     kind=COALESCE(NULLIF($13, ''), kind),
 		     picturebook_config=COALESCE(NULLIF($14, ''), picturebook_config),
