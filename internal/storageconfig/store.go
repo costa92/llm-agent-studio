@@ -404,14 +404,19 @@ func (s *Store) ResolveForOrg(ctx context.Context, orgID string) (ResolvedStorag
 	return s.ResolveForOrgAndMode(ctx, orgID, "")
 }
 
-// ResolveByID 按 storage_configs.id 直接解析「生效(enabled)」配置 (含解密后的
-// SecretKey)。只命中 enabled=true 行；未知/已禁用 id → ok=false (调用方回落)。
-// 用于「写目标」解析 (ResolveWriteTarget 的项目覆盖 / org 默认重解析)：禁用的配置
-// 不得再作为新写入落点。这是 ResolveForOrgAndMode 的 by-id 同伴，行→ResolvedStorage
-// 映射 (含 secret 解密) 完全一致 (复用 resolveOne)。
-// 注意：serve 路径用 ResolveByIDForServe (不过滤 enabled)，见其文档。
-func (s *Store) ResolveByID(ctx context.Context, id string) (ResolvedStorage, bool, error) {
-	return s.resolveOne(ctx, `WHERE id=$1 AND enabled=true`, id)
+// orgOwnedOrGlobal 限定 by-id 解析只命中「本 org 的 org-scope 行」或「global 共享行」，
+// 阻止跨租户解析他 org 的 org-scope 配置 (defense-in-depth)：即便某 asset/项目覆盖
+// 因 bug 或人为篡改持久化了他 org 的 config id，解析也 ok=false → 回落 default，绝不
+// 用他 org 的凭证。asset 可合法持久化 global id (per-(org,mode) 回落)，故须放行 global。
+const orgOwnedOrGlobal = ` AND (org_id=$2 OR scope='global')`
+
+// ResolveByID 按 storage_configs.id 直接解析「生效(enabled) 且属本 org 或 global」配置
+// (含解密后的 SecretKey)。未知/已禁用/他 org → ok=false (调用方回落)。用于「写目标」
+// 解析 (ResolveWriteTarget 的项目覆盖 / org 默认重解析)：禁用的配置不得再作为新写入
+// 落点。这是 ResolveForOrgAndMode 的 by-id 同伴，行→ResolvedStorage 映射 (含 secret
+// 解密) 完全一致 (复用 resolveOne)。注意：serve 路径用 ResolveByIDForServe (不过滤 enabled)。
+func (s *Store) ResolveByID(ctx context.Context, orgID, id string) (ResolvedStorage, bool, error) {
+	return s.resolveOne(ctx, `WHERE id=$1 AND enabled=true`+orgOwnedOrGlobal, id, orgID)
 }
 
 // ResolveByIDForServe 与 ResolveByID 同，但「不」要求 enabled=true：serve 路径按
@@ -419,9 +424,9 @@ func (s *Store) ResolveByID(ctx context.Context, id string) (ResolvedStorage, bo
 // 配置当前是否启用。语义：禁用一个存储配置只应阻止「新写入」(写路径仍按 enabled
 // 过滤) 与「被选为覆盖/默认」，已落在该后端的历史 asset 必须继续可读 (读非破坏性)——
 // 否则禁用会静默孤立既有资产 (回落 builtin default → 找不到字节 → 404)。删除才是
-// 硬下线 (Delete 有 in-use 守卫)。未知 id → ok=false。
-func (s *Store) ResolveByIDForServe(ctx context.Context, id string) (ResolvedStorage, bool, error) {
-	return s.resolveOne(ctx, `WHERE id=$1`, id)
+// 硬下线 (Delete 有 in-use 守卫)。仍按 org 限定 (本 org 或 global)：跨租户 id → ok=false。
+func (s *Store) ResolveByIDForServe(ctx context.Context, orgID, id string) (ResolvedStorage, bool, error) {
+	return s.resolveOne(ctx, `WHERE id=$1`+orgOwnedOrGlobal, id, orgID)
 }
 
 // ConfigIDForOrgAndMode 返回写路径要持久化的 token：某 (org,mode) 解析到的

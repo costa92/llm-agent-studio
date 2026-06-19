@@ -38,11 +38,11 @@ func (f fakeResolver) ResolveForOrgAndMode(context.Context, string, string) (sto
 	return f.rs, f.ok, f.err
 }
 
-func (f fakeResolver) ResolveByID(context.Context, string) (storageconfig.ResolvedStorage, bool, error) {
+func (f fakeResolver) ResolveByID(context.Context, string, string) (storageconfig.ResolvedStorage, bool, error) {
 	return f.rs, f.ok, f.err
 }
 
-func (f fakeResolver) ResolveByIDForServe(context.Context, string) (storageconfig.ResolvedStorage, bool, error) {
+func (f fakeResolver) ResolveByIDForServe(context.Context, string, string) (storageconfig.ResolvedStorage, bool, error) {
 	return f.rs, f.ok, f.err
 }
 
@@ -180,11 +180,11 @@ func (orgVaryingResolver) ResolveForOrgAndMode(_ context.Context, orgID, mode st
 	return storageconfig.ResolvedStorage{Mode: "s3", Bucket: orgID}, true, nil
 }
 
-func (orgVaryingResolver) ResolveByID(_ context.Context, id string) (storageconfig.ResolvedStorage, bool, error) {
+func (orgVaryingResolver) ResolveByID(_ context.Context, _, id string) (storageconfig.ResolvedStorage, bool, error) {
 	return storageconfig.ResolvedStorage{Mode: "s3", Bucket: id}, true, nil
 }
 
-func (orgVaryingResolver) ResolveByIDForServe(_ context.Context, id string) (storageconfig.ResolvedStorage, bool, error) {
+func (orgVaryingResolver) ResolveByIDForServe(_ context.Context, _, id string) (storageconfig.ResolvedStorage, bool, error) {
 	return storageconfig.ResolvedStorage{Mode: "s3", Bucket: id}, true, nil
 }
 
@@ -226,11 +226,11 @@ func (r idResolver) ResolveForOrgAndMode(_ context.Context, orgID, mode string) 
 	rs, ok := r.byID[id]
 	return rs, ok, nil
 }
-func (r idResolver) ResolveByID(_ context.Context, id string) (storageconfig.ResolvedStorage, bool, error) {
+func (r idResolver) ResolveByID(_ context.Context, _, id string) (storageconfig.ResolvedStorage, bool, error) {
 	rs, ok := r.byID[id]
 	return rs, ok, nil
 }
-func (r idResolver) ResolveByIDForServe(_ context.Context, id string) (storageconfig.ResolvedStorage, bool, error) {
+func (r idResolver) ResolveByIDForServe(_ context.Context, _, id string) (storageconfig.ResolvedStorage, bool, error) {
 	if rs, ok := r.byIDServe[id]; ok {
 		return rs, true, nil
 	}
