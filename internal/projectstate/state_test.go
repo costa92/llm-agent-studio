@@ -73,6 +73,30 @@ func TestCompute_AssetPipsAndCounts(t *testing.T) {
 	}
 }
 
+// TestCompute_RegenerateChildKeepsReview: a HITL regenerate spawns a child asset
+// with TodoID="" (it is filled by input_json.assetId, never todo_id) and
+// status='generating'. Such an in-flight regenerate child must keep the project
+// in 'review' even when every plan todo is done and its asset accepted — the run
+// is not 'completed' while a regenerate is still producing a new version.
+func TestCompute_RegenerateChildKeepsReview(t *testing.T) {
+	in := Input{
+		ProjectID: "p1", ProjectStatus: "review", HasPlan: true,
+		Plan: &Plan{PlanID: "pl1"},
+		Todos: []Todo{
+			{ID: "a1", Type: "asset", Status: "done"},
+		},
+		Assets: []Asset{
+			{ID: "as1", TodoID: "a1", Status: "accepted"},
+			// regenerate child: no todo_id, still generating.
+			{ID: "as2", TodoID: "", Status: "generating"},
+		},
+	}
+	got := Compute(in)
+	if got.Status != "review" {
+		t.Fatalf("status = %q, want review (in-flight regenerate child must gate completion)", got.Status)
+	}
+}
+
 func TestCompute_LastFailureSurfaces(t *testing.T) {
 	in := Input{
 		ProjectID: "p1", ProjectStatus: "failed", HasPlan: true, Plan: &Plan{PlanID: "pl1"},

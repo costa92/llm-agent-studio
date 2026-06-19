@@ -169,6 +169,14 @@ func Compute(in Input) ProjectState {
 		if a.Status == "pending_acceptance" {
 			c.pendingAssets++
 		}
+		// An in-flight asset with no todo_id is a HITL regenerate descendant
+		// (the worker fills it via input_json.assetId, never todo_id). LoadState
+		// only feeds in regenerate descendants rooted at the resolved plan's
+		// assets (the latest plan when planID=="", else that historical plan), so
+		// any todo-less in-flight asset here gates the run in 'review'.
+		if a.TodoID == "" && (a.Status == "generating" || a.Status == "submitted" || a.Status == "pending_acceptance") {
+			c.inFlightRegen++
+		}
 	}
 	st.Status = deriveStatus(c)
 	st.RunStatus = runStatusFor(st.Status)
@@ -223,7 +231,7 @@ func Compute(in Input) ProjectState {
 // total (so a new status added to project.TodoCounts must be added here too,
 // otherwise deriveStatus will produce incorrect results for that status).
 type counts struct {
-	total, ready, running, blocked, done, failed, canceled, pendingAssets int
+	total, ready, running, blocked, done, failed, canceled, pendingAssets, inFlightRegen int
 }
 
 // deriveStatus mirrors project.DeriveStatus (kept in sync manually; the two Go
@@ -242,7 +250,7 @@ func deriveStatus(c counts) string {
 	if c.canceled > 0 {
 		return "canceled"
 	}
-	if c.pendingAssets > 0 {
+	if c.pendingAssets > 0 || c.inFlightRegen > 0 {
 		return "review"
 	}
 	if c.done == c.total {

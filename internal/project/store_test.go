@@ -329,6 +329,170 @@ func TestRefreshStatusScopesToLatestPlan(t *testing.T) {
 	}
 }
 
+// HITL regenerate 子资产 todo_id='' 对所有 "JOIN todos WHERE plan_id" 的盘点不可见。
+// 当最新 plan 的 todos 全 done、资产全 accepted，但有一个 regenerate 子资产仍在
+// 生成（generating/submitted/pending_acceptance），项目应保持 "review" 而非误判
+// "completed"。新逻辑用 parent_asset_id 递归遍历，从最新 plan 的资产为根盘点在途
+// regenerate 后代。
+func TestRefreshStatus_RegenerateChildKeepsReview(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	p, err := s.Create(ctx, CreateInput{OrgID: "org-regen", Name: "Regen", CreatedBy: "u"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	planID := "pln_regen_" + p.ID
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO plans (id, project_id, status, valid, fallback_used, created_at)
+		 VALUES ($1, $2, 'review', true, false, now())`, planID, p.ID); err != nil {
+		t.Fatalf("insert plan: %v", err)
+	}
+	// 2 asset todos 全 done。
+	for _, id := range []string{"a", "b"} {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO todos (id, project_id, plan_id, type, status) VALUES ($1, $2, $3, 'asset', 'done')`,
+			"todo_regen_"+id+"_"+p.ID, p.ID, planID); err != nil {
+			t.Fatalf("insert todo %s: %v", id, err)
+		}
+	}
+	// 资产全 accepted（最新 plan 维度无 pending_acceptance）。
+	parentAssetID := "as_regen_parent_" + p.ID
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO assets (id, project_id, todo_id, type, status) VALUES
+		 ($1, $2, $3, 'image', 'accepted'),
+		 ($4, $2, $5, 'image', 'accepted')`,
+		parentAssetID, p.ID, "todo_regen_a_"+p.ID,
+		"as_regen_b_"+p.ID, "todo_regen_b_"+p.ID); err != nil {
+		t.Fatalf("insert accepted assets: %v", err)
+	}
+	// regenerate 子资产：parent_asset_id 指向最新 plan 的资产，todo_id='', 仍在生成。
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO assets (id, project_id, todo_id, parent_asset_id, type, status) VALUES
+		 ($1, $2, '', $3, 'image', 'generating')`,
+		"as_regen_child_"+p.ID, p.ID, parentAssetID); err != nil {
+		t.Fatalf("insert regenerate child: %v", err)
+	}
+
+	got, err := s.RefreshStatus(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if got != "review" {
+		t.Fatalf("project status=%q want review (in-flight regenerate child must keep review)", got)
+	}
+	// 幂等。
+	got2, _ := s.RefreshStatus(ctx, p.ID)
+	if got2 != "review" {
+		t.Fatalf("second refresh status=%q want review", got2)
+	}
+}
+
+// 负向（非可选）：regenerate 子资产其 lineage 根属于「旧/被取代」plan 的资产时，
+// 绝不能 gate 当前 review——否则旧 run 会借递归遍历复活。这里最新 plan 全 done +
+// accepted（无 pending），其状态应为 "completed"；旧 plan 下挂一个在途 regenerate
+// 子资产不得把它拉回 "review"。证明递归遍历严格以「最新 plan 资产」为根。
+func TestRefreshStatus_OldPlanRegenerateChildIgnored(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	p, err := s.Create(ctx, CreateInput{OrgID: "org-regen-old", Name: "RegenOld", CreatedBy: "u"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// 旧 plan：一个 asset todo done + 一个 accepted 资产，其下挂一个在途 regenerate 子资产。
+	oldPlan := "pln_old_regen_" + p.ID
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO plans (id, project_id, status, valid, fallback_used, created_at)
+		 VALUES ($1, $2, 'review', true, false, now() - interval '5 minutes')`, oldPlan, p.ID); err != nil {
+		t.Fatalf("insert old plan: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO todos (id, project_id, plan_id, type, status) VALUES ($1, $2, $3, 'asset', 'done')`,
+		"todo_old_regen_"+p.ID, p.ID, oldPlan); err != nil {
+		t.Fatalf("insert old todo: %v", err)
+	}
+	oldParentAsset := "as_old_parent_" + p.ID
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO assets (id, project_id, todo_id, type, status) VALUES ($1, $2, $3, 'image', 'accepted')`,
+		oldParentAsset, p.ID, "todo_old_regen_"+p.ID); err != nil {
+		t.Fatalf("insert old accepted asset: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO assets (id, project_id, todo_id, parent_asset_id, type, status) VALUES
+		 ($1, $2, '', $3, 'image', 'generating')`,
+		"as_old_child_"+p.ID, p.ID, oldParentAsset); err != nil {
+		t.Fatalf("insert old regenerate child: %v", err)
+	}
+	// 最新 plan：一个 asset todo done + 一个 accepted 资产，无 pending、无 regenerate。
+	newPlan := "pln_new_regen_" + p.ID
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO plans (id, project_id, status, valid, fallback_used, created_at)
+		 VALUES ($1, $2, 'completed', true, false, now())`, newPlan, p.ID); err != nil {
+		t.Fatalf("insert new plan: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO todos (id, project_id, plan_id, type, status) VALUES ($1, $2, $3, 'asset', 'done')`,
+		"todo_new_regen_"+p.ID, p.ID, newPlan); err != nil {
+		t.Fatalf("insert new todo: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO assets (id, project_id, todo_id, type, status) VALUES ($1, $2, $3, 'image', 'accepted')`,
+		"as_new_accepted_"+p.ID, p.ID, "todo_new_regen_"+p.ID); err != nil {
+		t.Fatalf("insert new accepted asset: %v", err)
+	}
+
+	got, err := s.RefreshStatus(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if got != "completed" {
+		t.Fatalf("project status=%q want completed (old-plan regenerate child must NOT gate latest plan)", got)
+	}
+}
+
+// TestLoadState_RegenerateChildVisible: an in-flight regenerate child (todo_id='',
+// parent_asset_id rooting in the latest plan, status generating) must reach
+// Compute so the derived status is 'review' (not 'completed').
+func TestLoadState_RegenerateChildVisible(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	orgID := "org_ls_regen_" + uniqueSuffix()
+	p, err := s.Create(ctx, CreateInput{OrgID: orgID, Name: "LS-Regen", CreatedBy: "u"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	planID := "pln_ls_regen_" + p.ID
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO plans (id, project_id, status, valid, fallback_used, created_at)
+		 VALUES ($1, $2, 'review', true, false, now())`, planID, p.ID); err != nil {
+		t.Fatalf("insert plan: %v", err)
+	}
+	todoID := "todo_ls_regen_" + p.ID
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO todos (id, project_id, plan_id, type, status) VALUES ($1, $2, $3, 'asset', 'done')`,
+		todoID, p.ID, planID); err != nil {
+		t.Fatalf("insert todo: %v", err)
+	}
+	parentAssetID := "as_ls_parent_" + p.ID
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO assets (id, project_id, todo_id, type, status) VALUES ($1, $2, $3, 'image', 'accepted')`,
+		parentAssetID, p.ID, todoID); err != nil {
+		t.Fatalf("insert accepted asset: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO assets (id, project_id, todo_id, parent_asset_id, type, status) VALUES
+		 ($1, $2, '', $3, 'image', 'generating')`,
+		"as_ls_child_"+p.ID, p.ID, parentAssetID); err != nil {
+		t.Fatalf("insert regenerate child: %v", err)
+	}
+	st, err := s.LoadState(ctx, p.ID, "")
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if st.Status != "review" {
+		t.Fatalf("LoadState status=%q want review (in-flight regenerate child must be visible)", st.Status)
+	}
+}
+
 // 边界：无任何 plan 的项目不要被 RefreshStatus 改成 "planning"（DeriveStatus 对空
 // TodoCounts 返 "planning"，但项目初始 status 是 "draft"，且未被运行的项目不该被
 // 这次刷新改写）。覆盖 latestPlanTodoCounts 的 "no plans" 分支。
