@@ -85,4 +85,9 @@ describe("CrudWorkspacePage", () => {
     expect(screen.getByText("暂无数据。")).toBeInTheDocument()
     expect(screen.queryByTestId("body")).not.toBeInTheDocument()
   })
+
+  it("isEmpty + emptyHint：渲染自定义空态文案（与 CrudResourcePage 同款 emptyHint）", () => {
+    render(<CrudWorkspacePage {...baseProps({ isEmpty: true, emptyHint: "暂无资产" })} />)
+    expect(screen.getByText("暂无资产")).toBeInTheDocument()
+  })
 })

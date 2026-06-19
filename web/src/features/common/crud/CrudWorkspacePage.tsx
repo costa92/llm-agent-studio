@@ -13,6 +13,7 @@ export interface CrudWorkspacePageProps {
   errorHint?: string
   isEmpty: boolean
   emptyState?: ReactNode
+  emptyHint?: string
   children: ReactNode
 }
 
@@ -30,6 +31,7 @@ export function CrudWorkspacePage({
   errorHint = "加载失败",
   isEmpty,
   emptyState,
+  emptyHint = "暂无数据。",
   children,
 }: CrudWorkspacePageProps) {
   return (
@@ -42,8 +44,17 @@ export function CrudWorkspacePage({
           {headerActions != null && <div className="flex items-center gap-3">{headerActions}</div>}
         </header>
 
-        {/* loading 先判：复刻 LibraryView 原顺序；四态由调用方约定互斥，顺序仅影响巧合并发态。 */}
-        {isLoading ? (
+        {/* 状态切换顺序 error→loading→empty 与 CrudResourcePage 对齐（四态由调用方约定互斥）。 */}
+        {isError ? (
+          <div className="flex flex-col items-center gap-3 py-20 text-center">
+            <p className="text-text-2">{errorHint}</p>
+            {onRetry && (
+              <Button variant="ghost" onClick={onRetry}>
+                重试
+              </Button>
+            )}
+          </div>
+        ) : isLoading ? (
           loadingSkeleton != null ? (
             loadingSkeleton
           ) : (
@@ -53,20 +64,11 @@ export function CrudWorkspacePage({
               ))}
             </div>
           )
-        ) : isError ? (
-          <div className="flex flex-col items-center gap-3 py-20 text-center">
-            <p className="text-text-2">{errorHint}</p>
-            {onRetry && (
-              <Button variant="ghost" onClick={onRetry}>
-                重试
-              </Button>
-            )}
-          </div>
         ) : isEmpty ? (
           emptyState != null ? (
             emptyState
           ) : (
-            <p className="py-8 text-center text-[13px] text-text-3">暂无数据。</p>
+            <p className="py-8 text-center text-[13px] text-text-3">{emptyHint}</p>
           )
         ) : (
           children
