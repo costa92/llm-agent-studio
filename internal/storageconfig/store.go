@@ -404,13 +404,24 @@ func (s *Store) ResolveForOrg(ctx context.Context, orgID string) (ResolvedStorag
 	return s.ResolveForOrgAndMode(ctx, orgID, "")
 }
 
-// ResolveByID 按 storage_configs.id 直接解析生效配置 (含解密后的 SecretKey)，供
-// serve 路径使用：asset 在写入时持久化了它落地的后端身份 (config id)，读回时按该
-// id 解析回 EXACTLY 那个后端，独立于 org 当前的 storage_mode。只命中 enabled=true
-// 行；未知/已禁用 id → ok=false (调用方回落)。这是 ResolveForOrgAndMode 的 by-id 同伴，
-// 行→ResolvedStorage 映射 (含 secret 解密) 完全一致 (复用 resolveOne)。
+// ResolveByID 按 storage_configs.id 直接解析「生效(enabled)」配置 (含解密后的
+// SecretKey)。只命中 enabled=true 行；未知/已禁用 id → ok=false (调用方回落)。
+// 用于「写目标」解析 (ResolveWriteTarget 的项目覆盖 / org 默认重解析)：禁用的配置
+// 不得再作为新写入落点。这是 ResolveForOrgAndMode 的 by-id 同伴，行→ResolvedStorage
+// 映射 (含 secret 解密) 完全一致 (复用 resolveOne)。
+// 注意：serve 路径用 ResolveByIDForServe (不过滤 enabled)，见其文档。
 func (s *Store) ResolveByID(ctx context.Context, id string) (ResolvedStorage, bool, error) {
 	return s.resolveOne(ctx, `WHERE id=$1 AND enabled=true`, id)
+}
+
+// ResolveByIDForServe 与 ResolveByID 同，但「不」要求 enabled=true：serve 路径按
+// asset 写入时持久化的后端身份 (config id) 把字节读回 EXACTLY 那个后端，独立于该
+// 配置当前是否启用。语义：禁用一个存储配置只应阻止「新写入」(写路径仍按 enabled
+// 过滤) 与「被选为覆盖/默认」，已落在该后端的历史 asset 必须继续可读 (读非破坏性)——
+// 否则禁用会静默孤立既有资产 (回落 builtin default → 找不到字节 → 404)。删除才是
+// 硬下线 (Delete 有 in-use 守卫)。未知 id → ok=false。
+func (s *Store) ResolveByIDForServe(ctx context.Context, id string) (ResolvedStorage, bool, error) {
+	return s.resolveOne(ctx, `WHERE id=$1`, id)
 }
 
 // ConfigIDForOrgAndMode 返回写路径要持久化的 token：某 (org,mode) 解析到的

@@ -26,10 +26,14 @@ import (
 type resolver interface {
 	ResolveForOrg(ctx context.Context, orgID string) (storageconfig.ResolvedStorage, bool, error)
 	ResolveForOrgAndMode(ctx context.Context, orgID string, mode string) (storageconfig.ResolvedStorage, bool, error)
-	// ResolveByID + ConfigIDForOrgAndMode back the write-time-backend serve path:
-	// write-time persists the backend identity (config id / "builtin"); serve reads
-	// that EXACT backend regardless of the org's current storage_mode.
+	// ResolveByID (enabled-only) backs the WRITE-target path (project override /
+	// org default re-resolve): a disabled config must not be a new write landing.
+	// ResolveByIDForServe (enabled-agnostic) backs the SERVE path: write-time
+	// persists the backend identity (config id / "builtin"); serve reads that EXACT
+	// backend regardless of the org's current storage_mode OR whether the config is
+	// still enabled — disabling only stops new writes, historical bytes keep serving.
 	ResolveByID(ctx context.Context, id string) (storageconfig.ResolvedStorage, bool, error)
+	ResolveByIDForServe(ctx context.Context, id string) (storageconfig.ResolvedStorage, bool, error)
 	ConfigIDForOrgAndMode(ctx context.Context, orgID string, mode string) (string, bool, error)
 	// DefaultConfigID returns the org's default storage config id (if any).
 	// Used by ResolveWriteTarget to fall back from project override to org default.
@@ -134,13 +138,15 @@ func (r *Router) BlobStoreForConfigID(ctx context.Context, orgID, configID strin
 	if configID == builtinConfigID || r.configs == nil || r.build == nil {
 		return r.def, nil
 	}
-	rs, ok, err := r.configs.ResolveByID(ctx, configID)
+	// ResolveByIDForServe (不过滤 enabled)：禁用一个存储配置只阻止新写入，已落在该
+	// 后端的历史 asset 必须继续可读——否则禁用会静默回落到 builtin default (无字节→404)。
+	rs, ok, err := r.configs.ResolveByIDForServe(ctx, configID)
 	if err != nil {
 		r.log.Warn("storagerouter: resolve config by id failed; using default store", "org", orgID, "configID", configID, "err", err)
 		return r.def, nil
 	}
 	if !ok {
-		r.log.Warn("storagerouter: config id not found/disabled; using default store", "org", orgID, "configID", configID)
+		r.log.Warn("storagerouter: config id not found; using default store", "org", orgID, "configID", configID)
 		return r.def, nil
 	}
 	return r.buildCached(orgID, rs), nil
