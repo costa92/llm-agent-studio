@@ -1,5 +1,7 @@
 # SP-F 项目创建时可选存储后端 Implementation Plan
 
+> **✅ DONE（2026-06-19，PR #68 squash-merge）** — 2 任务完成并经 spec+代码质量两段审查 + 修复闭环。全量 `vitest` 453 用例绿、`tsc` 干净、SP-F 触及文件 `eslint` 无 error；浏览器烟雾确认创建对话框出现「存储配置」下拉、其余字段无回归（图片模型按 M9 设计仍仅编辑暴露）。下方勾选为完成留痕。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把「per-project 存储后端 override」从仅编辑暴露到创建：创建项目对话框出现存储下拉（继承组织默认 + 各 enabled 配置），选中后随创建提交。纯前端改动，后端已就绪。
