@@ -86,6 +86,9 @@ export function useRun(
       apiJSON<RunResponse>(`/api/projects/${id}/run`, { method: "POST" }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["project", id] })
+      // 新建了一个 plan：失效运行历史，使运行页导航到新 runId 后 usePlans()[0]
+      // 即为新 plan，isLatestPlan 正确，Run/Cancel 不再静默禁用直至刷新。
+      void queryClient.invalidateQueries({ queryKey: ["plans", id] })
     },
   })
 }
