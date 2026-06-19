@@ -12,8 +12,8 @@ import (
 )
 
 func TestPromptHandlersCRUD(t *testing.T) {
-	pool := modelTestPool(t)
-	s := prompt.NewStore(pool)
+	db := modelTestGorm(t)
+	s := prompt.NewStore(db)
 	org := "org-handlers-test"
 
 	// 1. List (empty)
@@ -169,8 +169,8 @@ func TestPromptHandlersCRUD(t *testing.T) {
 // 不存在的 id：update/delete 须返回 404（而非 500）——store 返 prompt.ErrNotFound，
 // handler 映射为 NotFound（与 setPromptDefaultHandler 一致）。
 func TestPromptHandlers_MissingIDReturns404(t *testing.T) {
-	pool := modelTestPool(t)
-	s := prompt.NewStore(pool)
+	db := modelTestGorm(t)
+	s := prompt.NewStore(db)
 	org := "org-prompt-404"
 	missing := "does-not-exist-" + org
 
