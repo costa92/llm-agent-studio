@@ -283,7 +283,10 @@ func createProjectHandler(ps ProjectStore) http.HandlerFunc {
 			Kind:                  req.Kind,
 			PictureBookConfig:     req.PictureBookConfig,
 		})
-		if err != nil {
+		if errors.Is(err, project.ErrInvalidStorageConfig) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		} else if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -344,6 +347,9 @@ func updateProjectHandler(ps ProjectStore) http.HandlerFunc {
 		p, err := ps.Update(r.Context(), r.PathValue("id"), in)
 		if errors.Is(err, project.ErrNotFound) {
 			http.Error(w, "project not found", http.StatusNotFound)
+			return
+		} else if errors.Is(err, project.ErrInvalidStorageConfig) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		} else if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
