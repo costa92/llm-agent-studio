@@ -8,7 +8,7 @@ import {
 import userEvent from "@testing-library/user-event"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { createElement, type ReactElement, type ReactNode } from "react"
-import type { Project, Style } from "@/lib/types"
+import type { Project, StorageConfig, Style } from "@/lib/types"
 import { ProjectListView } from "./ProjectListPage"
 import { CreateProjectForm } from "./CreateProjectDialog"
 
@@ -334,5 +334,49 @@ describe("CreateProjectForm", () => {
     const got = onSubmit.mock.calls[0][0]
     expect(got.plannerProvider).toBeUndefined()
     expect(got.plannerModel).toBeUndefined()
+  })
+
+  const STORAGE_CONFIGS: StorageConfig[] = [
+    {
+      id: "sc1", orgId: "o1", scope: "org", name: "主存储桶", mode: "s3",
+      enabled: true, isDefault: true, endpoint: "https://s3.example.com",
+      region: "us-east-1", bucket: "my-bucket", accessKeyId: "AKID",
+      hasSecret: true, publicPrefix: "", useSsl: true,
+    },
+    {
+      id: "sc2", orgId: "o1", scope: "org", name: "备用仓库", mode: "github",
+      enabled: true, isDefault: false, endpoint: "", region: "", bucket: "my-repo",
+      accessKeyId: "my-owner", hasSecret: false, publicPrefix: "", useSsl: false,
+    },
+  ]
+
+  it("renders the storage dropdown and submits storageConfigId when a config is selected", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(makeProject({ id: "x" }))
+    const user = userEvent.setup()
+    render(<CreateProjectForm styles={STYLES} storageConfigs={STORAGE_CONFIGS} onSubmit={onSubmit} />)
+
+    await user.type(screen.getByLabelText("项目名称"), "X")
+    await user.type(screen.getByLabelText("创意需求"), "一句")
+
+    const trigger = screen.getByRole("combobox", { name: /存储配置/ })
+    await user.click(trigger)
+    await user.click(await screen.findByRole("option", { name: /主存储桶/ }))
+
+    await user.click(screen.getByRole("button", { name: "创建" }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({ storageConfigId: "sc1" })
+  })
+
+  it("omits storageConfigId when storage is left at inherit-default", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(makeProject({ id: "x" }))
+    const user = userEvent.setup()
+    render(<CreateProjectForm styles={STYLES} storageConfigs={STORAGE_CONFIGS} onSubmit={onSubmit} />)
+
+    await user.type(screen.getByLabelText("项目名称"), "X")
+    await user.type(screen.getByLabelText("创意需求"), "一句")
+    await user.click(screen.getByRole("button", { name: "创建" }))
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(onSubmit.mock.calls[0][0].storageConfigId).toBeUndefined()
   })
 })

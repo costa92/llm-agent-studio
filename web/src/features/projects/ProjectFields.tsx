@@ -254,7 +254,7 @@ export function ProjectFields({
         </div>
       )}
 
-      {/* 存储配置下拉：仅 Edit 传 storageConfigs 时渲染。 */}
+      {/* 存储配置下拉：Create/Edit 传 storageConfigs 时渲染；不传 = 继承组织默认、不显示下拉。 */}
       {storageConfigs && (
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={pre("storageConfigId")}>存储配置</Label>
