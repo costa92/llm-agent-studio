@@ -11,3 +11,6 @@ mails/
 cmd/studiod/mails/
 /studiod
 /placeholder.png
+# Local-only artifacts (Claude Code agent cache, stray root deps) — never commit.
+.claude/
+node_modules/
