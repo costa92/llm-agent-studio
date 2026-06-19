@@ -46,13 +46,17 @@ func (s *Store) Create(ctx context.Context, orgID, name, content, style, kind st
 	if orgID == "" || name == "" || content == "" {
 		return Prompt{}, fmt.Errorf("prompt: orgID, name, and content are required")
 	}
+	// INSERT ... RETURNING（保留原生）：返回 DB 落盘后的时间戳（微秒精度），与后续
+	// GET/ListByOrg 读到的值逐字一致——避免 GORM Create 回填 Go 时钟纳秒精度，造成
+	// POST 响应与后续读取的 created/updatedAt 在亚微秒位漂移（与 Update/SetDefault 一致）。
 	now := time.Now()
-	row := promptRow{
-		ID: newID(), OrgID: orgID, Name: name, Content: content,
-		Style: style, Kind: kind, IsDefault: false, CreatedAt: now, UpdatedAt: now,
-	}
-	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
-		return Prompt{}, fmt.Errorf("prompt: create: %w", err)
+	const q = `INSERT INTO prompts (id, org_id, name, content, style, kind, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id, org_id, name, content, style, kind, is_default, created_at, updated_at`
+	var row promptRow
+	res := s.db.WithContext(ctx).Raw(q, newID(), orgID, name, content, style, kind, now, now).Scan(&row)
+	if res.Error != nil {
+		return Prompt{}, fmt.Errorf("prompt: create: %w", res.Error)
 	}
 	return row.toPrompt(), nil
 }
