@@ -37,7 +37,7 @@ func TestMailConfigStore(t *testing.T) {
 		t.Fatalf("new box: %v", err)
 	}
 
-	store := New(st.Pool(), box)
+	store := New(st.GORM(), box)
 
 	// Clean up previous global config to ensure deterministic test
 	_, _ = st.Pool().Exec(ctx, "DELETE FROM mail_configs WHERE scope='global'")

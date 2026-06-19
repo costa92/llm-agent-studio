@@ -198,7 +198,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	}
 	modelStore := models.New(st.Pool(), encBox)
 	promptStore := prompt.NewStore(st.GORM())
-	mailConfigStore := mailconfig.New(st.Pool(), encBox)
+	mailConfigStore := mailconfig.New(st.GORM(), encBox)
 	envMailCfg := mail.EnvConfig{
 		SMTPHost: cfg.SMTPHost,
 		SMTPPort: cfg.SMTPPort,
