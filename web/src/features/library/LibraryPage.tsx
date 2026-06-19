@@ -5,6 +5,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Badge } from "@/components/studio/Badge"
 import { Button } from "@/components/studio/Button"
 import { AssetCard } from "@/components/studio/AssetCard"
+import { CrudWorkspacePage } from "@/features/common/crud"
 import { AssetThumb } from "@/features/workflow/AssetThumb.tsx"
 import { useResolvedAssetUrl } from "@/features/workflow/assetThumb"
 import { AssetPreviewActions } from "@/features/workflow/AssetPreviewActions"
@@ -77,20 +78,98 @@ export function LibraryView({
     />
   )
 
-  return (
-    <div className="flex h-full">
-      <FilterRail
-        filter={filter}
-        onToggle={toggle}
-        onTagChange={(tag) => onFilterChange({ ...filter, tag: tag || undefined })}
-        onProjectChange={(project) =>
-          onFilterChange({ ...filter, project: project || undefined })
-        }
-        projects={projects}
-        styles={styles}
-      />
+  // 左过滤栏：外壳直接渲染此节点，桌面 hidden…md:flex 响应式类由 FilterRail 自带。
+  const sidebar = (
+    <FilterRail
+      filter={filter}
+      onToggle={toggle}
+      onTagChange={(tag) => onFilterChange({ ...filter, tag: tag || undefined })}
+      onProjectChange={(project) =>
+        onFilterChange({ ...filter, project: project || undefined })
+      }
+      projects={projects}
+      styles={styles}
+    />
+  )
 
-      {/* 移动端筛选入口：≥md 隐藏（左 FilterRail 代之）。 */}
+  // 右列 header 右侧：移动端「筛选」按钮(≥md 隐藏) + 资产计数。onClick 仍调 LibraryView 持有的 setFiltersOpen。
+  const headerActions = (
+    <>
+      <button
+        type="button"
+        aria-label="筛选"
+        onClick={() => setFiltersOpen(true)}
+        className="inline-flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1.5 text-[12px] text-text-2 transition-colors hover:border-text-3 hover:text-text-1 md:hidden"
+      >
+        <SlidersHorizontal className="h-[14px] w-[14px]" />
+        筛选
+      </button>
+      <span className="text-[12px] text-text-3">{assets.length} 个资产</span>
+    </>
+  )
+
+  // 12 卡骨架网格（加载态）。
+  const loadingSkeleton = (
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3">
+      {Array.from({ length: 12 }).map((_, i) => (
+        <Skeleton key={i} className="aspect-square rounded-[10px]" />
+      ))}
+    </div>
+  )
+
+  // 空态：两行文案。
+  const emptyState = (
+    <div className="flex flex-col items-center gap-3 py-20 text-center">
+      <p className="text-text-1">没有匹配的资产</p>
+      <p className="text-[12.5px] text-text-3">调整筛选条件试试</p>
+    </div>
+  )
+
+  return (
+    <>
+      <CrudWorkspacePage
+        title="资产库"
+        sidebar={sidebar}
+        headerActions={headerActions}
+        isLoading={isLoading}
+        loadingSkeleton={loadingSkeleton}
+        isError={isError}
+        onRetry={onRetry}
+        errorHint="资产加载失败"
+        isEmpty={assets.length === 0}
+        emptyState={emptyState}
+      >
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3">
+          {assets.map((asset) => (
+            <div key={asset.id} className="relative">
+              <AssetCard
+                assetId={asset.id}
+                alt={asset.prompt}
+                type={asset.type}
+                caption={`v${asset.version}`}
+                selected={asset.id === selectedId}
+                onSelect={() => onSelect(asset.id)}
+                className="w-full"
+              />
+              <Badge
+                variant={assetStatusVariant(asset.status)}
+                className="pointer-events-none absolute left-1.5 top-1.5 max-w-[calc(100%-12px)] truncate"
+              >
+                {assetStatusLabel(asset.status)}
+              </Badge>
+            </div>
+          ))}
+        </div>
+        {hasNextPage && (
+          <div className="mt-5 flex justify-center">
+            <Button variant="ghost" onClick={onLoadMore} disabled={isFetchingNextPage}>
+              {isFetchingNextPage ? "加载中…" : "加载更多"}
+            </Button>
+          </div>
+        )}
+      </CrudWorkspacePage>
+
+      {/* 移动端筛选入口：≥md 隐藏（左 FilterRail 代之）。外壳的 sibling，portal 渲染。 */}
       <Sheet open={filtersOpen} onOpenChange={setFiltersOpen}>
         <SheetContent
           side="left"
@@ -100,79 +179,6 @@ export function LibraryView({
           {filterFields}
         </SheetContent>
       </Sheet>
-
-      <div className="flex min-w-0 flex-1 flex-col p-6 overflow-y-auto overscroll-contain">
-        <header className="mb-5 flex items-center justify-between gap-3">
-          <h1 className="font-heading text-[22px] font-bold text-text-1">资产库</h1>
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              aria-label="筛选"
-              onClick={() => setFiltersOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1.5 text-[12px] text-text-2 transition-colors hover:border-text-3 hover:text-text-1 md:hidden"
-            >
-              <SlidersHorizontal className="h-[14px] w-[14px]" />
-              筛选
-            </button>
-            <span className="text-[12px] text-text-3">{assets.length} 个资产</span>
-          </div>
-        </header>
-
-        {isLoading ? (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3">
-            {Array.from({ length: 12 }).map((_, i) => (
-              <Skeleton key={i} className="aspect-square rounded-[10px]" />
-            ))}
-          </div>
-        ) : isError ? (
-          <div className="flex flex-col items-center gap-3 py-20 text-center">
-            <p className="text-text-2">资产加载失败</p>
-            <Button variant="ghost" onClick={onRetry}>
-              重试
-            </Button>
-          </div>
-        ) : assets.length === 0 ? (
-          <div className="flex flex-col items-center gap-3 py-20 text-center">
-            <p className="text-text-1">没有匹配的资产</p>
-            <p className="text-[12.5px] text-text-3">调整筛选条件试试</p>
-          </div>
-        ) : (
-          <>
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3">
-              {assets.map((asset) => (
-                <div key={asset.id} className="relative">
-                  <AssetCard
-                    assetId={asset.id}
-                    alt={asset.prompt}
-                    type={asset.type}
-                    caption={`v${asset.version}`}
-                    selected={asset.id === selectedId}
-                    onSelect={() => onSelect(asset.id)}
-                    className="w-full"
-                  />
-                  <Badge
-                    variant={assetStatusVariant(asset.status)}
-                    className="pointer-events-none absolute left-1.5 top-1.5 max-w-[calc(100%-12px)] truncate"
-                  >
-                    {assetStatusLabel(asset.status)}
-                  </Badge>
-                </div>
-              ))}
-            </div>
-            {hasNextPage && (
-              <div className="mt-5 flex justify-center">
-                <Button
-                  variant="ghost"
-                  onClick={onLoadMore}
-                  disabled={isFetchingNextPage}
-                >
-                  {isFetchingNextPage ? "加载中…" : "加载更多"}
-                </Button>
-              </div>
-            )}
-          </>
-        )}
-      </div>
 
       {/* 资产详情 Drawer（?asset= 控制开合）—— 含版本血缘、播放器/缩略图。 */}
       <Sheet
@@ -191,7 +197,7 @@ export function LibraryView({
           )}
         </SheetContent>
       </Sheet>
-    </div>
+    </>
   )
 }
 
