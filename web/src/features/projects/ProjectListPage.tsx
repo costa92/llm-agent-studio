@@ -39,7 +39,7 @@ export interface ProjectListViewProps {
   textModels?: ModelConfig[]
   /** M9：org 下 kind=image 的启用模型，供"编辑"对话框的图片模型下拉。 */
   imageModels?: ModelConfig[]
-  /** org 下的存储配置列表，供"编辑"对话框的存储配置下拉。 */
+  /** org 下的存储配置列表，供"新建项目"/"编辑"对话框的存储配置下拉。 */
   storageConfigs?: StorageConfig[]
   onCreate: (input: CreateProjectInput) => Promise<Project>
   /** 编辑项目信息（卡片「编辑」按钮）。id + 整表单字段 → 更新后的 Project。 */

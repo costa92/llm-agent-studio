@@ -55,7 +55,9 @@ export interface CreateProjectFormProps {
   styles: Style[]
   /** M5.1: org 下 kind=text 的启用模型列表（供规划模型下拉）。空 = 不显示该下拉。 */
   textModels?: ModelConfig[]
-  /** M9: org 下 kind=image 的启用模型列表（供图片模型下拉）。空 = 不显示该下拉。 */
+  /** M9: org 下 kind=image 的启用模型列表（供图片模型下拉）。空 = 不显示该下拉。
+   *  注：当前「新建项目」入口刻意不传 imageModels（图片模型选择仅编辑时暴露，M9 范围）；
+   *  prop 仍透传给 ProjectFields 以备将来。 */
   imageModels?: ModelConfig[]
   /** M10: org 存储配置列表（供存储下拉）。空 = 不显示存储下拉（= 用组织默认）。 */
   storageConfigs?: StorageConfig[]
