@@ -1,5 +1,7 @@
 # SP-E 资产库迁移至 CRUD 工作区外壳 Implementation Plan
 
+> **✅ DONE（2026-06-19，PR #66 squash-merge）** — 3 任务完成并经 spec+代码质量两段审查 + 整特性 holistic review（Ready to merge）。全量 `vitest` 67 文件/450 用例绿、`tsc` 干净、SP-E 触及文件 `eslint` 无 error；浏览器烟雾截图确认资产库双列布局零视觉/行为回归。整特性审查另对齐了框架族 API（`CrudWorkspacePage` 补 `emptyHint`、状态切换顺序与 `CrudResourcePage` 一致）。下方勾选为完成留痕。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把资产库页（`web/src/features/library/LibraryPage.tsx` 的 `LibraryView`）的布局骨架抽成一个可复用的全高双列框架外壳 `web/src/features/common/crud/CrudWorkspacePage.tsx`，并把 `LibraryView` 重新包到该外壳上。**零视觉/行为回归**——外壳 markup 逐字搬自当前 `LibraryView`（class、间距、`py-20`、`w-56`、`overscroll-contain` 全保留），数据/过滤/keyset 加载更多/详情抽屉/移动端筛选 Sheet 均不变。
@@ -33,7 +35,7 @@
 
 ### TDD：先写失败测试
 
-- [ ] **Step 1: 写失败测试 `CrudWorkspacePage.test.tsx`**
+- [x] **Step 1: 写失败测试 `CrudWorkspacePage.test.tsx`**
 
 测试风格对齐同目录 `CrudResourcePage.test.tsx`：`render` + `screen` + `userEvent`，按 testid / role / text 断言。本外壳测试的核心不变量是「sidebar 跨 loading/error/empty 三态恒在」——这正是新建外壳的理由，必须锁死。
 
@@ -117,7 +119,7 @@ describe("CrudWorkspacePage", () => {
 })
 ```
 
-- [ ] **Step 2: 运行测试，确认 FAIL（模块不存在）**
+- [x] **Step 2: 运行测试，确认 FAIL（模块不存在）**
 
 ```bash
 cd web && npx vitest run src/features/common/crud/CrudWorkspacePage.test.tsx
@@ -127,7 +129,7 @@ cd web && npx vitest run src/features/common/crud/CrudWorkspacePage.test.tsx
 
 ### 实现
 
-- [ ] **Step 3: 创建 `CrudWorkspacePage.tsx`（完整实现）**
+- [x] **Step 3: 创建 `CrudWorkspacePage.tsx`（完整实现）**
 
 markup 逐字复刻 `LibraryView` 当前布局：`flex h-full` 双列骨架；外壳直接渲染传入的 `sidebar`（响应式类由调用方的 `FilterRail` 自带，外壳不强加）；右列 wrapper 用 `flex min-w-0 flex-1 flex-col p-6 overflow-y-auto overscroll-contain`；右列 header 用 `mb-5 flex items-center justify-between gap-3` + `<h1 className="font-heading text-[22px] font-bold text-text-1">{title}</h1>` + `{headerActions}`；状态切换顺序 loading → error → empty → children（与 `CrudResourcePage` 一致的判断顺序无所谓，因 props 互斥；这里按 Library 原顺序 loading/error/empty）。错误态用 Library 的 `py-20`（**不是** `CrudResourcePage` 的 `py-10`）+ `<p className="text-text-2">{errorHint}</p>` + ghost 重试。house style 对齐 `CrudResourcePage.tsx`：同样 import `Skeleton`（缺省加载骨架用）与 `Button`，组件上方一行中文职责注释。仅导出组件 + props interface（react-refresh 约定，`features/common/crud` 非路由目录）。
 
@@ -212,7 +214,7 @@ export function CrudWorkspacePage({
 
 > 注意：`headerActions` 用 `<div className="flex items-center gap-3">` 包裹，复刻 `LibraryView` 原 header 右侧那层 `<div className="flex items-center gap-3">`（内含「筛选」按钮 + 计数）。Library 会把这两个元素作为 `headerActions` 传入，包裹层由外壳提供，保证间距像素一致。
 
-- [ ] **Step 4: 运行测试，确认 PASS**
+- [x] **Step 4: 运行测试，确认 PASS**
 
 ```bash
 cd web && npx vitest run src/features/common/crud/CrudWorkspacePage.test.tsx
@@ -220,7 +222,7 @@ cd web && npx vitest run src/features/common/crud/CrudWorkspacePage.test.tsx
 
 预期：`Test Files  1 passed`，6 个用例全绿。
 
-- [ ] **Step 5: barrel 导出（`index.ts`）**
+- [x] **Step 5: barrel 导出（`index.ts`）**
 
 桶文件用「named import-export + 单独 `export type`」风格（对齐 `CrudResourcePage` 那行）。在 `CrudResourcePage` 导出行下方加：
 
@@ -229,7 +231,7 @@ export { CrudWorkspacePage } from "./CrudWorkspacePage"
 export type { CrudWorkspacePageProps } from "./CrudWorkspacePage"
 ```
 
-- [ ] **Step 6: tsc + eslint（仅本任务文件）**
+- [x] **Step 6: tsc + eslint（仅本任务文件）**
 
 ```bash
 cd web && npx tsc --noEmit
@@ -238,7 +240,7 @@ cd web && npx eslint src/features/common/crud/CrudWorkspacePage.tsx src/features
 
 预期：tsc 仅剩 2 个既有无关 error（`AssetGalleryModal.tsx` / `useProductionTimeline.ts`，见 Task 3）；eslint 本任务文件 0 error。
 
-- [ ] **Step 7: commit**
+- [x] **Step 7: commit**
 
 ```bash
 cd web && git add src/features/common/crud/CrudWorkspacePage.tsx src/features/common/crud/CrudWorkspacePage.test.tsx src/features/common/crud/index.ts
@@ -263,7 +265,7 @@ LibraryView 以保零视觉回归;sidebar 跨四态常驻由单测锁定。"
 
 `FilterRail`/`FilterFields`/`FilterGroup`/`FilterChip`/`AssetDetailBody`/`AssetMedia`/`AssetVideoAudio`/`Kv` 子组件**不动**（Task 2 只改 `LibraryView` 函数体 + 顶部 import）。
 
-- [ ] **Step 1: 顶部 import 增加外壳**
+- [x] **Step 1: 顶部 import 增加外壳**
 
 在现有 import 块加：
 
@@ -273,7 +275,7 @@ import { CrudWorkspacePage } from "@/features/common/crud"
 
 `Button`/`Skeleton` import 仍保留（`children` 里的「加载更多」按钮、12 卡骨架、详情 Drawer 骨架仍用它们）。
 
-- [ ] **Step 2: 替换 `LibraryView` 的 `return`（BEFORE → AFTER）**
+- [x] **Step 2: 替换 `LibraryView` 的 `return`（BEFORE → AFTER）**
 
 **BEFORE（当前 `LibraryView` return，第 80–195 行，整段替换）：**
 
@@ -528,7 +530,7 @@ import { CrudWorkspacePage } from "@/features/common/crud"
 > - 外壳右列 wrapper（`p-6 overflow-y-auto overscroll-contain`）+ header（`mb-5 … gap-3` + `h1 font-heading text-[22px] font-bold text-text-1`）由 Task 1 外壳提供，与原 Library 像素一致——「资产库」标题 + 计数 + 筛选按钮位置不变。
 > - `headerActions` 外壳包了一层 `<div className="flex items-center gap-3">`（见 Task 1 Step 3），与原 header 右侧那层 `div` 一致；故 `headerActions` 这里**只传两个元素本体**（按钮 + span），不再自带外层 div，避免双层嵌套。
 
-- [ ] **Step 3: 运行 `library.test.tsx`，确认全绿**
+- [x] **Step 3: 运行 `library.test.tsx`，确认全绿**
 
 ```bash
 cd web && npx vitest run src/features/library/library.test.tsx
@@ -546,7 +548,7 @@ cd web && npx vitest run src/features/library/library.test.tsx
 
 > 选择器风险评估：现有断言用 role / text / `data-slot` / tagName 查询，**均不依赖被搬动节点的祖先结构**（如 `getByRole("button",{name:"重试"})`、`getByText("没有匹配的资产")`）。搬迁只改包裹层级，不改这些可查询特征 → 预期**零选择器改动**。若个别断言因层级真漂移而失败，只允许收窄/校正选择器到等价的真实 DOM 特征，**绝不删除或弱化断言**（不得把精确文案/role 改成宽松 testid 兜底）。
 
-- [ ] **Step 4: tsc + eslint（仅本任务文件）**
+- [x] **Step 4: tsc + eslint（仅本任务文件）**
 
 ```bash
 cd web && npx tsc --noEmit
@@ -555,7 +557,7 @@ cd web && npx eslint src/features/library/LibraryPage.tsx
 
 预期：tsc 仅剩 2 个既有无关 error（见 Task 3）；eslint `LibraryPage.tsx` 0 error。
 
-- [ ] **Step 5: commit**
+- [x] **Step 5: commit**
 
 ```bash
 cd web && git add src/features/library/LibraryPage.tsx
@@ -573,7 +575,7 @@ markup 逐字未改,library.test.tsx 全绿,零视觉/行为回归。"
 **Files:**
 - 无新增/修改（仅验证）
 
-- [ ] **Step 1: 全量 tsc**
+- [x] **Step 1: 全量 tsc**
 
 ```bash
 cd web && npx tsc --noEmit
@@ -581,7 +583,7 @@ cd web && npx tsc --noEmit
 
 预期：仅剩 **2 个既有、与 SP-E 无关的 error**（超范围，不动）：`src/features/.../AssetGalleryModal.tsx` 与 `src/features/.../useProductionTimeline.ts`。除这 2 处外应为 0。若出现新 error，回到对应 Task 修复。
 
-- [ ] **Step 2: 全量 eslint**
+- [x] **Step 2: 全量 eslint**
 
 ```bash
 cd web && npx eslint .
@@ -589,7 +591,7 @@ cd web && npx eslint .
 
 预期：SP-E 触及文件（`CrudWorkspacePage.tsx`/`CrudWorkspacePage.test.tsx`/`index.ts`/`LibraryPage.tsx`）0 error。仓库其余既有告警/error 保持原状（不在本次范围）。特别确认 `CrudWorkspacePage.tsx` 无 `react-refresh/only-export-components` 告警（只导出组件 + props interface）。
 
-- [ ] **Step 3: 全量 vitest**
+- [x] **Step 3: 全量 vitest**
 
 ```bash
 cd web && npx vitest run
@@ -597,7 +599,7 @@ cd web && npx vitest run
 
 预期：所有测试文件通过（含新增 `CrudWorkspacePage.test.tsx` 6 例 + `library.test.tsx` 全例 + `CrudResourcePage.test.tsx` 未受影响全绿）。
 
-- [ ] **Step 4: 浏览器烟雾截图（资产库页像素比对）**
+- [x] **Step 4: 浏览器烟雾截图（资产库页像素比对）**
 
 复用 playwright-core 无头 harness（系统 chrome）。先确保本地 studiod(:8083) + Vite(:5173) 已起（参见 MEMORY「Studio dev runtime」：持久化密钥 `/tmp/studio-enc-key.txt` + `/tmp/studio-jwt-secret.txt`；账号 `demo@studio.com` / `DevReveal#123`；org `169278fcd0dec7d485c741215a578fab`；dev 无 `/healthz`）。
 
@@ -630,9 +632,9 @@ EOF
 node /tmp/sp-e-smoke.mjs
 ```
 
-- [ ] **Step 5: 人工比对截图**（Read `/tmp/sp-e-library.png`）核对：左 `FilterRail`（`w-56` 边框）、右列网格（150px min cards + 状态 Badge 叠加）、右列 header（「资产库」+「N 个资产」+ 移动端筛选按钮在 ≥md 隐藏）、独立滚动、详情抽屉入口、移动端筛选入口与迁移前**像素一致、零行为回归**。如有任何 class 漂移导致视觉差异，回 Task 1/2 修正。
+- [x] **Step 5: 人工比对截图**（Read `/tmp/sp-e-library.png`）核对：左 `FilterRail`（`w-56` 边框）、右列网格（150px min cards + 状态 Badge 叠加）、右列 header（「资产库」+「N 个资产」+ 移动端筛选按钮在 ≥md 隐藏）、独立滚动、详情抽屉入口、移动端筛选入口与迁移前**像素一致、零行为回归**。如有任何 class 漂移导致视觉差异，回 Task 1/2 修正。
 
-- [ ] **Step 6: 结束开发分支**
+- [x] **Step 6: 结束开发分支**
 
 调用 superpowers:finishing-a-development-branch，按其引导给出 merge / PR / cleanup 选项（SP-A/B/C/D 均经 PR 合入 main，SP-E 同此节奏）。
 
