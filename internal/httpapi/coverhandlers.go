@@ -230,7 +230,12 @@ func coverSetHandler(ps ProjectStore, ag AssetLibrary) http.HandlerFunc {
 		var req struct {
 			AssetID string `json:"assetId"`
 		}
-		_ = json.NewDecoder(r.Body).Decode(&req)
+		// 显式校验解码错误：畸形/空 body 不能被静默吞掉——否则 AssetID 留空会误入
+		// 下面的「清除封面」分支，把畸形请求当成主动清除。清除须显式传 {"assetId":""}。
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
 		if req.AssetID == "" {
 			if err := ps.SetCover(r.Context(), id, ""); err != nil {
 				if errors.Is(err, project.ErrNotFound) {
