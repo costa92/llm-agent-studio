@@ -84,6 +84,8 @@ export interface CreateProjectInput {
   // router 用 (provider, model) 查 org 的对应 model_config 拿 key。
   imageProvider?: string
   imageModel?: string
+  // M10: per-project 存储配置 override；空/省略 = 后端用组织默认存储配置。
+  storageConfigId?: string
   customWorkflowEnabled?: boolean
   workflowNodes?: string
   // 儿童绘本：kind 选 'picturebook' 时带上 pictureBookConfig（序列化后的配置 JSON）。

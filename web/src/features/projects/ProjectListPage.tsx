@@ -83,6 +83,7 @@ export function ProjectListView({
             trigger={newButton}
             styles={styles}
             textModels={textModels}
+            storageConfigs={storageConfigs}
             onSubmit={onCreate}
             onSuccess={onOpenProject}
           />
@@ -203,6 +204,7 @@ export function ProjectListView({
               trigger={<Button variant="amber">新建项目</Button>}
               styles={styles}
               textModels={textModels}
+              storageConfigs={storageConfigs}
               onSubmit={onCreate}
               onSuccess={onOpenProject}
             />

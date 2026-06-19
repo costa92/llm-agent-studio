@@ -16,6 +16,7 @@ import type {
   CreateProjectInput,
   ModelConfig,
   Project,
+  StorageConfig,
   Style,
 } from "@/lib/types"
 import { ProjectFields } from "./ProjectFields"
@@ -41,6 +42,9 @@ function toCreateInput(values: ProjectFormValues): CreateProjectInput {
     ...(values.imageProvider && values.imageModel
       ? { imageProvider: values.imageProvider, imageModel: values.imageModel }
       : {}),
+    ...(values.storageConfigId
+      ? { storageConfigId: values.storageConfigId }
+      : {}),
     ...(values.kind === "picturebook"
       ? { kind: "picturebook" as const, pictureBookConfig: serializePbConfig(values.pbConfig) }
       : {}),
@@ -53,6 +57,8 @@ export interface CreateProjectFormProps {
   textModels?: ModelConfig[]
   /** M9: org 下 kind=image 的启用模型列表（供图片模型下拉）。空 = 不显示该下拉。 */
   imageModels?: ModelConfig[]
+  /** M10: org 存储配置列表（供存储下拉）。空 = 不显示存储下拉（= 用组织默认）。 */
+  storageConfigs?: StorageConfig[]
   /** 提交表单——返回 Promise<Project>（成功）或 reject（失败）。 */
   onSubmit: (input: CreateProjectInput) => Promise<Project>
   /** 创建成功后回调（关闭 Dialog / 跳工作台）。 */
@@ -64,6 +70,7 @@ export function CreateProjectForm({
   styles,
   textModels,
   imageModels,
+  storageConfigs,
   onSubmit,
   onSuccess,
 }: CreateProjectFormProps) {
@@ -96,6 +103,7 @@ export function CreateProjectForm({
           briefRequired
           textModels={textModels}
           imageModels={imageModels}
+          storageConfigs={storageConfigs}
         />
         {submitError && (
           <p role="alert" className="text-[12px] text-danger">
@@ -124,6 +132,7 @@ export function CreateProjectDialog({
   styles,
   textModels,
   imageModels,
+  storageConfigs,
   onSubmit,
   onSuccess,
 }: CreateProjectDialogProps) {
@@ -140,6 +149,7 @@ export function CreateProjectDialog({
           styles={styles}
           textModels={textModels}
           imageModels={imageModels}
+          storageConfigs={storageConfigs}
           onSubmit={onSubmit}
           onSuccess={(project) => {
             setOpen(false)
