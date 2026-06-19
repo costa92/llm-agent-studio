@@ -34,8 +34,11 @@ export function AssetGalleryModal({ assetIds, open, onOpenChange, metaById }: As
   // 灯箱索引：null = 网格态；数字 = 看大图。
   const [lightbox, setLightbox] = useState<number | null>(null)
 
-  // 关模态时复位灯箱（下次打开从网格开始）。
+  // 关模态时复位灯箱（下次打开从网格开始）。reset-on-close 是惯用同步：仅在弹窗已关闭
+  // (off-screen) 时触发，cascade 无可见重绘；改写进 onOpenChange 会丢失「任意关闭路径都复位」
+  // 保证且无测试覆盖，故就地保留并抑制该 stricter 规则。
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (!open) setLightbox(null)
   }, [open])
 

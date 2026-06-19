@@ -95,7 +95,11 @@ export function useProductionTimeline({
   const aliveRef = useRef(true)
   // onState 走 ref，避免其引用变化重起整条流。
   const onStateRef = useRef(onState)
-  onStateRef.current = onState
+  // onStateRef 仅在异步 SSE 回调里读取（提交后才可能有帧），故写入放进无依赖 effect
+  // （每次提交后运行）以满足 react-hooks/refs；读取点为异步，行为与 render 期赋值等价。
+  useEffect(() => {
+    onStateRef.current = onState
+  })
 
   useEffect(() => {
     aliveRef.current = true
