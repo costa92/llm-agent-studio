@@ -32,8 +32,8 @@ type resolver interface {
 	// persists the backend identity (config id / "builtin"); serve reads that EXACT
 	// backend regardless of the org's current storage_mode OR whether the config is
 	// still enabled — disabling only stops new writes, historical bytes keep serving.
-	ResolveByID(ctx context.Context, id string) (storageconfig.ResolvedStorage, bool, error)
-	ResolveByIDForServe(ctx context.Context, id string) (storageconfig.ResolvedStorage, bool, error)
+	ResolveByID(ctx context.Context, orgID, id string) (storageconfig.ResolvedStorage, bool, error)
+	ResolveByIDForServe(ctx context.Context, orgID, id string) (storageconfig.ResolvedStorage, bool, error)
 	ConfigIDForOrgAndMode(ctx context.Context, orgID string, mode string) (string, bool, error)
 	// DefaultConfigID returns the org's default storage config id (if any).
 	// Used by ResolveWriteTarget to fall back from project override to org default.
@@ -140,7 +140,7 @@ func (r *Router) BlobStoreForConfigID(ctx context.Context, orgID, configID strin
 	}
 	// ResolveByIDForServe (不过滤 enabled)：禁用一个存储配置只阻止新写入，已落在该
 	// 后端的历史 asset 必须继续可读——否则禁用会静默回落到 builtin default (无字节→404)。
-	rs, ok, err := r.configs.ResolveByIDForServe(ctx, configID)
+	rs, ok, err := r.configs.ResolveByIDForServe(ctx, orgID, configID)
 	if err != nil {
 		r.log.Warn("storagerouter: resolve config by id failed; using default store", "org", orgID, "configID", configID, "err", err)
 		return r.def, nil
@@ -163,7 +163,7 @@ func (r *Router) ResolveWriteTarget(ctx context.Context, orgID, projConfigID str
 		return r.def, builtinConfigID, nil
 	}
 	if projConfigID != "" {
-		rs, ok, err := r.configs.ResolveByID(ctx, projConfigID)
+		rs, ok, err := r.configs.ResolveByID(ctx, orgID, projConfigID)
 		if err != nil {
 			r.log.Warn("storagerouter: resolve project override config failed; falling through to org default",
 				"org", orgID, "projConfigID", projConfigID, "err", err)
@@ -176,7 +176,7 @@ func (r *Router) ResolveWriteTarget(ctx context.Context, orgID, projConfigID str
 		r.log.Warn("storagerouter: resolve default config id failed; falling through to builtin",
 			"org", orgID, "err", err)
 	} else if ok {
-		rs, ok2, err2 := r.configs.ResolveByID(ctx, id)
+		rs, ok2, err2 := r.configs.ResolveByID(ctx, orgID, id)
 		if err2 != nil {
 			r.log.Warn("storagerouter: resolve default config by id failed; falling through to builtin",
 				"org", orgID, "defaultConfigID", id, "err", err2)

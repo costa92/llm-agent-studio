@@ -513,7 +513,7 @@ func TestResolveAndConfigIDAgreement(t *testing.T) {
 	}
 
 	// Fetch the full config for the id ConfigIDForOrgAndMode returned.
-	refByID, ok, err := st.ResolveByID(ctx, resolvedID)
+	refByID, ok, err := st.ResolveByID(ctx, org, resolvedID)
 	if err != nil || !ok {
 		t.Fatalf("resolveByID(%q): ok=%v err=%v", resolvedID, ok, err)
 	}
@@ -551,7 +551,7 @@ func TestResolveByID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	rs, ok, err := st.ResolveByID(ctx, sc.ID)
+	rs, ok, err := st.ResolveByID(ctx, org, sc.ID)
 	if err != nil || !ok {
 		t.Fatalf("resolve by id: ok=%v err=%v", ok, err)
 	}
@@ -559,7 +559,7 @@ func TestResolveByID(t *testing.T) {
 		t.Fatalf("resolve by id mismatch: %+v", rs)
 	}
 	// 未知 id → ok=false。
-	if _, ok, err := st.ResolveByID(ctx, "nonexistent-"+uniqueSuffix()); err != nil || ok {
+	if _, ok, err := st.ResolveByID(ctx, org, "nonexistent-"+uniqueSuffix()); err != nil || ok {
 		t.Fatalf("unknown id: ok=%v err=%v", ok, err)
 	}
 	// disabled id → ok=false (WHERE enabled=true)。
@@ -569,7 +569,7 @@ func TestResolveByID(t *testing.T) {
 	if _, err := st.Update(ctx, org, sc.ID, dis); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
-	if _, ok, err := st.ResolveByID(ctx, sc.ID); err != nil || ok {
+	if _, ok, err := st.ResolveByID(ctx, org, sc.ID); err != nil || ok {
 		t.Fatalf("disabled id must be ok=false: ok=%v err=%v", ok, err)
 	}
 }
@@ -597,11 +597,11 @@ func TestResolveByIDForServe(t *testing.T) {
 		t.Fatalf("disable: %v", err)
 	}
 	// 写目标视图：禁用 → ok=false。
-	if _, ok, err := st.ResolveByID(ctx, sc.ID); err != nil || ok {
+	if _, ok, err := st.ResolveByID(ctx, org, sc.ID); err != nil || ok {
 		t.Fatalf("ResolveByID on disabled must be ok=false: ok=%v err=%v", ok, err)
 	}
 	// serve 视图：禁用仍 ok=true，且解出后端身份（含解密 secret）完整。
-	rs, ok, err := st.ResolveByIDForServe(ctx, sc.ID)
+	rs, ok, err := st.ResolveByIDForServe(ctx, org, sc.ID)
 	if err != nil || !ok {
 		t.Fatalf("ResolveByIDForServe on disabled must be ok=true: ok=%v err=%v", ok, err)
 	}
@@ -609,8 +609,63 @@ func TestResolveByIDForServe(t *testing.T) {
 		t.Fatalf("serve resolve mismatch: %+v", rs)
 	}
 	// 未知 id → ok=false。
-	if _, ok, err := st.ResolveByIDForServe(ctx, "nonexistent-"+uniqueSuffix()); err != nil || ok {
+	if _, ok, err := st.ResolveByIDForServe(ctx, org, "nonexistent-"+uniqueSuffix()); err != nil || ok {
 		t.Fatalf("unknown id for serve: ok=%v err=%v", ok, err)
+	}
+}
+
+// TestResolveByID_OrgScoped 验证 defense-in-depth：by-id 解析（写目标 + serve 两条）
+// 只命中「本 org 的 org-scope 行」或「global 共享行」；他 org 的 org-scope id → ok=false，
+// 即便某 asset/项目覆盖因 bug/篡改持久化了他 org 的 config id 也绝不解析其凭证。
+func TestResolveByID_OrgScoped(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	orgA := "org-A-" + uniqueSuffix()
+	orgB := "org-B-" + uniqueSuffix()
+	in := s3Input("sek-scoped")
+	in.Name = "scoped"
+	in.Bucket = "scoped-bucket"
+	scA, err := st.Create(ctx, orgA, in)
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+
+	// 本 org：两条解析路径都 ok=true。
+	if _, ok, err := st.ResolveByID(ctx, orgA, scA.ID); err != nil || !ok {
+		t.Fatalf("own org ResolveByID must be ok=true: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := st.ResolveByIDForServe(ctx, orgA, scA.ID); err != nil || !ok {
+		t.Fatalf("own org ResolveByIDForServe must be ok=true: ok=%v err=%v", ok, err)
+	}
+	// 跨租户：orgB 解析 orgA 的 org-scope id → 两条路径都 ok=false（核心断言）。
+	if _, ok, err := st.ResolveByID(ctx, orgB, scA.ID); err != nil || ok {
+		t.Fatalf("foreign org ResolveByID must be ok=false: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := st.ResolveByIDForServe(ctx, orgB, scA.ID); err != nil || ok {
+		t.Fatalf("foreign org ResolveByIDForServe must be ok=false: ok=%v err=%v", ok, err)
+	}
+
+	// global 共享行：任何 org 都能解析（asset 可合法持久化 global id）。
+	gin := s3Input("sek-global")
+	gin.Name = "global"
+	gin.Bucket = "global-bucket"
+	gsc, err := st.UpsertGlobal(ctx, gin)
+	if err != nil {
+		t.Fatalf("upsert global: %v", err)
+	}
+	// global 是共享单例：用后即清，否则污染其他依赖「无 global 行」的用例（如
+	// TestConfigIDForOrgAndMode 的 unknown-org → ok=false 会被 global 回落变 ok=true）。
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM storage_configs WHERE scope='global'`)
+	})
+	for _, org := range []string{orgA, orgB} {
+		if _, ok, err := st.ResolveByID(ctx, org, gsc.ID); err != nil || !ok {
+			t.Fatalf("global ResolveByID for %s must be ok=true: ok=%v err=%v", org, ok, err)
+		}
+		if _, ok, err := st.ResolveByIDForServe(ctx, org, gsc.ID); err != nil || !ok {
+			t.Fatalf("global ResolveByIDForServe for %s must be ok=true: ok=%v err=%v", org, ok, err)
+		}
 	}
 }
 
