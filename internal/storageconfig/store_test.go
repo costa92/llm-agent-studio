@@ -574,6 +574,46 @@ func TestResolveByID(t *testing.T) {
 	}
 }
 
+// TestResolveByIDForServe 验证 serve 路径解析「不」过滤 enabled：禁用一个配置后，
+// ResolveByID → ok=false（写目标排除），但 ResolveByIDForServe → ok=true（历史
+// asset 仍按写入时的后端身份可读）。修复「禁用在用存储配置 → 既有资产 404」。
+func TestResolveByIDForServe(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool, testBox(t))
+	ctx := context.Background()
+	org := "org-rbids-" + uniqueSuffix()
+	in := s3Input("sek-rbids")
+	in.Name = "rbids"
+	in.Bucket = "rbids-bucket"
+	sc, err := st.Create(ctx, org, in)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// 禁用该配置。
+	dis := in
+	dis.Enabled = false
+	dis.Secret = ""
+	if _, err := st.Update(ctx, org, sc.ID, dis); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	// 写目标视图：禁用 → ok=false。
+	if _, ok, err := st.ResolveByID(ctx, sc.ID); err != nil || ok {
+		t.Fatalf("ResolveByID on disabled must be ok=false: ok=%v err=%v", ok, err)
+	}
+	// serve 视图：禁用仍 ok=true，且解出后端身份（含解密 secret）完整。
+	rs, ok, err := st.ResolveByIDForServe(ctx, sc.ID)
+	if err != nil || !ok {
+		t.Fatalf("ResolveByIDForServe on disabled must be ok=true: ok=%v err=%v", ok, err)
+	}
+	if rs.Bucket != "rbids-bucket" || rs.SecretKey != "sek-rbids" || rs.Mode != "s3" {
+		t.Fatalf("serve resolve mismatch: %+v", rs)
+	}
+	// 未知 id → ok=false。
+	if _, ok, err := st.ResolveByIDForServe(ctx, "nonexistent-"+uniqueSuffix()); err != nil || ok {
+		t.Fatalf("unknown id for serve: ok=%v err=%v", ok, err)
+	}
+}
+
 // TestConfigIDForOrgAndMode 验证写路径要持久化的 token：配置后端返回其 storage_configs.id；
 // 无 config 行（builtin 默认）返回 ""/ok=false，由调用方落 "builtin" sentinel。
 func TestConfigIDForOrgAndMode(t *testing.T) {

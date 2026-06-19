@@ -42,6 +42,10 @@ func (f fakeResolver) ResolveByID(context.Context, string) (storageconfig.Resolv
 	return f.rs, f.ok, f.err
 }
 
+func (f fakeResolver) ResolveByIDForServe(context.Context, string) (storageconfig.ResolvedStorage, bool, error) {
+	return f.rs, f.ok, f.err
+}
+
 func (f fakeResolver) ConfigIDForOrgAndMode(context.Context, string, string) (string, bool, error) {
 	return "", f.ok, f.err
 }
@@ -180,6 +184,10 @@ func (orgVaryingResolver) ResolveByID(_ context.Context, id string) (storageconf
 	return storageconfig.ResolvedStorage{Mode: "s3", Bucket: id}, true, nil
 }
 
+func (orgVaryingResolver) ResolveByIDForServe(_ context.Context, id string) (storageconfig.ResolvedStorage, bool, error) {
+	return storageconfig.ResolvedStorage{Mode: "s3", Bucket: id}, true, nil
+}
+
 func (orgVaryingResolver) ConfigIDForOrgAndMode(_ context.Context, orgID, mode string) (string, bool, error) {
 	return orgID, true, nil
 }
@@ -202,6 +210,9 @@ func TestBlobStoreForNeverNilWhenDefaultSet(t *testing.T) {
 type idResolver struct {
 	byID    map[string]storageconfig.ResolvedStorage
 	idByOrg map[string]string // key: orgID+"|"+mode
+	// byIDServe models the serve-path (enabled-agnostic) resolution. If set, an id
+	// here resolves for serve even when absent from byID (i.e. a disabled config).
+	byIDServe map[string]storageconfig.ResolvedStorage
 }
 
 func (r idResolver) ResolveForOrg(context.Context, string) (storageconfig.ResolvedStorage, bool, error) {
@@ -216,6 +227,13 @@ func (r idResolver) ResolveForOrgAndMode(_ context.Context, orgID, mode string) 
 	return rs, ok, nil
 }
 func (r idResolver) ResolveByID(_ context.Context, id string) (storageconfig.ResolvedStorage, bool, error) {
+	rs, ok := r.byID[id]
+	return rs, ok, nil
+}
+func (r idResolver) ResolveByIDForServe(_ context.Context, id string) (storageconfig.ResolvedStorage, bool, error) {
+	if rs, ok := r.byIDServe[id]; ok {
+		return rs, true, nil
+	}
 	rs, ok := r.byID[id]
 	return rs, ok, nil
 }
@@ -276,6 +294,35 @@ func TestBlobStoreForConfigID(t *testing.T) {
 	// unknown id → falls back to Default (never nil-meaningfully).
 	if bs, err := r.BlobStoreForConfigID(ctx, "org", "nope"); err != nil || bs != def {
 		t.Fatalf("unknown id should fall back to default: bs=%v err=%v", bs, err)
+	}
+}
+
+// TestBlobStoreForConfigID_ServesDisabledConfig is the regression for the
+// disable-breaks-serve bug: a DISABLED config (ResolveByID → ok=false, here
+// modeled by living only in byIDServe, not byID) must still serve historical
+// assets from its real backend — NOT silently fall back to the builtin Default
+// store (which lacks the bytes → 404). The serve path resolves via
+// ResolveByIDForServe (enabled-agnostic); disable only stops new writes.
+func TestBlobStoreForConfigID_ServesDisabledConfig(t *testing.T) {
+	def := &stubBlob{name: "default"}
+	built := &stubBlob{name: "built-s3"}
+	r := New(Config{
+		Configs: idResolver{
+			// disabled: absent from byID (write/enabled view), present for serve.
+			byIDServe: map[string]storageconfig.ResolvedStorage{"cfg-disabled": {Mode: "s3", Bucket: "b"}},
+		},
+		Default: def,
+		Build: func(rs storageconfig.ResolvedStorage) (blob.BlobStore, error) {
+			if rs.Mode != "s3" {
+				t.Fatalf("build got %+v", rs)
+			}
+			return built, nil
+		},
+	})
+	ctx := context.Background()
+	bs, err := r.BlobStoreForConfigID(ctx, "org", "cfg-disabled")
+	if err != nil || bs != built {
+		t.Fatalf("disabled config must serve from its real backend, not default: bs=%v err=%v", bs, err)
 	}
 }
 
