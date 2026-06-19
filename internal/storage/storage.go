@@ -8,6 +8,9 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 // Config configures Open.
@@ -15,12 +18,14 @@ type Config struct {
 	PGURL string
 }
 
-// Storage holds the pgxpool.
+// Storage holds the pgxpool plus a coexisting GORM handle (same DSN).
 type Storage struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	gormDB *gorm.DB
 }
 
-// Open builds the pool. The caller owns Close.
+// Open builds the pool AND a coexisting *gorm.DB (pgx stdlib driver) to the same
+// DB. Migrated packages take the GORM handle; un-migrated ones keep the pool.
 func Open(ctx context.Context, cfg Config) (*Storage, error) {
 	if cfg.PGURL == "" {
 		return nil, fmt.Errorf("storage: PGURL is required")
@@ -29,14 +34,31 @@ func Open(ctx context.Context, cfg Config) (*Storage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("storage: new pool: %w", err)
 	}
-	return &Storage{pool: pool}, nil
+	gormDB, err := gorm.Open(postgres.Open(cfg.PGURL), &gorm.Config{
+		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
+	})
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("storage: open gorm: %w", err)
+	}
+	return &Storage{pool: pool, gormDB: gormDB}, nil
 }
 
 // Pool returns the underlying pgxpool.
 func (s *Storage) Pool() *pgxpool.Pool { return s.pool }
 
-// Close releases the pool.
-func (s *Storage) Close() { s.pool.Close() }
+// GORM returns the coexisting *gorm.DB (same DB as Pool).
+func (s *Storage) GORM() *gorm.DB { return s.gormDB }
+
+// Close releases both the pool and the GORM sql.DB.
+func (s *Storage) Close() {
+	if s.gormDB != nil {
+		if sqlDB, err := s.gormDB.DB(); err == nil {
+			_ = sqlDB.Close()
+		}
+	}
+	s.pool.Close()
+}
 
 // m1Migrations are the studio M1 tables (spec §6). All idempotent.
 var m1Migrations = []string{

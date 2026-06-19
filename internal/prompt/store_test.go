@@ -6,11 +6,12 @@ import (
 	"os"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
+
 	"github.com/costa92/llm-agent-studio/internal/storage"
 )
 
-func testPool(t *testing.T) *pgxpool.Pool {
+func testDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
 	if dsn == "" {
@@ -25,12 +26,12 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	if err := st.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	return st.Pool()
+	return st.GORM()
 }
 
 func TestStoreCRUD(t *testing.T) {
-	pool := testPool(t)
-	s := NewStore(pool)
+	db := testDB(t)
+	s := NewStore(db)
 	ctx := context.Background()
 	orgID := "org-test-123"
 
@@ -81,8 +82,8 @@ func TestStoreCRUD(t *testing.T) {
 }
 
 func TestStoreSetDefault(t *testing.T) {
-	pool := testPool(t)
-	s := NewStore(pool)
+	db := testDB(t)
+	s := NewStore(db)
 	ctx := context.Background()
 	orgID := "org-setdefault-456"
 

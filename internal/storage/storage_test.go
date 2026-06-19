@@ -23,6 +23,33 @@ func testDSN(t *testing.T) string {
 	return dsn
 }
 
+func TestOpenExposesGORM(t *testing.T) {
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run storage tests")
+	}
+	ctx := context.Background()
+	st, err := Open(ctx, Config{PGURL: dsn})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(st.Close)
+	if st.GORM() == nil {
+		t.Fatal("GORM() returned nil")
+	}
+	var n int
+	if err := st.GORM().Raw("SELECT 1").Scan(&n).Error; err != nil {
+		t.Fatalf("gorm raw select: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("SELECT 1 = %d, want 1", n)
+	}
+	var m int
+	if err := st.Pool().QueryRow(ctx, "SELECT 1").Scan(&m); err != nil || m != 1 {
+		t.Fatalf("pool select: m=%d err=%v", m, err)
+	}
+}
+
 func TestMigrateIsIdempotentAndCreatesM1Tables(t *testing.T) {
 	ctx := context.Background()
 	st, err := Open(ctx, Config{PGURL: testDSN(t)})

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	"github.com/costa92/llm-agent-studio/internal/assets"
 	"github.com/costa92/llm-agent-studio/internal/blob/localfs"
@@ -249,6 +250,25 @@ func modelTestPool(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("migrate: %v", err)
 	}
 	return st.Pool()
+}
+
+// modelTestGorm 与 modelTestPool 同源，但返回 *gorm.DB，供已迁到 GORM 的 store（prompt）用。
+func modelTestGorm(t *testing.T) *gorm.DB {
+	t.Helper()
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run prompt HTTP store tests")
+	}
+	ctx := context.Background()
+	st, err := storage.Open(ctx, storage.Config{PGURL: dsn})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(st.Close)
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return st.GORM()
 }
 
 // modelTestBox builds an enabled secretbox.Box from a fixed base64 32-byte key.
