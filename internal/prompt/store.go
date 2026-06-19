@@ -80,6 +80,10 @@ func (s *Store) Update(ctx context.Context, id, orgID, name, content, style, kin
 	var p Prompt
 	err := s.pool.QueryRow(ctx, query, id, orgID, name, content, style, now, kind).
 		Scan(&p.ID, &p.OrgID, &p.Name, &p.Content, &p.Style, &p.Kind, &p.IsDefault, &p.CreatedAt, &p.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// 不存在的 (id,org) → 语义 404，而非 500（与 SetDefault 一致）。
+		return Prompt{}, ErrNotFound
+	}
 	if err != nil {
 		return Prompt{}, fmt.Errorf("prompt: update: %w", err)
 	}
@@ -143,7 +147,8 @@ func (s *Store) Delete(ctx context.Context, id, orgID string) error {
 		return fmt.Errorf("prompt: delete: %w", err)
 	}
 	if res.RowsAffected() == 0 {
-		return pgx.ErrNoRows
+		// 不存在的 (id,org) → 语义 404（与 SetDefault/Update 一致）。
+		return ErrNotFound
 	}
 	return nil
 }

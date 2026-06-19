@@ -76,6 +76,10 @@ func updatePromptHandler(s *prompt.Store) http.HandlerFunc {
 		}
 		p, err := s.Update(r.Context(), id, org, req.Name, req.Content, req.Style, req.Kind)
 		if err != nil {
+			if errors.Is(err, prompt.ErrNotFound) {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -106,6 +110,10 @@ func deletePromptHandler(s *prompt.Store) http.HandlerFunc {
 		id := r.PathValue("id")
 		err := s.Delete(r.Context(), id, org)
 		if err != nil {
+			if errors.Is(err, prompt.ErrNotFound) {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

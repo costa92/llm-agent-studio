@@ -166,6 +166,42 @@ func TestPromptHandlersCRUD(t *testing.T) {
 	}
 }
 
+// 不存在的 id：update/delete 须返回 404（而非 500）——store 返 prompt.ErrNotFound，
+// handler 映射为 NotFound（与 setPromptDefaultHandler 一致）。
+func TestPromptHandlers_MissingIDReturns404(t *testing.T) {
+	pool := modelTestPool(t)
+	s := prompt.NewStore(pool)
+	org := "org-prompt-404"
+	missing := "does-not-exist-" + org
+
+	// Update missing → 404
+	{
+		h := updatePromptHandler(s)
+		body := `{"name":"X","content":"Y","style":"","kind":"script"}`
+		req := httptest.NewRequest("PUT", "/api/orgs/"+org+"/prompts/"+missing, strings.NewReader(body))
+		req.SetPathValue("org", org)
+		req.SetPathValue("id", missing)
+		rec := httptest.NewRecorder()
+		h(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("update missing id: code=%d want 404, body=%s", rec.Code, rec.Body.String())
+		}
+	}
+
+	// Delete missing → 404
+	{
+		h := deletePromptHandler(s)
+		req := httptest.NewRequest("DELETE", "/api/orgs/"+org+"/prompts/"+missing, nil)
+		req.SetPathValue("org", org)
+		req.SetPathValue("id", missing)
+		rec := httptest.NewRecorder()
+		h(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("delete missing id: code=%d want 404, body=%s", rec.Code, rec.Body.String())
+		}
+	}
+}
+
 func TestCreatePromptHandlerValidation(t *testing.T) {
 	// Simple validation smoke tests
 	h := createPromptHandler(nil)

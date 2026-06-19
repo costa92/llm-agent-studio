@@ -198,6 +198,23 @@ func TestCoverSetEmptyClears(t *testing.T) {
 	}
 }
 
+// 畸形 JSON body 不得被静默吞掉而误入「清除封面」分支：须 400，且不调 SetCover。
+func TestCoverSetMalformedBody400(t *testing.T) {
+	ps := &coverProjStub{proj: project.Project{ID: "p1"}}
+	lib := &coverLibStub{}
+	h := coverSetHandler(ps, lib)
+	req := httptest.NewRequest("PUT", "/api/projects/p1/cover", bytes.NewBufferString(`{"assetId":`))
+	req.SetPathValue("id", "p1")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("malformed body should 400, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(ps.coverCalls) != 0 {
+		t.Fatalf("malformed body must NOT clear the cover: SetCover called with %v", ps.coverCalls)
+	}
+}
+
 func TestCoverSetValid(t *testing.T) {
 	ps := &coverProjStub{proj: project.Project{ID: "p1"}}
 	lib := &coverLibStub{asset: assets.Asset{ID: "a1", ProjectID: "p1"}}
