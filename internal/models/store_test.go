@@ -11,7 +11,7 @@ import (
 
 	"strings"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	"github.com/costa92/llm-agent-studio/internal/secretbox"
 	"github.com/costa92/llm-agent-studio/internal/storage"
@@ -56,7 +56,7 @@ func TestCatalogListsImageProviders(t *testing.T) {
 	}
 }
 
-func testPool(t *testing.T) *pgxpool.Pool {
+func testDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
 	if dsn == "" {
@@ -71,12 +71,12 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	if err := st.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	return st.Pool()
+	return st.GORM()
 }
 
 func TestCreateAndListByOrg(t *testing.T) {
-	pool := testPool(t)
-	st := New(pool, testBox(t))
+	db := testDB(t)
+	st := New(db, testBox(t))
 	ctx := context.Background()
 	mc, err := st.Create(ctx, CreateInput{
 		OrgID: "org-m", Kind: "image", Provider: "openai", Model: "gpt-image-1",
@@ -96,8 +96,8 @@ func TestCreateAndListByOrg(t *testing.T) {
 }
 
 func TestDefaultForOrg(t *testing.T) {
-	pool := testPool(t)
-	st := New(pool, testBox(t))
+	db := testDB(t)
+	st := New(db, testBox(t))
 	ctx := context.Background()
 	_, _ = st.Create(ctx, CreateInput{OrgID: "org-d", Kind: "image", Provider: "minimax", Model: "image-01", Enabled: true, IsDefault: false})
 	_, _ = st.Create(ctx, CreateInput{OrgID: "org-d", Kind: "image", Provider: "openai", Model: "gpt-image-1", Enabled: true, IsDefault: true})
@@ -150,8 +150,8 @@ func TestSecretParamMatchingExcludesTokenCounts(t *testing.T) {
 }
 
 func TestCreateWithAPIKeyHidesKey(t *testing.T) {
-	pool := testPool(t)
-	st := New(pool, testBox(t))
+	db := testDB(t)
+	st := New(db, testBox(t))
 	ctx := context.Background()
 	const rawKey = "sk-byok-super-secret-987654321"
 	mc, err := st.Create(ctx, CreateInput{
@@ -194,8 +194,8 @@ func TestCreateWithAPIKeyHidesKey(t *testing.T) {
 }
 
 func TestResolveForOrgDecryptsKey(t *testing.T) {
-	pool := testPool(t)
-	st := New(pool, testBox(t))
+	db := testDB(t)
+	st := New(db, testBox(t))
 	ctx := context.Background()
 	const rawKey = "sk-resolve-me-555"
 	if _, err := st.Create(ctx, CreateInput{
@@ -220,8 +220,8 @@ func TestResolveForOrgDecryptsKey(t *testing.T) {
 // M5.1: ResolveForOrgNamed 按 (kind, provider, model) 精准查 org 下的启用配置。
 // 多个 (provider, model) 同 kind 共存时也能精确命中（不必是默认）。
 func TestResolveForOrgNamedHitsExactProviderModel(t *testing.T) {
-	pool := testPool(t)
-	st := New(pool, testBox(t))
+	db := testDB(t)
+	st := New(db, testBox(t))
 	ctx := context.Background()
 	orgID := "org_named_" + uniqueSuffix()
 	const wantKey = "sk-named-hit-999"
@@ -264,9 +264,9 @@ func TestResolveForOrgNamedHitsExactProviderModel(t *testing.T) {
 }
 
 func TestCreateAPIKeyDisabledBoxFails(t *testing.T) {
-	pool := testPool(t)
+	db := testDB(t)
 	disabled, _ := secretbox.New("") // disabled box
-	st := New(pool, disabled)
+	st := New(db, disabled)
 	_, err := st.Create(context.Background(), CreateInput{
 		OrgID: "org-x", Kind: "text", Provider: "openai", Model: "gpt-4o-mini", APIKey: "sk-nope",
 	})
@@ -291,8 +291,8 @@ func TestCatalogIncludesVideoAndAudio(t *testing.T) {
 }
 
 func TestUpdateKeepsKeyWhenBlank(t *testing.T) {
-	pool := testPool(t)
-	st := New(pool, testBox(t))
+	db := testDB(t)
+	st := New(db, testBox(t))
 	ctx := context.Background()
 	const rawKey = "sk-keep-me-111"
 	mc, err := st.Create(ctx, CreateInput{
@@ -321,8 +321,8 @@ func TestUpdateKeepsKeyWhenBlank(t *testing.T) {
 }
 
 func TestUpdateReplacesKeyWhenSet(t *testing.T) {
-	pool := testPool(t)
-	st := New(pool, testBox(t))
+	db := testDB(t)
+	st := New(db, testBox(t))
 	ctx := context.Background()
 	mc, err := st.Create(ctx, CreateInput{
 		OrgID: "org-rep", Kind: "text", Provider: "deepseek", Model: "deepseek-chat",
@@ -346,8 +346,8 @@ func TestUpdateReplacesKeyWhenSet(t *testing.T) {
 }
 
 func TestUpdateScopedByOrg(t *testing.T) {
-	pool := testPool(t)
-	st := New(pool, testBox(t))
+	db := testDB(t)
+	st := New(db, testBox(t))
 	ctx := context.Background()
 	mc, err := st.Create(ctx, CreateInput{
 		OrgID: "org-owner", Kind: "text", Provider: "openai", Model: "gpt-4o-mini", Enabled: true,
@@ -369,8 +369,8 @@ func TestUpdateScopedByOrg(t *testing.T) {
 }
 
 func TestUpdateIsDefaultClearsSiblings(t *testing.T) {
-	pool := testPool(t)
-	st := New(pool, testBox(t))
+	db := testDB(t)
+	st := New(db, testBox(t))
 	ctx := context.Background()
 	a, _ := st.Create(ctx, CreateInput{OrgID: "org-def", Kind: "text", Provider: "openai", Model: "gpt-4o-mini", Enabled: true, IsDefault: true})
 	b, _ := st.Create(ctx, CreateInput{OrgID: "org-def", Kind: "text", Provider: "deepseek", Model: "deepseek-chat", Enabled: true, IsDefault: false})
@@ -396,8 +396,8 @@ func TestUpdateIsDefaultClearsSiblings(t *testing.T) {
 }
 
 func TestDeleteScopedByOrg(t *testing.T) {
-	pool := testPool(t)
-	st := New(pool, testBox(t))
+	db := testDB(t)
+	st := New(db, testBox(t))
 	ctx := context.Background()
 	mc, err := st.Create(ctx, CreateInput{OrgID: "org-del", Kind: "text", Provider: "openai", Model: "gpt-4o-mini", Enabled: true})
 	if err != nil {

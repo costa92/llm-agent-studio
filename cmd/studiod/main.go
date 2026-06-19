@@ -196,7 +196,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		st.Close()
 		return nil, nil, fmt.Errorf("studiod: secretbox: %w", err)
 	}
-	modelStore := models.New(st.Pool(), encBox)
+	modelStore := models.New(st.GORM(), encBox)
 	promptStore := prompt.NewStore(st.GORM())
 	mailConfigStore := mailconfig.New(st.GORM(), encBox)
 	envMailCfg := mail.EnvConfig{

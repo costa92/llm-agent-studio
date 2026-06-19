@@ -60,7 +60,8 @@ func TestWorkerRoutesChatModelViaRouter(t *testing.T) {
 
 	// Store an org text model_config WITH a per-config key → router calls BuildChat.
 	box := testBox(t)
-	ms := models.New(pool, box)
+	mdb := assetTestGorm(t)
+	ms := models.New(mdb, box)
 	if _, err := ms.Create(ctx, models.CreateInput{
 		OrgID: orgID, Kind: "text", Provider: "openai-compatible", Model: "x",
 		Enabled: true, IsDefault: true, APIKey: "sk-test",
@@ -139,7 +140,8 @@ func TestWorkerRoutesMediaViaRouterBuildMedia(t *testing.T) {
 		todoID, projID, `{"shotId":"s1","shotPrompt":"a teahouse","style":""}`)
 
 	box := testBox(t)
-	ms := models.New(pool, box)
+	mdb := assetTestGorm(t)
+	ms := models.New(mdb, box)
 	if _, err := ms.Create(ctx, models.CreateInput{
 		OrgID: orgID, Kind: "image", Provider: "openai-compatible", Model: "img-1",
 		Enabled: true, IsDefault: true, BaseURL: "http://local", APIKey: "sk-img",
