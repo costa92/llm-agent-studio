@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { renderHook, waitFor } from "@testing-library/react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { createElement, type ReactNode } from "react"
-import { useReviewQueue, useRegenerate } from "./api"
+import { useReviewQueue, useRegenerate, useAccept, useReject } from "./api"
 import { setAccessToken } from "@/lib/apiClient"
 import type { Asset } from "@/lib/types"
 
@@ -17,6 +17,17 @@ function wrapper() {
   })
   return ({ children }: { children: ReactNode }) =>
     createElement(QueryClientProvider, { client }, children)
+}
+
+// 暴露 invalidateQueries spy 以断言 HITL 成功后的失效集合。
+function setup() {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  const invalidateSpy = vi.spyOn(client, "invalidateQueries")
+  const wrap = ({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client }, children)
+  return { wrap, invalidateSpy }
 }
 
 function jsonResponse(body: unknown): Response {
@@ -65,6 +76,45 @@ describe("useReviewQueue", () => {
     expect(url).toContain("status=pending_acceptance")
     expect(url).toContain("project=proj-1")
     expect(url).not.toContain("type=image")
+  })
+})
+
+describe("useAccept / useReject (HITL 失效集合)", () => {
+  // 工作台右栏内联采纳/拒绝后，「待审核 · N」徽标取自 project-state（assets.pending）。
+  // accept/reject 不发 run_event，SSE 版本门不会推 state 帧，故必须主动失效
+  // ["project-state"] 让徽标刷新——否则计数停在旧值直到手动刷新。
+  it("useAccept invalidates review-queue + library + project-state", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ id: "as1", status: "accepted" }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    const { wrap, invalidateSpy } = setup()
+    const { result } = renderHook(() => useAccept("acme"), { wrapper: wrap })
+    result.current.mutate("as1")
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe("/api/assets/as1/accept")
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["review-queue", "acme"] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["library", "acme"] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["project-state"] })
+  })
+
+  it("useReject invalidates review-queue + library + project-state", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ id: "as1", status: "rejected" }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    const { wrap, invalidateSpy } = setup()
+    const { result } = renderHook(() => useReject("acme"), { wrapper: wrap })
+    result.current.mutate("as1")
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe("/api/assets/as1/reject")
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["review-queue", "acme"] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["library", "acme"] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["project-state"] })
   })
 })
 
