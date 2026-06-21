@@ -89,11 +89,12 @@
 │  ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐ ┌──────────────────┐   │
 │  │events │ │ cost  │ │limits │ │ fetch │ │ obs   │ │  todos/project   │   │
 │  │ (SSE) │ │ledger │ │ quota │ │SSRF-  │ │ otel  │ │  /assets stores  │   │
-│  │+id:seq│ │µs/sec │ │advis  │ │safe   │ │decorat│ │  (pgx queries)   │   │
+│  │+id:seq│ │µs/sec │ │advis  │ │safe   │ │decorat│ │  (GORM handle)   │   │
 │  │★PR#17 │ │µs/unit│ │lock   │ │512MB  │ │not hk │ │                  │   │
 │  └───────┘ └───────┘ └───────┘ └───────┘ └───────┘ └──────────────────┘   │
 └────────────────────────────────┬──────────────────────────────────────────┘
-                                 │ pgxpool
+                                 │ GORM (database/sql + pgx stdlib 驱动)
+                                 │ ‖ pgxpool 仅存于 storage 地基，供 authz/CLI/测试
                                  ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
 │                              POSTGRES                                    │
@@ -120,6 +121,18 @@
 │     -- 2 partial unique idx: global / per-org                            │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## 数据访问层（model + GORM 混合）
+
+所有 `internal/*` store / service 的数据访问都走 **GORM 句柄**（`storage.Storage.GORM()`，`gorm.io/driver/postgres` + pgx stdlib 驱动）。PR #79–#96 把全部 store 包（prompt/mailconfig/models/events/cost/assets/todos/workflows/storageconfig/project/worker）+ 服务层（studiosvc/planner/review/health）从 pgx/pgxpool 迁完。约定：
+
+- **混合**：CRUD / 简单读走 GORM 链式 API；`RETURNING`、事务、`FOR UPDATE`、`pg_advisory_xact_lock`、`ON CONFLICT`、递归 CTE、`FILTER` 聚合、部分唯一索引敏感的写**保留原生 SQL**，在同一 `*gorm.DB` 上以 `Raw/Exec/Transaction` 跑。
+- **不对既有表 AutoMigrate**：schema 仍由 `internal/storage/storage.go` 的 `m1..m17` 迁移脚本管理（部分唯一索引等 AutoMigrate 复现不了）。GORM 模型仅作映射层。
+- **写返回落盘行一律 `INSERT...RETURNING`**（不用 `gorm.Create` 回填，避免 Go 时钟纳秒与 DB 微秒漂移）。
+- **`pgxpool` 仅存于 `storage` 地基**：`Open` 同时建 pgxpool + GORM 池（同一 DSN），`GORM` 池已设连接上限（MaxOpen=25/MaxIdle=10/Lifetime=1h/IdleTime=30m）。pgxpool 现仅供外部 `llm-agent-authz`（`authzstore.New(*pgxpool.Pool)`）+ `cmd/secretbox-rotate` + 测试 fixture；彻底退役需 authz 库自身迁移（lockstep）。
+- **DB-backed 测试**：`health` / `worker` 用 `internal/dbtest` 在 `TestMain` 建 per-package 独立库（前者全库扫描、后者全局队列 claim，须与兄弟包隔离）。
 
 ---
 
@@ -184,7 +197,7 @@
 
 | 里程碑 | Tag | 关键交付 |
 |---|---|---|
-| post-v0.8.0 (main) | — | GitHub blob 后端、平台超级管理员、用户管理 |
+| post-v0.8.0 (main) | — | GitHub blob 后端、平台超级管理员、用户管理、**数据层 model+GORM 迁移**（PR #79–#96，全量完成） |
 | M8 | v0.8.0 | 可配置化 + BYOK + secretbox 加密 + DB 存储配置 |
 | M7 | v0.7.0 | OSS/COS blob 后端 |
 | M6 | v0.6.0 | 单进程全栈（`WEB_DIR` 静态托管 SPA） |
