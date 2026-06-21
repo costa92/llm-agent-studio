@@ -49,7 +49,7 @@ func TestWorkerRunsScriptThenStoryboard(t *testing.T) {
 		`INSERT INTO projects (id, org_id, name, created_by) VALUES ($1,'o','n','u')`, projID); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
-	todoStore := todos.New(pool)
+	todoStore := todos.New(assetTestGorm(t))
 	ids, err := todoStore.CreateGraph(ctx, projID, "pl1", []todos.NodeSpec{
 		{LocalID: "s", Type: "script", DependsOn: nil, InputJSON: []byte(`{"brief":"coffee ad","style":"realistic"}`)},
 		{LocalID: "b", Type: "storyboard", DependsOn: []string{"s"}, InputJSON: []byte(`{}`)},
@@ -140,7 +140,7 @@ func TestWorkerFailsTodoOnAgentError(t *testing.T) {
 	pool := st.Pool()
 	projID := "wf_" + randHex3()
 	_, _ = pool.Exec(ctx, `INSERT INTO projects (id, org_id, name, created_by) VALUES ($1,'o','n','u')`, projID)
-	todoStore := todos.New(pool)
+	todoStore := todos.New(assetTestGorm(t))
 	projStore := project.New(pool)
 	// Script succeeds, storyboard (the LAST todo) fails terminally: this exercises
 	// both the cancel-dependents path AND the run_done-on-terminal-failure path
@@ -256,7 +256,7 @@ func TestWorkerCustomExecutor(t *testing.T) {
 	// 1. Register the custom type to planner
 	planner.RegisterType("translate")
 
-	todoStore := todos.New(pool)
+	todoStore := todos.New(assetTestGorm(t))
 	ids, err := todoStore.CreateGraph(ctx, projID, "pl_wce", []todos.NodeSpec{
 		{LocalID: "t", Type: "translate", DependsOn: nil, InputJSON: []byte(`{"text":"hello"}`)},
 	})
@@ -348,7 +348,7 @@ func TestRunStoryboard_PictureBookFansOutImageAndAudio(t *testing.T) {
 		projID, `{"ageBand":"3-6","illustrationStyle":"watercolor","voice":"warm","themes":["友谊"]}`); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
-	todoStore := todos.New(pool)
+	todoStore := todos.New(assetTestGorm(t))
 	ids, err := todoStore.CreateGraph(ctx, projID, "pl_pb_"+projID[3:], []todos.NodeSpec{
 		{LocalID: "s", Type: "script", DependsOn: nil, InputJSON: []byte(`{"brief":"小白兔的故事"}`)},
 		{LocalID: "b", Type: "storyboard", DependsOn: []string{"s"}, InputJSON: []byte(`{}`)},
@@ -522,7 +522,7 @@ func TestRunStoryboard_UnsafeNarrationSkipsAudio(t *testing.T) {
 		projID, `{"ageBand":"3-6","illustrationStyle":"watercolor","voice":"warm","themes":["友谊"]}`); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
-	todoStore := todos.New(pool)
+	todoStore := todos.New(assetTestGorm(t))
 	ids, err := todoStore.CreateGraph(ctx, projID, "pl_pbu_"+projID[4:], []todos.NodeSpec{
 		{LocalID: "s", Type: "script", DependsOn: nil, InputJSON: []byte(`{"brief":"小白兔的故事"}`)},
 		{LocalID: "b", Type: "storyboard", DependsOn: []string{"s"}, InputJSON: []byte(`{}`)},
@@ -622,7 +622,7 @@ func TestRunStoryboard_InconclusiveNarrationAllowsAudio(t *testing.T) {
 		projID, `{"ageBand":"3-6","illustrationStyle":"watercolor","voice":"warm"}`); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
-	todoStore := todos.New(pool)
+	todoStore := todos.New(assetTestGorm(t))
 	ids, err := todoStore.CreateGraph(ctx, projID, "pl_pbi_"+projID[4:], []todos.NodeSpec{
 		{LocalID: "s", Type: "script", DependsOn: nil, InputJSON: []byte(`{"brief":"小白兔的故事"}`)},
 		{LocalID: "b", Type: "storyboard", DependsOn: []string{"s"}, InputJSON: []byte(`{}`)},
@@ -687,7 +687,7 @@ func TestRunStoryboard_StandardOnlyImage(t *testing.T) {
 		`INSERT INTO projects (id, org_id, name, created_by) VALUES ($1,'o','n','u')`, projID); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
-	todoStore := todos.New(pool)
+	todoStore := todos.New(assetTestGorm(t))
 	ids, err := todoStore.CreateGraph(ctx, projID, "pl_std_"+projID[4:], []todos.NodeSpec{
 		{LocalID: "s", Type: "script", DependsOn: nil, InputJSON: []byte(`{"brief":"coffee ad"}`)},
 		{LocalID: "b", Type: "storyboard", DependsOn: []string{"s"}, InputJSON: []byte(`{}`)},

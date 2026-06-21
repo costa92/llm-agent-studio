@@ -44,7 +44,7 @@ func TestWorkerRoutesChatModelViaRouter(t *testing.T) {
 		`INSERT INTO projects (id,org_id,name,style,created_by) VALUES (md5(random()::text),$1,'p','realistic','u') RETURNING id`,
 		orgID).Scan(&projID)
 
-	todoStore := todos.New(pool)
+	todoStore := todos.New(assetTestGorm(t))
 	ids, err := todoStore.CreateGraph(ctx, projID, "pl_"+randHex3(), []todos.NodeSpec{
 		{LocalID: "s", Type: "script", DependsOn: nil, InputJSON: []byte(`{"brief":"coffee ad","style":"realistic"}`)},
 		{LocalID: "b", Type: "storyboard", DependsOn: []string{"s"}, InputJSON: []byte(`{}`)},
@@ -164,7 +164,7 @@ func TestWorkerRoutesMediaViaRouterBuildMedia(t *testing.T) {
 	})
 
 	w := New(Config{
-		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(assetTestGorm(t)),
+		Pool: pool, Todos: todos.New(assetTestGorm(t)), Projects: project.New(pool), Events: events.New(assetTestGorm(t)),
 		Asset:   studioagents.NewAssetAgent(prompt.NewBuilder(), defGen),
 		Storage: testStorage(), Assets: assets.New(assetTestGorm(t)), Cost: cost.New(assetTestGorm(t)),
 		Models: ms, Registry: reg, Router: router,

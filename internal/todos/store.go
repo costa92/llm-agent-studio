@@ -10,7 +10,8 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lib/pq"
+	"gorm.io/gorm"
 )
 
 // NodeSpec is one todo to create. LocalID is the planner-local node id; the
@@ -24,11 +25,11 @@ type NodeSpec struct {
 
 // Store persists todos.
 type Store struct {
-	pool *pgxpool.Pool
+	db *gorm.DB
 }
 
 // New builds a Store.
-func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
+func New(db *gorm.DB) *Store { return &Store{db: db} }
 
 func newID() string {
 	b := make([]byte, 16)
@@ -43,32 +44,30 @@ func (s *Store) CreateGraph(ctx context.Context, projectID, planID string, specs
 	for _, sp := range specs {
 		idMap[sp.LocalID] = newID()
 	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	for _, sp := range specs {
-		deps := make([]string, 0, len(sp.DependsOn))
-		for _, d := range sp.DependsOn {
-			id, ok := idMap[d]
-			if !ok {
-				return nil, fmt.Errorf("todos: node %q depends on unknown local id %q", sp.LocalID, d)
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, sp := range specs {
+			deps := make([]string, 0, len(sp.DependsOn))
+			for _, d := range sp.DependsOn {
+				id, ok := idMap[d]
+				if !ok {
+					return fmt.Errorf("todos: node %q depends on unknown local id %q", sp.LocalID, d)
+				}
+				deps = append(deps, id)
 			}
-			deps = append(deps, id)
+			status := "ready"
+			if len(deps) > 0 {
+				status = "blocked"
+			}
+			if err := tx.Exec(
+				`INSERT INTO todos (id, project_id, plan_id, type, status, depends_on, input_json)
+				 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+				idMap[sp.LocalID], projectID, planID, sp.Type, status, pq.StringArray(deps), sp.InputJSON).Error; err != nil {
+				return fmt.Errorf("todos: insert: %w", err)
+			}
 		}
-		status := "ready"
-		if len(deps) > 0 {
-			status = "blocked"
-		}
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO todos (id, project_id, plan_id, type, status, depends_on, input_json)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-			idMap[sp.LocalID], projectID, planID, sp.Type, status, deps, sp.InputJSON); err != nil {
-			return nil, fmt.Errorf("todos: insert: %w", err)
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 	return idMap, nil
@@ -81,36 +80,40 @@ func (s *Store) CreateGraph(ctx context.Context, projectID, planID string, specs
 // (already canceled). One tx so the unblock is atomic with the done write
 // (worker §7.3 step 3).
 func (s *Store) MarkDone(ctx context.Context, todoID, outputRef string) (bool, error) {
-	tx, err := s.pool.Begin(ctx)
+	var marked bool
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var projectID string
+		res := tx.Exec(
+			`UPDATE todos SET status='done', output_ref=$2, error='', locked_by='', locked_until=NULL, updated_at=now()
+			 WHERE id=$1 AND status='running'`, todoID, outputRef)
+		if res.Error != nil {
+			return fmt.Errorf("todos: mark done: %w", res.Error)
+		}
+		if res.RowsAffected == 0 {
+			// Todo no longer 'running' (e.g. canceled): commit cleanly, no unblock.
+			marked = false
+			return nil
+		}
+		if err := tx.Raw(`SELECT project_id FROM todos WHERE id=$1`, todoID).Row().Scan(&projectID); err != nil {
+			return fmt.Errorf("todos: load project: %w", err)
+		}
+		// Promote blocked dependents whose deps are now all done.
+		if err := tx.Exec(
+			`UPDATE todos t SET status='ready', updated_at=now()
+			 WHERE t.project_id=$1 AND t.status='blocked' AND $2 = ANY(t.depends_on)
+			   AND NOT EXISTS (
+			     SELECT 1 FROM todos d
+			     WHERE d.id = ANY(t.depends_on) AND d.status <> 'done'
+			   )`, projectID, todoID).Error; err != nil {
+			return fmt.Errorf("todos: unblock dependents: %w", err)
+		}
+		marked = true
+		return nil
+	})
 	if err != nil {
 		return false, err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	var projectID string
-	tag, err := tx.Exec(ctx,
-		`UPDATE todos SET status='done', output_ref=$2, error='', locked_by='', locked_until=NULL, updated_at=now()
-		 WHERE id=$1 AND status='running'`, todoID, outputRef)
-	if err != nil {
-		return false, fmt.Errorf("todos: mark done: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		// Todo no longer 'running' (e.g. canceled): commit cleanly, no unblock.
-		return false, tx.Commit(ctx)
-	}
-	if err := tx.QueryRow(ctx, `SELECT project_id FROM todos WHERE id=$1`, todoID).Scan(&projectID); err != nil {
-		return false, fmt.Errorf("todos: load project: %w", err)
-	}
-	// Promote blocked dependents whose deps are now all done.
-	if _, err := tx.Exec(ctx,
-		`UPDATE todos t SET status='ready', updated_at=now()
-		 WHERE t.project_id=$1 AND t.status='blocked' AND $2 = ANY(t.depends_on)
-		   AND NOT EXISTS (
-		     SELECT 1 FROM todos d
-		     WHERE d.id = ANY(t.depends_on) AND d.status <> 'done'
-		   )`, projectID, todoID); err != nil {
-		return false, fmt.Errorf("todos: unblock dependents: %w", err)
-	}
-	return true, tx.Commit(ctx)
+	return marked, nil
 }
 
 // MarkFailed marks a todo terminally 'failed' AND transitively cancels every
@@ -122,20 +125,17 @@ func (s *Store) MarkDone(ctx context.Context, todoID, outputRef string) (bool, e
 // retryable failure still reschedules (see worker.fail) and never lands here.
 // One tx so the fail + cancel are atomic.
 func (s *Store) MarkFailed(ctx context.Context, todoID, errMsg string) error {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx,
-		`UPDATE todos SET status='failed', error=$2, locked_by='', locked_until=NULL, updated_at=now()
-		 WHERE id=$1`, todoID, errMsg); err != nil {
-		return fmt.Errorf("todos: mark failed: %w", err)
-	}
-	if err := cancelDependents(ctx, tx, todoID); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec(
+			`UPDATE todos SET status='failed', error=$2, locked_by='', locked_until=NULL, updated_at=now()
+			 WHERE id=$1`, todoID, errMsg).Error; err != nil {
+			return fmt.Errorf("todos: mark failed: %w", err)
+		}
+		if err := cancelDependents(ctx, tx, todoID); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 // DynamicSpec is one dynamically-added todo (fan-out): a type + its input. The
@@ -188,10 +188,10 @@ func (s *Store) AddSingleReady(ctx context.Context, projectID, todoID, typ strin
 	if dependsOn == nil {
 		dependsOn = []string{}
 	}
-	if _, err := s.pool.Exec(ctx,
+	if err := s.db.WithContext(ctx).Exec(
 		`INSERT INTO todos (id, project_id, plan_id, type, status, depends_on, input_json)
 		 VALUES ($1,$2,'',$3,'ready',$4,$5)`,
-		todoID, projectID, typ, dependsOn, inputJSON); err != nil {
+		todoID, projectID, typ, pq.StringArray(dependsOn), inputJSON).Error; err != nil {
 		return "", fmt.Errorf("todos: add single ready: %w", err)
 	}
 	return todoID, nil
@@ -201,17 +201,17 @@ func (s *Store) AddSingleReady(ctx context.Context, projectID, todoID, typ strin
 // depends_on edges from the failed todo, using a recursive CTE over
 // depends_on @> ARRAY[id]. Already-terminal todos (done/failed/canceled) are
 // left untouched.
-func cancelDependents(ctx context.Context, tx pgx.Tx, failedID string) error {
-	if _, err := tx.Exec(ctx, `
+func cancelDependents(ctx context.Context, tx *gorm.DB, failedID string) error {
+	if err := tx.Exec(`
 		WITH RECURSIVE blocked AS (
-		  SELECT id FROM todos WHERE depends_on @> ARRAY[$1]::text[]
+		  SELECT id FROM todos WHERE depends_on @> ARRAY[?]::text[]
 		  UNION
 		  SELECT t.id FROM todos t
 		  JOIN blocked b ON t.depends_on @> ARRAY[b.id]::text[]
 		)
 		UPDATE todos SET status='canceled', locked_by='', locked_until=NULL, updated_at=now()
 		WHERE id IN (SELECT id FROM blocked)
-		  AND status NOT IN ('done','failed','canceled')`, failedID); err != nil {
+		  AND status NOT IN ('done','failed','canceled')`, failedID).Error; err != nil {
 		return fmt.Errorf("todos: cancel dependents: %w", err)
 	}
 	return nil
