@@ -288,7 +288,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	var wg sync.WaitGroup
 	for i := 0; i < cfg.Workers; i++ {
 		w := worker.New(worker.Config{
-			Pool: st.Pool(), Todos: todoStore, Projects: projectStore, Events: eventStore,
+			DB: st.GORM(), Todos: todoStore, Projects: projectStore, Events: eventStore,
 			Script: scriptAgent, Storyboard: storyboardAgent,
 			Asset: assetAgent, Review: reviewAgent, Narration: narrationSafety, Storage: storageRouter, Assets: assetStore, Cost: costStore,
 			Models: modelStore, Registry: registry, Router: router,

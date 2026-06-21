@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -21,12 +22,11 @@ import (
 	"time"
 
 	"github.com/costa92/llm-agent-contract/llm"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
+	"gorm.io/gorm"
 
 	studioagents "github.com/costa92/llm-agent-studio/internal/agents"
 	"github.com/costa92/llm-agent-studio/internal/assets"
@@ -55,7 +55,7 @@ type TaskExecutor func(ctx context.Context, todo ClaimedTodo) (outputRef string,
 
 // Config configures a Worker.
 type Config struct {
-	Pool             *pgxpool.Pool
+	DB               *gorm.DB
 	Todos            *todos.Store
 	Projects         *project.Store
 	Events           *events.Store
@@ -224,26 +224,22 @@ func (w *Worker) Run(ctx context.Context, pollInterval time.Duration) {
 // 'running' todo with an expired lease (stuck-reclaim), marks it running with a
 // fresh DB-clock lease, bumps attempts. Mirrors kb ingest claim().
 func (w *Worker) claim(ctx context.Context) (claimed, bool, error) {
-	tx, err := w.cfg.Pool.Begin(ctx)
-	if err != nil {
-		return claimed{}, false, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
 	lease := int(w.cfg.Lease / time.Second)
 	if lease <= 0 {
 		lease = 120
 	}
 	var c claimed
-	// Global concurrent-generation cap (spec §12): an asset todo is claimable
-	// only while fewer than MaxConcurrentGen asset todos hold a LIVE lease (the
-	// expired-lease exclusion keeps stuck-reclaim from being blocked by its own
-	// stale lease). This is a SOFT/approximate cap (评审修复 M5): FOR UPDATE
-	// SKIP LOCKED locks only the claimed row, not the count, so overlapping
-	// claim transactions under READ COMMITTED each see the old count and can
-	// transiently overshoot the cap by up to Workers-1. Good enough for
-	// generation throttling; do not treat it as hard isolation. 0 = unlimited.
-	row := tx.QueryRow(ctx, `
+	found := false
+	err := w.cfg.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Global concurrent-generation cap (spec §12): an asset todo is claimable
+		// only while fewer than MaxConcurrentGen asset todos hold a LIVE lease (the
+		// expired-lease exclusion keeps stuck-reclaim from being blocked by its own
+		// stale lease). This is a SOFT/approximate cap (评审修复 M5): FOR UPDATE
+		// SKIP LOCKED locks only the claimed row, not the count, so overlapping
+		// claim transactions under READ COMMITTED each see the old count and can
+		// transiently overshoot the cap by up to Workers-1. Good enough for
+		// generation throttling; do not treat it as hard isolation. 0 = unlimited.
+		row := tx.Raw(`
 		SELECT id, project_id, type, attempts, input_json FROM todos
 		WHERE ((status='ready' AND next_run_at <= now())
 		   OR (status='running' AND locked_until IS NOT NULL AND locked_until < now()))
@@ -252,25 +248,28 @@ func (w *Worker) claim(ctx context.Context) (claimed, bool, error) {
 		           WHERE type='asset' AND status='running' AND locked_until > now()) < $1)
 		ORDER BY next_run_at ASC
 		FOR UPDATE SKIP LOCKED
-		LIMIT 1`, w.cfg.MaxConcurrentGen)
-	if err := row.Scan(&c.todoID, &c.projectID, &c.typ, &c.attempts, &c.input); err != nil {
-		if err == pgx.ErrNoRows {
-			return claimed{}, false, nil
+		LIMIT 1`, w.cfg.MaxConcurrentGen).Row()
+		if err := row.Scan(&c.todoID, &c.projectID, &c.typ, &c.attempts, &c.input); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil // empty commit; found stays false
+			}
+			return err
 		}
-		return claimed{}, false, err
-	}
-	c.attempts++
-	if _, err := tx.Exec(ctx, `
+		c.attempts++
+		if err := tx.Exec(`
 		UPDATE todos
 		SET status='running', locked_by=$2, locked_until = now() + make_interval(secs => $3),
 		    attempts=$4, updated_at=now()
-		WHERE id=$1`, c.todoID, w.cfg.WorkerID, lease, c.attempts); err != nil {
+		WHERE id=$1`, c.todoID, w.cfg.WorkerID, lease, c.attempts).Error; err != nil {
+			return err
+		}
+		found = true
+		return nil
+	})
+	if err != nil {
 		return claimed{}, false, err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return claimed{}, false, err
-	}
-	return c, true, nil
+	return c, found, nil
 }
 
 // process dispatches by type, writes artifacts, marks done + emits events, or
@@ -426,9 +425,9 @@ func (w *Worker) runScript(ctx context.Context, c claimed) (string, error) {
 	}
 	contentJSON, _ := json.Marshal(out)
 	scriptID := newID()
-	if _, err := w.cfg.Pool.Exec(ctx,
+	if err := w.cfg.DB.WithContext(ctx).Exec(
 		`INSERT INTO scripts (id, project_id, todo_id, content_json, version) VALUES ($1,$2,$3,$4,1)`,
-		scriptID, c.projectID, c.todoID, contentJSON); err != nil {
+		scriptID, c.projectID, c.todoID, contentJSON).Error; err != nil {
 		return "", fmt.Errorf("worker: insert script: %w", err)
 	}
 	return "script:" + scriptID, nil
@@ -441,8 +440,8 @@ func (w *Worker) runScript(ctx context.Context, c claimed) (string, error) {
 // (false, zero, nil) so a malformed config can't wedge a standard run.
 func (w *Worker) pictureBookConfig(ctx context.Context, projectID string) (bool, project.PictureBookConfig, error) {
 	var kind, raw string
-	if err := w.cfg.Pool.QueryRow(ctx,
-		`SELECT kind, picturebook_config FROM projects WHERE id=$1`, projectID).Scan(&kind, &raw); err != nil {
+	if err := w.cfg.DB.WithContext(ctx).Raw(
+		`SELECT kind, picturebook_config FROM projects WHERE id=$1`, projectID).Row().Scan(&kind, &raw); err != nil {
 		return false, project.PictureBookConfig{}, fmt.Errorf("worker: load project kind: %w", err)
 	}
 	if kind != "picturebook" {
@@ -468,21 +467,21 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 	var scriptID string
 	var contentJSON []byte
 	var parentRef string
-	perr := w.cfg.Pool.QueryRow(ctx, `
+	perr := w.cfg.DB.WithContext(ctx).Raw(`
 		SELECT t.output_ref FROM todos t
 		JOIN todos sb ON t.id = ANY(sb.depends_on)
 		WHERE sb.id=$1 AND t.type='script' AND t.output_ref LIKE 'script:%'
-		ORDER BY t.updated_at DESC LIMIT 1`, c.todoID).Scan(&parentRef)
+		ORDER BY t.updated_at DESC LIMIT 1`, c.todoID).Row().Scan(&parentRef)
 	if perr == nil {
 		scriptID = strings.TrimPrefix(parentRef, "script:")
-		if err := w.cfg.Pool.QueryRow(ctx,
-			`SELECT content_json FROM scripts WHERE id=$1`, scriptID).Scan(&contentJSON); err != nil {
+		if err := w.cfg.DB.WithContext(ctx).Raw(
+			`SELECT content_json FROM scripts WHERE id=$1`, scriptID).Row().Scan(&contentJSON); err != nil {
 			return "", fmt.Errorf("worker: load parent script %s: %w", scriptID, err)
 		}
 	} else {
-		if err := w.cfg.Pool.QueryRow(ctx,
+		if err := w.cfg.DB.WithContext(ctx).Raw(
 			`SELECT id, content_json FROM scripts WHERE project_id=$1 ORDER BY created_at DESC LIMIT 1`,
-			c.projectID).Scan(&scriptID, &contentJSON); err != nil {
+			c.projectID).Row().Scan(&scriptID, &contentJSON); err != nil {
 			return "", fmt.Errorf("worker: load upstream script: %w", err)
 		}
 	}
@@ -492,8 +491,8 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 	// would silently disable the whole M2 style library. The project style feeds
 	// both the StoryboardAgent call and every fanned-out asset todo.
 	var projectStyle string
-	if err := w.cfg.Pool.QueryRow(ctx,
-		`SELECT style FROM projects WHERE id=$1`, c.projectID).Scan(&projectStyle); err != nil {
+	if err := w.cfg.DB.WithContext(ctx).Raw(
+		`SELECT style FROM projects WHERE id=$1`, c.projectID).Row().Scan(&projectStyle); err != nil {
 		return "", fmt.Errorf("worker: load project style: %w", err)
 	}
 	var storyboardInputJSON struct {
@@ -530,92 +529,95 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	tx, err := w.cfg.Pool.Begin(ctx)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	var newTodoIDs []string
+	earlyExisting := false
+	err = w.cfg.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Idempotency guard (C1): a re-claimed/re-run storyboard todo must not insert
+		// a second batch of shots + asset todos. depends_on is TEXT[]; the prior
+		// fan-out tagged each asset todo with this storyboard todoID. If they already
+		// exist, the prior run committed — just return success so MarkDone proceeds.
+		var existing int
+		if err := tx.Raw(
+			`SELECT count(*) FROM todos WHERE project_id=$1 AND type='asset' AND $2 = ANY(depends_on)`,
+			c.projectID, c.todoID).Row().Scan(&existing); err != nil {
+			return fmt.Errorf("worker: fan-out idempotency check: %w", err)
+		}
+		if existing > 0 {
+			earlyExisting = true // commit (nothing written), success
+			return nil
+		}
 
-	// Idempotency guard (C1): a re-claimed/re-run storyboard todo must not insert
-	// a second batch of shots + asset todos. depends_on is TEXT[]; the prior
-	// fan-out tagged each asset todo with this storyboard todoID. If they already
-	// exist, the prior run committed — just return success so MarkDone proceeds.
-	var existing int
-	if err := tx.QueryRow(ctx,
-		`SELECT count(*) FROM todos WHERE project_id=$1 AND type='asset' AND $2 = ANY(depends_on)`,
-		c.projectID, c.todoID).Scan(&existing); err != nil {
-		return "", fmt.Errorf("worker: fan-out idempotency check: %w", err)
-	}
-	if existing > 0 {
-		_ = tx.Commit(ctx) // nothing written; release the tx
-		return "shots:" + scriptID, nil
-	}
-
-	var assetSpecs []todos.DynamicSpec
-	for i, sh := range out.Shots {
-		shotID := newID()
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO shots (id, project_id, script_id, todo_id, shot_no, camera, scene, action, prompt, duration, ordering)
+		var assetSpecs []todos.DynamicSpec
+		for i, sh := range out.Shots {
+			shotID := newID()
+			if err := tx.Exec(
+				`INSERT INTO shots (id, project_id, script_id, todo_id, shot_no, camera, scene, action, prompt, duration, ordering)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-			shotID, c.projectID, scriptID, c.todoID, sh.ShotNo, sh.Camera, sh.Scene, sh.Action, sh.Prompt, sh.Duration, i); err != nil {
-			return "", fmt.Errorf("worker: insert shot: %w", err)
-		}
-		// Fan-out: one asset todo per shot (spec §15 M2). The shot's prompt + the
-		// PROJECT style (sourced from the projects row, NOT the storyboard todo's
-		// empty input — see B1) become the asset todo's input.
-		//
-		// I3: write the asset kind + media duration into the todo input. The kind
-		// is what the route reads via DefaultForOrg(kind); duration comes from
-		// shots.duration. Without these, the per-kind concurrency cap never fires
-		// and video billing has no duration. M4 storyboard shots have NO kind field
-		// (StoryboardShot = ShotNo/Camera/Scene/Action/Prompt/Duration only — see
-		// internal/agents/storyboard.go), so fan-out writes the constant "image"
-		// here; the video/audio kind for M4 is driven by org model_config routing +
-		// e2e FakeAsync injection (T9), NOT read from the storyboard shot.
-		input, _ := json.Marshal(map[string]any{
-			"shotId": shotID, "shotPrompt": sh.Prompt, "style": projectStyle,
-			"kind": "image", "duration": sh.Duration,
-		})
-		assetSpecs = append(assetSpecs, todos.DynamicSpec{Type: "asset", InputJSON: input})
-		// 绘本分支：每页除插图外，若该页有旁白（Action 非空，封面/wordless 页为空），
-		// 追加一个 audio asset todo，prompt 取该页旁白、voice 取项目配置。封面页与
-		// 无字页的 Action 为空，自然只产出 image——无需特判。
-		if isPB && strings.TrimSpace(sh.Action) != "" {
-			// 旁白文本安全校验：明确判定 unsafe 时跳过该页 audio（image 仍照常出），
-			// 不阻断整本。降级策略：Narration 未注入或 LLM 调用出错时不拦截（放行
-			// audio）——保守起见，避免外部故障导致整本绘本无声；只在明确 unsafe 时拦。
-			if w.cfg.Narration != nil {
-				v, cerr := w.cfg.Narration.Check(ctx, sh.Action, pbCfg.AgeBand)
-				switch {
-				case cerr != nil:
-					w.cfg.Logger.Warn("worker: narration safety check failed; allowing audio (fail-open)",
-						"project", c.projectID, "shot", shotID, "err", cerr)
-				case !v.Safe && strings.TrimSpace(v.Reason) != "":
-					_, _ = w.cfg.Events.Append(ctx, c.projectID, "narration_blocked", c.todoID,
-						map[string]any{"shotId": shotID, "reason": v.Reason})
-					w.cfg.Logger.Info("worker: narration blocked by safety check; skipping audio for page",
-						"project", c.projectID, "shot", shotID, "reason", v.Reason)
-					continue
-				}
+				shotID, c.projectID, scriptID, c.todoID, sh.ShotNo, sh.Camera, sh.Scene, sh.Action, sh.Prompt, sh.Duration, i).Error; err != nil {
+				return fmt.Errorf("worker: insert shot: %w", err)
 			}
-			audioInput, _ := json.Marshal(map[string]any{
-				"shotId": shotID, "shotPrompt": sh.Action, "kind": "audio", "voice": pbCfg.Voice,
+			// Fan-out: one asset todo per shot (spec §15 M2). The shot's prompt + the
+			// PROJECT style (sourced from the projects row, NOT the storyboard todo's
+			// empty input — see B1) become the asset todo's input.
+			//
+			// I3: write the asset kind + media duration into the todo input. The kind
+			// is what the route reads via DefaultForOrg(kind); duration comes from
+			// shots.duration. Without these, the per-kind concurrency cap never fires
+			// and video billing has no duration. M4 storyboard shots have NO kind field
+			// (StoryboardShot = ShotNo/Camera/Scene/Action/Prompt/Duration only — see
+			// internal/agents/storyboard.go), so fan-out writes the constant "image"
+			// here; the video/audio kind for M4 is driven by org model_config routing +
+			// e2e FakeAsync injection (T9), NOT read from the storyboard shot.
+			input, _ := json.Marshal(map[string]any{
+				"shotId": shotID, "shotPrompt": sh.Prompt, "style": projectStyle,
+				"kind": "image", "duration": sh.Duration,
 			})
-			assetSpecs = append(assetSpecs, todos.DynamicSpec{Type: "asset", InputJSON: audioInput})
+			assetSpecs = append(assetSpecs, todos.DynamicSpec{Type: "asset", InputJSON: input})
+			// 绘本分支：每页除插图外，若该页有旁白（Action 非空，封面/wordless 页为空），
+			// 追加一个 audio asset todo，prompt 取该页旁白、voice 取项目配置。封面页与
+			// 无字页的 Action 为空，自然只产出 image——无需特判。
+			if isPB && strings.TrimSpace(sh.Action) != "" {
+				// 旁白文本安全校验：明确判定 unsafe 时跳过该页 audio（image 仍照常出），
+				// 不阻断整本。降级策略：Narration 未注入或 LLM 调用出错时不拦截（放行
+				// audio）——保守起见，避免外部故障导致整本绘本无声；只在明确 unsafe 时拦。
+				if w.cfg.Narration != nil {
+					v, cerr := w.cfg.Narration.Check(ctx, sh.Action, pbCfg.AgeBand)
+					switch {
+					case cerr != nil:
+						w.cfg.Logger.Warn("worker: narration safety check failed; allowing audio (fail-open)",
+							"project", c.projectID, "shot", shotID, "err", cerr)
+					case !v.Safe && strings.TrimSpace(v.Reason) != "":
+						_, _ = w.cfg.Events.Append(ctx, c.projectID, "narration_blocked", c.todoID,
+							map[string]any{"shotId": shotID, "reason": v.Reason})
+						w.cfg.Logger.Info("worker: narration blocked by safety check; skipping audio for page",
+							"project", c.projectID, "shot", shotID, "reason", v.Reason)
+						continue
+					}
+				}
+				audioInput, _ := json.Marshal(map[string]any{
+					"shotId": shotID, "shotPrompt": sh.Action, "kind": "audio", "voice": pbCfg.Voice,
+				})
+				assetSpecs = append(assetSpecs, todos.DynamicSpec{Type: "asset", InputJSON: audioInput})
+			}
 		}
-	}
-	// planID for the dynamic todos: read it off the storyboard todo so the asset
-	// todos share the same plan lineage.
-	var planID string
-	if err := tx.QueryRow(ctx, `SELECT plan_id FROM todos WHERE id=$1`, c.todoID).Scan(&planID); err != nil {
-		return "", fmt.Errorf("worker: load plan id: %w", err)
-	}
-	newTodoIDs, err := w.cfg.Todos.AddDynamic(ctx, tx, c.projectID, planID, c.todoID, assetSpecs)
+		// planID for the dynamic todos: read it off the storyboard todo so the asset
+		// todos share the same plan lineage.
+		var planID string
+		if err := tx.Raw(`SELECT plan_id FROM todos WHERE id=$1`, c.todoID).Row().Scan(&planID); err != nil {
+			return fmt.Errorf("worker: load plan id: %w", err)
+		}
+		ids, err := w.cfg.Todos.AddDynamic(ctx, tx, c.projectID, planID, c.todoID, assetSpecs)
+		if err != nil {
+			return err
+		}
+		newTodoIDs = ids
+		return nil
+	})
 	if err != nil {
 		return "", err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return "", err
+	if earlyExisting {
+		return "shots:" + scriptID, nil
 	}
 	// Announce the fanned-out asset todos in the timeline (after commit so a
 	// reader following todo_ready can immediately read the rows).
@@ -854,13 +856,13 @@ func firstNonEmpty(a, b string) string {
 // emitNewlyReady appends a todo_ready event for each todo that is now 'ready'
 // but has no todo_ready event yet (so dependents light up in the timeline).
 func (w *Worker) emitNewlyReady(ctx context.Context, projectID string) {
-	rows, err := w.cfg.Pool.Query(ctx, `
+	rows, err := w.cfg.DB.WithContext(ctx).Raw(`
 		SELECT t.id, t.type FROM todos t
 		WHERE t.project_id=$1 AND t.status='ready'
 		  AND NOT EXISTS (
 		    SELECT 1 FROM run_events e
 		    WHERE e.project_id=$1 AND e.todo_id=t.id AND e.kind='todo_ready'
-		  )`, projectID)
+		  )`, projectID).Rows()
 	if err != nil {
 		w.cfg.Logger.Warn("worker: scan newly-ready failed", "project", projectID, "err", err)
 		return
@@ -883,11 +885,11 @@ func (w *Worker) emitNewlyReady(ctx context.Context, projectID string) {
 // at least one is done (so we only emit run_done once real work completed).
 func (w *Worker) allDone(ctx context.Context, projectID string) bool {
 	var total, terminal, done int
-	if err := w.cfg.Pool.QueryRow(ctx, `
+	if err := w.cfg.DB.WithContext(ctx).Raw(`
 		SELECT count(*),
 		       count(*) FILTER (WHERE status IN ('done','failed','canceled')),
 		       count(*) FILTER (WHERE status='done')
-		FROM todos WHERE project_id=$1`, projectID).Scan(&total, &terminal, &done); err != nil {
+		FROM todos WHERE project_id=$1`, projectID).Row().Scan(&total, &terminal, &done); err != nil {
 		return false
 	}
 	return total > 0 && total == terminal && done > 0
@@ -925,9 +927,9 @@ func (w *Worker) fail(ctx context.Context, c claimed, cause error) {
 	w.cfg.Logger.Warn("worker: task failed, rescheduling", "todo", c.todoID, "type", c.typ, "attempt", c.attempts, "err", cause)
 	backoff := w.cfg.BaseBackoff * (1 << (c.attempts - 1))
 	nextRun := w.cfg.Clock().Add(backoff)
-	if _, err := w.cfg.Pool.Exec(ctx,
+	if err := w.cfg.DB.WithContext(ctx).Exec(
 		`UPDATE todos SET status='ready', next_run_at=$2, error=$3, locked_by='', locked_until=NULL, updated_at=now() WHERE id=$1 AND status='running'`,
-		c.todoID, nextRun, msg); err != nil {
+		c.todoID, nextRun, msg).Error; err != nil {
 		w.cfg.Logger.Error("worker: reschedule failed", "todo", c.todoID, "err", err)
 	}
 }
@@ -1016,9 +1018,9 @@ func (w *Worker) renewLease(ctx context.Context, todoID string) {
 	if lease <= 0 {
 		lease = 120
 	}
-	if _, err := w.cfg.Pool.Exec(ctx,
+	if err := w.cfg.DB.WithContext(ctx).Exec(
 		`UPDATE todos SET locked_until = now() + make_interval(secs => $2)
-		 WHERE id=$1 AND locked_by=$3 AND status='running'`, todoID, lease, w.cfg.WorkerID); err != nil {
+		 WHERE id=$1 AND locked_by=$3 AND status='running'`, todoID, lease, w.cfg.WorkerID).Error; err != nil {
 		w.cfg.Logger.Warn("worker: renew lease failed", "todo", todoID, "err", err)
 	}
 }
@@ -1045,15 +1047,15 @@ func (w *Worker) reschedulePoll(ctx context.Context, todoID string, bumpPoll boo
 	if bumpPoll {
 		pollExpr = "poll_attempts + 1" // poll: atomic increment in the guarded UPDATE (I4)
 	}
-	tag, err := w.cfg.Pool.Exec(ctx,
+	res := w.cfg.DB.WithContext(ctx).Exec(
 		`UPDATE todos SET status='ready', next_run_at=$2, attempts=0, poll_attempts=`+pollExpr+`,
 		    locked_by='', locked_until=NULL, updated_at=now()
 		 WHERE id=$1 AND locked_by=$3 AND status='running'`,
 		todoID, w.cfg.Clock().Add(backoff), w.cfg.WorkerID)
-	if err != nil {
-		return false, fmt.Errorf("worker: reschedule poll: %w", err)
+	if res.Error != nil {
+		return false, fmt.Errorf("worker: reschedule poll: %w", res.Error)
 	}
-	return tag.RowsAffected() == 1, nil
+	return res.RowsAffected == 1, nil
 }
 
 // pollBackoff returns the exponential poll backoff capped at MaxPollBackoff.
@@ -1197,57 +1199,54 @@ func (w *Worker) submitCapHeld(ctx context.Context, projectID, kind string) bool
 // reschedule} atomically (spec §5.2c B1 + §9.3 I1). The advisory xact lock
 // serializes same-org submits so the quota count-then-act is a HARD cap.
 func (w *Worker) submitTx(ctx context.Context, c claimed, asset assets.Asset, kind, built string, sub generate.SubmitResult, estSeconds int) error {
-	tx, err := w.cfg.Pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("worker: submit tx begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	orgID, oerr := w.cfg.Projects.OrgIDForProject(ctx, c.projectID)
-	if oerr == nil && w.cfg.GenQuota > 0 {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, orgID); err != nil {
-			return fmt.Errorf("worker: submit quota lock: %w", err)
-		}
-		var n int
-		if err := tx.QueryRow(ctx, `
+	return w.cfg.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		orgID, oerr := w.cfg.Projects.OrgIDForProject(ctx, c.projectID)
+		if oerr == nil && w.cfg.GenQuota > 0 {
+			if err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtext($1))`, orgID).Error; err != nil {
+				return fmt.Errorf("worker: submit quota lock: %w", err)
+			}
+			var n int
+			if err := tx.Raw(`
 			SELECT count(*) FROM generations g JOIN projects p ON g.project_id=p.id
-			WHERE p.org_id=$1 AND g.created_at >= $2`, orgID, w.cfg.Clock().Add(-24*time.Hour)).Scan(&n); err != nil {
-			return fmt.Errorf("worker: submit quota count: %w", err)
+			WHERE p.org_id=$1 AND g.created_at >= $2`, orgID, w.cfg.Clock().Add(-24*time.Hour)).Row().Scan(&n); err != nil {
+				return fmt.Errorf("worker: submit quota count: %w", err)
+			}
+			if n >= w.cfg.GenQuota {
+				return fmt.Errorf("worker: org %s generation quota exceeded (%d/%d in 24h)", orgID, n, w.cfg.GenQuota)
+			}
 		}
-		if n >= w.cfg.GenQuota {
-			return fmt.Errorf("worker: org %s generation quota exceeded (%d/%d in 24h)", orgID, n, w.cfg.GenQuota)
+		// Persist provider/model onto the asset row at submit (F3): real async
+		// providers often return only status+URL on Poll, so the poll-done cost
+		// backfill in completeAsync cannot rely on the PollResult carrying them.
+		// Stashing them here lets completeAsync price correctly from the (re-fetched
+		// submitted) asset row even when the poll payload omits provider/model.
+		if err := tx.Exec(
+			`UPDATE assets SET status='submitted', external_job_id=$2, provider=$3, model=$4, submitted_at=now() WHERE id=$1 AND status='generating'`,
+			asset.ID, sub.ExternalJobID, sub.Provider, sub.Model).Error; err != nil {
+			return fmt.Errorf("worker: submit set submitted: %w", err)
 		}
-	}
-	// Persist provider/model onto the asset row at submit (F3): real async
-	// providers often return only status+URL on Poll, so the poll-done cost
-	// backfill in completeAsync cannot rely on the PollResult carrying them.
-	// Stashing them here lets completeAsync price correctly from the (re-fetched
-	// submitted) asset row even when the poll payload omits provider/model.
-	if _, err := tx.Exec(ctx,
-		`UPDATE assets SET status='submitted', external_job_id=$2, provider=$3, model=$4, submitted_at=now() WHERE id=$1 AND status='generating'`,
-		asset.ID, sub.ExternalJobID, sub.Provider, sub.Model); err != nil {
-		return fmt.Errorf("worker: submit set submitted: %w", err)
-	}
-	cost := int64(estSeconds) * w.perSecondMicros(ctx, sub.Provider, sub.Model)
-	// I2: the ON CONFLICT predicate `WHERE asset_id <> '' AND todo_id <> ''` below
-	// must be COPY-PASTED VERBATIM from the T3 migration's generations_asset_todo_uniq
-	// index — Postgres infers the partial-index arbiter by byte-identical predicate
-	// text; any drift fails at RUNTIME with "no unique or exclusion constraint
-	// matching the ON CONFLICT specification".
-	if _, err := tx.Exec(ctx, `
+		cost := int64(estSeconds) * w.perSecondMicros(ctx, sub.Provider, sub.Model)
+		// I2: the ON CONFLICT predicate `WHERE asset_id <> '' AND todo_id <> ''` below
+		// must be COPY-PASTED VERBATIM from the T3 migration's generations_asset_todo_uniq
+		// index — Postgres infers the partial-index arbiter by byte-identical predicate
+		// text; any drift fails at RUNTIME with "no unique or exclusion constraint
+		// matching the ON CONFLICT specification".
+		if err := tx.Exec(`
 		INSERT INTO generations (id, project_id, asset_id, todo_id, kind, provider, model, prompt, video_seconds, cost_micros)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 		ON CONFLICT (asset_id, todo_id) WHERE asset_id <> '' AND todo_id <> '' DO UPDATE SET id=generations.id`,
-		newID(), c.projectID, asset.ID, c.todoID, kind, sub.Provider, sub.Model, built, estSeconds, cost); err != nil {
-		return fmt.Errorf("worker: submit ledger upsert: %w", err)
-	}
-	if _, err := tx.Exec(ctx,
-		`UPDATE todos SET status='ready', next_run_at=$2, attempts=0, poll_attempts=0,
+			newID(), c.projectID, asset.ID, c.todoID, kind, sub.Provider, sub.Model, built, estSeconds, cost).Error; err != nil {
+			return fmt.Errorf("worker: submit ledger upsert: %w", err)
+		}
+		if err := tx.Exec(
+			`UPDATE todos SET status='ready', next_run_at=$2, attempts=0, poll_attempts=0,
 		    locked_by='', locked_until=NULL, updated_at=now()
 		 WHERE id=$1 AND locked_by=$3 AND status='running'`,
-		c.todoID, w.cfg.Clock().Add(w.cfg.PollBackoff), w.cfg.WorkerID); err != nil {
-		return fmt.Errorf("worker: submit reschedule: %w", err)
-	}
-	return tx.Commit(ctx)
+			c.todoID, w.cfg.Clock().Add(w.cfg.PollBackoff), w.cfg.WorkerID).Error; err != nil {
+			return fmt.Errorf("worker: submit reschedule: %w", err)
+		}
+		return nil
+	})
 }
 
 // perSecondMicros looks up the per-second unit price (0 when unpriced).
@@ -1275,7 +1274,7 @@ func (w *Worker) perSecondMicros(ctx context.Context, provider, model string) in
 // returns a cancel signal rather than mis-routing a healthy job through fail().
 func (w *Worker) pollAsync(ctx, cctx context.Context, c claimed, asset assets.Asset, duration int, ag generate.AsyncGenerator) (string, error) {
 	var pollAttempts int
-	_ = w.cfg.Pool.QueryRow(ctx, `SELECT poll_attempts FROM todos WHERE id=$1`, c.todoID).Scan(&pollAttempts)
+	_ = w.cfg.DB.WithContext(ctx).Raw(`SELECT poll_attempts FROM todos WHERE id=$1`, c.todoID).Row().Scan(&pollAttempts)
 	pollAttempts++ // local-only: budget check + backoff; persisted bump is atomic (I4)
 
 	pr, perr := ag.Poll(ctx, asset.ExternalJobID)
@@ -1347,7 +1346,7 @@ func (w *Worker) rescheduleOrCancel(ctx context.Context, c claimed, pollAttempts
 		// (running todo owned by another lease). Both are benign for THIS worker:
 		// stop polling without MarkDone/fail/discard. Re-read only to log which.
 		var status, lockedBy string
-		_ = w.cfg.Pool.QueryRow(ctx, `SELECT status, locked_by FROM todos WHERE id=$1`, c.todoID).
+		_ = w.cfg.DB.WithContext(ctx).Raw(`SELECT status, locked_by FROM todos WHERE id=$1`, c.todoID).Row().
 			Scan(&status, &lockedBy)
 		if status == "running" && lockedBy != w.cfg.WorkerID {
 			w.cfg.Logger.Info("worker: poll lease reclaimed by another worker; stopping",
