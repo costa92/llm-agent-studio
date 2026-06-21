@@ -1,7 +1,9 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
+  useMemo,
   useState,
   type ReactNode,
 } from "react"
@@ -37,7 +39,7 @@ interface ThemeCtx {
   setTheme: (t: Theme) => void
 }
 
-const Ctx = createContext<ThemeCtx | null>(null)
+const ThemeContext = createContext<ThemeCtx | null>(null)
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>(readStored)
@@ -46,20 +48,25 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     document.documentElement.setAttribute("data-theme", theme)
   }, [theme])
 
-  const setTheme = (t: Theme) => {
+  const setTheme = useCallback((t: Theme) => {
     try {
       localStorage.setItem(STORAGE_KEY, t)
     } catch {
       /* 隐私模式：本会话内仍生效，仅不持久化 */
     }
     setThemeState(t)
-  }
+  }, [])
 
-  return <Ctx.Provider value={{ theme, setTheme }}>{children}</Ctx.Provider>
+  const value = useMemo<ThemeCtx>(
+    () => ({ theme, setTheme }),
+    [theme, setTheme],
+  )
+
+  return <ThemeContext value={value}>{children}</ThemeContext>
 }
 
 export function useTheme(): ThemeCtx {
-  const c = useContext(Ctx)
-  if (!c) throw new Error("useTheme 必须在 ThemeProvider 内使用")
+  const c = useContext(ThemeContext)
+  if (!c) throw new Error("useTheme must be used within a ThemeProvider")
   return c
 }
