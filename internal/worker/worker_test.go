@@ -80,7 +80,7 @@ func TestWorkerRunsScriptThenStoryboard(t *testing.T) {
 		Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fakeGen),
 		Storage:    testStorage(),
 		Assets:     assets.New(pool),
-		Cost:       cost.New(pool),
+		Cost:       cost.New(assetTestGorm(t)),
 		WorkerID:   "test-0",
 	})
 	// Drain the queue deterministically (no sleeps).
@@ -376,7 +376,7 @@ func TestRunStoryboard_PictureBookFansOutImageAndAudio(t *testing.T) {
 		Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fakeGen),
 		Storage:    testStorage(),
 		Assets:     assets.New(pool),
-		Cost:       cost.New(pool),
+		Cost:       cost.New(assetTestGorm(t)),
 		WorkerID:   "test-pb",
 	})
 	for i := 0; i < 20; i++ {
@@ -550,7 +550,7 @@ func TestRunStoryboard_UnsafeNarrationSkipsAudio(t *testing.T) {
 		Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fakeGen),
 		Storage:    testStorage(),
 		Assets:     assets.New(pool),
-		Cost:       cost.New(pool),
+		Cost:       cost.New(assetTestGorm(t)),
 		WorkerID:   "test-pbu",
 	})
 	for i := 0; i < 20; i++ {
@@ -641,7 +641,7 @@ func TestRunStoryboard_InconclusiveNarrationAllowsAudio(t *testing.T) {
 		Asset: studioagents.NewAssetAgent(prompt.NewBuilder(), generate.NewFakeLooping(generate.GenResult{
 			Bytes: []byte("FAKE"), MimeType: "image/png", Provider: "fake", Model: "fake-img", ImageCount: 1,
 		})),
-		Storage: testStorage(), Assets: assets.New(pool), Cost: cost.New(pool), WorkerID: "test-pbi",
+		Storage: testStorage(), Assets: assets.New(pool), Cost: cost.New(assetTestGorm(t)), WorkerID: "test-pbi",
 	})
 	for i := 0; i < 20; i++ {
 		ran, err := w.RunOnce(ctx)
@@ -713,7 +713,7 @@ func TestRunStoryboard_StandardOnlyImage(t *testing.T) {
 		Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fakeGen),
 		Storage:    testStorage(),
 		Assets:     assets.New(pool),
-		Cost:       cost.New(pool),
+		Cost:       cost.New(assetTestGorm(t)),
 		WorkerID:   "test-std",
 	})
 	for i := 0; i < 20; i++ {
