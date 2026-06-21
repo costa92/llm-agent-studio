@@ -82,7 +82,7 @@ func TestRunAssetWritesAssetAndGeneration(t *testing.T) {
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(assetTestGorm(t)),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
 		Storage:  testStorage(),
-		Assets:   assets.New(pool),
+		Assets:   assets.New(assetTestGorm(t)),
 		Cost:     cost.New(assetTestGorm(t)),
 		WorkerID: "test", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
 	})
@@ -224,7 +224,7 @@ func TestRunAssetRoutesViaOrgDefaultModelConfig(t *testing.T) {
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(assetTestGorm(t)),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), defGen),
 		Storage:  testStorage(),
-		Assets:   assets.New(pool),
+		Assets:   assets.New(assetTestGorm(t)),
 		Cost:     cost.New(assetTestGorm(t)),
 		Models:   ms,
 		Registry: reg,
@@ -266,7 +266,7 @@ func TestProcessDiscardsAssetWhenTodoCanceledMidFlight(t *testing.T) {
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(assetTestGorm(t)),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
 		Storage:  testStorage(),
-		Assets:   assets.New(pool),
+		Assets:   assets.New(assetTestGorm(t)),
 		Cost:     cost.New(assetTestGorm(t)),
 		WorkerID: "discarder", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
 	})
@@ -331,7 +331,7 @@ func TestRunAssetSyncRetryReusesRowNoDuplicateKey(t *testing.T) {
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(assetTestGorm(t)),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), gen),
 		Storage:  testStorage(),
-		Assets:   assets.New(pool),
+		Assets:   assets.New(assetTestGorm(t)),
 		Cost:     cost.New(assetTestGorm(t)),
 		WorkerID: "retry", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
 	})
@@ -394,7 +394,7 @@ func TestRunAssetSyncPermanentFailureTerminalFailsViaProcess(t *testing.T) {
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(assetTestGorm(t)),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), gen),
 		Storage:  testStorage(),
-		Assets:   assets.New(pool),
+		Assets:   assets.New(assetTestGorm(t)),
 		Cost:     cost.New(assetTestGorm(t)),
 		WorkerID: "permfail", Lease: time.Minute, MaxAttempts: 2, BaseBackoff: 0,
 	})
@@ -446,7 +446,7 @@ func TestRunAssetWithDevFakeGeneratorReachesPendingAcceptance(t *testing.T) {
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(assetTestGorm(t)),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), generate.NewDevFakeGenerator()),
 		Storage:  testStorage(),
-		Assets:   assets.New(pool),
+		Assets:   assets.New(assetTestGorm(t)),
 		Cost:     cost.New(assetTestGorm(t)),
 		WorkerID: "fakegen", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
 	})
@@ -489,7 +489,7 @@ func TestProcessAppliesCallTimeout(t *testing.T) {
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(assetTestGorm(t)),
 		Asset:       studioagents.NewAssetAgent(prompt.NewBuilder(), slowGen{}),
 		Storage:     testStorage(),
-		Assets:      assets.New(pool),
+		Assets:      assets.New(assetTestGorm(t)),
 		Cost:        cost.New(assetTestGorm(t)),
 		WorkerID:    "timeouter",
 		Lease:       time.Minute,
@@ -555,7 +555,7 @@ func TestRunStoryboardUsesParentScriptTodo(t *testing.T) {
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(assetTestGorm(t)),
 		Storyboard: newStoryboardAgentWithShots(t, 1),
 		Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
-		Storage:    testStorage(), Assets: assets.New(pool), Cost: cost.New(assetTestGorm(t)),
+		Storage:    testStorage(), Assets: assets.New(assetTestGorm(t)), Cost: cost.New(assetTestGorm(t)),
 		WorkerID: "parent", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
 	})
 	ref, err := w.runStoryboard(ctx, claimed{todoID: sbTodo, projectID: pid, typ: "storyboard", attempts: 1, input: []byte(`{}`)})
@@ -585,7 +585,7 @@ func TestRunAssetPrescreensViaReviewAgent(t *testing.T) {
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
 		Review:   studioagents.NewReviewAgent(reviewModel),
 		Storage:  testStorage(),
-		Assets:   assets.New(pool),
+		Assets:   assets.New(assetTestGorm(t)),
 		Cost:     cost.New(assetTestGorm(t)),
 		WorkerID: "prescreener", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
 	})
@@ -707,7 +707,7 @@ func TestRunAssetQuotaBackstopFailsOverQuotaTodo(t *testing.T) {
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(assetTestGorm(t)),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
 		Storage:  testStorage(),
-		Assets:   assets.New(pool),
+		Assets:   assets.New(assetTestGorm(t)),
 		Cost:     cs,
 		GenQuota: 1,
 		WorkerID: "backstop", Lease: time.Minute, MaxAttempts: 1, BaseBackoff: time.Millisecond,
@@ -753,7 +753,7 @@ func TestFanOutWritesKindAndDuration(t *testing.T) {
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(assetTestGorm(t)),
 		Storyboard: newStoryboardAgentWithShots(t, 1),
 		Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
-		Storage:    testStorage(), Assets: assets.New(pool), Cost: cost.New(assetTestGorm(t)),
+		Storage:    testStorage(), Assets: assets.New(assetTestGorm(t)), Cost: cost.New(assetTestGorm(t)),
 		WorkerID: "fanout", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
 	})
 	if _, err := w.runStoryboard(ctx, claimed{todoID: sbTodo, projectID: pid, typ: "storyboard", attempts: 1, input: []byte(`{}`)}); err != nil {
@@ -796,7 +796,7 @@ func asyncWorkerSetup(t *testing.T, pool *pgxpool.Pool, pollsToDone int) (*Worke
 	w := New(Config{
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(assetTestGorm(t)),
 		Asset:   studioagents.NewAssetAgent(prompt.NewBuilder(), generate.NewFakeLooping(generate.GenResult{Provider: "img"})),
-		Storage: testStorage(), Assets: assets.New(pool), Cost: cost.New(assetTestGorm(t)),
+		Storage: testStorage(), Assets: assets.New(assetTestGorm(t)), Cost: cost.New(assetTestGorm(t)),
 		Models: ms, Registry: reg,
 		WorkerID: "async", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
 		PollBackoff: time.Millisecond, MaxPollBackoff: time.Millisecond, MaxPollAttempts: 60,
@@ -1232,7 +1232,7 @@ func TestRunAsset_AudioRecordsCostAndPrompt(t *testing.T) {
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(assetTestGorm(t)),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), spy),
 		Storage:  testStorage(),
-		Assets:   assets.New(pool),
+		Assets:   assets.New(assetTestGorm(t)),
 		Cost:     cost.New(assetTestGorm(t)),
 		WorkerID: "test", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
 	})
@@ -1294,7 +1294,7 @@ func TestRunAsset_ImageEffectivePrompt(t *testing.T) {
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(assetTestGorm(t)),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
 		Storage:  testStorage(),
-		Assets:   assets.New(pool),
+		Assets:   assets.New(assetTestGorm(t)),
 		Cost:     cost.New(assetTestGorm(t)),
 		WorkerID: "test", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
 	})

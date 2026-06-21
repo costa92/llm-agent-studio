@@ -79,7 +79,7 @@ func TestWorkerRunsScriptThenStoryboard(t *testing.T) {
 		Storyboard: studioagents.NewStoryboardAgent(storyboardModel),
 		Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fakeGen),
 		Storage:    testStorage(),
-		Assets:     assets.New(pool),
+		Assets:     assets.New(assetTestGorm(t)),
 		Cost:       cost.New(assetTestGorm(t)),
 		WorkerID:   "test-0",
 	})
@@ -375,7 +375,7 @@ func TestRunStoryboard_PictureBookFansOutImageAndAudio(t *testing.T) {
 		Storyboard: storyboard,
 		Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fakeGen),
 		Storage:    testStorage(),
-		Assets:     assets.New(pool),
+		Assets:     assets.New(assetTestGorm(t)),
 		Cost:       cost.New(assetTestGorm(t)),
 		WorkerID:   "test-pb",
 	})
@@ -549,7 +549,7 @@ func TestRunStoryboard_UnsafeNarrationSkipsAudio(t *testing.T) {
 		Narration:  narration,
 		Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fakeGen),
 		Storage:    testStorage(),
-		Assets:     assets.New(pool),
+		Assets:     assets.New(assetTestGorm(t)),
 		Cost:       cost.New(assetTestGorm(t)),
 		WorkerID:   "test-pbu",
 	})
@@ -641,7 +641,7 @@ func TestRunStoryboard_InconclusiveNarrationAllowsAudio(t *testing.T) {
 		Asset: studioagents.NewAssetAgent(prompt.NewBuilder(), generate.NewFakeLooping(generate.GenResult{
 			Bytes: []byte("FAKE"), MimeType: "image/png", Provider: "fake", Model: "fake-img", ImageCount: 1,
 		})),
-		Storage: testStorage(), Assets: assets.New(pool), Cost: cost.New(assetTestGorm(t)), WorkerID: "test-pbi",
+		Storage: testStorage(), Assets: assets.New(assetTestGorm(t)), Cost: cost.New(assetTestGorm(t)), WorkerID: "test-pbi",
 	})
 	for i := 0; i < 20; i++ {
 		ran, err := w.RunOnce(ctx)
@@ -712,7 +712,7 @@ func TestRunStoryboard_StandardOnlyImage(t *testing.T) {
 		Storyboard: storyboard,
 		Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fakeGen),
 		Storage:    testStorage(),
-		Assets:     assets.New(pool),
+		Assets:     assets.New(assetTestGorm(t)),
 		Cost:       cost.New(assetTestGorm(t)),
 		WorkerID:   "test-std",
 	})

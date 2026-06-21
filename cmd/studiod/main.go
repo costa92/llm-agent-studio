@@ -186,7 +186,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	}
 
 	promptBuilder := prompt.NewBuilder()
-	assetStore := assets.New(st.Pool())
+	assetStore := assets.New(st.GORM())
 	costStore := cost.New(st.GORM())
 	taskBoard := studiosvc.NewTaskBoard(st.Pool())
 	// BYOK: per-config api key 静态加密 box (env STUDIO_CONFIG_ENC_KEY)。未配置时

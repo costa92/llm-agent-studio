@@ -10,6 +10,7 @@ require (
 	github.com/costa92/llm-agent-otel v0.4.0
 	github.com/costa92/llm-agent-providers v0.7.0
 	github.com/jackc/pgx/v5 v5.9.2
+	github.com/lib/pq v1.12.3
 	github.com/minio/minio-go/v7 v7.2.0
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/sdk v1.43.0

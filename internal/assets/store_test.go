@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	"github.com/costa92/llm-agent-studio/internal/storage"
 )
@@ -28,6 +29,24 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	return st.Pool()
 }
 
+func testGorm(t *testing.T) *gorm.DB {
+	t.Helper()
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run assets store tests")
+	}
+	ctx := context.Background()
+	st, err := storage.Open(ctx, storage.Config{PGURL: dsn})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(st.Close)
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return st.GORM()
+}
+
 // seedProject inserts a minimal project row so the FK on assets resolves.
 func seedProject(t *testing.T, pool *pgxpool.Pool, orgID string) string {
 	t.Helper()
@@ -41,7 +60,7 @@ func seedProject(t *testing.T, pool *pgxpool.Pool, orgID string) string {
 
 func TestCreateAndGet(t *testing.T) {
 	pool := testPool(t)
-	st := New(pool)
+	st := New(testGorm(t))
 	ctx := context.Background()
 	pid := seedProject(t, pool, "org-a")
 	// 用 unique 后缀避免共享测试池里硬编码 todo/shot ID 撞 assets_todo_uniq。
@@ -65,7 +84,7 @@ func TestCreateAndGet(t *testing.T) {
 
 func TestRegenerateBumpsVersionWithLineage(t *testing.T) {
 	pool := testPool(t)
-	st := New(pool)
+	st := New(testGorm(t))
 	ctx := context.Background()
 	pid := seedProject(t, pool, "org-b")
 	v1, _ := st.Create(ctx, CreateInput{ProjectID: pid, ShotID: "s", Type: "image", Prompt: "old", Status: "rejected"})
@@ -85,7 +104,7 @@ func TestRegenerateBumpsVersionWithLineage(t *testing.T) {
 
 func TestSetStatus409Semantics(t *testing.T) {
 	pool := testPool(t)
-	st := New(pool)
+	st := New(testGorm(t))
 	ctx := context.Background()
 	pid := seedProject(t, pool, "org-c")
 	a, _ := st.Create(ctx, CreateInput{ProjectID: pid, ShotID: "s", Type: "image", Status: "pending_acceptance"})
@@ -102,7 +121,7 @@ func TestSetStatus409Semantics(t *testing.T) {
 
 func TestLibrarySearchFiltersAndPaginates(t *testing.T) {
 	pool := testPool(t)
-	st := New(pool)
+	st := New(testGorm(t))
 	ctx := context.Background()
 	pid := seedProject(t, pool, "org-lib")
 	for i := 0; i < 3; i++ {
@@ -127,7 +146,7 @@ func TestSetPrescreenAndReadBack(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
 	pid := seedProject(t, pool, "org_prescreen")
-	s := New(pool)
+	s := New(testGorm(t))
 	a, err := s.Create(ctx, CreateInput{ProjectID: pid, Status: "pending_acceptance", Prompt: "x"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -155,7 +174,7 @@ func TestGetOrCreateForTodoIsIdempotent(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
 	pid := seedProject(t, pool, "org_goc")
-	s := New(pool)
+	s := New(testGorm(t))
 	todoID := "todo_goc_1"
 	a1, err := s.GetOrCreateForTodo(ctx, CreateInput{ProjectID: pid, TodoID: todoID, Type: "video", Status: "generating"})
 	if err != nil {
@@ -174,7 +193,7 @@ func TestSetSubmittedAndAsyncFailedAndInFlightCount(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
 	pid := seedProject(t, pool, "org_async")
-	s := New(pool)
+	s := New(testGorm(t))
 	// 唯一 todo id 避免共享测试池撞 assets_todo_uniq。
 	asyncTodoID := "todo_async_" + newID()
 	a, err := s.GetOrCreateForTodo(ctx, CreateInput{ProjectID: pid, TodoID: asyncTodoID, Type: "video", Status: "generating"})
@@ -209,7 +228,7 @@ func TestSetSubmittedAndAsyncFailedAndInFlightCount(t *testing.T) {
 func TestCountInFlightByKindOrg(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
-	s := New(pool)
+	s := New(testGorm(t))
 	pidA := seedProject(t, pool, "org_perorg_A")
 	pidB := seedProject(t, pool, "org_perorg_B")
 	for _, pid := range []string{pidA, pidB} {
@@ -235,7 +254,7 @@ func TestSetBlobAdvancesFromSubmitted(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
 	pid := seedProject(t, pool, "org_setblob")
-	s := New(pool)
+	s := New(testGorm(t))
 	// 唯一 todo id 避免共享测试池撞 assets_todo_uniq。
 	sbTodoID := "todo_sb_" + newID()
 	a, _ := s.GetOrCreateForTodo(ctx, CreateInput{ProjectID: pid, TodoID: sbTodoID, Type: "video", Status: "generating"})
@@ -269,7 +288,7 @@ func TestSetBlobAdvancesFromSubmitted(t *testing.T) {
 // backend the bytes landed in, independent of the project's current storage_mode.
 func TestSetBlobPersistsStorageConfigID(t *testing.T) {
 	pool := testPool(t)
-	s := New(pool)
+	s := New(testGorm(t))
 	ctx := context.Background()
 	pid := seedProject(t, pool, "org-scid")
 	uniq := newID()
