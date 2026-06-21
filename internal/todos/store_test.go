@@ -32,7 +32,7 @@ func newStore(t *testing.T) (*Store, *pgxpool.Pool, string) {
 		`INSERT INTO projects (id, org_id, name, created_by) VALUES ($1,'o1','t','u1')`, projID); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
-	return New(pool), pool, projID
+	return New(st.GORM()), pool, projID
 }
 
 func randHex(t *testing.T) string {

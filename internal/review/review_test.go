@@ -58,7 +58,7 @@ func seedPendingAsset(t *testing.T, pool *pgxpool.Pool) (svc *Service, assetID, 
 	if err != nil {
 		t.Fatalf("seed asset: %v", err)
 	}
-	return New(as, todos.New(pool), pool), a.ID, projectID
+	return New(as, todos.New(testGorm(t)), pool), a.ID, projectID
 }
 
 // seedNarrationShot creates a shots row (action=oldText) plus an audio asset
@@ -74,7 +74,7 @@ func seedNarrationShot(t *testing.T, pool *pgxpool.Pool, oldText string) (svc *S
 	if err != nil {
 		t.Fatalf("seed audio asset: %v", err)
 	}
-	return New(as, todos.New(pool), pool), a.ID, shotID, projectID
+	return New(as, todos.New(testGorm(t)), pool), a.ID, shotID, projectID
 }
 
 func TestRegenerateNarration_UpdatesShotAndRegensAudio(t *testing.T) {
