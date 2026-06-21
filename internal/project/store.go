@@ -6,14 +6,15 @@ package project
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lib/pq"
+	"gorm.io/gorm"
 
 	"github.com/costa92/llm-agent-studio/internal/projectstate"
 )
@@ -107,11 +108,11 @@ type UpdateInput struct {
 
 // Store persists projects.
 type Store struct {
-	pool *pgxpool.Pool
+	db *gorm.DB
 }
 
 // New builds a Store.
-func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
+func New(db *gorm.DB) *Store { return &Store{db: db} }
 
 func newID() string {
 	b := make([]byte, 16)
@@ -125,9 +126,9 @@ func newID() string {
 // override（global 是 ResolveWriteTarget 在无 per-project/org 配置时的自动回落），故拒之。
 func (s *Store) storageConfigBelongsToOrg(ctx context.Context, configID, orgID string) (bool, error) {
 	var ok bool
-	if err := s.pool.QueryRow(ctx,
+	if err := s.db.WithContext(ctx).Raw(
 		`SELECT EXISTS(SELECT 1 FROM storage_configs WHERE id=$1 AND org_id=$2 AND scope='org')`,
-		configID, orgID).Scan(&ok); err != nil {
+		configID, orgID).Row().Scan(&ok); err != nil {
 		return false, fmt.Errorf("project: validate storage config: %w", err)
 	}
 	return ok, nil
@@ -163,11 +164,11 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Project, error) {
 		WorkflowNodes:         in.WorkflowNodes,
 		Kind:                  kind, PictureBookConfig: in.PictureBookConfig,
 	}
-	if _, err := s.pool.Exec(ctx,
+	if res := s.db.WithContext(ctx).Exec(
 		`INSERT INTO projects (id, org_id, name, description, content_type, target_platform, style, status, created_by, planner_provider, planner_model, image_provider, image_model, storage_mode, custom_workflow_enabled, workflow_nodes, storage_config_id, kind, picturebook_config)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
-		p.ID, p.OrgID, p.Name, p.Description, p.ContentType, p.TargetPlatform, p.Style, p.Status, p.CreatedBy, p.PlannerProvider, p.PlannerModel, p.ImageProvider, p.ImageModel, p.StorageMode, p.CustomWorkflowEnabled, p.WorkflowNodes, p.StorageConfigID, p.Kind, p.PictureBookConfig); err != nil {
-		return Project{}, fmt.Errorf("project: insert: %w", err)
+		p.ID, p.OrgID, p.Name, p.Description, p.ContentType, p.TargetPlatform, p.Style, p.Status, p.CreatedBy, p.PlannerProvider, p.PlannerModel, p.ImageProvider, p.ImageModel, p.StorageMode, p.CustomWorkflowEnabled, p.WorkflowNodes, p.StorageConfigID, p.Kind, p.PictureBookConfig); res.Error != nil {
+		return Project{}, fmt.Errorf("project: insert: %w", res.Error)
 	}
 	return p, nil
 }
@@ -175,7 +176,8 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Project, error) {
 // Get returns a project by id.
 func (s *Store) Get(ctx context.Context, id string) (Project, error) {
 	var p Project
-	err := s.pool.QueryRow(ctx,
+	var nodesB []byte
+	err := s.db.WithContext(ctx).Raw(
 		`SELECT p.id, p.org_id, p.name, p.description, p.content_type, p.target_platform, p.style, p.status, p.created_by,
 		        COALESCE(pl.fallback_used, false),
 		        p.planner_provider, p.planner_model, p.image_provider, p.image_model, p.storage_mode,
@@ -187,10 +189,13 @@ func (s *Store) Get(ctx context.Context, id string) (Project, error) {
 		     FROM plans
 		     ORDER BY project_id, created_at DESC
 		 ) pl ON p.id = pl.project_id
-		 WHERE p.id=$1`, id).
-		Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy, &p.FallbackUsed, &p.PlannerProvider, &p.PlannerModel, &p.ImageProvider, &p.ImageModel, &p.StorageMode, &p.CustomWorkflowEnabled, &p.WorkflowNodes, &p.CoverAssetID, &p.StorageConfigID, &p.Kind, &p.PictureBookConfig)
-	if errors.Is(err, pgx.ErrNoRows) {
+		 WHERE p.id=$1`, id).Row().
+		Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy, &p.FallbackUsed, &p.PlannerProvider, &p.PlannerModel, &p.ImageProvider, &p.ImageModel, &p.StorageMode, &p.CustomWorkflowEnabled, &nodesB, &p.CoverAssetID, &p.StorageConfigID, &p.Kind, &p.PictureBookConfig)
+	if errors.Is(err, sql.ErrNoRows) {
 		return Project{}, ErrNotFound
+	}
+	if err == nil {
+		p.WorkflowNodes = json.RawMessage(nodesB)
 	}
 	return p, err
 }
@@ -199,8 +204,8 @@ func (s *Store) Get(ctx context.Context, id string) (Project, error) {
 // which only has the project id from the path). Mirrors orgkb.OrgIDForKB.
 func (s *Store) OrgIDForProject(ctx context.Context, projectID string) (string, error) {
 	var orgID string
-	err := s.pool.QueryRow(ctx, `SELECT org_id FROM projects WHERE id=$1`, projectID).Scan(&orgID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	err := s.db.WithContext(ctx).Raw(`SELECT org_id FROM projects WHERE id=$1`, projectID).Row().Scan(&orgID)
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrNotFound
 	}
 	return orgID, err
@@ -211,10 +216,10 @@ func (s *Store) ListByOrg(ctx context.Context, orgID string, limit int, cursor s
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db.WithContext(ctx).Raw(
 		`SELECT id, org_id, name, description, content_type, target_platform, style, status, created_by, planner_provider, planner_model, image_provider, image_model, storage_mode, custom_workflow_enabled, workflow_nodes, cover_asset_id, COALESCE(storage_config_id, ''), COALESCE(kind, 'standard'), COALESCE(picturebook_config, '')
 		 FROM projects WHERE org_id=$1 AND id>$2 ORDER BY id ASC LIMIT $3`,
-		orgID, cursor, limit)
+		orgID, cursor, limit).Rows()
 	if err != nil {
 		return nil, "", err
 	}
@@ -222,9 +227,11 @@ func (s *Store) ListByOrg(ctx context.Context, orgID string, limit int, cursor s
 	var out []Project
 	for rows.Next() {
 		var p Project
-		if err := rows.Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy, &p.PlannerProvider, &p.PlannerModel, &p.ImageProvider, &p.ImageModel, &p.StorageMode, &p.CustomWorkflowEnabled, &p.WorkflowNodes, &p.CoverAssetID, &p.StorageConfigID, &p.Kind, &p.PictureBookConfig); err != nil {
+		var nodesB []byte
+		if err := rows.Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy, &p.PlannerProvider, &p.PlannerModel, &p.ImageProvider, &p.ImageModel, &p.StorageMode, &p.CustomWorkflowEnabled, &nodesB, &p.CoverAssetID, &p.StorageConfigID, &p.Kind, &p.PictureBookConfig); err != nil {
 			return nil, "", err
 		}
+		p.WorkflowNodes = json.RawMessage(nodesB)
 		out = append(out, p)
 	}
 	if err := rows.Err(); err != nil {
@@ -239,19 +246,18 @@ func (s *Store) ListByOrg(ctx context.Context, orgID string, limit int, cursor s
 
 // SetStatus writes the project status directly (used on run kickoff: planning).
 func (s *Store) SetStatus(ctx context.Context, id, status string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE projects SET status=$2, updated_at=now() WHERE id=$1`, id, status)
-	return err
+	return s.db.WithContext(ctx).Exec(`UPDATE projects SET status=$2, updated_at=now() WHERE id=$1`, id, status).Error
 }
 
 // SetCover links a project to its cover asset (M14). assetID="" clears the cover.
 // 0 rows affected = no such project → ErrNotFound (404 not 200).
 func (s *Store) SetCover(ctx context.Context, projectID, assetID string) error {
-	tag, err := s.pool.Exec(ctx,
+	res := s.db.WithContext(ctx).Exec(
 		`UPDATE projects SET cover_asset_id=$2, updated_at=now() WHERE id=$1`, projectID, assetID)
-	if err != nil {
-		return fmt.Errorf("project: set cover: %w", err)
+	if res.Error != nil {
+		return fmt.Errorf("project: set cover: %w", res.Error)
 	}
-	if tag.RowsAffected() == 0 {
+	if res.RowsAffected == 0 {
 		return ErrNotFound
 	}
 	return nil
@@ -264,8 +270,8 @@ func (s *Store) Update(ctx context.Context, id string, in UpdateInput) (Project,
 	// 存储配置 override 必须属于本项目 org（防跨租户存储写入）；先取项目 org（保留 ErrNotFound 语义）。
 	if in.StorageConfigID != "" {
 		var orgID string
-		if err := s.pool.QueryRow(ctx, `SELECT org_id FROM projects WHERE id=$1`, id).Scan(&orgID); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+		if err := s.db.WithContext(ctx).Raw(`SELECT org_id FROM projects WHERE id=$1`, id).Row().Scan(&orgID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
 				return Project{}, ErrNotFound
 			}
 			return Project{}, fmt.Errorf("project: update: lookup org: %w", err)
@@ -282,7 +288,7 @@ func (s *Store) Update(ctx context.Context, id string, in UpdateInput) (Project,
 	// custom workflows are now first-class rows in the workflows table (m12), and
 	// the project edit form no longer sends them. Leaving the legacy columns
 	// untouched preserves any pre-migration data instead of zeroing it on edit.
-	tag, err := s.pool.Exec(ctx,
+	res := s.db.WithContext(ctx).Exec(
 		`UPDATE projects
 		 SET name=$2, description=$3, content_type=$4, target_platform=$5, style=$6,
 		     planner_provider=$7, planner_model=$8, image_provider=$9, image_model=$10, storage_mode=$11,
@@ -297,10 +303,10 @@ func (s *Store) Update(ctx context.Context, id string, in UpdateInput) (Project,
 		id, in.Name, in.Description, in.ContentType, in.TargetPlatform, in.Style,
 		in.PlannerProvider, in.PlannerModel, in.ImageProvider, in.ImageModel, in.StorageMode, in.StorageConfigID,
 		in.Kind, in.PictureBookConfig)
-	if err != nil {
-		return Project{}, fmt.Errorf("project: update: %w", err)
+	if res.Error != nil {
+		return Project{}, fmt.Errorf("project: update: %w", res.Error)
 	}
-	if tag.RowsAffected() == 0 {
+	if res.RowsAffected == 0 {
 		return Project{}, ErrNotFound
 	}
 	return s.Get(ctx, id)
@@ -319,10 +325,10 @@ func (s *Store) Update(ctx context.Context, id string, in UpdateInput) (Project,
 // TodoCounts 返 "planning"，但项目初始就是 "draft"，硬改写会误导。
 func (s *Store) RefreshStatus(ctx context.Context, projectID string) (string, error) {
 	var latestPlanID string
-	err := s.pool.QueryRow(ctx,
+	err := s.db.WithContext(ctx).Raw(
 		`SELECT id FROM plans WHERE project_id=$1 ORDER BY created_at DESC LIMIT 1`,
-		projectID).Scan(&latestPlanID)
-	if errors.Is(err, pgx.ErrNoRows) {
+		projectID).Row().Scan(&latestPlanID)
+	if errors.Is(err, sql.ErrNoRows) {
 		// 无 plan：不改写 project.status（保持 create 时的 draft）。返回
 		// Get 出来的当前值，便于 caller 行为对称。
 		return s.currentStatus(ctx, projectID)
@@ -332,7 +338,7 @@ func (s *Store) RefreshStatus(ctx context.Context, projectID string) (string, er
 	}
 
 	var c TodoCounts
-	err = s.pool.QueryRow(ctx, `
+	err = s.db.WithContext(ctx).Raw(`
 		SELECT count(*),
 		       count(*) FILTER (WHERE status='ready'),
 		       count(*) FILTER (WHERE status='running'),
@@ -340,25 +346,25 @@ func (s *Store) RefreshStatus(ctx context.Context, projectID string) (string, er
 		       count(*) FILTER (WHERE status='done'),
 		       count(*) FILTER (WHERE status='failed'),
 		       count(*) FILTER (WHERE status='canceled')
-		FROM todos WHERE plan_id=$1`, latestPlanID).
+		FROM todos WHERE plan_id=$1`, latestPlanID).Row().
 		Scan(&c.Total, &c.Ready, &c.Running, &c.Blocked, &c.Done, &c.Failed, &c.Canceled)
 	if err != nil {
 		return "", fmt.Errorf("project: tally latest plan todos: %w", err)
 	}
 	// 资产通过 todos 关联到 plan（assets.todo_id → todos.plan_id）；这样
 	// pending_acceptance 也只计最新 plan 的，与 ListPlans 的关联方式一致。
-	if err := s.pool.QueryRow(ctx,
+	if err := s.db.WithContext(ctx).Raw(
 		`SELECT count(*) FROM assets a
 		 JOIN todos t ON a.todo_id = t.id
 		 WHERE t.plan_id = $1 AND a.status = 'pending_acceptance'`,
-		latestPlanID).Scan(&c.PendingAssets); err != nil {
+		latestPlanID).Row().Scan(&c.PendingAssets); err != nil {
 		return "", fmt.Errorf("project: tally latest plan pending assets: %w", err)
 	}
 	// HITL regenerate 子资产 todo_id='' → 对上面的 "JOIN todos WHERE plan_id" 盘点
 	// 不可见。以最新 plan 的资产为根，沿 parent_asset_id 递归遍历（chain v2→v3 可能，
 	// 故必须递归），盘点在途 regenerate 后代。以「最新 plan 资产」为根保住多 plan 不
 	// 变式：lineage 根属旧 plan 的 regenerate 子资产不得 gate 当前 review。
-	if err := s.pool.QueryRow(ctx, `
+	if err := s.db.WithContext(ctx).Raw(`
 		WITH RECURSIVE regen AS (
 			SELECT a.id, a.status FROM assets a
 			WHERE a.parent_asset_id IN (
@@ -368,7 +374,7 @@ func (s *Store) RefreshStatus(ctx context.Context, projectID string) (string, er
 			SELECT a.id, a.status FROM assets a JOIN regen r ON a.parent_asset_id = r.id
 		)
 		SELECT count(*) FILTER (WHERE status IN ('generating','submitted','pending_acceptance')) FROM regen`,
-		latestPlanID).Scan(&c.InFlightRegen); err != nil {
+		latestPlanID).Row().Scan(&c.InFlightRegen); err != nil {
 		return "", fmt.Errorf("project: tally latest plan in-flight regenerate descendants: %w", err)
 	}
 	status := DeriveStatus(c)
@@ -383,8 +389,8 @@ func (s *Store) RefreshStatus(ctx context.Context, projectID string) (string, er
 // plans yet (so the function's return semantics stay uniform for callers).
 func (s *Store) currentStatus(ctx context.Context, projectID string) (string, error) {
 	var status string
-	err := s.pool.QueryRow(ctx,
-		`SELECT status FROM projects WHERE id=$1`, projectID).Scan(&status)
+	err := s.db.WithContext(ctx).Raw(
+		`SELECT status FROM projects WHERE id=$1`, projectID).Row().Scan(&status)
 	return status, err
 }
 
@@ -400,13 +406,13 @@ func (s *Store) currentStatus(ctx context.Context, projectID string) (string, er
 // money and HITL accept/reject still applies; DeriveStatus's Canceled branch
 // outranks the review branch so the project status stays canceled.
 func (s *Store) Cancel(ctx context.Context, projectID string) error {
-	if _, err := s.pool.Exec(ctx,
+	if err := s.db.WithContext(ctx).Exec(
 		`UPDATE todos SET status='canceled', locked_by='', locked_until=NULL, updated_at=now()
-		 WHERE project_id=$1 AND status IN ('pending','ready','blocked','running')`, projectID); err != nil {
+		 WHERE project_id=$1 AND status IN ('pending','ready','blocked','running')`, projectID).Error; err != nil {
 		return fmt.Errorf("project: cancel todos: %w", err)
 	}
-	if _, err := s.pool.Exec(ctx,
-		`UPDATE assets SET status='canceled' WHERE project_id=$1 AND status IN ('generating','submitted')`, projectID); err != nil {
+	if err := s.db.WithContext(ctx).Exec(
+		`UPDATE assets SET status='canceled' WHERE project_id=$1 AND status IN ('generating','submitted')`, projectID).Error; err != nil {
 		return fmt.Errorf("project: cancel assets: %w", err)
 	}
 	return s.SetStatus(ctx, projectID, "canceled")
@@ -457,7 +463,7 @@ func (s *Store) ListPlans(ctx context.Context, projectID string) ([]Plan, error)
 		WHERE p.project_id = $1
 		ORDER BY p.created_at DESC`
 
-	rows, err := s.pool.Query(ctx, q, projectID)
+	rows, err := s.db.WithContext(ctx).Raw(q, projectID).Rows()
 	if err != nil {
 		return nil, fmt.Errorf("project: list plans: %w", err)
 	}
@@ -506,8 +512,8 @@ func (s *Store) LoadState(ctx context.Context, projectID, planID string) (projec
 	// events, but that is harmless — the re-pushed payload is still computed
 	// for THIS planID below, so the client just receives its own (unchanged)
 	// snapshot again rather than another run's state.
-	if err := s.pool.QueryRow(ctx,
-		`SELECT COALESCE(max(seq), 0) FROM run_events WHERE project_id=$1`, projectID).
+	if err := s.db.WithContext(ctx).Raw(
+		`SELECT COALESCE(max(seq), 0) FROM run_events WHERE project_id=$1`, projectID).Row().
 		Scan(&in.Version); err != nil {
 		return projectstate.ProjectState{}, fmt.Errorf("project: load state version: %w", err)
 	}
@@ -517,15 +523,15 @@ func (s *Store) LoadState(ctx context.Context, projectID, planID string) (projec
 	var planRowID, workflowID string
 	var valid, fallbackUsed bool
 	if planID == "" {
-		err = s.pool.QueryRow(ctx,
+		err = s.db.WithContext(ctx).Raw(
 			`SELECT id, valid, fallback_used, COALESCE(workflow_id,'') FROM plans WHERE project_id=$1 ORDER BY created_at DESC LIMIT 1`,
-			projectID).Scan(&planRowID, &valid, &fallbackUsed, &workflowID)
+			projectID).Row().Scan(&planRowID, &valid, &fallbackUsed, &workflowID)
 	} else {
-		err = s.pool.QueryRow(ctx,
+		err = s.db.WithContext(ctx).Raw(
 			`SELECT id, valid, fallback_used, COALESCE(workflow_id,'') FROM plans WHERE id=$1 AND project_id=$2`,
-			planID, projectID).Scan(&planRowID, &valid, &fallbackUsed, &workflowID)
+			planID, projectID).Row().Scan(&planRowID, &valid, &fallbackUsed, &workflowID)
 	}
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return projectstate.Compute(in), nil // no plan / not found: draft passthrough
 	}
 	if err != nil {
@@ -536,17 +542,19 @@ func (s *Store) LoadState(ctx context.Context, projectID, planID string) (projec
 	in.WorkflowID = workflowID
 
 	// todos of the resolved plan
-	rows, err := s.pool.Query(ctx,
-		`SELECT id, type, status, COALESCE(error,''), depends_on, created_at FROM todos WHERE plan_id=$1 ORDER BY updated_at ASC`, planRowID)
+	rows, err := s.db.WithContext(ctx).Raw(
+		`SELECT id, type, status, COALESCE(error,''), depends_on, created_at FROM todos WHERE plan_id=$1 ORDER BY updated_at ASC`, planRowID).Rows()
 	if err != nil {
 		return projectstate.ProjectState{}, fmt.Errorf("project: load state todos: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var t projectstate.Todo
-		if err := rows.Scan(&t.ID, &t.Type, &t.Status, &t.Error, &t.DependsOn, &t.CreatedAt); err != nil {
+		var deps pq.StringArray
+		if err := rows.Scan(&t.ID, &t.Type, &t.Status, &t.Error, &deps, &t.CreatedAt); err != nil {
 			return projectstate.ProjectState{}, fmt.Errorf("project: scan state todo: %w", err)
 		}
+		t.DependsOn = []string(deps)
 		in.Todos = append(in.Todos, t)
 	}
 	if err := rows.Err(); err != nil {
@@ -564,7 +572,7 @@ func (s *Store) LoadState(ctx context.Context, projectID, planID string) (projec
 	// any todo in assetByTodo, so they never become pips. created_at ordering is
 	// kept for the plan-asset rows (the in-flight descendants only feed the
 	// status tally, not pip layout).
-	arows, err := s.pool.Query(ctx,
+	arows, err := s.db.WithContext(ctx).Raw(
 		`WITH RECURSIVE plan_assets AS (
 			SELECT a.id, a.todo_id, a.status, a.created_at FROM assets a
 			JOIN todos t ON a.todo_id = t.id
@@ -579,7 +587,7 @@ func (s *Store) LoadState(ctx context.Context, projectID, planID string) (projec
 		SELECT id, todo_id, status, created_at FROM plan_assets
 		UNION ALL
 		SELECT id, todo_id, status, created_at FROM regen
-		ORDER BY created_at ASC`, planRowID)
+		ORDER BY created_at ASC`, planRowID).Rows()
 	if err != nil {
 		return projectstate.ProjectState{}, fmt.Errorf("project: load state assets: %w", err)
 	}

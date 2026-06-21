@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	"github.com/costa92/llm-agent-studio/internal/project"
 	"github.com/costa92/llm-agent-studio/internal/storage"
@@ -55,10 +56,28 @@ func newStore(t *testing.T) (*Store, *pgxpool.Pool) {
 	return New(st.GORM()), st.Pool()
 }
 
+func projectGormForTest(t *testing.T) *gorm.DB {
+	t.Helper()
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run workflow tests")
+	}
+	ctx := context.Background()
+	st, err := storage.Open(ctx, storage.Config{PGURL: dsn})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(st.Close)
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return st.GORM()
+}
+
 // newProject creates a real project row (workflows FK to projects) and returns its id.
 func newProject(t *testing.T, pool *pgxpool.Pool) string {
 	t.Helper()
-	ps := project.New(pool)
+	ps := project.New(projectGormForTest(t))
 	p, err := ps.Create(context.Background(), project.CreateInput{
 		OrgID: "org_wf_" + uniqueSuffix(), Name: "WF Project", Brief: "b",
 		ContentType: "ad", TargetPlatform: "tiktok", Style: "clean", CreatedBy: "u1",

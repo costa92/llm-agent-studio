@@ -73,7 +73,7 @@ func TestWorkerRunsScriptThenStoryboard(t *testing.T) {
 	w := New(Config{
 		Pool:       pool,
 		Todos:      todoStore,
-		Projects:   project.New(pool),
+		Projects:   project.New(assetTestGorm(t)),
 		Events:     events.New(assetTestGorm(t)),
 		Script:     studioagents.NewScriptAgent(scriptModel),
 		Storyboard: studioagents.NewStoryboardAgent(storyboardModel),
@@ -141,7 +141,7 @@ func TestWorkerFailsTodoOnAgentError(t *testing.T) {
 	projID := "wf_" + randHex3()
 	_, _ = pool.Exec(ctx, `INSERT INTO projects (id, org_id, name, created_by) VALUES ($1,'o','n','u')`, projID)
 	todoStore := todos.New(assetTestGorm(t))
-	projStore := project.New(pool)
+	projStore := project.New(assetTestGorm(t))
 	// Script succeeds, storyboard (the LAST todo) fails terminally: this exercises
 	// both the cancel-dependents path AND the run_done-on-terminal-failure path
 	// (done>0 because the script finished, so allDone is satisfied once the
@@ -278,7 +278,7 @@ func TestWorkerCustomExecutor(t *testing.T) {
 	w := New(Config{
 		Pool:            pool,
 		Todos:           todoStore,
-		Projects:        project.New(pool),
+		Projects:        project.New(assetTestGorm(t)),
 		Events:          events.New(assetTestGorm(t)),
 		Storage:         testStorage(),
 		CustomExecutors: customExecutors,
@@ -369,7 +369,7 @@ func TestRunStoryboard_PictureBookFansOutImageAndAudio(t *testing.T) {
 	w := New(Config{
 		Pool:       pool,
 		Todos:      todoStore,
-		Projects:   project.New(pool),
+		Projects:   project.New(assetTestGorm(t)),
 		Events:     events.New(assetTestGorm(t)),
 		Script:     studioagents.NewScriptAgent(scriptModel),
 		Storyboard: storyboard,
@@ -542,7 +542,7 @@ func TestRunStoryboard_UnsafeNarrationSkipsAudio(t *testing.T) {
 	w := New(Config{
 		Pool:       pool,
 		Todos:      todoStore,
-		Projects:   project.New(pool),
+		Projects:   project.New(assetTestGorm(t)),
 		Events:     events.New(assetTestGorm(t)),
 		Script:     studioagents.NewScriptAgent(scriptModel),
 		Storyboard: storyboard,
@@ -634,7 +634,7 @@ func TestRunStoryboard_InconclusiveNarrationAllowsAudio(t *testing.T) {
 		Text: `{"title":"小白兔","logline":"勇敢","scenes":[{"heading":"森林","description":"清晨","dialogue":""}],"characterSheet":"小白兔,长耳"}`,
 	}))
 	w := New(Config{
-		Pool: pool, Todos: todoStore, Projects: project.New(pool), Events: events.New(assetTestGorm(t)),
+		Pool: pool, Todos: todoStore, Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
 		Script:     studioagents.NewScriptAgent(scriptModel),
 		Storyboard: newPictureBookStoryboardAgent(t, 2),
 		Narration:  studioagents.NewNarrationSafety(&inconclusiveSafetyStub{}),
@@ -706,7 +706,7 @@ func TestRunStoryboard_StandardOnlyImage(t *testing.T) {
 	w := New(Config{
 		Pool:       pool,
 		Todos:      todoStore,
-		Projects:   project.New(pool),
+		Projects:   project.New(assetTestGorm(t)),
 		Events:     events.New(assetTestGorm(t)),
 		Script:     studioagents.NewScriptAgent(scriptModel),
 		Storyboard: storyboard,
