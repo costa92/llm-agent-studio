@@ -9,6 +9,24 @@
       href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=JetBrains+Mono:wght@400;600&family=Noto+Sans+SC:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
+    <script>
+      // 防闪烁：paint 前据 localStorage / prefers-color-scheme 预设 html[data-theme]。
+      // 白名单须与 src/app/theme.tsx THEMES 一致。
+      (function () {
+        try {
+          var valid = ["dark-studio", "light", "cinematic"]
+          var t = localStorage.getItem("studio-theme")
+          if (valid.indexOf(t) === -1) {
+            t = window.matchMedia("(prefers-color-scheme: light)").matches
+              ? "light"
+              : "dark-studio"
+          }
+          document.documentElement.setAttribute("data-theme", t)
+        } catch (e) {
+          document.documentElement.setAttribute("data-theme", "dark-studio")
+        }
+      })()
+    </script>
     <title>AI Studio</title>
   </head>
   <body>

@@ -70,20 +70,62 @@
 /*
  * 原型 :root token（逐字）。
  */
+/* 三套主题底层 token（dark-studio 兼作 :root 兜底，JS 禁用时合理着色）。
+   键须与 src/app/theme.tsx THEMES、index.html 内联脚本一致。 */
+:root,
+[data-theme="dark-studio"] {
+  --bg-base: #17191e;
+  --bg-surface: #1f232a;
+  --bg-raised: #272c34;
+  --line: #343a44;
+  --text-1: #edeef0;
+  --text-2: #9aa1ac;
+  --text-3: #7e8794;
+  --amber: #e8a33d;
+  --script: #5c9bd6;
+  --board: #9c7bda;
+  --asset: #e8a33d;
+  --review: #4fb286;
+  --danger: #e05f5b;
+  --primary-foreground: #1a1408;
+  --sidebar-primary-foreground: #1a1408;
+}
+[data-theme="light"] {
+  --bg-base: #f7f8fa;
+  --bg-surface: #ffffff;
+  --bg-raised: #f0f1f3;
+  --line: #e2e5ea;
+  --text-1: #1a1d21;
+  --text-2: #5b6470;
+  --text-3: #8a929e;
+  --amber: #b26b00;
+  --script: #2f6fb0;
+  --board: #6e4fb0;
+  --asset: #b26b00;
+  --review: #2e8b63;
+  --danger: #c23b37;
+  --primary-foreground: #ffffff;
+  --sidebar-primary-foreground: #ffffff;
+}
+[data-theme="cinematic"] {
+  --bg-base: #0c0d10;
+  --bg-surface: #15161b;
+  --bg-raised: #1e2027;
+  --line: #2a2d36;
+  --text-1: #f2f3f5;
+  --text-2: #a0a6b0;
+  --text-3: #6e7682;
+  --amber: #e8a33d;
+  --script: #69a9e0;
+  --board: #ad8ce6;
+  --asset: #f0ae4a;
+  --review: #5cc79a;
+  --danger: #f0726e;
+  --primary-foreground: #0c0d10;
+  --sidebar-primary-foreground: #0c0d10;
+}
+
 :root {
-    --bg-base: #17191E;
-    --bg-surface: #1F232A;
-    --bg-raised: #272C34;
-    --line: #343A44;
-    --text-1: #EDEEF0;
-    --text-2: #9AA1AC;
-    --text-3: #7E8794;
-    --amber: #E8A33D;
-    --script: #5C9BD6;
-    --board: #9C7BDA;
-    --asset: #E8A33D;
-    --review: #4FB286;
-    --danger: #E05F5B;
     --mono: "JetBrains Mono", monospace;
     --disp: "Space Grotesk", "Noto Sans SC", sans-serif;
 
@@ -96,7 +138,6 @@
     --popover: var(--bg-surface);
     --popover-foreground: var(--text-1);
     --primary: var(--amber);
-    --primary-foreground: #1a1408;
     --secondary: var(--bg-raised);
     --secondary-foreground: var(--text-1);
     --muted: var(--bg-raised);
@@ -115,7 +156,6 @@
     --sidebar: var(--bg-surface);
     --sidebar-foreground: var(--text-1);
     --sidebar-primary: var(--amber);
-    --sidebar-primary-foreground: #1a1408;
     --sidebar-accent: var(--bg-raised);
     --sidebar-accent-foreground: var(--text-1);
     --sidebar-border: var(--line);
@@ -167,4 +207,17 @@
     animation: none !important;
     transition: none !important;
   }
+}
+
+/* 影院感：仅在 cinematic 主题下给卡片极轻发光（范围受限，不逐组件改 React）。 */
+[data-theme="cinematic"] [data-slot="card"] {
+  box-shadow: 0 0 0 1px var(--line), 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+
+/* 可选渐变标题工具类（本期定义可用，不强制改任何现有标题）。 */
+.text-gradient {
+  background: linear-gradient(90deg, var(--amber), var(--board));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
