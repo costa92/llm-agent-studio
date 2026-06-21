@@ -154,9 +154,15 @@ func TestTaskBoardScopesProgressAndPendingToLatestPlan(t *testing.T) {
 	_, _ = pool.Exec(ctx, `INSERT INTO todos (id,project_id,plan_id,type,status) VALUES
 		('b1',$1,$2,'script','done'),
 		('b2',$1,$2,'asset','done')`, p, plB)
-	_, _ = pool.Exec(ctx, `INSERT INTO assets (id,project_id,todo_id,status) VALUES
-		('bA1',$1,'b2','pending_acceptance'),
-		('bA2',$1,'b2','pending_acceptance')`, p)
+	// 两条 pending 资产必须挂在不同 todo：assets_todo_uniq 是 (todo_id) WHERE todo_id<>''
+	// 的部分唯一索引，同一 todo_id 的两条会撞唯一约束、整条多行 INSERT 原子失败。
+	// bA1→b1 / bA2→b2，各占一个 todo，pendingReview 才能如期计到 2。错误显式断言，
+	// 避免无效种子被 _, _ = 静默吞掉（本测试此前正因此长期失败而未被发现）。
+	if _, err := pool.Exec(ctx, `INSERT INTO assets (id,project_id,todo_id,status) VALUES
+		('bA1',$1,'b1','pending_acceptance'),
+		('bA2',$1,'b2','pending_acceptance')`, p); err != nil {
+		t.Fatalf("seed plan B assets: %v", err)
+	}
 	// RefreshStatus 后 projects.status 会变；本测试不动 status（保持 failed），
 	// 只看行内 progress / pendingReview / failingAgent 是否按最新 plan 算。
 	rows, err := NewTaskBoard(st.GORM()).Board(ctx, org)
