@@ -143,7 +143,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 
 	projectStore := project.New(st.Pool())
 	healthStore := health.New(st.Pool(), projectStore)
-	workflowStore := workflows.New(st.Pool())
+	workflowStore := workflows.New(st.GORM())
 	todoStore := todos.New(st.GORM())
 	eventStore := events.New(st.GORM())
 	plannerSvc := planner.New(model, todoStore, st.Pool())
