@@ -91,7 +91,7 @@ func TestWorkerRoutesChatModelViaRouter(t *testing.T) {
 		Script:     studioagents.NewScriptAgent(bound),
 		Storyboard: studioagents.NewStoryboardAgent(bound),
 		Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fakeGen),
-		Storage:    testStorage(), Assets: assets.New(pool), Cost: cost.New(assetTestGorm(t)),
+		Storage:    testStorage(), Assets: assets.New(assetTestGorm(t)), Cost: cost.New(assetTestGorm(t)),
 		Models: ms, Registry: reg, Router: router,
 		WorkerID: "route-chat", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
 	})
@@ -166,7 +166,7 @@ func TestWorkerRoutesMediaViaRouterBuildMedia(t *testing.T) {
 	w := New(Config{
 		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(assetTestGorm(t)),
 		Asset:   studioagents.NewAssetAgent(prompt.NewBuilder(), defGen),
-		Storage: testStorage(), Assets: assets.New(pool), Cost: cost.New(assetTestGorm(t)),
+		Storage: testStorage(), Assets: assets.New(assetTestGorm(t)), Cost: cost.New(assetTestGorm(t)),
 		Models: ms, Registry: reg, Router: router,
 		WorkerID: "route-media", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
 	})

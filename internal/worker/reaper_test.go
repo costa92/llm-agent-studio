@@ -17,7 +17,7 @@ func TestReapStaleSubmitted(t *testing.T) {
 	_, _ = pool.Exec(ctx, `INSERT INTO assets (id,project_id,type,status,submitted_at) VALUES
 		(md5(random()::text),$1,'video','submitted', now() - interval '1 hour'),
 		(md5(random()::text),$1,'video','submitted', now())`, pid)
-	n, err := assets.New(pool).ReapStaleSubmitted(ctx, time.Now().Add(-30*time.Minute))
+	n, err := assets.New(assetTestGorm(t)).ReapStaleSubmitted(ctx, time.Now().Add(-30*time.Minute))
 	if err != nil {
 		t.Fatalf("reap: %v", err)
 	}

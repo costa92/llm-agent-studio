@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	"github.com/costa92/llm-agent-studio/internal/assets"
 	"github.com/costa92/llm-agent-studio/internal/storage"
@@ -30,11 +31,29 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	return st.Pool()
 }
 
+func testGorm(t *testing.T) *gorm.DB {
+	t.Helper()
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run review tests")
+	}
+	ctx := context.Background()
+	st, err := storage.Open(ctx, storage.Config{PGURL: dsn})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(st.Close)
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return st.GORM()
+}
+
 func seedPendingAsset(t *testing.T, pool *pgxpool.Pool) (svc *Service, assetID, projectID string) {
 	t.Helper()
 	ctx := context.Background()
 	_ = pool.QueryRow(ctx, `INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),'org','p','u') RETURNING id`).Scan(&projectID)
-	as := assets.New(pool)
+	as := assets.New(testGorm(t))
 	a, err := as.Create(ctx, assets.CreateInput{ProjectID: projectID, ShotID: "s1", Type: "image", Prompt: "p", Style: "国风", Status: "pending_acceptance"})
 	if err != nil {
 		t.Fatalf("seed asset: %v", err)
@@ -50,7 +69,7 @@ func seedNarrationShot(t *testing.T, pool *pgxpool.Pool, oldText string) (svc *S
 	ctx := context.Background()
 	_ = pool.QueryRow(ctx, `INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),'org','p','u') RETURNING id`).Scan(&projectID)
 	_ = pool.QueryRow(ctx, `INSERT INTO shots (id,project_id,script_id,todo_id,shot_no,action) VALUES (md5(random()::text),$1,'sc','td',1,$2) RETURNING id`, projectID, oldText).Scan(&shotID)
-	as := assets.New(pool)
+	as := assets.New(testGorm(t))
 	a, err := as.Create(ctx, assets.CreateInput{ProjectID: projectID, ShotID: shotID, Type: "audio", Prompt: oldText, Style: "国风", Status: "pending_acceptance"})
 	if err != nil {
 		t.Fatalf("seed audio asset: %v", err)
@@ -75,7 +94,7 @@ func TestRegenerateNarration_UpdatesShotAndRegensAudio(t *testing.T) {
 		t.Fatalf("want shot action 新旁白, got %q", action)
 	}
 	// ② a new audio version was spawned: kind still audio, prompt=new text.
-	child, _ := assets.New(pool).Get(ctx, newAssetID)
+	child, _ := assets.New(testGorm(t)).Get(ctx, newAssetID)
 	if child.Type != "audio" {
 		t.Fatalf("want child kind audio, got %q", child.Type)
 	}
@@ -101,7 +120,7 @@ func TestRegenerateNarration_EmptyTextErrorsAndKeepsData(t *testing.T) {
 	if action != "旧旁白" {
 		t.Fatalf("shot action should be unchanged, got %q", action)
 	}
-	got, _ := assets.New(pool).Get(ctx, audioID)
+	got, _ := assets.New(testGorm(t)).Get(ctx, audioID)
 	if got.Status != "pending_acceptance" {
 		t.Fatalf("audio asset should be untouched, got status %q", got.Status)
 	}
@@ -113,7 +132,7 @@ func TestAcceptMovesToAccepted(t *testing.T) {
 	if err := svc.Accept(context.Background(), id); err != nil {
 		t.Fatalf("accept: %v", err)
 	}
-	got, _ := assets.New(pool).Get(context.Background(), id)
+	got, _ := assets.New(testGorm(t)).Get(context.Background(), id)
 	if got.Status != "accepted" {
 		t.Fatalf("want accepted, got %q", got.Status)
 	}
@@ -134,7 +153,7 @@ func TestRejectMovesToRejected(t *testing.T) {
 	if err := svc.Reject(context.Background(), id); err != nil {
 		t.Fatalf("reject: %v", err)
 	}
-	got, _ := assets.New(pool).Get(context.Background(), id)
+	got, _ := assets.New(testGorm(t)).Get(context.Background(), id)
 	if got.Status != "rejected" {
 		t.Fatalf("want rejected, got %q", got.Status)
 	}
@@ -149,11 +168,11 @@ func TestRegenerateSpawnsVersionAndTodo(t *testing.T) {
 		t.Fatalf("regenerate: %v", err)
 	}
 	// parent moved to rejected; new asset is v2 generating with parent lineage.
-	parent, _ := assets.New(pool).Get(ctx, id)
+	parent, _ := assets.New(testGorm(t)).Get(ctx, id)
 	if parent.Status != "rejected" {
 		t.Fatalf("parent should be rejected after regenerate, got %q", parent.Status)
 	}
-	child, _ := assets.New(pool).Get(ctx, newAssetID)
+	child, _ := assets.New(testGorm(t)).Get(ctx, newAssetID)
 	if child.Version != 2 || child.ParentAssetID != id {
 		t.Fatalf("child lineage wrong: v=%d parent=%q", child.Version, child.ParentAssetID)
 	}
