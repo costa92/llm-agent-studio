@@ -16,7 +16,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	"github.com/costa92/llm-agent-studio/internal/assets"
 	"github.com/costa92/llm-agent-studio/internal/todos"
@@ -29,12 +29,12 @@ var ErrConflict = errors.New("review: asset not pending_acceptance")
 type Service struct {
 	assets *assets.Store
 	todos  *todos.Store
-	pool   *pgxpool.Pool // narration regenerate updates shots.action in the same tx
+	db     *gorm.DB // narration regenerate updates shots.action in the same tx
 }
 
 // New builds a Service.
-func New(as *assets.Store, td *todos.Store, pool *pgxpool.Pool) *Service {
-	return &Service{assets: as, todos: td, pool: pool}
+func New(as *assets.Store, td *todos.Store, db *gorm.DB) *Service {
+	return &Service{assets: as, todos: td, db: db}
 }
 
 func newID() string {
@@ -131,21 +131,21 @@ func (s *Service) RegenerateNarration(ctx context.Context, audioAssetID, newText
 	// regenerate succeeds. (Regenerate writes via the pool, not this tx, so the
 	// commit boundary is what keeps shots.action from diverging from a failed
 	// regenerate.)
-	tx, err := s.pool.Begin(ctx)
+	var newAssetID, todoID string
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec(`UPDATE shots SET action=$1 WHERE id=$2`, newText, a.ShotID).Error; err != nil {
+			return fmt.Errorf("review: update shot action: %w", err)
+		}
+		// Regenerate keeps the original asset's kind (audio) and versions it; newText
+		// becomes the new TTS text (editedPrompt).
+		var rerr error
+		newAssetID, todoID, rerr = s.Regenerate(ctx, audioAssetID, newText)
+		if rerr != nil {
+			return rerr
+		}
+		return nil
+	})
 	if err != nil {
-		return "", "", err
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `UPDATE shots SET action=$1 WHERE id=$2`, newText, a.ShotID); err != nil {
-		return "", "", fmt.Errorf("review: update shot action: %w", err)
-	}
-	// Regenerate keeps the original asset's kind (audio) and versions it; newText
-	// becomes the new TTS text (editedPrompt).
-	newAssetID, todoID, err := s.Regenerate(ctx, audioAssetID, newText)
-	if err != nil {
-		return "", "", err
-	}
-	if err := tx.Commit(ctx); err != nil {
 		return "", "", err
 	}
 	return newAssetID, todoID, nil

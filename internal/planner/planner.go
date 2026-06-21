@@ -9,7 +9,7 @@ import (
 
 	coreagents "github.com/costa92/llm-agent"
 	"github.com/costa92/llm-agent-contract/llm"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	"github.com/costa92/llm-agent-studio/internal/prompt"
 	"github.com/costa92/llm-agent-studio/internal/todos"
@@ -44,7 +44,7 @@ type ReadyTodo struct {
 type Planner struct {
 	model llm.ChatModel // bound default for Plan; PlanWith routes per-org (BYOK)
 	todos *todos.Store
-	pool  *pgxpool.Pool
+	db    *gorm.DB
 }
 
 const plannerSystemPrompt = `You are a content-production planner. Given a brief, output a todo graph as a JSON object with EXACTLY this shape and nothing else:
@@ -52,8 +52,8 @@ const plannerSystemPrompt = `You are a content-production planner. Given a brief
 Allowed node types: "script", "storyboard". The graph MUST contain a "script" node, must be acyclic, and "storyboard" should depend on "script". Output ONLY the JSON object.`
 
 // New builds a Planner over the bound default model (used by Plan).
-func New(model llm.ChatModel, todoStore *todos.Store, pool *pgxpool.Pool) *Planner {
-	return &Planner{model: model, todos: todoStore, pool: pool}
+func New(model llm.ChatModel, todoStore *todos.Store, db *gorm.DB) *Planner {
+	return &Planner{model: model, todos: todoStore, db: db}
 }
 
 func newID() string {
@@ -103,10 +103,10 @@ func (p *Planner) PlanWith(ctx context.Context, projectID string, model llm.Chat
 
 	// Persist the plan row (raw text stored as a JSON string for auditing).
 	rawJSON, _ := json.Marshal(rawText)
-	if _, err := p.pool.Exec(ctx,
+	if err := p.db.WithContext(ctx).Exec(
 		`INSERT INTO plans (id, project_id, status, raw_plan_json, valid, fallback_used)
 		 VALUES ($1,$2,'created',$3,$4,$5)`,
-		planID, projectID, rawJSON, valid, fallback); err != nil {
+		planID, projectID, rawJSON, valid, fallback).Error; err != nil {
 		return Result{}, fmt.Errorf("planner: insert plan: %w", err)
 	}
 
@@ -234,10 +234,10 @@ func (p *Planner) PlanCustom(ctx context.Context, projectID, workflowID string, 
 	// Persist the plan row. Status 'created', valid true, fallback_used false.
 	// NULLIF maps an empty workflowID to NULL (the FK is nullable).
 	rawJSON, _ := json.Marshal(nodes)
-	if _, err := p.pool.Exec(ctx,
+	if err := p.db.WithContext(ctx).Exec(
 		`INSERT INTO plans (id, project_id, workflow_id, status, raw_plan_json, valid, fallback_used)
 		 VALUES ($1,$2,NULLIF($3,''),'created',$4,true,false)`,
-		planID, projectID, workflowID, rawJSON); err != nil {
+		planID, projectID, workflowID, rawJSON).Error; err != nil {
 		return Result{}, fmt.Errorf("planner: insert plan: %w", err)
 	}
 
@@ -262,7 +262,7 @@ func (p *Planner) PlanCustom(ctx context.Context, projectID, workflowID string, 
 				inputMap["systemPrompt"] = content
 			} else {
 				var promptContent string
-				err := p.pool.QueryRow(ctx, "SELECT content FROM prompts WHERE id=$1", n.PromptID).Scan(&promptContent)
+				err := p.db.WithContext(ctx).Raw("SELECT content FROM prompts WHERE id=$1", n.PromptID).Row().Scan(&promptContent)
 				if err != nil {
 					return Result{}, fmt.Errorf("planner: get prompt %q: %w", n.PromptID, err)
 				}
