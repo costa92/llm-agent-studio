@@ -4,6 +4,7 @@ import { createMemoryHistory, createRouter, RouterProvider } from "@tanstack/rea
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { routeTree } from "@/routeTree.gen"
 import { AuthProvider } from "@/app/auth"
+import { ThemeProvider } from "@/app/theme"
 import { setAccessToken } from "@/lib/apiClient"
 import { installFetchRoutes, jsonResponse } from "@/test/helpers"
 
@@ -22,11 +23,13 @@ function renderRoute(path: string) {
     defaultOptions: { queries: { retry: false } },
   })
   render(
-    <AuthProvider>
-      <QueryClientProvider client={queryClient}>
-        <RouterProvider router={router} />
-      </QueryClientProvider>
-    </AuthProvider>,
+    <ThemeProvider>
+      <AuthProvider>
+        <QueryClientProvider client={queryClient}>
+          <RouterProvider router={router} />
+        </QueryClientProvider>
+      </AuthProvider>
+    </ThemeProvider>,
   )
   return router
 }

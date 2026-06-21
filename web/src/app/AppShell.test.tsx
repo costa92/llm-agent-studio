@@ -10,6 +10,7 @@ import {
   Outlet,
 } from "@tanstack/react-router"
 import { AppShell } from "./AppShell"
+import { ThemeProvider } from "./theme"
 
 // AppShell 用 <Link>，需挂在 RouterProvider 下。建一个含 4 个 nav 目标的最小内存路由树，
 // 把待测的 AppShell 渲染进根布局，断言导航项与角色门禁。
@@ -50,7 +51,11 @@ function renderShell(
     routeTree,
     history: createMemoryHistory({ initialEntries: [props.initialEntry ?? "/orgs/acme/projects"] }),
   })
-  return render(<RouterProvider router={router as never} />)
+  return render(
+    <ThemeProvider>
+      <RouterProvider router={router as never} />
+    </ThemeProvider>,
+  )
 }
 
 describe("AppShell", () => {
