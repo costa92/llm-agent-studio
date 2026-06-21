@@ -32,7 +32,7 @@ func newPlanner(t *testing.T, model llm.ChatModel) (*Planner, *storage.Storage, 
 		`INSERT INTO projects (id, org_id, name, created_by) VALUES ($1,'o','n','u')`, projID); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
-	return New(model, todos.New(st.GORM()), st.Pool()), st, projID
+	return New(model, todos.New(st.GORM()), st.GORM()), st, projID
 }
 
 func TestPlanValidGraph(t *testing.T) {

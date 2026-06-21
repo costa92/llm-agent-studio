@@ -146,7 +146,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	workflowStore := workflows.New(st.GORM())
 	todoStore := todos.New(st.GORM())
 	eventStore := events.New(st.GORM())
-	plannerSvc := planner.New(model, todoStore, st.Pool())
+	plannerSvc := planner.New(model, todoStore, st.GORM())
 	scriptAgent := studioagents.NewScriptAgent(model)
 	storyboardAgent := studioagents.NewStoryboardAgent(model)
 
@@ -273,7 +273,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	// 绘本旁白安全 guardrail：始终启用（仅对绘本项目的旁白生效），用 env-default
 	// chat model。明确判定 unsafe 才跳过该页 audio，LLM 出错时放行（见 runStoryboard）。
 	narrationSafety := studioagents.NewNarrationSafety(model)
-	reviewSvc := review.New(assetStore, todoStore, st.Pool())
+	reviewSvc := review.New(assetStore, todoStore, st.GORM())
 
 	// SSRF-safe video/audio result puller (spec §9.4): content-type allowlist +
 	// 512MB hard cap (no streaming in M4 — memory ceiling ≈ MaxConcurrent×512MB).
