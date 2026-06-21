@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	"github.com/costa92/llm-agent-studio/internal/secretbox"
 	"github.com/costa92/llm-agent-studio/internal/storage"
@@ -42,6 +43,25 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	return st.Pool()
 }
 
+// testGorm 与 testPool 同样打开测试 DB + 迁移，但返回 GORM 句柄 (供 New)。
+func testGorm(t *testing.T) *gorm.DB {
+	t.Helper()
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run storage config store tests")
+	}
+	ctx := context.Background()
+	st, err := storage.Open(ctx, storage.Config{PGURL: dsn})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(st.Close)
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return st.GORM()
+}
+
 func s3Input(secret string) UpsertInput {
 	return UpsertInput{
 		Mode: "s3", Endpoint: "https://s3.example.com", Region: "us-east-1",
@@ -50,8 +70,7 @@ func s3Input(secret string) UpsertInput {
 }
 
 func TestUpsertGlobalRoundTrip(t *testing.T) {
-	pool := testPool(t)
-	st := New(pool, testBox(t))
+	st := New(testGorm(t), testBox(t))
 	ctx := context.Background()
 	sc, err := st.UpsertGlobal(ctx, s3Input("topsecret"))
 	if err != nil {
@@ -71,7 +90,7 @@ func TestUpsertGlobalRoundTrip(t *testing.T) {
 
 func TestUpsertGlobalIsSingleton(t *testing.T) {
 	pool := testPool(t)
-	st := New(pool, testBox(t))
+	st := New(testGorm(t), testBox(t))
 	ctx := context.Background()
 	if _, err := st.UpsertGlobal(ctx, s3Input("s1")); err != nil {
 		t.Fatalf("first upsert: %v", err)
@@ -95,8 +114,7 @@ func TestUpsertGlobalIsSingleton(t *testing.T) {
 }
 
 func TestCreateForOrgRoundTrip(t *testing.T) {
-	pool := testPool(t)
-	st := New(pool, testBox(t))
+	st := New(testGorm(t), testBox(t))
 	ctx := context.Background()
 	org := "org-a-" + uniqueSuffix()
 	in := s3Input("sek")
@@ -131,7 +149,7 @@ func TestCreateForOrgRoundTrip(t *testing.T) {
 
 func TestUpdateKeepOrReplaceSecret(t *testing.T) {
 	pool := testPool(t)
-	st := New(pool, testBox(t))
+	st := New(testGorm(t), testBox(t))
 	ctx := context.Background()
 	org := "org-k-" + uniqueSuffix()
 	in := s3Input("orig-secret")
@@ -169,7 +187,7 @@ func TestUpdateKeepOrReplaceSecret(t *testing.T) {
 
 func TestListMissing(t *testing.T) {
 	pool := testPool(t)
-	st := New(pool, testBox(t))
+	st := New(testGorm(t), testBox(t))
 	ctx := context.Background()
 	list, err := st.List(ctx, "org-nope-"+uniqueSuffix())
 	if err != nil || len(list) != 0 {
@@ -180,7 +198,7 @@ func TestListMissing(t *testing.T) {
 
 func TestResolvePrecedence(t *testing.T) {
 	pool := testPool(t)
-	st := New(pool, testBox(t))
+	st := New(testGorm(t), testBox(t))
 	ctx := context.Background()
 	orgP := "org-p-" + uniqueSuffix()
 	// global enabled.
@@ -227,7 +245,7 @@ func TestResolvePrecedence(t *testing.T) {
 
 func TestDeleteByID(t *testing.T) {
 	pool := testPool(t)
-	st := New(pool, testBox(t))
+	st := New(testGorm(t), testBox(t))
 	ctx := context.Background()
 	org := "org-d-" + uniqueSuffix()
 	in := s3Input("s")
@@ -331,7 +349,7 @@ func mustDisabledBox(t *testing.T) *secretbox.Box {
 func TestLocalfsModeNoBucketRequired(t *testing.T) {
 	// localfs 不需要 bucket/endpoint，且无 secret → 入库成功 (round-trip via PG)。
 	pool := testPool(t)
-	st := New(pool, testBox(t))
+	st := New(testGorm(t), testBox(t))
 	ctx := context.Background()
 	org := "org-lfs-" + uniqueSuffix()
 	in := UpsertInput{Mode: "localfs", Name: "lfs", PublicPrefix: "/files", UseSSL: true, Enabled: true}
@@ -353,7 +371,7 @@ func TestLocalfsModeNoBucketRequired(t *testing.T) {
 // PublicPrefix=path 前缀, Endpoint=GHE API 根, SecretKey=token (加密入库)。
 func TestGithubModeColumnOverload(t *testing.T) {
 	pool := testPool(t)
-	st := New(pool, testBox(t))
+	st := New(testGorm(t), testBox(t))
 	ctx := context.Background()
 	org := "org-gh-" + uniqueSuffix()
 	in := UpsertInput{
@@ -381,7 +399,7 @@ func TestGithubModeColumnOverload(t *testing.T) {
 
 func TestMultipleOrgConfigsAndResolution(t *testing.T) {
 	pool := testPool(t)
-	st := New(pool, testBox(t))
+	st := New(testGorm(t), testBox(t))
 	ctx := context.Background()
 	orgID := "org-multi-" + uniqueSuffix()
 
@@ -469,8 +487,7 @@ func TestMultipleOrgConfigsAndResolution(t *testing.T) {
 // that ResolveByID returns (i.e., same mode/bucket as the one ResolveForOrgAndMode
 // returned). Mismatch proves the two helpers diverged.
 func TestResolveAndConfigIDAgreement(t *testing.T) {
-	pool := testPool(t)
-	st := New(pool, testBox(t))
+	st := New(testGorm(t), testBox(t))
 	ctx := context.Background()
 	org := "org-agree-" + uniqueSuffix()
 
@@ -540,8 +557,7 @@ func uniqueSuffix() string {
 // TestResolveByID 验证按 config id 直接解析（serve 路径用：asset 持久化的 backend
 // 身份 → 解析回当时写入的后端，独立于 org 当前 storage_mode）。
 func TestResolveByID(t *testing.T) {
-	pool := testPool(t)
-	st := New(pool, testBox(t))
+	st := New(testGorm(t), testBox(t))
 	ctx := context.Background()
 	org := "org-rbid-" + uniqueSuffix()
 	in := s3Input("sek-rbid")
@@ -578,8 +594,7 @@ func TestResolveByID(t *testing.T) {
 // ResolveByID → ok=false（写目标排除），但 ResolveByIDForServe → ok=true（历史
 // asset 仍按写入时的后端身份可读）。修复「禁用在用存储配置 → 既有资产 404」。
 func TestResolveByIDForServe(t *testing.T) {
-	pool := testPool(t)
-	st := New(pool, testBox(t))
+	st := New(testGorm(t), testBox(t))
 	ctx := context.Background()
 	org := "org-rbids-" + uniqueSuffix()
 	in := s3Input("sek-rbids")
@@ -619,7 +634,7 @@ func TestResolveByIDForServe(t *testing.T) {
 // 即便某 asset/项目覆盖因 bug/篡改持久化了他 org 的 config id 也绝不解析其凭证。
 func TestResolveByID_OrgScoped(t *testing.T) {
 	pool := testPool(t)
-	st := New(pool, testBox(t))
+	st := New(testGorm(t), testBox(t))
 	ctx := context.Background()
 	orgA := "org-A-" + uniqueSuffix()
 	orgB := "org-B-" + uniqueSuffix()
@@ -672,8 +687,7 @@ func TestResolveByID_OrgScoped(t *testing.T) {
 // TestConfigIDForOrgAndMode 验证写路径要持久化的 token：配置后端返回其 storage_configs.id；
 // 无 config 行（builtin 默认）返回 ""/ok=false，由调用方落 "builtin" sentinel。
 func TestConfigIDForOrgAndMode(t *testing.T) {
-	pool := testPool(t)
-	st := New(pool, testBox(t))
+	st := New(testGorm(t), testBox(t))
 	ctx := context.Background()
 	org := "org-cfgid-" + uniqueSuffix()
 	in := s3Input("sek-cfgid")
@@ -702,15 +716,14 @@ func TestConfigIDForOrgAndMode(t *testing.T) {
 // newStore 返回一个连接到测试 DB 的 Store。
 func newStore(t *testing.T) *Store {
 	t.Helper()
-	pool := testPool(t)
-	return New(pool, testBox(t))
+	return New(testGorm(t), testBox(t))
 }
 
 // newStoreAndPool 返回 Store + 底层 pool（供测试直接执行 SQL）。
 func newStoreAndPool(t *testing.T) (*Store, *pgxpool.Pool) {
 	t.Helper()
 	pool := testPool(t)
-	return New(pool, testBox(t)), pool
+	return New(testGorm(t), testBox(t)), pool
 }
 
 func TestMultiConfig_CreateListSetDefaultDelete(t *testing.T) {

@@ -8,12 +8,12 @@ package storageconfig
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	blobgithub "github.com/costa92/llm-agent-studio/internal/blob/github"
 	"github.com/costa92/llm-agent-studio/internal/secretbox"
@@ -81,13 +81,13 @@ type UpsertInput struct {
 
 // Store persists storage_configs.
 type Store struct {
-	pool *pgxpool.Pool
-	box  *secretbox.Box
+	db  *gorm.DB
+	box *secretbox.Box
 }
 
 // New builds a Store. box 提供 secret 的静态加解密；nil/disabled box 表示无法存储
 // secret (带非空 Secret 的 Upsert 返回 ErrEncUnavailable)。
-func New(pool *pgxpool.Pool, box *secretbox.Box) *Store { return &Store{pool: pool, box: box} }
+func New(db *gorm.DB, box *secretbox.Box) *Store { return &Store{db: db, box: box} }
 
 func newID() string {
 	b := make([]byte, 16)
@@ -165,13 +165,13 @@ func (s *Store) UpsertGlobal(ctx context.Context, in UpsertInput) (StorageConfig
 			enabled=EXCLUDED.enabled, updated_at=now()
 		RETURNING id, scope, org_id, mode, endpoint, region, bucket, access_key_id,
 			(secret_enc IS NOT NULL) AS has_secret, use_ssl, public_prefix, enabled, name, is_default`
-	row := s.pool.QueryRow(ctx, q,
-		newID(), in.Mode, in.Endpoint, in.Region, in.Bucket, in.AccessKeyID, enc, in.UseSSL, in.PublicPrefix, in.Enabled, replace, in.Name)
+	row := s.db.WithContext(ctx).Raw(q,
+		newID(), in.Mode, in.Endpoint, in.Region, in.Bucket, in.AccessKeyID, enc, in.UseSSL, in.PublicPrefix, in.Enabled, replace, in.Name).Row()
 	return scanConfig(row)
 }
 
 // scanConfig 把 RETURNING/SELECT 行扫进公开 DTO (列序固定)。
-func scanConfig(row pgx.Row) (StorageConfig, error) {
+func scanConfig(row interface{ Scan(...any) error }) (StorageConfig, error) {
 	var sc StorageConfig
 	if err := row.Scan(&sc.ID, &sc.Scope, &sc.OrgID, &sc.Mode, &sc.Endpoint, &sc.Region,
 		&sc.Bucket, &sc.AccessKeyID, &sc.HasSecret, &sc.UseSSL, &sc.PublicPrefix, &sc.Enabled,
@@ -183,13 +183,13 @@ func scanConfig(row pgx.Row) (StorageConfig, error) {
 
 // GetGlobal 读 global 配置。无行 → ok=false。
 func (s *Store) GetGlobal(ctx context.Context) (StorageConfig, bool, error) {
-	row := s.pool.QueryRow(ctx,
+	row := s.db.WithContext(ctx).Raw(
 		`SELECT id, scope, org_id, mode, endpoint, region, bucket, access_key_id,
 			(secret_enc IS NOT NULL) AS has_secret, use_ssl, public_prefix, enabled, name, is_default
-		 FROM storage_configs WHERE scope='global' LIMIT 1`)
+		 FROM storage_configs WHERE scope='global' LIMIT 1`).Row()
 	sc, err := scanConfig(row)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return StorageConfig{}, false, nil
 		}
 		return StorageConfig{}, false, err
@@ -199,11 +199,11 @@ func (s *Store) GetGlobal(ctx context.Context) (StorageConfig, bool, error) {
 
 // List 返回 org 的所有 org-scope 配置，默认在前。
 func (s *Store) List(ctx context.Context, orgID string) ([]StorageConfig, error) {
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db.WithContext(ctx).Raw(
 		`SELECT id, scope, org_id, mode, endpoint, region, bucket, access_key_id,
 			(secret_enc IS NOT NULL), use_ssl, public_prefix, enabled, name, is_default
 		 FROM storage_configs WHERE scope='org' AND org_id=$1
-		 ORDER BY is_default DESC, created_at ASC`, orgID)
+		 ORDER BY is_default DESC, created_at ASC`, orgID).Rows()
 	if err != nil {
 		return nil, fmt.Errorf("storageconfig: list: %w", err)
 	}
@@ -233,9 +233,9 @@ func (s *Store) Create(ctx context.Context, orgID string, in UpsertInput) (Stora
 		return StorageConfig{}, err
 	}
 	var hasDefault bool
-	if err := s.pool.QueryRow(ctx,
+	if err := s.db.WithContext(ctx).Raw(
 		`SELECT EXISTS(SELECT 1 FROM storage_configs WHERE scope='org' AND org_id=$1 AND enabled=true AND is_default=true)`,
-		orgID).Scan(&hasDefault); err != nil {
+		orgID).Row().Scan(&hasDefault); err != nil {
 		return StorageConfig{}, fmt.Errorf("storageconfig: check default: %w", err)
 	}
 	isDefault := in.Enabled && !hasDefault
@@ -245,9 +245,9 @@ func (s *Store) Create(ctx context.Context, orgID string, in UpsertInput) (Stora
 		VALUES ($1,'org',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 		RETURNING id, scope, org_id, mode, endpoint, region, bucket, access_key_id,
 			(secret_enc IS NOT NULL), use_ssl, public_prefix, enabled, name, is_default`
-	row := s.pool.QueryRow(ctx, q,
+	row := s.db.WithContext(ctx).Raw(q,
 		newID(), orgID, in.Mode, in.Endpoint, in.Region, in.Bucket, in.AccessKeyID, enc,
-		in.UseSSL, in.PublicPrefix, in.Enabled, in.Name, isDefault)
+		in.UseSSL, in.PublicPrefix, in.Enabled, in.Name, isDefault).Row()
 	return scanConfig(row)
 }
 
@@ -273,11 +273,11 @@ func (s *Store) Update(ctx context.Context, orgID, id string, in UpsertInput) (S
 		WHERE id=$1 AND org_id=$2 AND scope='org'
 		RETURNING id, scope, org_id, mode, endpoint, region, bucket, access_key_id,
 			(secret_enc IS NOT NULL), use_ssl, public_prefix, enabled, name, is_default`
-	row := s.pool.QueryRow(ctx, q,
+	row := s.db.WithContext(ctx).Raw(q,
 		id, orgID, in.Mode, in.Endpoint, in.Region, in.Bucket, in.AccessKeyID,
-		replace, enc, in.UseSSL, in.PublicPrefix, in.Enabled, in.Name)
+		replace, enc, in.UseSSL, in.PublicPrefix, in.Enabled, in.Name).Row()
 	sc, err := scanConfig(row)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return StorageConfig{}, ErrNotFound
 	}
 	return sc, err
@@ -289,41 +289,38 @@ func (s *Store) SetDefault(ctx context.Context, orgID, id string) error {
 	if orgID == "" || id == "" {
 		return fmt.Errorf("storageconfig: orgID+id required")
 	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	var enabled bool
-	if err := tx.QueryRow(ctx,
-		`SELECT enabled FROM storage_configs WHERE id=$1 AND org_id=$2 AND scope='org'`, id, orgID).
-		Scan(&enabled); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrNotFound
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var enabled bool
+		if err := tx.Raw(
+			`SELECT enabled FROM storage_configs WHERE id=$1 AND org_id=$2 AND scope='org'`, id, orgID).
+			Row().Scan(&enabled); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
 		}
-		return err
-	}
-	if !enabled {
-		return fmt.Errorf("storageconfig: cannot set a disabled config as default")
-	}
-	if _, err := tx.Exec(ctx,
-		`UPDATE storage_configs SET is_default=false WHERE org_id=$1 AND scope='org'`, orgID); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx,
-		`UPDATE storage_configs SET is_default=true WHERE id=$1 AND org_id=$2 AND scope='org'`, id, orgID); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+		if !enabled {
+			return fmt.Errorf("storageconfig: cannot set a disabled config as default")
+		}
+		if res := tx.Exec(
+			`UPDATE storage_configs SET is_default=false WHERE org_id=$1 AND scope='org'`, orgID); res.Error != nil {
+			return res.Error
+		}
+		if res := tx.Exec(
+			`UPDATE storage_configs SET is_default=true WHERE id=$1 AND org_id=$2 AND scope='org'`, id, orgID); res.Error != nil {
+			return res.Error
+		}
+		return nil
+	})
 }
 
 // DefaultConfigID 返回 org 默认 enabled 配置 id。
 func (s *Store) DefaultConfigID(ctx context.Context, orgID string) (string, bool, error) {
 	var id string
-	err := s.pool.QueryRow(ctx,
+	err := s.db.WithContext(ctx).Raw(
 		`SELECT id FROM storage_configs WHERE scope='org' AND org_id=$1 AND enabled=true AND is_default=true LIMIT 1`,
-		orgID).Scan(&id)
-	if errors.Is(err, pgx.ErrNoRows) {
+		orgID).Row().Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
 	if err != nil {
@@ -338,32 +335,29 @@ func (s *Store) Delete(ctx context.Context, orgID, id string) error {
 	if orgID == "" || id == "" {
 		return fmt.Errorf("storageconfig: orgID+id required")
 	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	var refs int
-	if err := tx.QueryRow(ctx,
-		`SELECT count(*) FROM assets WHERE storage_config_id=$1`, id).Scan(&refs); err != nil {
-		return fmt.Errorf("storageconfig: ref check: %w", err)
-	}
-	if refs > 0 {
-		return ErrInUse
-	}
-	tag, err := tx.Exec(ctx,
-		`DELETE FROM storage_configs WHERE id=$1 AND org_id=$2 AND scope='org'`, id, orgID)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	if _, err := tx.Exec(ctx,
-		`UPDATE projects SET storage_config_id='' WHERE storage_config_id=$1`, id); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var refs int
+		if err := tx.Raw(
+			`SELECT count(*) FROM assets WHERE storage_config_id=$1`, id).Row().Scan(&refs); err != nil {
+			return fmt.Errorf("storageconfig: ref check: %w", err)
+		}
+		if refs > 0 {
+			return ErrInUse
+		}
+		res := tx.Exec(
+			`DELETE FROM storage_configs WHERE id=$1 AND org_id=$2 AND scope='org'`, id, orgID)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		if res := tx.Exec(
+			`UPDATE projects SET storage_config_id='' WHERE storage_config_id=$1`, id); res.Error != nil {
+			return res.Error
+		}
+		return nil
+	})
 }
 
 // ResolveForOrgAndMode 解析某 org 在指定 mode 下生效的存储配置 (含解密后的 SecretKey)，供 StorageRouter
@@ -457,8 +451,8 @@ func (s *Store) ConfigIDForOrgAndMode(ctx context.Context, orgID, mode string) (
 func (s *Store) configIDOne(ctx context.Context, where string, args ...any) (string, bool, error) {
 	q := `SELECT id FROM storage_configs ` + where + ` ORDER BY created_at DESC, id LIMIT 1`
 	var id string
-	if err := s.pool.QueryRow(ctx, q, args...).Scan(&id); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+	if err := s.db.WithContext(ctx).Raw(q, args...).Row().Scan(&id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
 			return "", false, nil
 		}
 		return "", false, fmt.Errorf("storageconfig: config id: %w", err)
@@ -473,11 +467,11 @@ func (s *Store) configIDOne(ctx context.Context, where string, args ...any) (str
 func (s *Store) resolveOne(ctx context.Context, where string, args ...any) (ResolvedStorage, bool, error) {
 	q := `SELECT mode, endpoint, region, bucket, access_key_id, secret_enc, use_ssl, public_prefix
 		 FROM storage_configs ` + where + ` ORDER BY created_at DESC, id LIMIT 1`
-	row := s.pool.QueryRow(ctx, q, args...)
+	row := s.db.WithContext(ctx).Raw(q, args...).Row()
 	var rs ResolvedStorage
 	var enc []byte
 	if err := row.Scan(&rs.Mode, &rs.Endpoint, &rs.Region, &rs.Bucket, &rs.AccessKeyID, &enc, &rs.UseSSL, &rs.PublicPrefix); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return ResolvedStorage{}, false, nil
 		}
 		return ResolvedStorage{}, false, fmt.Errorf("storageconfig: resolve: %w", err)
