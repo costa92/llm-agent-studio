@@ -213,7 +213,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	// storageStore 复用 BYOK 同一把加密 box 解密 secret。buildStorageStore 复用 main 里
 	// 既有的 adapter 构造器 (绝不重实现 adapter)。零 storage_config 行时 ResolveForOrg
 	// 返回 !ok，router 始终回落 localfsDefault → 全流程仍可跑 (内置默认)。
-	storageStore := storageconfig.New(st.Pool(), encBox)
+	storageStore := storageconfig.New(st.GORM(), encBox)
 	buildStorageStore := func(rs storageconfig.ResolvedStorage) (blob.BlobStore, error) {
 		switch rs.Mode {
 		case "localfs":
