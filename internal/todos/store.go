@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/lib/pq"
 	"gorm.io/gorm"
 )
@@ -161,14 +160,14 @@ type DynamicSpec struct {
 // plan id; todos.plan_id is NOT NULL but has NO FK. A future schema change that
 // drops the next_run_at default (or adds a plan_id FK) would break fan-out
 // claimability — keep the default.
-func (s *Store) AddDynamic(ctx context.Context, tx pgx.Tx, projectID, planID, parentTodoID string, specs []DynamicSpec) ([]string, error) {
+func (s *Store) AddDynamic(ctx context.Context, tx *gorm.DB, projectID, planID, parentTodoID string, specs []DynamicSpec) ([]string, error) {
 	ids := make([]string, 0, len(specs))
 	for _, sp := range specs {
 		id := newID()
-		if _, err := tx.Exec(ctx,
+		if err := tx.Exec(
 			`INSERT INTO todos (id, project_id, plan_id, type, status, depends_on, input_json)
 			 VALUES ($1,$2,$3,$4,'ready',$5,$6)`,
-			id, projectID, planID, sp.Type, []string{parentTodoID}, sp.InputJSON); err != nil {
+			id, projectID, planID, sp.Type, pq.StringArray([]string{parentTodoID}), sp.InputJSON).Error; err != nil {
 			return nil, fmt.Errorf("todos: add dynamic: %w", err)
 		}
 		ids = append(ids, id)

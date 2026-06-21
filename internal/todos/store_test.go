@@ -6,11 +6,18 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	"github.com/costa92/llm-agent-studio/internal/storage"
 )
 
 func newStore(t *testing.T) (*Store, *pgxpool.Pool, string) {
+	t.Helper()
+	st, pool, _, projID := newStoreWithGorm(t)
+	return st, pool, projID
+}
+
+func newStoreWithGorm(t *testing.T) (*Store, *pgxpool.Pool, *gorm.DB, string) {
 	t.Helper()
 	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
 	if dsn == "" {
@@ -32,7 +39,7 @@ func newStore(t *testing.T) (*Store, *pgxpool.Pool, string) {
 		`INSERT INTO projects (id, org_id, name, created_by) VALUES ($1,'o1','t','u1')`, projID); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
-	return New(st.GORM()), pool, projID
+	return New(st.GORM()), pool, st.GORM(), projID
 }
 
 func randHex(t *testing.T) string {
@@ -95,7 +102,7 @@ func TestMarkDoneUnblocksDependents(t *testing.T) {
 }
 
 func TestAddDynamicCreatesReadyAssetTodos(t *testing.T) {
-	st, pool, pid := newStore(t)
+	st, pool, gdb, pid := newStoreWithGorm(t)
 	ctx := context.Background()
 	planID := "pl_" + randHex(t)
 	// Seed a storyboard todo (the fan-out parent), mirroring the worker flow.
@@ -105,19 +112,16 @@ func TestAddDynamicCreatesReadyAssetTodos(t *testing.T) {
 		parentID, pid, planID); err != nil {
 		t.Fatalf("seed parent: %v", err)
 	}
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	ids, err := st.AddDynamic(ctx, tx, pid, planID, parentID, []DynamicSpec{
-		{Type: "asset", InputJSON: []byte(`{"shotId":"s1"}`)},
-		{Type: "asset", InputJSON: []byte(`{"shotId":"s2"}`)},
-	})
-	if err != nil {
+	var ids []string
+	if err := gdb.Transaction(func(tx *gorm.DB) error {
+		var e error
+		ids, e = st.AddDynamic(ctx, tx, pid, planID, parentID, []DynamicSpec{
+			{Type: "asset", InputJSON: []byte(`{"shotId":"s1"}`)},
+			{Type: "asset", InputJSON: []byte(`{"shotId":"s2"}`)},
+		})
+		return e
+	}); err != nil {
 		t.Fatalf("addDynamic: %v", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit: %v", err)
 	}
 	if len(ids) != 2 {
 		t.Fatalf("want 2 ids, got %d", len(ids))

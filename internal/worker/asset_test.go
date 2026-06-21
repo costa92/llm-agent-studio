@@ -79,7 +79,7 @@ func TestRunAssetWritesAssetAndGeneration(t *testing.T) {
 
 	fake := generate.NewFakeLooping(generate.GenResult{Bytes: []byte("PNG"), MimeType: "image/png", Provider: "fake", Model: "m", Tokens: 7, ImageCount: 1, LatencyMS: 50})
 	w := New(Config{
-		Pool: pool, Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
+		DB: assetTestGorm(t), Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
 		Storage:  testStorage(),
 		Assets:   assets.New(assetTestGorm(t)),
@@ -131,7 +131,7 @@ func TestRunStoryboardFansOutAssetTodos(t *testing.T) {
 	// M1 storyboard agent over a ScriptedLLM with one shots response.
 	sbAgent := newStoryboardAgentWithShots(t, 3)
 	w := New(Config{
-		Pool: pool, Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
+		DB: assetTestGorm(t), Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
 		Storyboard: sbAgent, WorkerID: "test", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
 	})
 	// Empty input — style must come from the project, not here.
@@ -171,7 +171,7 @@ func TestRunStoryboardFanOutIsIdempotent(t *testing.T) {
 	sbID := newID()
 	_, _ = pool.Exec(ctx, `INSERT INTO todos (id,project_id,plan_id,type,status,input_json) VALUES ($1,$2,'plan','storyboard','running','{}')`, sbID, pid)
 	w := New(Config{
-		Pool: pool, Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
+		DB: assetTestGorm(t), Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
 		Storyboard: newStoryboardAgentWithShots(t, 3), WorkerID: "test", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
 	})
 	if _, err := w.runStoryboard(ctx, claimed{todoID: sbID, projectID: pid, typ: "storyboard", attempts: 1, input: []byte(`{}`)}); err != nil {
@@ -180,7 +180,7 @@ func TestRunStoryboardFanOutIsIdempotent(t *testing.T) {
 	// Second run (re-claim). StoryboardAgent would yield 3 shots again, but the
 	// guard must short-circuit before any insert.
 	w2 := New(Config{
-		Pool: pool, Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
+		DB: assetTestGorm(t), Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
 		Storyboard: newStoryboardAgentWithShots(t, 3), WorkerID: "test", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
 	})
 	if _, err := w2.runStoryboard(ctx, claimed{todoID: sbID, projectID: pid, typ: "storyboard", attempts: 1, input: []byte(`{}`)}); err != nil {
@@ -221,7 +221,7 @@ func TestRunAssetRoutesViaOrgDefaultModelConfig(t *testing.T) {
 	}
 
 	w := New(Config{
-		Pool: pool, Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
+		DB: assetTestGorm(t), Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), defGen),
 		Storage:  testStorage(),
 		Assets:   assets.New(assetTestGorm(t)),
@@ -263,7 +263,7 @@ func TestProcessDiscardsAssetWhenTodoCanceledMidFlight(t *testing.T) {
 	}
 	fake := generate.NewFakeLooping(generate.GenResult{Bytes: []byte("PNG"), MimeType: "image/png", Provider: "fake", Model: "m", ImageCount: 1})
 	w := New(Config{
-		Pool: pool, Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
+		DB: assetTestGorm(t), Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
 		Storage:  testStorage(),
 		Assets:   assets.New(assetTestGorm(t)),
@@ -328,7 +328,7 @@ func TestRunAssetSyncRetryReusesRowNoDuplicateKey(t *testing.T) {
 		Bytes: []byte("PNG"), MimeType: "image/png", Provider: "fake", Model: "m", ImageCount: 1,
 	}}
 	w := New(Config{
-		Pool: pool, Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
+		DB: assetTestGorm(t), Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), gen),
 		Storage:  testStorage(),
 		Assets:   assets.New(assetTestGorm(t)),
@@ -391,7 +391,7 @@ func TestRunAssetSyncPermanentFailureTerminalFailsViaProcess(t *testing.T) {
 	// failUntil huge → always fails.
 	gen := &flakyGen{failUntil: 1 << 30}
 	w := New(Config{
-		Pool: pool, Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
+		DB: assetTestGorm(t), Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), gen),
 		Storage:  testStorage(),
 		Assets:   assets.New(assetTestGorm(t)),
@@ -443,7 +443,7 @@ func TestRunAssetWithDevFakeGeneratorReachesPendingAcceptance(t *testing.T) {
 		todoID, pid, in)
 
 	w := New(Config{
-		Pool: pool, Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
+		DB: assetTestGorm(t), Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), generate.NewDevFakeGenerator()),
 		Storage:  testStorage(),
 		Assets:   assets.New(assetTestGorm(t)),
@@ -486,7 +486,7 @@ func TestProcessAppliesCallTimeout(t *testing.T) {
 		`INSERT INTO todos (id,project_id,plan_id,type,status,input_json) VALUES ($1,$2,'plan','asset','running',$3)`,
 		todoID, pid, `{"shotId":"s1","shotPrompt":"x","style":""}`)
 	w := New(Config{
-		Pool: pool, Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
+		DB: assetTestGorm(t), Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
 		Asset:       studioagents.NewAssetAgent(prompt.NewBuilder(), slowGen{}),
 		Storage:     testStorage(),
 		Assets:      assets.New(assetTestGorm(t)),
@@ -552,7 +552,7 @@ func TestRunStoryboardUsesParentScriptTodo(t *testing.T) {
 		sbTodo, pid, []string{parentTodo})
 	fake := generate.NewFakeLooping(generate.GenResult{Bytes: []byte("P"), MimeType: "image/png", Provider: "fake", Model: "m", ImageCount: 1})
 	w := New(Config{
-		Pool: pool, Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
+		DB: assetTestGorm(t), Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
 		Storyboard: newStoryboardAgentWithShots(t, 1),
 		Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
 		Storage:    testStorage(), Assets: assets.New(assetTestGorm(t)), Cost: cost.New(assetTestGorm(t)),
@@ -581,7 +581,7 @@ func TestRunAssetPrescreensViaReviewAgent(t *testing.T) {
 		llm.Response{Text: `{"score":42,"flags":["check_copyright"],"note":"meh"}`},
 	))
 	w := New(Config{
-		Pool: pool, Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
+		DB: assetTestGorm(t), Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
 		Review:   studioagents.NewReviewAgent(reviewModel),
 		Storage:  testStorage(),
@@ -638,7 +638,7 @@ func TestClaimRespectsGlobalGenerationCap(t *testing.T) {
 		    locked_until = CASE WHEN status='running' THEN now() + interval '1 hour' ELSE locked_until END
 		WHERE project_id <> $1 AND status IN ('ready','running')`, pid)
 
-	capped := New(Config{Pool: pool, WorkerID: "capped", Lease: time.Minute, MaxConcurrentGen: 1})
+	capped := New(Config{DB: assetTestGorm(t), WorkerID: "capped", Lease: time.Minute, MaxConcurrentGen: 1})
 	// Drain claims and assert OUR ready asset todo is never taken while the
 	// slot is occupied (pre-existing rows were neutralized above, so the first
 	// empty claim ends the loop deterministically).
@@ -655,7 +655,7 @@ func TestClaimRespectsGlobalGenerationCap(t *testing.T) {
 		}
 	}
 	// cap=0 disables the gate: the todo becomes claimable.
-	uncapped := New(Config{Pool: pool, WorkerID: "uncapped", Lease: time.Minute})
+	uncapped := New(Config{DB: assetTestGorm(t), WorkerID: "uncapped", Lease: time.Minute})
 	claimedOurs := false
 	for i := 0; i < 20; i++ {
 		c, ok, err := uncapped.claim(ctx)
@@ -704,7 +704,7 @@ func TestRunAssetQuotaBackstopFailsOverQuotaTodo(t *testing.T) {
 		todoID, pid, `{"shotId":"s1","shotPrompt":"x","style":""}`)
 	fake := generate.NewFakeLooping(generate.GenResult{Bytes: []byte("P"), MimeType: "image/png", Provider: "fake", Model: "m", ImageCount: 1})
 	w := New(Config{
-		Pool: pool, Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
+		DB: assetTestGorm(t), Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
 		Storage:  testStorage(),
 		Assets:   assets.New(assetTestGorm(t)),
@@ -750,7 +750,7 @@ func TestFanOutWritesKindAndDuration(t *testing.T) {
 
 	fake := generate.NewFakeLooping(generate.GenResult{Bytes: []byte("P"), MimeType: "image/png", Provider: "fake", Model: "m", ImageCount: 1})
 	w := New(Config{
-		Pool: pool, Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
+		DB: assetTestGorm(t), Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
 		Storyboard: newStoryboardAgentWithShots(t, 1),
 		Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
 		Storage:    testStorage(), Assets: assets.New(assetTestGorm(t)), Cost: cost.New(assetTestGorm(t)),
@@ -794,7 +794,7 @@ func asyncWorkerSetup(t *testing.T, pool *pgxpool.Pool, pollsToDone int) (*Worke
 	reg.Register("fake", "fake-video-async", fakeAsync)
 
 	w := New(Config{
-		Pool: pool, Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
+		DB: assetTestGorm(t), Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
 		Asset:   studioagents.NewAssetAgent(prompt.NewBuilder(), generate.NewFakeLooping(generate.GenResult{Provider: "img"})),
 		Storage: testStorage(), Assets: assets.New(assetTestGorm(t)), Cost: cost.New(assetTestGorm(t)),
 		Models: ms, Registry: reg,
@@ -1229,7 +1229,7 @@ func TestRunAsset_AudioRecordsCostAndPrompt(t *testing.T) {
 
 	spy := &voiceSpyGen{kind: "audio", ok: generate.GenResult{Bytes: []byte("MP3"), MimeType: "audio/mpeg", Provider: "fake", Model: "tts"}}
 	w := New(Config{
-		Pool: pool, Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
+		DB: assetTestGorm(t), Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), spy),
 		Storage:  testStorage(),
 		Assets:   assets.New(assetTestGorm(t)),
@@ -1291,7 +1291,7 @@ func TestRunAsset_ImageEffectivePrompt(t *testing.T) {
 
 	fake := generate.NewFakeLooping(generate.GenResult{Bytes: []byte("PNG"), MimeType: "image/png", Provider: "fake", Model: "m", ImageCount: 1})
 	w := New(Config{
-		Pool: pool, Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
+		DB: assetTestGorm(t), Todos: todos.New(assetTestGorm(t)), Projects: project.New(assetTestGorm(t)), Events: events.New(assetTestGorm(t)),
 		Asset:    studioagents.NewAssetAgent(prompt.NewBuilder(), fake),
 		Storage:  testStorage(),
 		Assets:   assets.New(assetTestGorm(t)),
