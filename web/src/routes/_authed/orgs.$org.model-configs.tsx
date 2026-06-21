@@ -46,9 +46,10 @@ function ModelConfigsPage() {
     return update.mutateAsync({ id, input })
   }
 
-  // 删除：确认弹窗已在 view 内；此处只发请求。
+  // 删除：确认弹窗已在 view 内；此处只发请求。mutateAsync 返回 {ok}，view 的
+  // onDelete 契约是 Promise<void>（不消费返回值），故丢弃 payload 以符合签名。
   function handleDelete(id: string): Promise<void> {
-    return del.mutateAsync(id)
+    return del.mutateAsync(id).then(() => undefined)
   }
 
   return (

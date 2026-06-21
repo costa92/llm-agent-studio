@@ -16,6 +16,7 @@ import {
   Wand2,
 } from "lucide-react"
 import { Button } from "@/components/studio/Button"
+import { ThemeSwitcher } from "@/components/studio/ThemeSwitcher"
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
 import { cleanOrg } from "./org"
 
@@ -340,7 +341,8 @@ export function AppShell({
           </SheetContent>
         </Sheet>
         {logo}
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
+          <ThemeSwitcher />
           {avatar ?? (
             <div className="grid h-[30px] w-[30px] place-items-center rounded-full bg-gradient-to-br from-script to-board font-heading text-[11px] font-semibold text-text-1">
               小A
@@ -392,6 +394,7 @@ export function AppShell({
             {currentOrg.slice(0, 2).toUpperCase()}
           </Button>
         )}
+        <ThemeSwitcher />
         {avatar ?? (
           <div className="grid h-[30px] w-[30px] place-items-center rounded-full bg-gradient-to-br from-script to-board font-heading text-[11px] font-semibold text-text-1">
             小A

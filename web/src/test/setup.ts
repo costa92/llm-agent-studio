@@ -26,3 +26,18 @@ if (typeof Element !== "undefined") {
     Element.prototype.scrollIntoView = () => {}
   }
 }
+
+// jsdom 不实现 matchMedia；ThemeProvider 用它探测 prefers-color-scheme。
+// 默认 matches:false（系统暗），单测可按用例 stub 覆盖（见 theme.test.tsx）。
+if (typeof window !== "undefined" && typeof window.matchMedia === "undefined") {
+  window.matchMedia = ((query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  })) as typeof window.matchMedia
+}
