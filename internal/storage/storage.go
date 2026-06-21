@@ -6,6 +6,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"gorm.io/driver/postgres"
@@ -41,6 +42,21 @@ func Open(ctx context.Context, cfg Config) (*Storage, error) {
 		pool.Close()
 		return nil, fmt.Errorf("storage: open gorm: %w", err)
 	}
+	// Bound the GORM (database/sql) pool — it is now the PRIMARY connection pool
+	// (nearly every package uses the GORM handle; only the external authz lib still
+	// holds the pgxpool). database/sql defaults to UNLIMITED open conns, which
+	// together with the coexisting pgxpool can exhaust Postgres' default
+	// max_connections (100). Conservative caps + recycling keep total connections
+	// well under that ceiling and drop stale conns behind an LB / server idle timeout.
+	sqlDB, err := gormDB.DB()
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("storage: gorm sql.DB: %w", err)
+	}
+	sqlDB.SetMaxOpenConns(25)
+	sqlDB.SetMaxIdleConns(10)
+	sqlDB.SetConnMaxLifetime(time.Hour)
+	sqlDB.SetConnMaxIdleTime(30 * time.Minute)
 	return &Storage{pool: pool, gormDB: gormDB}, nil
 }
 
