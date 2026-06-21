@@ -6,13 +6,13 @@ package cost
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 )
 
 // Generation is one generations row (a single provider call).
@@ -40,10 +40,10 @@ type Aggregate struct {
 }
 
 // Store persists + aggregates the generations ledger.
-type Store struct{ pool *pgxpool.Pool }
+type Store struct{ db *gorm.DB }
 
 // New builds a Store.
-func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
+func New(db *gorm.DB) *Store { return &Store{db: db} }
 
 func newID() string {
 	b := make([]byte, 16)
@@ -57,12 +57,12 @@ func (s *Store) Record(ctx context.Context, g Generation) error {
 	if kind == "" {
 		kind = "image"
 	}
-	_, err := s.pool.Exec(ctx,
+	err := s.db.WithContext(ctx).Exec(
 		`INSERT INTO generations
 		 (id, project_id, asset_id, todo_id, kind, provider, model, prompt, tokens, image_count, video_seconds, cost_micros, latency_ms)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
 		newID(), g.ProjectID, g.AssetID, g.TodoID, kind, g.Provider, g.Model, g.Prompt,
-		g.Tokens, g.ImageCount, g.VideoSeconds, g.CostMicros, g.LatencyMS)
+		g.Tokens, g.ImageCount, g.VideoSeconds, g.CostMicros, g.LatencyMS).Error
 	if err != nil {
 		return fmt.Errorf("cost: record: %w", err)
 	}
@@ -77,9 +77,9 @@ func scanAgg(row interface{ Scan(...any) error }) (Aggregate, error) {
 
 // ByProject aggregates the ledger for one project.
 func (s *Store) ByProject(ctx context.Context, projectID string) (Aggregate, error) {
-	a, err := scanAgg(s.pool.QueryRow(ctx, `
+	a, err := scanAgg(s.db.WithContext(ctx).Raw(`
 		SELECT count(*), COALESCE(sum(tokens),0), COALESCE(sum(image_count),0), COALESCE(sum(cost_micros),0)
-		FROM generations WHERE project_id=$1`, projectID))
+		FROM generations WHERE project_id=$1`, projectID).Row())
 	if err != nil {
 		return Aggregate{}, fmt.Errorf("cost: by project: %w", err)
 	}
@@ -88,9 +88,9 @@ func (s *Store) ByProject(ctx context.Context, projectID string) (Aggregate, err
 
 // ByOrg aggregates the ledger for all projects in an org (via the project join).
 func (s *Store) ByOrg(ctx context.Context, orgID string) (Aggregate, error) {
-	a, err := scanAgg(s.pool.QueryRow(ctx, `
+	a, err := scanAgg(s.db.WithContext(ctx).Raw(`
 		SELECT count(*), COALESCE(sum(g.tokens),0), COALESCE(sum(g.image_count),0), COALESCE(sum(g.cost_micros),0)
-		FROM generations g JOIN projects p ON g.project_id=p.id WHERE p.org_id=$1`, orgID))
+		FROM generations g JOIN projects p ON g.project_id=p.id WHERE p.org_id=$1`, orgID).Row())
 	if err != nil {
 		return Aggregate{}, fmt.Errorf("cost: by org: %w", err)
 	}
@@ -109,11 +109,11 @@ type Price struct {
 // has no pricing row — the caller records cost_micros=0 (unpriced).
 func (s *Store) PriceFor(ctx context.Context, provider, model string) (Price, bool, error) {
 	var p Price
-	err := s.pool.QueryRow(ctx,
+	err := s.db.WithContext(ctx).Raw(
 		`SELECT micros_per_image, micros_per_1k_tokens, micros_per_second FROM pricing WHERE provider=$1 AND model=$2`,
-		provider, model).Scan(&p.MicrosPerImage, &p.MicrosPer1kTokens, &p.MicrosPerSecond)
+		provider, model).Row().Scan(&p.MicrosPerImage, &p.MicrosPer1kTokens, &p.MicrosPerSecond)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return Price{}, false, nil
 		}
 		return Price{}, false, fmt.Errorf("cost: price for %s/%s: %w", provider, model, err)
@@ -159,10 +159,10 @@ func rangeBounds(from, to time.Time) (time.Time, time.Time) {
 // open (spec §9 成本中心: 按时间聚合).
 func (s *Store) ByOrgBetween(ctx context.Context, orgID string, from, to time.Time) (Aggregate, error) {
 	from, to = rangeBounds(from, to)
-	a, err := scanAgg(s.pool.QueryRow(ctx, `
+	a, err := scanAgg(s.db.WithContext(ctx).Raw(`
 		SELECT count(*), COALESCE(sum(g.tokens),0), COALESCE(sum(g.image_count),0), COALESCE(sum(g.cost_micros),0)
 		FROM generations g JOIN projects p ON g.project_id=p.id
-		WHERE p.org_id=$1 AND g.created_at >= $2 AND g.created_at < $3`, orgID, from, to))
+		WHERE p.org_id=$1 AND g.created_at >= $2 AND g.created_at < $3`, orgID, from, to).Row())
 	if err != nil {
 		return Aggregate{}, fmt.Errorf("cost: by org between: %w", err)
 	}
@@ -172,9 +172,9 @@ func (s *Store) ByOrgBetween(ctx context.Context, orgID string, from, to time.Ti
 // ByProjectBetween aggregates one project's ledger within [from, to).
 func (s *Store) ByProjectBetween(ctx context.Context, projectID string, from, to time.Time) (Aggregate, error) {
 	from, to = rangeBounds(from, to)
-	a, err := scanAgg(s.pool.QueryRow(ctx, `
+	a, err := scanAgg(s.db.WithContext(ctx).Raw(`
 		SELECT count(*), COALESCE(sum(tokens),0), COALESCE(sum(image_count),0), COALESCE(sum(cost_micros),0)
-		FROM generations WHERE project_id=$1 AND created_at >= $2 AND created_at < $3`, projectID, from, to))
+		FROM generations WHERE project_id=$1 AND created_at >= $2 AND created_at < $3`, projectID, from, to).Row())
 	if err != nil {
 		return Aggregate{}, fmt.Errorf("cost: by project between: %w", err)
 	}
@@ -191,12 +191,12 @@ type ProjectAggregate struct {
 // PerProjectByOrg rolls the org ledger up per project, most expensive first.
 func (s *Store) PerProjectByOrg(ctx context.Context, orgID string, from, to time.Time) ([]ProjectAggregate, error) {
 	from, to = rangeBounds(from, to)
-	rows, err := s.pool.Query(ctx, `
+	rows, err := s.db.WithContext(ctx).Raw(`
 		SELECT p.id, p.name, count(*), COALESCE(sum(g.tokens),0), COALESCE(sum(g.image_count),0), COALESCE(sum(g.cost_micros),0)
 		FROM generations g JOIN projects p ON g.project_id=p.id
 		WHERE p.org_id=$1 AND g.created_at >= $2 AND g.created_at < $3
 		GROUP BY p.id, p.name
-		ORDER BY COALESCE(sum(g.cost_micros),0) DESC`, orgID, from, to)
+		ORDER BY COALESCE(sum(g.cost_micros),0) DESC`, orgID, from, to).Rows()
 	if err != nil {
 		return nil, fmt.Errorf("cost: per project: %w", err)
 	}
@@ -232,10 +232,10 @@ func (s *Store) RecentByOrg(ctx context.Context, orgID string, limit int) ([]Led
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	rows, err := s.pool.Query(ctx, `
+	rows, err := s.db.WithContext(ctx).Raw(`
 		SELECT g.id, g.project_id, p.name, g.kind, g.provider, g.model, g.tokens, g.image_count, g.cost_micros, g.latency_ms, g.created_at
 		FROM generations g JOIN projects p ON g.project_id=p.id
-		WHERE p.org_id=$1 ORDER BY g.created_at DESC, g.id DESC LIMIT $2`, orgID, limit)
+		WHERE p.org_id=$1 ORDER BY g.created_at DESC, g.id DESC LIMIT $2`, orgID, limit).Rows()
 	if err != nil {
 		return nil, fmt.Errorf("cost: recent: %w", err)
 	}
@@ -256,9 +256,9 @@ func (s *Store) RecentByOrg(ctx context.Context, orgID string, limit int) ([]Led
 // quota check, spec §12 配额).
 func (s *Store) CountByOrgSince(ctx context.Context, orgID string, since time.Time) (int, error) {
 	var n int
-	if err := s.pool.QueryRow(ctx, `
+	if err := s.db.WithContext(ctx).Raw(`
 		SELECT count(*) FROM generations g JOIN projects p ON g.project_id=p.id
-		WHERE p.org_id=$1 AND g.created_at >= $2`, orgID, since).Scan(&n); err != nil {
+		WHERE p.org_id=$1 AND g.created_at >= $2`, orgID, since).Row().Scan(&n); err != nil {
 		return 0, fmt.Errorf("cost: count since: %w", err)
 	}
 	return n, nil
@@ -276,7 +276,7 @@ func (s *Store) UpsertSubmittedGeneration(ctx context.Context, g Generation) (st
 		kind = "video"
 	}
 	var id string
-	err := s.pool.QueryRow(ctx, `
+	err := s.db.WithContext(ctx).Raw(`
 		INSERT INTO generations
 		 (id, project_id, asset_id, todo_id, kind, provider, model, prompt, tokens, image_count, video_seconds, cost_micros, latency_ms)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
@@ -284,7 +284,7 @@ func (s *Store) UpsertSubmittedGeneration(ctx context.Context, g Generation) (st
 		  DO UPDATE SET id = generations.id
 		RETURNING id`,
 		newID(), g.ProjectID, g.AssetID, g.TodoID, kind, g.Provider, g.Model, g.Prompt,
-		g.Tokens, g.ImageCount, g.VideoSeconds, g.CostMicros, g.LatencyMS).Scan(&id)
+		g.Tokens, g.ImageCount, g.VideoSeconds, g.CostMicros, g.LatencyMS).Row().Scan(&id)
 	if err != nil {
 		return "", fmt.Errorf("cost: upsert submitted generation: %w", err)
 	}
@@ -295,9 +295,9 @@ func (s *Store) UpsertSubmittedGeneration(ctx context.Context, g Generation) (st
 // registered async row at poll-done (idempotent: re-running with the same values
 // is a no-op). Locates the row by (asset_id, todo_id) — no in-memory id passing.
 func (s *Store) UpdateGenerationByAssetTodo(ctx context.Context, assetID, todoID string, seconds int, costMicros int64) error {
-	if _, err := s.pool.Exec(ctx,
+	if err := s.db.WithContext(ctx).Exec(
 		`UPDATE generations SET video_seconds=$3, cost_micros=$4 WHERE asset_id=$1 AND todo_id=$2`,
-		assetID, todoID, seconds, costMicros); err != nil {
+		assetID, todoID, seconds, costMicros).Error; err != nil {
 		return fmt.Errorf("cost: update generation by asset/todo: %w", err)
 	}
 	return nil

@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	"github.com/costa92/llm-agent-studio/internal/storage"
 )
 
-func testPool(t *testing.T) *pgxpool.Pool {
+func testDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
 	if dsn == "" {
@@ -26,25 +26,25 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	if err := st.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	return st.Pool()
+	return st.GORM()
 }
 
-func seedProject(t *testing.T, pool *pgxpool.Pool, orgID string) string {
+func seedProject(t *testing.T, db *gorm.DB, orgID string) string {
 	t.Helper()
 	var id string
-	if err := pool.QueryRow(context.Background(),
+	if err := db.WithContext(context.Background()).Raw(
 		`INSERT INTO projects (id, org_id, name, created_by) VALUES (md5(random()::text), $1, 'p', 'u') RETURNING id`,
-		orgID).Scan(&id); err != nil {
+		orgID).Row().Scan(&id); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
 	return id
 }
 
 func TestRecordAndAggregateByProject(t *testing.T) {
-	pool := testPool(t)
-	st := New(pool)
+	db := testDB(t)
+	st := New(db)
 	ctx := context.Background()
-	pid := seedProject(t, pool, "org-cost")
+	pid := seedProject(t, db, "org-cost")
 	if err := st.Record(ctx, Generation{
 		ProjectID: pid, TodoID: "t", Kind: "image", Provider: "fake", Model: "m",
 		Tokens: 100, ImageCount: 1, CostMicros: 2000, LatencyMS: 350,
@@ -62,10 +62,10 @@ func TestRecordAndAggregateByProject(t *testing.T) {
 }
 
 func TestAggregateByOrg(t *testing.T) {
-	pool := testPool(t)
-	st := New(pool)
+	db := testDB(t)
+	st := New(db)
 	ctx := context.Background()
-	pid := seedProject(t, pool, "org-only")
+	pid := seedProject(t, db, "org-only")
 	_ = st.Record(ctx, Generation{ProjectID: pid, Kind: "image", Provider: "fake", Model: "m", CostMicros: 1500, ImageCount: 1})
 	agg, err := st.ByOrg(ctx, "org-only")
 	if err != nil {
@@ -77,12 +77,12 @@ func TestAggregateByOrg(t *testing.T) {
 }
 
 func TestPriceForAndRecordPriced(t *testing.T) {
-	pool := testPool(t)
+	db := testDB(t)
 	ctx := context.Background()
-	s := New(pool)
+	s := New(db)
 	// Seed a price for a test provider/model (idempotent for re-runs).
-	if _, err := pool.Exec(ctx, `INSERT INTO pricing (provider, model, kind, micros_per_image, micros_per_1k_tokens)
-		VALUES ('testprov','testmodel','image',5000,1000) ON CONFLICT (provider, model) DO NOTHING`); err != nil {
+	if err := db.WithContext(ctx).Exec(`INSERT INTO pricing (provider, model, kind, micros_per_image, micros_per_1k_tokens)
+		VALUES ('testprov','testmodel','image',5000,1000) ON CONFLICT (provider, model) DO NOTHING`).Error; err != nil {
 		t.Fatalf("seed pricing: %v", err)
 	}
 	p, ok, err := s.PriceFor(ctx, "testprov", "testmodel")
@@ -96,7 +96,7 @@ func TestPriceForAndRecordPriced(t *testing.T) {
 		t.Fatalf("unknown model should not be priced")
 	}
 	// RecordPriced fills cost_micros: 2 images * 5000 + 2000 tokens * 1000/1k.
-	pid := seedProject(t, pool, "org_priced")
+	pid := seedProject(t, db, "org_priced")
 	if err := s.RecordPriced(ctx, Generation{
 		ProjectID: pid, Kind: "image", Provider: "testprov", Model: "testmodel",
 		Tokens: 2000, ImageCount: 2,
@@ -104,7 +104,7 @@ func TestPriceForAndRecordPriced(t *testing.T) {
 		t.Fatalf("RecordPriced: %v", err)
 	}
 	var micros int64
-	if err := pool.QueryRow(ctx, `SELECT cost_micros FROM generations WHERE project_id=$1`, pid).Scan(&micros); err != nil {
+	if err := db.WithContext(ctx).Raw(`SELECT cost_micros FROM generations WHERE project_id=$1`, pid).Row().Scan(&micros); err != nil {
 		t.Fatalf("load generation: %v", err)
 	}
 	if micros != 2*5000+2000*1000/1000 {
@@ -113,18 +113,18 @@ func TestPriceForAndRecordPriced(t *testing.T) {
 }
 
 func TestAggregatesByRangePerProjectAndRecent(t *testing.T) {
-	pool := testPool(t)
+	db := testDB(t)
 	ctx := context.Background()
-	s := New(pool)
+	s := New(db)
 	orgID := "org_range_" + time.Now().Format("150405.000000000")
-	pid := seedProject(t, pool, orgID)
+	pid := seedProject(t, db, orgID)
 	// One row inside the window, one well in the past (created_at backdated).
 	if err := s.Record(ctx, Generation{ProjectID: pid, Provider: "p", Model: "m", ImageCount: 1, CostMicros: 100}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO generations
+	if err := db.WithContext(ctx).Exec(`INSERT INTO generations
 		(id, project_id, kind, provider, model, image_count, cost_micros, created_at)
-		VALUES (md5(random()::text), $1, 'image', 'p', 'm', 1, 100, now() - interval '48 hours')`, pid); err != nil {
+		VALUES (md5(random()::text), $1, 'image', 'p', 'm', 1, 100, now() - interval '48 hours')`, pid).Error; err != nil {
 		t.Fatalf("seed old generation: %v", err)
 	}
 	// Range covering only the last 24h sees 1 generation.
@@ -161,11 +161,11 @@ func TestAggregatesByRangePerProjectAndRecent(t *testing.T) {
 }
 
 func TestPerSecondPricingAndUpsertFlow(t *testing.T) {
-	pool := testPool(t)
+	db := testDB(t)
 	ctx := context.Background()
-	s := New(pool)
-	if _, err := pool.Exec(ctx, `INSERT INTO pricing (provider, model, kind, micros_per_second)
-		VALUES ('fake','fake-video-async','video',500000) ON CONFLICT (provider, model) DO NOTHING`); err != nil {
+	s := New(db)
+	if err := db.WithContext(ctx).Exec(`INSERT INTO pricing (provider, model, kind, micros_per_second)
+		VALUES ('fake','fake-video-async','video',500000) ON CONFLICT (provider, model) DO NOTHING`).Error; err != nil {
 		t.Fatalf("seed pricing: %v", err)
 	}
 	p, ok, err := s.PriceFor(ctx, "fake", "fake-video-async")
@@ -175,7 +175,7 @@ func TestPerSecondPricingAndUpsertFlow(t *testing.T) {
 	if got := ComputeCostMicros(p, 0, 0, 6); got != 6*500000 {
 		t.Fatalf("ComputeCostMicros seconds = %d, want %d", got, 6*500000)
 	}
-	pid := seedProject(t, pool, "org_upsert")
+	pid := seedProject(t, db, "org_upsert")
 	g := Generation{ProjectID: pid, AssetID: "asset-1", TodoID: "todo-1", Kind: "video",
 		Provider: "fake", Model: "fake-video-async", VideoSeconds: 6, CostMicros: 6 * 500000}
 	id1, err := s.UpsertSubmittedGeneration(ctx, g)
@@ -189,7 +189,7 @@ func TestPerSecondPricingAndUpsertFlow(t *testing.T) {
 		t.Fatalf("upsert#2 must return same id: %q vs %q err=%v", id2, id1, err)
 	}
 	var nRows int
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM generations WHERE asset_id='asset-1' AND todo_id='todo-1'`).Scan(&nRows)
+	_ = db.WithContext(ctx).Raw(`SELECT count(*) FROM generations WHERE asset_id='asset-1' AND todo_id='todo-1'`).Row().Scan(&nRows)
 	if nRows != 1 {
 		t.Fatalf("ledger must have exactly 1 row, got %d", nRows)
 	}
@@ -199,7 +199,7 @@ func TestPerSecondPricingAndUpsertFlow(t *testing.T) {
 	}
 	var sec int
 	var micros int64
-	_ = pool.QueryRow(ctx, `SELECT video_seconds, cost_micros FROM generations WHERE asset_id='asset-1' AND todo_id='todo-1'`).Scan(&sec, &micros)
+	_ = db.WithContext(ctx).Raw(`SELECT video_seconds, cost_micros FROM generations WHERE asset_id='asset-1' AND todo_id='todo-1'`).Row().Scan(&sec, &micros)
 	if sec != 8 || micros != 8*500000 {
 		t.Fatalf("backfill = %ds / %d micros, want 8s / %d", sec, micros, 8*500000)
 	}
