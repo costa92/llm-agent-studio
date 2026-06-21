@@ -61,7 +61,7 @@ func TestRegisterPlatformTopUp(t *testing.T) {
 	if err := az.Migrate(ctx); err != nil {
 		t.Fatalf("authz migrate: %v", err)
 	}
-	p := NewPlatform(az, st.Pool())
+	p := NewPlatform(az, st.GORM())
 	if err := p.EnsureSentinelOrg(ctx); err != nil {
 		t.Fatalf("ensure sentinel org: %v", err)
 	}

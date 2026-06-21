@@ -30,7 +30,7 @@ func membersFixture(t *testing.T) (context.Context, *Members, *authzstore.Store,
 		st.Close()
 		t.Fatalf("authz migrate: %v", err)
 	}
-	m := NewMembers(az, st.Pool())
+	m := NewMembers(az, st.GORM())
 	return ctx, m, az, NewOrg(az), st.Close
 }
 

@@ -77,7 +77,7 @@ func TestOrgsForUserListsMemberships(t *testing.T) {
 		t.Fatalf("create other org: %v", err)
 	}
 
-	got, err := NewOrgList(st.Pool()).OrgsForUser(ctx, uid)
+	got, err := NewOrgList(st.GORM()).OrgsForUser(ctx, uid)
 	if err != nil {
 		t.Fatalf("OrgsForUser: %v", err)
 	}

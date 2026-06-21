@@ -2,32 +2,34 @@ package studiosvc
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lib/pq"
+	"gorm.io/gorm"
 )
 
 // Artifacts reads todos/scripts/shots for the artifact endpoints.
 type Artifacts struct {
-	pool *pgxpool.Pool
+	db *gorm.DB
 }
 
 // NewArtifacts builds an Artifacts reader.
-func NewArtifacts(pool *pgxpool.Pool) *Artifacts { return &Artifacts{pool: pool} }
+func NewArtifacts(db *gorm.DB) *Artifacts { return &Artifacts{db: db} }
 
 // Todos lists a project's todos as JSON-serializable maps.
 func (a *Artifacts) Todos(ctx context.Context, projectID string, planID string) ([]map[string]any, error) {
-	var rows pgx.Rows
+	var rows *sql.Rows
 	var err error
 	if planID == "" {
-		rows, err = a.pool.Query(ctx,
+		rows, err = a.db.WithContext(ctx).Raw(
 			`SELECT id, type, status, depends_on, attempts, error FROM todos WHERE project_id=$1 ORDER BY created_at ASC`,
-			projectID)
+			projectID).Rows()
 	} else {
-		rows, err = a.pool.Query(ctx,
+		rows, err = a.db.WithContext(ctx).Raw(
 			`SELECT id, type, status, depends_on, attempts, error FROM todos WHERE project_id=$1 AND plan_id=$2 ORDER BY created_at ASC`,
-			projectID, planID)
+			projectID, planID).Rows()
 	}
 	if err != nil {
 		return nil, err
@@ -36,13 +38,13 @@ func (a *Artifacts) Todos(ctx context.Context, projectID string, planID string) 
 	out := make([]map[string]any, 0)
 	for rows.Next() {
 		var id, typ, status, errMsg string
-		var deps []string
+		var deps pq.StringArray
 		var attempts int
 		if err := rows.Scan(&id, &typ, &status, &deps, &attempts, &errMsg); err != nil {
 			return nil, err
 		}
 		out = append(out, map[string]any{
-			"id": id, "type": typ, "status": status, "dependsOn": deps,
+			"id": id, "type": typ, "status": status, "dependsOn": []string(deps),
 			"attempts": attempts, "error": errMsg,
 		})
 	}
@@ -57,22 +59,22 @@ func (a *Artifacts) Script(ctx context.Context, projectID string, planID string,
 	var content []byte
 	var err error
 	if todoID != "" {
-		err = a.pool.QueryRow(ctx,
+		err = a.db.WithContext(ctx).Raw(
 			`SELECT content_json FROM scripts WHERE project_id=$1 AND todo_id=$2 ORDER BY created_at DESC LIMIT 1`,
-			projectID, todoID).Scan(&content)
+			projectID, todoID).Row().Scan(&content)
 	} else if planID == "" {
-		err = a.pool.QueryRow(ctx,
+		err = a.db.WithContext(ctx).Raw(
 			`SELECT content_json FROM scripts WHERE project_id=$1 ORDER BY created_at DESC LIMIT 1`,
-			projectID).Scan(&content)
+			projectID).Row().Scan(&content)
 	} else {
-		err = a.pool.QueryRow(ctx,
+		err = a.db.WithContext(ctx).Raw(
 			`SELECT s.content_json FROM scripts s
 			 JOIN todos t ON s.todo_id = t.id
 			 WHERE s.project_id=$1 AND t.plan_id=$2
 			 ORDER BY s.created_at DESC LIMIT 1`,
-			projectID, planID).Scan(&content)
+			projectID, planID).Row().Scan(&content)
 	}
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
 	if err != nil {
@@ -86,23 +88,23 @@ func (a *Artifacts) Script(ctx context.Context, projectID string, planID string,
 // ignoring planID. When todoID is empty, falls back to the existing per-planID
 // / all-shots behavior.
 func (a *Artifacts) Shots(ctx context.Context, projectID string, planID string, todoID string) ([]map[string]any, error) {
-	var rows pgx.Rows
+	var rows *sql.Rows
 	var err error
 	if todoID != "" {
-		rows, err = a.pool.Query(ctx,
+		rows, err = a.db.WithContext(ctx).Raw(
 			`SELECT id, shot_no, camera, scene, action, prompt, duration FROM shots WHERE project_id=$1 AND todo_id=$2 ORDER BY ordering ASC`,
-			projectID, todoID)
+			projectID, todoID).Rows()
 	} else if planID == "" {
-		rows, err = a.pool.Query(ctx,
+		rows, err = a.db.WithContext(ctx).Raw(
 			`SELECT id, shot_no, camera, scene, action, prompt, duration FROM shots WHERE project_id=$1 ORDER BY ordering ASC`,
-			projectID)
+			projectID).Rows()
 	} else {
-		rows, err = a.pool.Query(ctx,
+		rows, err = a.db.WithContext(ctx).Raw(
 			`SELECT s.id, s.shot_no, s.camera, s.scene, s.action, s.prompt, s.duration FROM shots s
 			 JOIN todos t ON s.todo_id = t.id
 			 WHERE s.project_id=$1 AND t.plan_id=$2
 			 ORDER BY s.ordering ASC`,
-			projectID, planID)
+			projectID, planID).Rows()
 	}
 	if err != nil {
 		return nil, err
@@ -125,7 +127,7 @@ func (a *Artifacts) Shots(ctx context.Context, projectID string, planID string, 
 
 // Assets lists a project's assets, newest first, optionally filtered by status.
 func (a *Artifacts) Assets(ctx context.Context, projectID, planID, status string) ([]map[string]any, error) {
-	var rows pgx.Rows
+	var rows *sql.Rows
 	var err error
 	if planID == "" {
 		q := `SELECT id, shot_id, type, blob_key, url, prompt, style, provider, model, status, version, parent_asset_id
@@ -136,7 +138,7 @@ func (a *Artifacts) Assets(ctx context.Context, projectID, planID, status string
 			args = append(args, status)
 		}
 		q += ` ORDER BY created_at DESC`
-		rows, err = a.pool.Query(ctx, q, args...)
+		rows, err = a.db.WithContext(ctx).Raw(q, args...).Rows()
 	} else {
 		q := `SELECT a.id, a.shot_id, a.type, a.blob_key, a.url, a.prompt, a.style, a.provider, a.model, a.status, a.version, a.parent_asset_id
 		      FROM assets a
@@ -148,7 +150,7 @@ func (a *Artifacts) Assets(ctx context.Context, projectID, planID, status string
 			args = append(args, status)
 		}
 		q += ` ORDER BY a.created_at DESC`
-		rows, err = a.pool.Query(ctx, q, args...)
+		rows, err = a.db.WithContext(ctx).Raw(q, args...).Rows()
 	}
 	if err != nil {
 		return nil, err

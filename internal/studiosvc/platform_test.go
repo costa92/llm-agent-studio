@@ -32,7 +32,7 @@ func platformFixture(t *testing.T) (context.Context, *Platform, *authzstore.Stor
 		st.Close()
 		t.Fatalf("authz migrate: %v", err)
 	}
-	p := NewPlatform(az, st.Pool())
+	p := NewPlatform(az, st.GORM())
 	if err := p.EnsureSentinelOrg(ctx); err != nil {
 		st.Close()
 		t.Fatalf("ensure sentinel org: %v", err)
@@ -303,7 +303,7 @@ func TestPlatformDeleteUser(t *testing.T) {
 	// Row survives with deleted_at stamped (audit / created-by lineage).
 	var n int
 	var deletedAt *time.Time
-	if err := p.pool.QueryRow(ctx, `SELECT count(*), max(deleted_at) FROM auth_user WHERE id=$1`, uid).Scan(&n, &deletedAt); err != nil {
+	if err := p.db.WithContext(ctx).Raw(`SELECT count(*), max(deleted_at) FROM auth_user WHERE id=$1`, uid).Row().Scan(&n, &deletedAt); err != nil {
 		t.Fatalf("count user: %v", err)
 	}
 	if n != 1 || deletedAt == nil {
@@ -324,7 +324,7 @@ func TestPlatformDeleteUser(t *testing.T) {
 		}
 	}
 	// Membership rows retained for audit (NOT cascade-deleted).
-	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM auth_membership WHERE user_id=$1`, uid).Scan(&n); err != nil {
+	if err := p.db.WithContext(ctx).Raw(`SELECT count(*) FROM auth_membership WHERE user_id=$1`, uid).Row().Scan(&n); err != nil {
 		t.Fatalf("count memberships: %v", err)
 	}
 	if n == 0 {

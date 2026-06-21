@@ -8,14 +8,14 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 )
 
 // TaskBoard 是任务中心的聚合读服务（单条 GROUP BY 查询，无 N+1）。
-type TaskBoard struct{ pool *pgxpool.Pool }
+type TaskBoard struct{ db *gorm.DB }
 
 // NewTaskBoard 构造 TaskBoard。
-func NewTaskBoard(pool *pgxpool.Pool) *TaskBoard { return &TaskBoard{pool: pool} }
+func NewTaskBoard(db *gorm.DB) *TaskBoard { return &TaskBoard{db: db} }
 
 // TaskRow 是任务中心一行：一个项目的运行快照。Status 是原始 projects.status，
 // 前端据此分桶（不在后端二次推导）。
@@ -40,7 +40,7 @@ type TaskRow struct {
 // 在 LATERAL 任意状态 todos 上找（审计时关心），last_activity_at
 // 自然跨 plan 取 max（最近活动含历史事件）。
 func (b *TaskBoard) Board(ctx context.Context, orgID string) ([]TaskRow, error) {
-	rows, err := b.pool.Query(ctx, `
+	rows, err := b.db.WithContext(ctx).Raw(`
 		SELECT
 		  p.id, p.name, p.status,
 		  COALESCE(t.done, 0)           AS progress_done,
@@ -73,7 +73,7 @@ func (b *TaskBoard) Board(ctx context.Context, orgID string) ([]TaskRow, error) 
 		  ORDER BY updated_at DESC LIMIT 1
 		) f ON true
 		WHERE p.org_id = $1
-		ORDER BY last_activity_at DESC, p.id`, orgID)
+		ORDER BY last_activity_at DESC, p.id`, orgID).Rows()
 	if err != nil {
 		return nil, fmt.Errorf("studiosvc: taskboard: %w", err)
 	}
