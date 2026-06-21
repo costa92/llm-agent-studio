@@ -7,14 +7,14 @@ package workflows
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	"github.com/costa92/llm-agent-studio/internal/project"
 )
@@ -41,11 +41,11 @@ type Workflow struct {
 
 // Store persists workflows.
 type Store struct {
-	pool *pgxpool.Pool
+	db *gorm.DB
 }
 
 // New builds a Store.
-func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
+func New(db *gorm.DB) *Store { return &Store{db: db} }
 
 func newID() string {
 	b := make([]byte, 16)
@@ -68,11 +68,11 @@ func (s *Store) Create(ctx context.Context, projectID, name string, nodes json.R
 		return Workflow{}, fmt.Errorf("workflows: projectID and name required")
 	}
 	w := Workflow{ID: newID(), ProjectID: projectID, Name: name, Nodes: normalizeNodes(nodes)}
-	err := s.pool.QueryRow(ctx,
+	err := s.db.WithContext(ctx).Raw(
 		`INSERT INTO workflows (id, project_id, name, nodes)
 		 VALUES ($1,$2,$3,$4)
 		 RETURNING created_at, updated_at`,
-		w.ID, w.ProjectID, w.Name, w.Nodes).Scan(&w.CreatedAt, &w.UpdatedAt)
+		w.ID, w.ProjectID, w.Name, w.Nodes).Row().Scan(&w.CreatedAt, &w.UpdatedAt)
 	if err != nil {
 		return Workflow{}, fmt.Errorf("workflows: insert: %w", err)
 	}
@@ -83,16 +83,18 @@ func (s *Store) Create(ctx context.Context, projectID, name string, nodes json.R
 // ErrNotFound, not a leak.
 func (s *Store) Get(ctx context.Context, projectID, id string) (Workflow, error) {
 	var w Workflow
-	err := s.pool.QueryRow(ctx,
+	var nodesB []byte
+	err := s.db.WithContext(ctx).Raw(
 		`SELECT id, project_id, name, nodes, created_at, updated_at
-		 FROM workflows WHERE id=$1 AND project_id=$2`, id, projectID).
-		Scan(&w.ID, &w.ProjectID, &w.Name, &w.Nodes, &w.CreatedAt, &w.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+		 FROM workflows WHERE id=$1 AND project_id=$2`, id, projectID).Row().
+		Scan(&w.ID, &w.ProjectID, &w.Name, &nodesB, &w.CreatedAt, &w.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
 		return Workflow{}, ErrNotFound
 	}
 	if err != nil {
 		return Workflow{}, fmt.Errorf("workflows: get: %w", err)
 	}
+	w.Nodes = json.RawMessage(nodesB)
 	return w, nil
 }
 
@@ -100,7 +102,7 @@ func (s *Store) Get(ctx context.Context, projectID, id string) (Workflow, error)
 // the status of its most-recent run (plans row with this workflow_id, tallied
 // like project.ListPlans). Workflows that have never run get an empty status.
 func (s *Store) ListByProject(ctx context.Context, projectID string) ([]Workflow, error) {
-	rows, err := s.pool.Query(ctx, `
+	rows, err := s.db.WithContext(ctx).Raw(`
 		SELECT w.id, w.project_id, w.name, w.nodes, w.created_at, w.updated_at,
 		       COALESCE(lp.plan_id, ''),
 		       COALESCE(t.total, 0),
@@ -136,7 +138,7 @@ func (s *Store) ListByProject(ctx context.Context, projectID string) ([]Workflow
 		    GROUP BY t.plan_id
 		) a ON a.plan_id = lp.plan_id
 		WHERE w.project_id = $1
-		ORDER BY w.created_at DESC`, projectID)
+		ORDER BY w.created_at DESC`, projectID).Rows()
 	if err != nil {
 		return nil, fmt.Errorf("workflows: list: %w", err)
 	}
@@ -145,12 +147,14 @@ func (s *Store) ListByProject(ctx context.Context, projectID string) ([]Workflow
 	var out []Workflow
 	for rows.Next() {
 		var w Workflow
+		var nodesB []byte
 		var c project.TodoCounts
-		if err := rows.Scan(&w.ID, &w.ProjectID, &w.Name, &w.Nodes, &w.CreatedAt, &w.UpdatedAt,
+		if err := rows.Scan(&w.ID, &w.ProjectID, &w.Name, &nodesB, &w.CreatedAt, &w.UpdatedAt,
 			&w.LatestPlanID,
 			&c.Total, &c.Ready, &c.Running, &c.Blocked, &c.Done, &c.Failed, &c.Canceled, &c.PendingAssets); err != nil {
 			return nil, fmt.Errorf("workflows: list: scan: %w", err)
 		}
+		w.Nodes = json.RawMessage(nodesB)
 		// No run yet → leave status empty (the UI shows "未运行"); a run with todos
 		// derives the same status as project.ListPlans.
 		if w.LatestPlanID != "" {
@@ -170,13 +174,13 @@ func (s *Store) Update(ctx context.Context, projectID, id, name string, nodes js
 	if name == "" {
 		return Workflow{}, fmt.Errorf("workflows: name required")
 	}
-	tag, err := s.pool.Exec(ctx,
+	res := s.db.WithContext(ctx).Exec(
 		`UPDATE workflows SET name=$3, nodes=$4, updated_at=now()
 		 WHERE id=$1 AND project_id=$2`, id, projectID, name, normalizeNodes(nodes))
-	if err != nil {
-		return Workflow{}, fmt.Errorf("workflows: update: %w", err)
+	if res.Error != nil {
+		return Workflow{}, fmt.Errorf("workflows: update: %w", res.Error)
 	}
-	if tag.RowsAffected() == 0 {
+	if res.RowsAffected == 0 {
 		return Workflow{}, ErrNotFound
 	}
 	return s.Get(ctx, projectID, id)
@@ -185,11 +189,11 @@ func (s *Store) Update(ctx context.Context, projectID, id, name string, nodes js
 // Delete removes a workflow scoped by (id AND project_id). Its past runs (plans)
 // are kept but orphaned (plans.workflow_id ON DELETE SET NULL). 0 rows → ErrNotFound.
 func (s *Store) Delete(ctx context.Context, projectID, id string) error {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM workflows WHERE id=$1 AND project_id=$2`, id, projectID)
-	if err != nil {
-		return fmt.Errorf("workflows: delete: %w", err)
+	res := s.db.WithContext(ctx).Exec(`DELETE FROM workflows WHERE id=$1 AND project_id=$2`, id, projectID)
+	if res.Error != nil {
+		return fmt.Errorf("workflows: delete: %w", res.Error)
 	}
-	if tag.RowsAffected() == 0 {
+	if res.RowsAffected == 0 {
 		return ErrNotFound
 	}
 	return nil
