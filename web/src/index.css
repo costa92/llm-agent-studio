@@ -3,9 +3,10 @@
 @import "shadcn/tailwind.css";
 
 /*
- * 设计 token 逐字取自 docs/superpowers/specs/ai-studio-ui-prototype.html 的 :root
- * （暗色单主题 + 琥珀 + per-agent 制片轨道色）。不重新设计。
- * 单主题：永远暗色，无浅色态、无 next-themes 切换。
+ * 设计 token 取自 docs/superpowers/specs/ai-studio-ui-prototype.html 的 :root
+ * （琥珀 + per-agent 制片轨道色）。
+ * 多主题：dark-studio / light / cinematic，运行时按 html[data-theme] 切换
+ * （见下方三段 [data-theme] 与 src/app/theme.tsx）。
  */
 
 @theme inline {
@@ -129,7 +130,7 @@
     --mono: "JetBrains Mono", monospace;
     --disp: "Space Grotesk", "Noto Sans SC", sans-serif;
 
-    /* 把原型 token 映射到 shadcn 语义变量（暗色单主题，无 .dark 分支） */
+    /* 把原型 token 映射到 shadcn 语义变量（var() 间接引用，随 [data-theme] 重解析） */
     --radius: 0.625rem;
     --background: var(--bg-base);
     --foreground: var(--text-1);
