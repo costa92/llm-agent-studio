@@ -1,7 +1,7 @@
 // Package workflows owns the first-class 1:N project→workflow model: a project
 // can have many named workflows, each an independent execution unit (its own DAG
 // of nodes, its own runs via plans.workflow_id, its own produced assets). It
-// mirrors the internal/project store conventions (pgxpool, hex newID, ErrNotFound).
+// mirrors the internal/project store conventions (GORM handle, hex newID, ErrNotFound).
 package workflows
 
 import (
