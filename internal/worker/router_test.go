@@ -87,7 +87,7 @@ func TestWorkerRoutesChatModelViaRouter(t *testing.T) {
 	})
 
 	w := New(Config{
-		Pool: pool, Todos: todoStore, Projects: project.New(pool), Events: events.New(pool),
+		Pool: pool, Todos: todoStore, Projects: project.New(pool), Events: events.New(assetTestGorm(t)),
 		Script:     studioagents.NewScriptAgent(bound),
 		Storyboard: studioagents.NewStoryboardAgent(bound),
 		Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fakeGen),
@@ -164,7 +164,7 @@ func TestWorkerRoutesMediaViaRouterBuildMedia(t *testing.T) {
 	})
 
 	w := New(Config{
-		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(pool),
+		Pool: pool, Todos: todos.New(pool), Projects: project.New(pool), Events: events.New(assetTestGorm(t)),
 		Asset:   studioagents.NewAssetAgent(prompt.NewBuilder(), defGen),
 		Storage: testStorage(), Assets: assets.New(pool), Cost: cost.New(pool),
 		Models: ms, Registry: reg, Router: router,

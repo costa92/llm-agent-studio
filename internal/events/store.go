@@ -4,12 +4,12 @@ package events
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 )
 
 // Event is one run_events row.
@@ -22,11 +22,11 @@ type Event struct {
 
 // Store persists run events.
 type Store struct {
-	pool *pgxpool.Pool
+	db *gorm.DB
 }
 
 // New builds a Store.
-func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
+func New(db *gorm.DB) *Store { return &Store{db: db} }
 
 // Append writes one event and returns its assigned seq. payload may be nil.
 func (s *Store) Append(ctx context.Context, projectID, kind, todoID string, payload any) (int64, error) {
@@ -39,9 +39,9 @@ func (s *Store) Append(ctx context.Context, projectID, kind, todoID string, payl
 		raw = b
 	}
 	var seq int64
-	if err := s.pool.QueryRow(ctx,
+	if err := s.db.WithContext(ctx).Raw(
 		`INSERT INTO run_events (project_id, kind, todo_id, payload) VALUES ($1,$2,$3,$4) RETURNING seq`,
-		projectID, kind, todoID, raw).Scan(&seq); err != nil {
+		projectID, kind, todoID, raw).Row().Scan(&seq); err != nil {
 		return 0, fmt.Errorf("events: append: %w", err)
 	}
 	return seq, nil
@@ -57,32 +57,35 @@ func (s *Store) Append(ctx context.Context, projectID, kind, todoID string, payl
 // xact lock: the second worker blocks until the first commits, then its
 // NOT EXISTS sees the fresh run_done and skips.
 func (s *Store) AppendRunDone(ctx context.Context, projectID string) (int64, bool, error) {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return 0, false, fmt.Errorf("events: append run_done: begin: %w", err)
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, projectID); err != nil {
-		return 0, false, fmt.Errorf("events: append run_done: lock: %w", err)
-	}
 	var seq int64
-	err = tx.QueryRow(ctx, `
-		INSERT INTO run_events (project_id, kind, todo_id, payload)
-		SELECT $1, 'run_done', '', NULL
-		WHERE NOT EXISTS (
-			SELECT 1 FROM run_events
-			WHERE project_id=$1 AND kind='run_done'
-			  AND seq > COALESCE((SELECT max(seq) FROM run_events WHERE project_id=$1 AND kind='planner_started'), 0)
-		)
-		RETURNING seq`, projectID).Scan(&seq)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, false, nil // deferred rollback releases the lock
-	}
+	var inserted bool
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtext(?))`, projectID).Error; err != nil {
+			return fmt.Errorf("events: append run_done: lock: %w", err)
+		}
+		err := tx.Raw(`
+			INSERT INTO run_events (project_id, kind, todo_id, payload)
+			SELECT $1, 'run_done', '', NULL
+			WHERE NOT EXISTS (
+				SELECT 1 FROM run_events
+				WHERE project_id=$1 AND kind='run_done'
+				  AND seq > COALESCE((SELECT max(seq) FROM run_events WHERE project_id=$1 AND kind='planner_started'), 0)
+			)
+			RETURNING seq`, projectID).Row().Scan(&seq)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil // committing just releases the lock; behaviorally equivalent to the old rollback-skip
+		}
+		if err != nil {
+			return fmt.Errorf("events: append run_done: %w", err)
+		}
+		inserted = true
+		return nil
+	})
 	if err != nil {
-		return 0, false, fmt.Errorf("events: append run_done: %w", err)
+		return 0, false, err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, false, fmt.Errorf("events: append run_done: commit: %w", err)
+	if !inserted {
+		return 0, false, nil
 	}
 	return seq, true, nil
 }
@@ -95,10 +98,10 @@ func (s *Store) List(ctx context.Context, projectID string, planID string, after
 		limit = 200
 	}
 	if planID == "" {
-		rows, err := s.pool.Query(ctx,
+		rows, err := s.db.WithContext(ctx).Raw(
 			`SELECT seq, kind, todo_id, payload FROM run_events
 			 WHERE project_id=$1 AND seq>$2 ORDER BY seq ASC LIMIT $3`,
-			projectID, afterSeq, limit)
+			projectID, afterSeq, limit).Rows()
 		if err != nil {
 			return nil, err
 		}
@@ -106,9 +109,11 @@ func (s *Store) List(ctx context.Context, projectID string, planID string, after
 		var out []Event
 		for rows.Next() {
 			var e Event
-			if err := rows.Scan(&e.Seq, &e.Kind, &e.TodoID, &e.Payload); err != nil {
+			var pl []byte
+			if err := rows.Scan(&e.Seq, &e.Kind, &e.TodoID, &pl); err != nil {
 				return nil, err
 			}
+			e.Payload = json.RawMessage(pl)
 			out = append(out, e)
 		}
 		return out, rows.Err()
@@ -137,7 +142,7 @@ func (s *Store) List(ctx context.Context, projectID string, planID string, after
 		  AND seq > $3
 		ORDER BY seq ASC LIMIT $4`
 
-	rows, err := s.pool.Query(ctx, q, projectID, planID, afterSeq, limit)
+	rows, err := s.db.WithContext(ctx).Raw(q, projectID, planID, afterSeq, limit).Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -145,9 +150,11 @@ func (s *Store) List(ctx context.Context, projectID string, planID string, after
 	var out []Event
 	for rows.Next() {
 		var e Event
-		if err := rows.Scan(&e.Seq, &e.Kind, &e.TodoID, &e.Payload); err != nil {
+		var pl []byte
+		if err := rows.Scan(&e.Seq, &e.Kind, &e.TodoID, &pl); err != nil {
 			return nil, err
 		}
+		e.Payload = json.RawMessage(pl)
 		out = append(out, e)
 	}
 	return out, rows.Err()

@@ -28,7 +28,7 @@ func newStore(t *testing.T) (*Store, string) {
 		`INSERT INTO projects (id, org_id, name, created_by) VALUES ($1,'o','n','u')`, projID); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
-	return New(st.Pool()), projID
+	return New(st.GORM()), projID
 }
 
 func TestAppendAndList(t *testing.T) {
