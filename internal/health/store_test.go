@@ -34,7 +34,7 @@ func newStore(t *testing.T) (*Store, *pgxpool.Pool) {
 	if err := st.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	return New(st.Pool(), project.New(st.GORM())), st.Pool()
+	return New(st.GORM(), project.New(st.GORM())), st.Pool()
 }
 
 func envDSN(t *testing.T) string {

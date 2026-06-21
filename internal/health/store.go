@@ -1,17 +1,19 @@
 // Package health owns the platform monitoring + data-integrity surface: a set of
 // read-only invariant checks over the studio tables (stuck todos, stranded
 // assets, status divergence, orphans) plus repair routines that drive the
-// offending rows back to a consistent state. It composes *pgxpool.Pool with
+// offending rows back to a consistent state. It composes *gorm.DB with
 // *project.Store so the status_divergence repair reuses the authoritative
 // project.RefreshStatus (no import cycle: project does not import health).
 package health
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lib/pq"
+	"gorm.io/gorm"
 
 	"github.com/costa92/llm-agent-studio/internal/project"
 )
@@ -24,13 +26,13 @@ const stuckAssetCutoff = time.Hour
 // Store runs the health checks + repairs. It reuses project.Store.RefreshStatus
 // for the status_divergence repair.
 type Store struct {
-	pool     *pgxpool.Pool
+	db       *gorm.DB
 	projects *project.Store
 }
 
 // New builds a Store.
-func New(pool *pgxpool.Pool, projects *project.Store) *Store {
-	return &Store{pool: pool, projects: projects}
+func New(db *gorm.DB, projects *project.Store) *Store {
+	return &Store{db: db, projects: projects}
 }
 
 // Check is one data-integrity invariant result.
@@ -82,7 +84,7 @@ func (s *Store) Report(ctx context.Context) (Report, error) {
 
 	// System: DB latency + reachability.
 	start := time.Now()
-	if _, err := s.pool.Exec(ctx, "SELECT 1"); err != nil {
+	if err := s.db.WithContext(ctx).Exec("SELECT 1").Error; err != nil {
 		rep.System.DBOK = false
 		rep.System.DBLatencyMs = time.Since(start).Milliseconds()
 		return rep, fmt.Errorf("health: ping: %w", err)
@@ -91,12 +93,12 @@ func (s *Store) Report(ctx context.Context) (Report, error) {
 	rep.System.DBLatencyMs = time.Since(start).Milliseconds()
 
 	// Last run event (NULL/no rows → zero time).
-	var lastEvent *time.Time
-	if err := s.pool.QueryRow(ctx, `SELECT max(ts) FROM run_events`).Scan(&lastEvent); err != nil {
+	var lastEvent sql.NullTime
+	if err := s.db.WithContext(ctx).Raw(`SELECT max(ts) FROM run_events`).Row().Scan(&lastEvent); err != nil {
 		return rep, fmt.Errorf("health: last event: %w", err)
 	}
-	if lastEvent != nil {
-		rep.System.LastEventAt = *lastEvent
+	if lastEvent.Valid {
+		rep.System.LastEventAt = lastEvent.Time
 	}
 
 	c1, err := s.checkStuckTodos(ctx)
@@ -132,12 +134,12 @@ func (s *Store) Report(ctx context.Context) (Report, error) {
 // it in a Check with the supplied metadata.
 func (s *Store) aggCheck(ctx context.Context, id, title, severity string, repairable bool, query string, args ...any) (Check, error) {
 	c := Check{ID: id, Title: title, Severity: severity, Repairable: repairable, Samples: []string{}}
-	var samples []string
-	if err := s.pool.QueryRow(ctx, query, args...).Scan(&c.Count, &samples); err != nil {
+	var samples pq.StringArray
+	if err := s.db.WithContext(ctx).Raw(query, args...).Row().Scan(&c.Count, &samples); err != nil {
 		return Check{}, fmt.Errorf("health: check %s: %w", id, err)
 	}
 	if samples != nil {
-		c.Samples = samples
+		c.Samples = []string(samples)
 	}
 	return c, nil
 }
@@ -212,7 +214,7 @@ const divergentProjectQuery = `
 // the status derived off their latest plan. Projects with no plan are skipped
 // (RefreshStatus leaves them at their create-time 'draft' — see its docstring).
 func (s *Store) divergentProjectIDs(ctx context.Context) ([]string, error) {
-	rows, err := s.pool.Query(ctx, divergentProjectQuery)
+	rows, err := s.db.WithContext(ctx).Raw(divergentProjectQuery).Rows()
 	if err != nil {
 		return nil, fmt.Errorf("health: status_divergence query: %w", err)
 	}
@@ -264,38 +266,38 @@ func (s *Store) checkStatusDivergence(ctx context.Context) (Check, error) {
 func (s *Store) Repair(ctx context.Context, checkID string) (RepairResult, error) {
 	switch checkID {
 	case "stuck_todos":
-		tag, err := s.pool.Exec(ctx,
+		res := s.db.WithContext(ctx).Exec(
 			`UPDATE todos SET status='ready', locked_by='', locked_until=NULL, next_run_at=now(), updated_at=now()
 			 WHERE status='running' AND (locked_until IS NULL OR locked_until < now())`)
-		if err != nil {
-			return RepairResult{}, fmt.Errorf("health: repair stuck_todos: %w", err)
+		if res.Error != nil {
+			return RepairResult{}, fmt.Errorf("health: repair stuck_todos: %w", res.Error)
 		}
-		return RepairResult{CheckID: checkID, Repaired: int(tag.RowsAffected())}, nil
+		return RepairResult{CheckID: checkID, Repaired: int(res.RowsAffected)}, nil
 
 	case "stuck_assets":
 		// Terminal = 'failed' (aligns with the orphan reaper + assets.SetAsyncFailed;
 		// intentionally NOT 'canceled').
 		cutoff := time.Now().Add(-stuckAssetCutoff)
-		tag, err := s.pool.Exec(ctx,
+		res := s.db.WithContext(ctx).Exec(
 			`UPDATE assets SET status='failed'
 			 WHERE (status='generating' AND created_at < $1)
 			    OR (status='submitted' AND submitted_at IS NOT NULL AND submitted_at < $1)`, cutoff)
-		if err != nil {
-			return RepairResult{}, fmt.Errorf("health: repair stuck_assets: %w", err)
+		if res.Error != nil {
+			return RepairResult{}, fmt.Errorf("health: repair stuck_assets: %w", res.Error)
 		}
-		return RepairResult{CheckID: checkID, Repaired: int(tag.RowsAffected())}, nil
+		return RepairResult{CheckID: checkID, Repaired: int(res.RowsAffected)}, nil
 
 	case "failed_todo_live_assets":
-		tag, err := s.pool.Exec(ctx,
+		res := s.db.WithContext(ctx).Exec(
 			`UPDATE assets a SET status='failed'
 			 FROM todos t
 			 WHERE a.todo_id = t.id
 			   AND a.status IN ('generating','submitted','pending_acceptance')
 			   AND t.status='failed'`)
-		if err != nil {
-			return RepairResult{}, fmt.Errorf("health: repair failed_todo_live_assets: %w", err)
+		if res.Error != nil {
+			return RepairResult{}, fmt.Errorf("health: repair failed_todo_live_assets: %w", res.Error)
 		}
-		return RepairResult{CheckID: checkID, Repaired: int(tag.RowsAffected())}, nil
+		return RepairResult{CheckID: checkID, Repaired: int(res.RowsAffected)}, nil
 
 	case "status_divergence":
 		ids, err := s.divergentProjectIDs(ctx)
@@ -322,7 +324,7 @@ func (s *Store) Repair(ctx context.Context, checkID string) (RepairResult, error
 
 // Ping verifies DB reachability with a trivial query.
 func (s *Store) Ping(ctx context.Context) error {
-	if _, err := s.pool.Exec(ctx, "SELECT 1"); err != nil {
+	if err := s.db.WithContext(ctx).Exec("SELECT 1").Error; err != nil {
 		return fmt.Errorf("health: ping: %w", err)
 	}
 	return nil
@@ -336,12 +338,12 @@ func (s *Store) RecentFailures(ctx context.Context, limit int) ([]Failure, error
 	if limit > 200 {
 		limit = 200
 	}
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db.WithContext(ctx).Raw(
 		`SELECT t.id, t.project_id, p.name, p.org_id, t.type, t.agent, t.error, t.updated_at
 		 FROM todos t JOIN projects p ON t.project_id = p.id
 		 WHERE t.status='failed'
 		 ORDER BY t.updated_at DESC
-		 LIMIT $1`, limit)
+		 LIMIT $1`, limit).Rows()
 	if err != nil {
 		return nil, fmt.Errorf("health: recent failures: %w", err)
 	}
