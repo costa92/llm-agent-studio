@@ -141,7 +141,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	}
 	model = obs.WrapModel(model, tp) // otel decorator (spec §12)
 
-	projectStore := project.New(st.Pool())
+	projectStore := project.New(st.GORM())
 	healthStore := health.New(st.Pool(), projectStore)
 	workflowStore := workflows.New(st.GORM())
 	todoStore := todos.New(st.GORM())

@@ -37,7 +37,7 @@ func newStore(t *testing.T) (*Store, *pgxpool.Pool) {
 	if err := st.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	return New(st.Pool()), st.Pool()
+	return New(st.GORM()), st.Pool()
 }
 
 func TestCreateGetListProject(t *testing.T) {
