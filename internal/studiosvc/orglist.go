@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 )
 
 // OrgList lists the orgs a user belongs to. The authz store owns the auth_*
@@ -13,11 +13,11 @@ import (
 // scope_kind='org' — which is what grants org access; mirrors how Org grants
 // the creator an org-level org_admin row).
 type OrgList struct {
-	pool *pgxpool.Pool
+	db *gorm.DB
 }
 
 // NewOrgList builds an OrgList reader.
-func NewOrgList(pool *pgxpool.Pool) *OrgList { return &OrgList{pool: pool} }
+func NewOrgList(db *gorm.DB) *OrgList { return &OrgList{db: db} }
 
 // OrgsForUser returns the user's orgs as JSON-serializable maps {id,name,role},
 // ordered by name. Empty (non-nil) slice when the user has no memberships.
@@ -25,12 +25,12 @@ func (l *OrgList) OrgsForUser(ctx context.Context, userID string) ([]map[string]
 	if userID == "" {
 		return nil, fmt.Errorf("studiosvc: userID required")
 	}
-	rows, err := l.pool.Query(ctx,
+	rows, err := l.db.WithContext(ctx).Raw(
 		`SELECT o.id, o.name, m.role
 		   FROM auth_membership m
 		   JOIN auth_org o ON o.id = m.org_id
 		  WHERE m.user_id = $1 AND m.scope_kind = 'org'
-		  ORDER BY o.name ASC`, userID)
+		  ORDER BY o.name ASC`, userID).Rows()
 	if err != nil {
 		return nil, fmt.Errorf("studiosvc: orgs for user: %w", err)
 	}

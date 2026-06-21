@@ -2,13 +2,13 @@ package studiosvc
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 
 	authzrole "github.com/costa92/llm-agent-authz/role"
 	authzstore "github.com/costa92/llm-agent-authz/store"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 )
 
 // ErrLastOrgAdmin 由 SetMemberRole/RemoveMember 在该操作会移除 org 仅存的 org_admin
@@ -23,7 +23,7 @@ var ErrMemberNotFound = errors.New("studiosvc: membership not found")
 // （镜像 Platform / OrgList 的做法）；写入复用 authz.UpsertMembership。
 type Members struct {
 	authz *authzstore.Store
-	pool  *pgxpool.Pool
+	db    *gorm.DB
 }
 
 // OrgMember 是 org 成员名册里的一行：身份 + 角色。
@@ -34,17 +34,17 @@ type OrgMember struct {
 }
 
 // NewMembers 构造 Members 适配器。
-func NewMembers(az *authzstore.Store, pool *pgxpool.Pool) *Members {
-	return &Members{authz: az, pool: pool}
+func NewMembers(az *authzstore.Store, db *gorm.DB) *Members {
+	return &Members{authz: az, db: db}
 }
 
 // ListMembers 列出 orgID 的 org-level 成员（按 email 升序）。空时返回非 nil 空切片。
 func (m *Members) ListMembers(ctx context.Context, orgID string) ([]OrgMember, error) {
-	rows, err := m.pool.Query(ctx,
+	rows, err := m.db.WithContext(ctx).Raw(
 		`SELECT m.user_id, u.email, m.role
 		   FROM auth_membership m JOIN auth_user u ON u.id=m.user_id
 		  WHERE m.org_id=$1 AND m.scope_kind='org' AND m.scope_id IS NULL AND u.deleted_at IS NULL
-		  ORDER BY u.email ASC`, orgID)
+		  ORDER BY u.email ASC`, orgID).Rows()
 	if err != nil {
 		return nil, fmt.Errorf("studiosvc: list members: %w", err)
 	}
@@ -118,13 +118,13 @@ func (m *Members) RemoveMember(ctx context.Context, orgID, userID string) error 
 			return ErrLastOrgAdmin
 		}
 	}
-	tag, err := m.pool.Exec(ctx,
+	res := m.db.WithContext(ctx).Exec(
 		`DELETE FROM auth_membership WHERE org_id=$1 AND user_id=$2 AND scope_kind='org' AND scope_id IS NULL`,
 		orgID, userID)
-	if err != nil {
-		return fmt.Errorf("studiosvc: remove member: %w", err)
+	if res.Error != nil {
+		return fmt.Errorf("studiosvc: remove member: %w", res.Error)
 	}
-	if tag.RowsAffected() == 0 {
+	if res.RowsAffected == 0 {
 		return ErrMemberNotFound
 	}
 	return nil
@@ -133,9 +133,9 @@ func (m *Members) RemoveMember(ctx context.Context, orgID, userID string) error 
 // countOrgAdmins 返回 orgID 的 org-level org_admin 数。
 func (m *Members) countOrgAdmins(ctx context.Context, orgID string) (int, error) {
 	var n int
-	if err := m.pool.QueryRow(ctx,
+	if err := m.db.WithContext(ctx).Raw(
 		`SELECT count(*) FROM auth_membership
-		  WHERE org_id=$1 AND scope_kind='org' AND scope_id IS NULL AND role='org_admin'`, orgID).Scan(&n); err != nil {
+		  WHERE org_id=$1 AND scope_kind='org' AND scope_id IS NULL AND role='org_admin'`, orgID).Row().Scan(&n); err != nil {
 		return 0, fmt.Errorf("studiosvc: count org admins: %w", err)
 	}
 	return n, nil
@@ -144,10 +144,10 @@ func (m *Members) countOrgAdmins(ctx context.Context, orgID string) (int, error)
 // currentOrgRole 读取 userID 在 orgID 的 org-level 角色。无该行 → ("", false, nil)。
 func (m *Members) currentOrgRole(ctx context.Context, orgID, userID string) (authzrole.Role, bool, error) {
 	var r string
-	err := m.pool.QueryRow(ctx,
+	err := m.db.WithContext(ctx).Raw(
 		`SELECT role FROM auth_membership
-		  WHERE org_id=$1 AND user_id=$2 AND scope_kind='org' AND scope_id IS NULL`, orgID, userID).Scan(&r)
-	if errors.Is(err, pgx.ErrNoRows) {
+		  WHERE org_id=$1 AND user_id=$2 AND scope_kind='org' AND scope_id IS NULL`, orgID, userID).Row().Scan(&r)
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
 	if err != nil {
@@ -162,8 +162,8 @@ func (m *Members) currentOrgRole(ctx context.Context, orgID, userID string) (aut
 func (m *Members) userIDByEmail(ctx context.Context, email string) (string, string, error) {
 	normalized := normalizePlatformEmail(email)
 	var uid string
-	err := m.pool.QueryRow(ctx, `SELECT id FROM auth_user WHERE email = $1 AND deleted_at IS NULL`, normalized).Scan(&uid)
-	if errors.Is(err, pgx.ErrNoRows) {
+	err := m.db.WithContext(ctx).Raw(`SELECT id FROM auth_user WHERE email = $1 AND deleted_at IS NULL`, normalized).Row().Scan(&uid)
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", ErrUserNotFound
 	}
 	if err != nil {

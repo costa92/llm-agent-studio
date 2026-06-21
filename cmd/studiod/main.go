@@ -120,8 +120,8 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 
 	// 平台超级管理员 (platform role)。哨兵 org (id='') 必须先于任何平台 membership 写入，
 	// 满足 auth_membership.org_id 的外键约束 (authz schema)。随后按 env 种子名单授予。
-	membersSvc := studiosvc.NewMembers(az, st.Pool())
-	platformSvc := studiosvc.NewPlatform(az, st.Pool())
+	membersSvc := studiosvc.NewMembers(az, st.GORM())
+	platformSvc := studiosvc.NewPlatform(az, st.GORM())
 	if err := platformSvc.EnsureSentinelOrg(ctx); err != nil {
 		st.Close()
 		return nil, nil, err
@@ -188,7 +188,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	promptBuilder := prompt.NewBuilder()
 	assetStore := assets.New(st.GORM())
 	costStore := cost.New(st.GORM())
-	taskBoard := studiosvc.NewTaskBoard(st.Pool())
+	taskBoard := studiosvc.NewTaskBoard(st.GORM())
 	// BYOK: per-config api key 静态加密 box (env STUDIO_CONFIG_ENC_KEY)。未配置时
 	// 返回 disabled box——存 key 会被拒，但服务仍可启动 (env-only key 老路径不受影响)。
 	encBox, err := secretbox.NewBoxFromEnv()
@@ -341,14 +341,14 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		Register:     studiosvc.NewRegister(az).WithMail(mailClient).WithPlatformTopUp(platformSvc, cfg.PlatformAdminEmails),
 		MailConfig:   mailConfigStore,
 		OrgBootstrap: studiosvc.NewOrg(az),
-		OrgList:      studiosvc.NewOrgList(st.Pool()),
+		OrgList:      studiosvc.NewOrgList(st.GORM()),
 		Projects:     projectStore,
 		Workflows:    workflowStore,
 		Planner:      plannerSvc,
 		ChatRouter:   router,
 		Events:       eventStore,
 		EventReader:  eventStore,
-		Artifacts:    studiosvc.NewArtifacts(st.Pool()),
+		Artifacts:    studiosvc.NewArtifacts(st.GORM()),
 		PerUserLimit: cfg.PerUserLimit,
 
 		Review:         reviewSvc,

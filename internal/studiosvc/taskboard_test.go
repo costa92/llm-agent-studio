@@ -57,7 +57,7 @@ func TestTaskBoardBoard(t *testing.T) {
 	pDraft := "p_draft_" + randHexSvc()
 	_, _ = pool.Exec(ctx, `INSERT INTO projects (id,org_id,name,status,created_by,updated_at) VALUES ($1,$2,'Draft','draft','u',now()-interval '3 hour')`, pDraft, org)
 
-	b := NewTaskBoard(pool)
+	b := NewTaskBoard(st.GORM())
 	rows, err := b.Board(ctx, org)
 	if err != nil {
 		t.Fatalf("board: %v", err)
@@ -159,7 +159,7 @@ func TestTaskBoardScopesProgressAndPendingToLatestPlan(t *testing.T) {
 		('bA2',$1,'b2','pending_acceptance')`, p)
 	// RefreshStatus 后 projects.status 会变；本测试不动 status（保持 failed），
 	// 只看行内 progress / pendingReview / failingAgent 是否按最新 plan 算。
-	rows, err := NewTaskBoard(pool).Board(ctx, org)
+	rows, err := NewTaskBoard(st.GORM()).Board(ctx, org)
 	if err != nil {
 		t.Fatalf("board: %v", err)
 	}

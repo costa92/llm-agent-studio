@@ -27,7 +27,7 @@ func TestArtifactsReadTodosScriptShots(t *testing.T) {
 	_, _ = pool.Exec(ctx, `INSERT INTO scripts (id, project_id, todo_id, content_json) VALUES ('sc1',$1,'t1','{"title":"X"}')`, projID)
 	_, _ = pool.Exec(ctx, `INSERT INTO shots (id, project_id, script_id, todo_id, shot_no) VALUES ('sh1',$1,'sc1','t1',1)`, projID)
 
-	a := NewArtifacts(pool)
+	a := NewArtifacts(st.GORM())
 	todos, err := a.Todos(ctx, projID, "")
 	if err != nil || len(todos) != 1 {
 		t.Fatalf("todos: %v len=%d", err, len(todos))
@@ -67,7 +67,7 @@ func TestScript_ScopedByTodo(t *testing.T) {
 	_, _ = pool.Exec(ctx, `INSERT INTO scripts (id, project_id, todo_id, content_json) VALUES ($1,$2,$3,'{"title":"A"}')`, "sc_a_"+randHexSvc(), projID, todoA)
 	_, _ = pool.Exec(ctx, `INSERT INTO scripts (id, project_id, todo_id, content_json) VALUES ($1,$2,$3,'{"title":"B"}')`, "sc_b_"+randHexSvc(), projID, todoB)
 
-	a := NewArtifacts(pool)
+	a := NewArtifacts(st.GORM())
 
 	// Scoped by todoA: must return A's content only.
 	content, ok, err := a.Script(ctx, projID, planID, todoA)
@@ -127,7 +127,7 @@ func TestShots_ScopedByTodo(t *testing.T) {
 	_, _ = pool.Exec(ctx, `INSERT INTO shots (id, project_id, script_id, todo_id, shot_no, ordering) VALUES ($1,$2,$3,$4,2,2)`, "sh_b2_"+randHexSvc(), projID, scriptB, todoB)
 	_, _ = pool.Exec(ctx, `INSERT INTO shots (id, project_id, script_id, todo_id, shot_no, ordering) VALUES ($1,$2,$3,$4,3,3)`, "sh_b3_"+randHexSvc(), projID, scriptB, todoB)
 
-	a := NewArtifacts(pool)
+	a := NewArtifacts(st.GORM())
 
 	// Scoped by todoA: must return exactly 2 shots.
 	shotsA, err := a.Shots(ctx, projID, planID, todoA)
@@ -171,7 +171,7 @@ func TestArtifactsAssets(t *testing.T) {
 	_, _ = pool.Exec(ctx,
 		`INSERT INTO assets (id,project_id,shot_id,type,blob_key,prompt,style,provider,model,status,version)
 		 VALUES (md5(random()::text),$1,'s1','image','k','p','国风','fake','m','pending_acceptance',1)`, pid)
-	ar := NewArtifacts(pool)
+	ar := NewArtifacts(st.GORM())
 	items, err := ar.Assets(ctx, pid, "", "")
 	if err != nil || len(items) != 1 {
 		t.Fatalf("assets: %v len=%d", err, len(items))

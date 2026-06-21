@@ -2,6 +2,7 @@ package studiosvc
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,8 +10,7 @@ import (
 	"github.com/costa92/llm-agent-authz/password"
 	authzrole "github.com/costa92/llm-agent-authz/role"
 	authzstore "github.com/costa92/llm-agent-authz/store"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 )
 
 // platformOrgID 是平台级 membership 的占位 org_id：平台管理员不属于任何业务 org，
@@ -36,7 +36,7 @@ var ErrUserNotFound = errors.New("studiosvc: user not found")
 // 跨表查询，故部分读取直接走共享 pool（镜像 OrgList 的做法）。
 type Platform struct {
 	authz *authzstore.Store
-	pool  *pgxpool.Pool
+	db    *gorm.DB
 }
 
 // PlatformAdmin 是一名平台管理员的列表项。
@@ -73,16 +73,16 @@ type UserDetail struct {
 }
 
 // NewPlatform 构造 Platform 适配器。
-func NewPlatform(az *authzstore.Store, pool *pgxpool.Pool) *Platform {
-	return &Platform{authz: az, pool: pool}
+func NewPlatform(az *authzstore.Store, db *gorm.DB) *Platform {
+	return &Platform{authz: az, db: db}
 }
 
 // EnsureSentinelOrg 幂等地写入哨兵 org（id=”），满足平台 membership 的外键约束。
 // 必须在 az.Migrate 之后、任何 Grant/SeedFromEmails 之前调用一次（见 main.go）。
 func (p *Platform) EnsureSentinelOrg(ctx context.Context) error {
-	if _, err := p.pool.Exec(ctx,
+	if err := p.db.WithContext(ctx).Exec(
 		`INSERT INTO auth_org (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`,
-		platformOrgID, sentinelOrgName); err != nil {
+		platformOrgID, sentinelOrgName).Error; err != nil {
 		return fmt.Errorf("studiosvc: ensure sentinel platform org: %w", err)
 	}
 	return nil
@@ -101,9 +101,9 @@ func (p *Platform) Grant(ctx context.Context, userID string) error {
 
 // Revoke 删除该用户的平台 membership（无该行则 no-op）。
 func (p *Platform) Revoke(ctx context.Context, userID string) error {
-	if _, err := p.pool.Exec(ctx,
+	if err := p.db.WithContext(ctx).Exec(
 		`DELETE FROM auth_membership WHERE user_id = $1 AND org_id = $2 AND scope_kind = $3`,
-		userID, platformOrgID, platformScopeKind); err != nil {
+		userID, platformOrgID, platformScopeKind).Error; err != nil {
 		return fmt.Errorf("studiosvc: revoke platform admin: %w", err)
 	}
 	return nil
@@ -123,12 +123,12 @@ func (p *Platform) IsPlatformAdmin(ctx context.Context, userID string) (bool, er
 
 // ListAdmins 列出所有平台管理员（按 email 排序）。
 func (p *Platform) ListAdmins(ctx context.Context) ([]PlatformAdmin, error) {
-	rows, err := p.pool.Query(ctx,
+	rows, err := p.db.WithContext(ctx).Raw(
 		`SELECT m.user_id, u.email
 		   FROM auth_membership m
 		   JOIN auth_user u ON u.id = m.user_id
 		  WHERE m.scope_kind = $1 AND m.org_id = $2 AND u.deleted_at IS NULL
-		  ORDER BY u.email ASC`, platformScopeKind, platformOrgID)
+		  ORDER BY u.email ASC`, platformScopeKind, platformOrgID).Rows()
 	if err != nil {
 		return nil, fmt.Errorf("studiosvc: list platform admins: %w", err)
 	}
@@ -180,14 +180,14 @@ func (p *Platform) SeedFromEmails(ctx context.Context, emails []string) error {
 // ListAllOrgs 列出所有业务 org（含成员数），按创建时间倒序。哨兵 org（id=”）以
 // id <> ” 过滤排除。返回 JSON 可序列化的 maps（镜像 OrgList.OrgsForUser 风格）。
 func (p *Platform) ListAllOrgs(ctx context.Context) ([]map[string]any, error) {
-	rows, err := p.pool.Query(ctx,
+	rows, err := p.db.WithContext(ctx).Raw(
 		`SELECT o.id, o.name, o.created_at,
 		        COUNT(m.user_id) FILTER (WHERE m.scope_kind = 'org') AS members
 		   FROM auth_org o
 		   LEFT JOIN auth_membership m ON m.org_id = o.id
 		  WHERE o.id <> $1
 		  GROUP BY o.id, o.name, o.created_at
-		  ORDER BY o.created_at DESC`, platformOrgID)
+		  ORDER BY o.created_at DESC`, platformOrgID).Rows()
 	if err != nil {
 		return nil, fmt.Errorf("studiosvc: list all orgs: %w", err)
 	}
@@ -212,13 +212,13 @@ func (p *Platform) ListAllOrgs(ctx context.Context) ([]map[string]any, error) {
 // ListUsers 列出所有用户（按 email 升序），含是否平台管理员与所属业务 org 数。
 // 空时返回非 nil 空切片。
 func (p *Platform) ListUsers(ctx context.Context) ([]PlatformUser, error) {
-	rows, err := p.pool.Query(ctx,
+	rows, err := p.db.WithContext(ctx).Raw(
 		`SELECT u.id, u.email, u.created_at,
 		        EXISTS(SELECT 1 FROM auth_membership pa
 		               WHERE pa.user_id=u.id AND pa.scope_kind='platform' AND pa.org_id='' AND pa.role='admin') AS is_admin,
 		        (SELECT count(DISTINCT m.org_id) FROM auth_membership m
 		           WHERE m.user_id=u.id AND m.scope_kind='org') AS org_count
-		   FROM auth_user u WHERE u.deleted_at IS NULL ORDER BY u.email ASC`)
+		   FROM auth_user u WHERE u.deleted_at IS NULL ORDER BY u.email ASC`).Rows()
 	if err != nil {
 		return nil, fmt.Errorf("studiosvc: list users: %w", err)
 	}
@@ -239,10 +239,10 @@ func (p *Platform) ListUsers(ctx context.Context) ([]PlatformUser, error) {
 func (p *Platform) UserDetail(ctx context.Context, userID string) (UserDetail, error) {
 	var d UserDetail
 	d.Orgs = make([]UserOrgMembership, 0)
-	err := p.pool.QueryRow(ctx,
+	err := p.db.WithContext(ctx).Raw(
 		`SELECT id, email, created_at FROM auth_user WHERE id=$1 AND deleted_at IS NULL`, userID).
-		Scan(&d.UserID, &d.Email, &d.CreatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+		Row().Scan(&d.UserID, &d.Email, &d.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
 		return UserDetail{}, ErrUserNotFound
 	}
 	if err != nil {
@@ -254,14 +254,14 @@ func (p *Platform) UserDetail(ctx context.Context, userID string) (UserDetail, e
 	}
 	d.IsAdmin = admin
 
-	rows, err := p.pool.Query(ctx,
+	rows, err := p.db.WithContext(ctx).Raw(
 		`SELECT o.id, o.name, m.role,
 		        ((SELECT count(*) FROM auth_membership a
 		            WHERE a.org_id=o.id AND a.scope_kind='org' AND a.scope_id IS NULL AND a.role='org_admin') = 1
 		         AND m.role='org_admin') AS sole_org_admin
 		   FROM auth_membership m JOIN auth_org o ON o.id=m.org_id
 		  WHERE m.user_id=$1 AND m.scope_kind='org' AND m.scope_id IS NULL AND o.id<>''
-		  ORDER BY o.name ASC`, userID)
+		  ORDER BY o.name ASC`, userID).Rows()
 	if err != nil {
 		return UserDetail{}, fmt.Errorf("studiosvc: list user orgs: %w", err)
 	}
@@ -302,9 +302,9 @@ func (p *Platform) DeleteUser(ctx context.Context, userID string) error {
 // 规整为小写 trim，这里再 normalize 一次以容错直接传入的入参。
 func (p *Platform) userIDByEmail(ctx context.Context, email string) (string, error) {
 	var uid string
-	err := p.pool.QueryRow(ctx,
-		`SELECT id FROM auth_user WHERE email = $1 AND deleted_at IS NULL`, normalizePlatformEmail(email)).Scan(&uid)
-	if errors.Is(err, pgx.ErrNoRows) {
+	err := p.db.WithContext(ctx).Raw(
+		`SELECT id FROM auth_user WHERE email = $1 AND deleted_at IS NULL`, normalizePlatformEmail(email)).Row().Scan(&uid)
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrUserNotFound
 	}
 	if err != nil {
