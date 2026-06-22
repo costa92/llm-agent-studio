@@ -227,9 +227,11 @@ with:
 
 ```tsx
                 <span className="text-[11px] text-text-3">
-                  左键拖拽平移，Shift+拖拽框选，右键打开菜单
+                  左键拖拽平移，Shift+拖拽框选
                 </span>
 ```
+
+> Note: the "右键打开菜单" mention is **deferred to PR-D2 Task 9** (don't promise the context menu before it ships). PR-D2 Task 9 should append it to this hint once menus exist.
 
 - [ ] **Step 3: Verify build + no regression**
 
