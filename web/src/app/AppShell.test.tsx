@@ -10,6 +10,7 @@ import {
   Outlet,
 } from "@tanstack/react-router"
 import { AppShell } from "./AppShell"
+import { findActiveLabel } from "./nav"
 import { ThemeProvider } from "./theme"
 
 // AppShell 用 <Link>，需挂在 RouterProvider 下。建一个含 4 个 nav 目标的最小内存路由树，
@@ -58,6 +59,10 @@ function renderShell(
   )
 }
 
+// 桌面侧栏 nav（始终在 DOM）。「项目」既出现在侧栏又出现在面包屑，故按侧栏取范围去歧义。
+// 抽屉打开时也会有一个同名 nav；这些用例不开抽屉，取第一个（桌面侧栏）即可。
+const desktopNav = () => screen.getAllByRole("navigation", { name: "主导航" })[0]
+
 describe("AppShell", () => {
   beforeEach(() => {
     localStorage.clear()
@@ -65,7 +70,8 @@ describe("AppShell", () => {
 
   it("renders all nav entries for admin", async () => {
     renderShell({ isAdmin: true })
-    expect(await screen.findByText("项目")).toBeInTheDocument()
+    await screen.findByText("任务中心")
+    expect(within(desktopNav()).getByText("项目")).toBeInTheDocument()
     expect(screen.getByText("任务中心")).toBeInTheDocument()
     expect(screen.getByText("审核")).toBeInTheDocument()
     expect(screen.getByText("资产")).toBeInTheDocument()
@@ -75,8 +81,8 @@ describe("AppShell", () => {
 
   it("hides admin-only entries (审核/成本) for non-admin", async () => {
     renderShell({ isAdmin: false })
-    expect(await screen.findByText("项目")).toBeInTheDocument()
-    expect(screen.getByText("资产")).toBeInTheDocument()
+    expect(await screen.findByText("资产")).toBeInTheDocument()
+    expect(within(desktopNav()).getByText("项目")).toBeInTheDocument()
     // 任务中心非 admin-only —— viewer 也应可见。
     expect(screen.getByText("任务中心")).toBeInTheDocument()
     expect(screen.queryByText("审核")).not.toBeInTheDocument()
@@ -96,7 +102,8 @@ describe("AppShell", () => {
   // 桌面轨道始终在 DOM、汉堡控件存在、点开抽屉后里面有同一套 nav 项（且尊重 isAdmin）。
   it("renders a hamburger control alongside the desktop rail nav", async () => {
     renderShell({ isAdmin: true })
-    expect(await screen.findByText("项目")).toBeInTheDocument() // 桌面轨道
+    await screen.findByText("工作区")
+    expect(within(desktopNav()).getByText("项目")).toBeInTheDocument() // 桌面轨道
     expect(screen.getByLabelText("打开导航菜单")).toBeInTheDocument() // 汉堡
   })
 
@@ -144,7 +151,8 @@ describe("AppShell", () => {
 
   it("hides the 平台 / 全部组织 nav items when not a platform admin (even if org admin)", async () => {
     renderShell({ isAdmin: true, isPlatformAdmin: false })
-    expect(await screen.findByText("项目")).toBeInTheDocument()
+    await screen.findByText("任务中心")
+    expect(within(desktopNav()).getByText("项目")).toBeInTheDocument()
     expect(screen.queryByText("平台")).not.toBeInTheDocument()
     expect(screen.queryByText("全部组织")).not.toBeInTheDocument()
   })
@@ -174,19 +182,19 @@ describe("AppShell", () => {
   it("collapse toggle hides labels + section titles but keeps the link present", async () => {
     const user = userEvent.setup()
     renderShell({ isAdmin: true })
-    expect(await screen.findByText("项目")).toBeInTheDocument()
-    expect(screen.getByText("工作区")).toBeInTheDocument()
+    await screen.findByText("工作区")
+    expect(within(desktopNav()).getByText("项目")).toBeInTheDocument()
 
-    // 收起 → 标题与文案消失，但链接仍在（折叠态用 title 标识）。
+    // 收起 → 标题与侧栏文案消失，但链接仍在（折叠态用 title 标识）。面包屑「项目」始终在顶栏。
     await user.click(screen.getByLabelText("收起导航"))
     expect(screen.queryByText("工作区")).not.toBeInTheDocument()
-    expect(screen.queryByText("项目")).not.toBeInTheDocument()
+    expect(within(desktopNav()).queryByText("项目")).not.toBeInTheDocument()
     expect(screen.getByTitle("项目")).toBeInTheDocument()
 
     // 展开 → 恢复。
     await user.click(screen.getByLabelText("展开导航"))
     expect(screen.getByText("工作区")).toBeInTheDocument()
-    expect(screen.getByText("项目")).toBeInTheDocument()
+    expect(within(desktopNav()).getByText("项目")).toBeInTheDocument()
   })
 
   it("persists collapse state: collapsing writes localStorage; fresh render starts collapsed", async () => {
@@ -199,8 +207,39 @@ describe("AppShell", () => {
     unmount()
     renderShell({ isAdmin: true })
     expect(await screen.findByLabelText("展开导航")).toBeInTheDocument()
-    expect(screen.queryByText("项目")).not.toBeInTheDocument()
+    expect(within(desktopNav()).queryByText("项目")).not.toBeInTheDocument()
     expect(screen.getByTitle("项目")).toBeInTheDocument()
     localStorage.clear()
+  })
+
+  // ── 桌面顶栏（面包屑 + 控件上移）──
+
+  it("renders the desktop header breadcrumb: org segment + active page label", async () => {
+    renderShell({ isAdmin: true })
+    const crumb = await screen.findByRole("navigation", { name: "面包屑" })
+    // org 段是「切换组织」按钮，显示当前 org。
+    const orgBtn = within(crumb).getByRole("button", { name: "切换组织" })
+    expect(orgBtn).toHaveTextContent("acme")
+    // 当前页（默认路由 /orgs/acme/projects）→「项目」。
+    expect(within(crumb).getByText("项目")).toBeInTheDocument()
+  })
+
+  it("renders ThemeSwitcher + avatar in the header, not in the sidebar nav", async () => {
+    renderShell({ isAdmin: true })
+    const header = (await screen.findByRole("navigation", { name: "面包屑" }))
+      .closest("header") as HTMLElement
+    expect(header).not.toBeNull()
+    // 主题切换器在顶栏。
+    expect(within(header).getByRole("button", { name: "切换主题" })).toBeInTheDocument()
+    // 侧栏 nav 不再含主题切换器。
+    expect(within(desktopNav()).queryByRole("button", { name: "切换主题" })).not.toBeInTheDocument()
+  })
+
+  it("findActiveLabel: org-scoped, longest-match, and unknown", () => {
+    expect(findActiveLabel("/orgs/o1/projects", "o1")).toBe("项目")
+    // /platform/orgs 比 /platform 长 → 取「全部组织」而非「平台」。
+    expect(findActiveLabel("/platform/orgs", "o1")).toBe("全部组织")
+    expect(findActiveLabel("/platform", "o1")).toBe("平台")
+    expect(findActiveLabel("/nope/nowhere", "o1")).toBeNull()
   })
 })
