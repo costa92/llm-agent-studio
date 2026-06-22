@@ -55,8 +55,10 @@ export interface WorkbenchViewProps {
   live: boolean
   // POST /run 返回的 fallbackUsed（常驻 WarnStrip）。
   fallbackUsed?: boolean
-  // editor+ 才显示运行/取消/重新运行。
+  // editor+ 才显示运行/重新运行。
   canRun: boolean
+  // 仅运行中/规划中（且为最新 plan）才可取消 → 控制「取消」按钮显隐。
+  canCancel: boolean
   onRun: () => void
   onCancel: () => void
   isRunning: boolean
@@ -88,6 +90,7 @@ export function WorkbenchView({
   live,
   fallbackUsed,
   canRun,
+  canCancel,
   onRun,
   onCancel,
   isRunning,
@@ -146,15 +149,15 @@ export function WorkbenchView({
         <div className="ml-auto flex flex-wrap items-center justify-end gap-2 sm:gap-3">
           {galleryTrigger}
           {live && <SseIndicator status={CONN_TO_STATUS[conn]} />}
+          {canCancel && (
+            <Button variant="ghost" onClick={onCancel} disabled={isRunning}>
+              取消
+            </Button>
+          )}
           {canRun && (
-            <>
-              <Button variant="ghost" onClick={onCancel} disabled={isRunning}>
-                取消
-              </Button>
-              <Button variant="amber" kbd="R" onClick={onRun} disabled={isRunning}>
-                {runStatus === "idle" ? "运行" : "重新运行"}
-              </Button>
-            </>
+            <Button variant="amber" kbd="R" onClick={onRun} disabled={isRunning}>
+              {runStatus === "idle" ? "运行" : "重新运行"}
+            </Button>
           )}
         </div>
         <SlateBar visible={slateVisible} />

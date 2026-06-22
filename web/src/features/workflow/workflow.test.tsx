@@ -58,6 +58,7 @@ function baseWorkbenchProps() {
     conn: "connected" as const,
     live: true,
     canRun: true,
+    canCancel: false,
     onRun: vi.fn(),
     onCancel: vi.fn(),
     isRunning: false,
@@ -260,6 +261,7 @@ describe("WorkbenchView (authoritative ProjectState)", () => {
         conn="connected"
         live={false}
         canRun={false}
+        canCancel={false}
         onRun={vi.fn()}
         onCancel={vi.fn()}
         isRunning={false}
@@ -286,6 +288,7 @@ describe("WorkbenchView (authoritative ProjectState)", () => {
         conn="connected"
         live={false}
         canRun={false}
+        canCancel={false}
         onRun={vi.fn()}
         onCancel={vi.fn()}
         isRunning={false}
