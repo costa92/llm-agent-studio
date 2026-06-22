@@ -60,9 +60,11 @@ function RunsListPage() {
       } else {
         toast.success("已开始运行")
       }
+      // Phase 3：运行成功后直接进画布运行模式（res 带 workflowId + planId）。
       void navigate({
-        to: "/orgs/$org/projects/$id/runs/$runId",
-        params: { org, id, runId: res.planId },
+        to: "/orgs/$org/projects/$id/workflow",
+        params: { org, id },
+        search: { wf: res.workflowId, run: res.planId },
       })
     } catch (err) {
       if (err instanceof ApiError && err.status === 429) {
@@ -279,8 +281,9 @@ function RunsListPage() {
                             variant="ghost"
                             onClick={() =>
                               void navigate({
-                                to: "/orgs/$org/projects/$id/runs/$runId",
-                                params: { org, id, runId: wf.latestPlanId as string },
+                                to: "/orgs/$org/projects/$id/workflow",
+                                params: { org, id },
+                                search: { wf: wf.id, run: wf.latestPlanId as string },
                               })
                             }
                           >

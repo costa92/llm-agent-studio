@@ -262,6 +262,9 @@ export interface Plan {
   valid: boolean
   fallbackUsed: boolean
   createdAt: string
+  // 该 plan 所属自定义工作流 id（后端 COALESCE 空 = 项目级默认管线）。
+  // 非空 → 该 run 可直接定向到画布运行模式 /workflow?wf=<workflowId>&run=<id>。
+  workflowId?: string
 }
 
 export function usePlans(projectId: string): UseQueryResult<Plan[]> {

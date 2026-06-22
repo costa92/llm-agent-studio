@@ -426,12 +426,16 @@ type Plan struct {
 	Valid        bool      `json:"valid"`
 	FallbackUsed bool      `json:"fallbackUsed"`
 	CreatedAt    time.Time `json:"createdAt"`
+	// WorkflowID 为该 plan 所属自定义工作流的 id（COALESCE 空 = 项目级默认管线，
+	// 无关联工作流）。供前端把自定义 run 直接定向到画布运行模式。
+	WorkflowID string `json:"workflowId"`
 }
 
 // ListPlans lists all plans/runs for a specific project.
 func (s *Store) ListPlans(ctx context.Context, projectID string) ([]Plan, error) {
 	q := `
 		SELECT p.id, p.project_id, p.valid, p.fallback_used, p.created_at,
+		       COALESCE(p.workflow_id, ''),
 		       COALESCE(t.total, 0),
 		       COALESCE(t.ready, 0),
 		       COALESCE(t.running, 0),
@@ -474,7 +478,7 @@ func (s *Store) ListPlans(ctx context.Context, projectID string) ([]Plan, error)
 		var p Plan
 		var c TodoCounts
 		if err := rows.Scan(
-			&p.ID, &p.ProjectID, &p.Valid, &p.FallbackUsed, &p.CreatedAt,
+			&p.ID, &p.ProjectID, &p.Valid, &p.FallbackUsed, &p.CreatedAt, &p.WorkflowID,
 			&c.Total, &c.Ready, &c.Running, &c.Blocked, &c.Done, &c.Failed, &c.Canceled, &c.PendingAssets,
 		); err != nil {
 			return nil, fmt.Errorf("project: list plans: scan: %w", err)

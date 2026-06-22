@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { createFileRoute, useNavigate } from "@tanstack/react-router"
+import { createFileRoute, useNavigate, Navigate } from "@tanstack/react-router"
 import { useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { getAccessToken } from "@/lib/apiClient"
@@ -44,8 +44,31 @@ import type { ProjectState, PipState, GraphNode } from "@/lib/projectState"
 export const Route = createFileRoute(
   "/_authed/orgs/$org/projects/$id/runs/$runId"
 )({
-  component: RunWorkbenchPage,
+  component: RunRouteGate,
 })
+
+// Phase 3：/runs/$runId 整合入口。自定义工作流 run（plan.workflowId 非空）重定向到
+// 画布运行模式 /workflow?wf=&run=；遗留默认管线 run（workflowId 空）回落渲染旧
+// RunWorkbenchPage。加载/错误态由 RunWorkbenchPage 自身处理（这里仅在 plans 就绪后判定）。
+function RunRouteGate() {
+  const { org, id, runId } = Route.useParams()
+  const plansQuery = usePlans(id)
+  const plan = plansQuery.data?.find((p) => p.id === runId)
+
+  // plans 就绪且该 run 属于某自定义工作流 → 定向到画布运行模式（replace 不留历史）。
+  if (plansQuery.isSuccess && plan?.workflowId) {
+    return (
+      <Navigate
+        to="/orgs/$org/projects/$id/workflow"
+        params={{ org, id }}
+        search={{ wf: plan.workflowId, run: runId }}
+        replace
+      />
+    )
+  }
+  // 加载中 / 加载失败 / 默认管线 run（无 workflowId）：渲染旧工作台（自带 loading/error 态）。
+  return <RunWorkbenchPage />
+}
 
 type Selection =
   | { kind: "asset"; assetId: string }
