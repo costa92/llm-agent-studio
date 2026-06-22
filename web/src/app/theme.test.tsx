@@ -46,13 +46,15 @@ function stubControllableMatchMedia(initialMatches: boolean) {
   }
 }
 
-// 探针组件：把当前 theme 写进 DOM，并暴露一个切到 light 的按钮。
+// 探针组件：把当前 theme/choice 写进 DOM，并暴露切到 light / auto 的按钮。
 function Probe() {
-  const { theme, setTheme } = useTheme()
+  const { theme, choice, setChoice } = useTheme()
   return (
     <div>
       <span data-testid="theme">{theme}</span>
-      <button onClick={() => setTheme("light")}>to-light</button>
+      <span data-testid="choice">{choice}</span>
+      <button onClick={() => setChoice("light")}>to-light</button>
+      <button onClick={() => setChoice("auto")}>to-auto</button>
     </div>
   )
 }
@@ -93,7 +95,13 @@ describe("ThemeProvider", () => {
     expect(screen.getByTestId("theme").textContent).toBe("dark-studio")
   })
 
-  it("setTheme 持久化并写 data-theme", async () => {
+  it("无存储 → choice 默认 auto", () => {
+    stubMatchMedia(false)
+    render(<ThemeProvider><Probe /></ThemeProvider>)
+    expect(screen.getByTestId("choice").textContent).toBe("auto")
+  })
+
+  it("setChoice 持久化并写 data-theme", async () => {
     stubMatchMedia(false)
     const user = userEvent.setup()
     render(<ThemeProvider><Probe /></ThemeProvider>)
@@ -101,6 +109,7 @@ describe("ThemeProvider", () => {
     expect(localStorage.getItem("studio-theme")).toBe("light")
     expect(document.documentElement.getAttribute("data-theme")).toBe("light")
     expect(screen.getByTestId("theme").textContent).toBe("light")
+    expect(screen.getByTestId("choice").textContent).toBe("light")
   })
 
   it("useTheme 在 Provider 外抛错", () => {
@@ -126,6 +135,22 @@ describe("ThemeProvider", () => {
     expect(screen.getByTestId("theme").textContent).toBe("cinematic")
     await act(async () => fire(true)) // 系统切到亮 —— 不应覆盖
     expect(screen.getByTestId("theme").textContent).toBe("cinematic")
+  })
+
+  it("选具体主题后再选「auto」→ 恢复跟随系统并持久化 auto", async () => {
+    const fire = stubControllableMatchMedia(false) // 系统暗
+    localStorage.setItem("studio-theme", "light") // 已选具体主题
+    const user = userEvent.setup()
+    render(<ThemeProvider><Probe /></ThemeProvider>)
+    expect(screen.getByTestId("theme").textContent).toBe("light")
+    await act(async () => fire(true)) // 系统切亮 —— 具体主题不跟随
+    expect(screen.getByTestId("theme").textContent).toBe("light")
+    await user.click(screen.getByText("to-auto")) // 切回 auto → 立即解析为当前系统(亮)=light
+    expect(screen.getByTestId("choice").textContent).toBe("auto")
+    expect(localStorage.getItem("studio-theme")).toBe("auto")
+    expect(screen.getByTestId("theme").textContent).toBe("light")
+    await act(async () => fire(false)) // 系统切暗 → auto 实时跟随 → dark-studio
+    expect(screen.getByTestId("theme").textContent).toBe("dark-studio")
   })
 
   it("显式选择即使未持久化（私有模式 setItem 抛错）也不被系统变化覆盖", async () => {

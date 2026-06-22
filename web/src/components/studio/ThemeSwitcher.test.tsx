@@ -23,11 +23,12 @@ describe("ThemeSwitcher", () => {
     expect(screen.getByRole("button", { name: "切换主题" })).toBeInTheDocument()
   })
 
-  it("打开菜单显示三项主题", async () => {
+  it("打开菜单显示四项（含跟随系统）", async () => {
     const user = userEvent.setup()
     renderSwitcher()
     await user.click(screen.getByRole("button", { name: "切换主题" }))
-    expect(await screen.findByText("暗色工作室")).toBeInTheDocument()
+    expect(await screen.findByText("跟随系统")).toBeInTheDocument()
+    expect(screen.getByText("暗色工作室")).toBeInTheDocument()
     expect(screen.getByText("明亮")).toBeInTheDocument()
     expect(screen.getByText("影院感")).toBeInTheDocument()
   })
@@ -39,5 +40,14 @@ describe("ThemeSwitcher", () => {
     await user.click(await screen.findByText("明亮"))
     expect(localStorage.getItem("studio-theme")).toBe("light")
     expect(document.documentElement.getAttribute("data-theme")).toBe("light")
+  })
+
+  it("点选「跟随系统」→ 持久化 auto", async () => {
+    const user = userEvent.setup()
+    localStorage.setItem("studio-theme", "light") // 先有具体选择
+    renderSwitcher()
+    await user.click(screen.getByRole("button", { name: "切换主题" }))
+    await user.click(await screen.findByText("跟随系统"))
+    expect(localStorage.getItem("studio-theme")).toBe("auto")
   })
 })
