@@ -641,6 +641,21 @@ describe("reconnectEdge", () => {
     })
     expect(next).toHaveLength(3)
   })
+
+  it("dedups: reconnecting onto an already-connected pair yields no duplicate edge id", () => {
+    // 链 + 额外 script-1->asset-1；把 storyboard-1->asset-1 重连成 script-1->asset-1（已存在）。
+    const { edges } = toReactFlow(chain)
+    const withExtra = [
+      ...(edges as RFEdge[]),
+      { id: "script-1->asset-1", source: "script-1", target: "asset-1", type: "studio" },
+    ]
+    const next = reconnectEdge(withExtra, "storyboard-1->asset-1", {
+      source: "script-1",
+      target: "asset-1",
+    })
+    const ids = next.map((e) => e.id)
+    expect(ids.filter((id) => id === "script-1->asset-1")).toHaveLength(1)
+  })
 })
 
 describe("rename cascade (re-key edges)", () => {
