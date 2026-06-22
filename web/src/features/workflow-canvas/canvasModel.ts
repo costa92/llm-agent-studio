@@ -199,6 +199,134 @@ export function duplicateNode(
   return { nodes: [...rfNodes, newRf], id: newId }
 }
 
+// 复制选区（纯函数，C2）：把 selectedIds 圈选的节点/内部边整体克隆出一份。
+// id 分配：先一次性建好 oldId→newId 映射，逐个对照「现有 id（existing） + 本批已分配 id」
+// 取下一个空位，保证与画布现有节点 AND 同批其它克隆都不冲突；再据此重键边。
+// - 节点：新 id，data.node 深拷贝 + data.node.id 同步，position 偏移 offset，selected:true。
+// - 边：仅保留 source 与 target 都在 selectedIds 内的内部边，重键 source/target/id；type:"studio"。
+//       触及非选中节点的边（如外部入边 X->A）一律丢弃。
+// 返回克隆出的 nodes/edges（不与原图合并，由调用方合并）。existing 为分配 id 时需避让的
+// 现有画布节点（粘贴时传当前 getNodes()，避免与画布既有 id 撞）。
+export function cloneSelection(
+  rfNodes: RFNode[],
+  rfEdges: RFEdge[],
+  selectedIds: Set<string>,
+  offset: { x: number; y: number },
+  _prompts?: Prompt[],
+  existing?: RFNode[],
+): { nodes: RFNode[]; edges: RFEdge[] } {
+  const selected = rfNodes.filter((n) => selectedIds.has(n.id))
+  // 先建 oldId→newId 映射：working 集合从「现有画布 id + 选区原 id」起步，
+  // 每分配一个新 id 就并入 working，使后续分配既避让现有也避让本批已分配。
+  const working: RFNode[] = [...(existing ?? []), ...selected]
+  const idMap = new Map<string, string>()
+  for (const n of selected) {
+    const newId = nextNodeId(working)
+    idMap.set(n.id, newId)
+    // 把刚分配的 id 占位进 working，下一轮 nextNodeId 不会重复给出。
+    working.push({
+      id: newId,
+      type: "studio",
+      position: { x: 0, y: 0 },
+      data: { node: { id: newId, type: n.data.node.type, promptId: "", dependsOn: [] } },
+    })
+  }
+  const nodes: RFNode[] = selected.map((n) => {
+    const newId = idMap.get(n.id)!
+    return {
+      id: newId,
+      type: "studio",
+      position: { x: n.position.x + offset.x, y: n.position.y + offset.y },
+      selected: true,
+      data: { node: { ...n.data.node, id: newId } },
+    }
+  })
+  const edges: RFEdge[] = rfEdges
+    .filter((e) => selectedIds.has(e.source) && selectedIds.has(e.target))
+    .map((e) => {
+      const source = idMap.get(e.source)!
+      const target = idMap.get(e.target)!
+      return { id: `${source}->${target}`, source, target, type: "studio" }
+    })
+  return { nodes, edges }
+}
+
+// 对齐辅助线（纯函数，C3）：把被拖节点的 left/center/right(x)、top/center/bottom(y)
+// 与其它节点对应边比较；落在阈值内则返回引导线坐标（flow 坐标）+ 吸附后位置。
+// 几何参考 ReactFlow「helper lines」示例：节点宽高取 width/height（measured 兜底），
+// 缺省回退到 180×64。snapX/snapY 是为了让被拖节点边/中心与对齐目标精确重合所需的左上角坐标。
+const DEFAULT_NODE_W = 180
+const DEFAULT_NODE_H = 64
+
+function nodeSize(n: RFNode): { w: number; h: number } {
+  const anyN = n as RFNode & {
+    width?: number
+    height?: number
+    measured?: { width?: number; height?: number }
+  }
+  return {
+    w: anyN.width ?? anyN.measured?.width ?? DEFAULT_NODE_W,
+    h: anyN.height ?? anyN.measured?.height ?? DEFAULT_NODE_H,
+  }
+}
+
+export function getHelperLines(
+  dragged: RFNode,
+  nodes: RFNode[],
+  threshold = 5,
+): { horizontal?: number; vertical?: number; snapX?: number; snapY?: number } {
+  const { w: dw, h: dh } = nodeSize(dragged)
+  const dx = dragged.position.x
+  const dy = dragged.position.y
+  // 被拖节点在 x/y 轴上的三条参考线：左/中/右、上/中/下。
+  const dragX = [
+    { line: dx, snap: dx }, // left
+    { line: dx + dw / 2, snap: dx }, // center
+    { line: dx + dw, snap: dx }, // right
+  ]
+  const dragY = [
+    { line: dy, snap: dy },
+    { line: dy + dh / 2, snap: dy },
+    { line: dy + dh, snap: dy },
+  ]
+  let vertical: number | undefined
+  let snapX: number | undefined
+  let horizontal: number | undefined
+  let snapY: number | undefined
+  let bestDx = threshold
+  let bestDy = threshold
+  for (const other of nodes) {
+    if (other.id === dragged.id) continue
+    const { w: ow, h: oh } = nodeSize(other)
+    const ox = other.position.x
+    const oy = other.position.y
+    const otherX = [ox, ox + ow / 2, ox + ow]
+    const otherY = [oy, oy + oh / 2, oy + oh]
+    for (const d of dragX) {
+      for (const t of otherX) {
+        const dist = Math.abs(d.line - t)
+        if (dist < bestDx) {
+          bestDx = dist
+          vertical = t
+          // 吸附：使被拖参考线（line）与目标线 t 重合，左上角随之平移。
+          snapX = d.snap + (t - d.line)
+        }
+      }
+    }
+    for (const d of dragY) {
+      for (const t of otherY) {
+        const dist = Math.abs(d.line - t)
+        if (dist < bestDy) {
+          bestDy = dist
+          horizontal = t
+          snapY = d.snap + (t - d.line)
+        }
+      }
+    }
+  }
+  return { horizontal, vertical, snapX, snapY }
+}
+
 // 在边 A->B 上插入一个新节点 N（纯函数）：移除 A->B，新增 A->N 与 N->B。
 // 新节点经 nextNodeId 分配 id，落在 midPos；promptId 取该 type org 默认。
 // 边带 type:"studio"（与所有连边构造点一致）。
