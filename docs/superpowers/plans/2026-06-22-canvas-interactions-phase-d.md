@@ -99,14 +99,11 @@ export function reconnectEdge(
   oldEdgeId: string,
   conn: { source: string; target: string },
 ): RFEdge[] {
+  const newId = `${conn.source}->${conn.target}`
+  // 去掉旧边 + 任何与新边 id 重复的既有边（重连到已连节点时避免重复 id / 重复 dependsOn）。
   return [
-    ...rfEdges.filter((e) => e.id !== oldEdgeId),
-    {
-      id: `${conn.source}->${conn.target}`,
-      source: conn.source,
-      target: conn.target,
-      type: "studio",
-    },
+    ...rfEdges.filter((e) => e.id !== oldEdgeId && e.id !== newId),
+    { id: newId, source: conn.source, target: conn.target, type: "studio" },
   ]
 }
 ```
