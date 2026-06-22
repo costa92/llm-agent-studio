@@ -10,6 +10,7 @@ import { Button } from "@/components/studio/Button"
 import { useAuth } from "@/app/auth"
 import { sanitizeLoginRedirect } from "@/app/org"
 import { ApiError } from "@/lib/apiClient"
+import { ThemeSwitcher } from "@/components/studio/ThemeSwitcher"
 
 // T6：rhf+zod 登录表单 + AuthProvider 接入。
 // 登录请求体 {email,password}（与 authz 自带测试一致；Go JSON 大小写不敏感）。
@@ -112,6 +113,9 @@ function LoginPage() {
 
   return (
     <div className="grid min-h-screen place-items-center bg-bg-base text-text-1">
+      <div className="fixed right-4 top-4 z-10">
+        <ThemeSwitcher />
+      </div>
       <div className="flex flex-col items-center gap-6">
         <h1 className="font-heading text-[22px] font-bold text-amber">
           AI Studio

@@ -48,6 +48,7 @@
 
     /* per-agent 制片轨道语义色（S2 Script 蓝 / S3 Storyboard 紫 / S4 Asset 琥珀 / S5 Review 绿） */
     --color-amber: var(--amber);
+    --color-amber-hover: var(--amber-hover);
     --color-script: var(--script);
     --color-board: var(--board);
     --color-asset: var(--asset);
@@ -83,6 +84,7 @@
   --text-2: #9aa1ac;
   --text-3: #7e8794;
   --amber: #e8a33d;
+  --amber-hover: #f0b257;
   --script: #5c9bd6;
   --board: #9c7bda;
   --asset: #e8a33d;
@@ -100,6 +102,7 @@
   --text-2: #5b6470;
   --text-3: #8a929e;
   --amber: #b26b00;
+  --amber-hover: #946000;
   --script: #2f6fb0;
   --board: #6e4fb0;
   --asset: #b26b00;
@@ -117,6 +120,7 @@
   --text-2: #a0a6b0;
   --text-3: #6e7682;
   --amber: #e8a33d;
+  --amber-hover: #f0b257;
   --script: #69a9e0;
   --board: #ad8ce6;
   --asset: #f0ae4a;

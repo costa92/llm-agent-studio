@@ -10,7 +10,7 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        amber: "bg-amber text-[#1a1408] hover:bg-[#f0b257]",
+        amber: "bg-amber text-primary-foreground hover:bg-amber-hover",
         ghost: "border border-line text-text-2 hover:border-text-3 hover:text-text-1",
         green: "border border-review/40 bg-review/15 text-review",
         red: "border border-danger/35 bg-danger/12 text-danger",

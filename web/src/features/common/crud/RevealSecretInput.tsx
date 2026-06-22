@@ -63,7 +63,7 @@ export function RevealSecretInput({
       {alreadySet && (
         <p className="text-[11px] text-text-3">留空保持不变（已配置）；填写则替换为新值。</p>
       )}
-      {revealError && <p className="text-[11px] text-red-400">{revealError}</p>}
+      {revealError && <p className="text-[11px] text-danger" role="alert">{revealError}</p>}
     </div>
   )
 }

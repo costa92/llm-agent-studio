@@ -76,16 +76,16 @@ export function OrgLanding() {
                   <button
                     type="button"
                     onClick={() => enter(org)}
-                    className="group flex w-full items-center gap-3 rounded-md border border-line px-3 py-2.5 text-left transition-[0.15s] hover:border-amber hover:bg-surface-2"
+                    className="group flex w-full items-center gap-3 rounded-md border border-line px-3 py-2.5 text-left transition-colors duration-150 hover:border-amber hover:bg-bg-raised"
                   >
-                    <span className="grid h-8 w-8 place-items-center rounded-md bg-surface-2 text-text-2">
+                    <span className="grid h-8 w-8 place-items-center rounded-md bg-bg-raised text-text-2">
                       <Building2 className="h-4 w-4" />
                     </span>
                     <span className="flex min-w-0 flex-1 flex-col">
                       <span className="truncate text-[13px] font-medium text-text-1">{org.name}</span>
                       <span className="text-[11px] text-text-3">{org.role}</span>
                     </span>
-                    <ChevronRight className="h-4 w-4 text-text-3 transition-[0.15s] group-hover:text-amber" />
+                    <ChevronRight className="h-4 w-4 text-text-3 transition-colors duration-150 group-hover:text-amber" />
                   </button>
                 </li>
               ))}

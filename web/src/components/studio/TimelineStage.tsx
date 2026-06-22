@@ -40,7 +40,7 @@ const tchipVariants = cva(
         blocked: "border border-dashed border-line text-text-3",
         pending: "bg-bg-raised text-text-3",
         running:
-          "text-[#1a1408] bg-[repeating-linear-gradient(115deg,var(--amber)_0_8px,#c9882a_8px_16px)]",
+          "text-primary-foreground bg-[repeating-linear-gradient(115deg,var(--amber)_0_8px,color-mix(in_srgb,var(--amber)_72%,#000)_8px_16px)]",
         done: "bg-review/13 text-review",
         failed: "bg-danger/13 text-danger",
       } satisfies Record<StageStatus2, string>,
@@ -123,7 +123,7 @@ export function TimelineStage({
         <span
           className={cn(
             "font-sans text-[10px] font-bold",
-            isDone ? "text-[#14161a]" : isFailed ? "text-danger" : "text-text-3",
+            isDone ? "text-bg-base" : isFailed ? "text-danger" : "text-text-3",
           )}
         >
           {isDone ? "✓" : meta.sn}

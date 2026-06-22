@@ -144,12 +144,13 @@ function RunsListPage() {
       <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-line pb-6 mb-8">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <span
+            <button
+              type="button"
               onClick={() => void navigate({ to: "/orgs/$org/projects", params: { org } })}
-              className="text-[12px] text-text-3 cursor-pointer hover:text-text-1"
+              className="text-[12px] text-text-3 hover:text-text-1"
             >
               项目列表
-            </span>
+            </button>
             <span className="text-[12px] text-text-3">/</span>
             <span className="text-[12px] text-text-2 font-semibold">项目详情</span>
           </div>
@@ -196,7 +197,7 @@ function RunsListPage() {
       </header>
 
       {/* 工作流 section：一个项目可有多条 DAG 工作流，各自独立运行。 */}
-      <section className="bg-bg-default border border-line rounded-xl p-5 shadow-sm mb-8">
+      <section className="bg-bg-surface border border-line rounded-xl p-5 shadow-sm mb-8">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-xs font-semibold tracking-wider text-text-3 uppercase">工作流</h3>
           <WorkflowDialog
@@ -207,7 +208,14 @@ function RunsListPage() {
           />
         </div>
 
-        {workflows.length === 0 ? (
+        {workflowsQuery.isError ? (
+          <div className="flex flex-col items-center justify-center gap-3 text-center py-8">
+            <p className="text-sm text-text-2">工作流加载失败</p>
+            <Button variant="ghost" onClick={() => void workflowsQuery.refetch()}>
+              重试
+            </Button>
+          </div>
+        ) : workflows.length === 0 ? (
           <div className="flex flex-col items-center justify-center text-center py-8">
             <p className="text-sm text-text-2 mb-1 font-semibold">暂无工作流</p>
             <p className="text-xs text-text-3 max-w-xs">
@@ -246,7 +254,9 @@ function RunsListPage() {
                           onClick={() => void handleRunWorkflow(wf.id)}
                           disabled={runWorkflow.isPending}
                         >
-                          运行
+                          {runWorkflow.isPending && runWorkflow.variables === wf.id
+                            ? "运行中…"
+                            : "运行"}
                         </Button>
                         <WorkflowDialog
                           projectId={id}
@@ -289,14 +299,14 @@ function RunsListPage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Left column: Brief & config */}
         <div className="lg:col-span-1 space-y-6">
-          <section className="bg-bg-default border border-line rounded-xl p-5 shadow-sm">
+          <section className="bg-bg-surface border border-line rounded-xl p-5 shadow-sm">
             <h3 className="text-xs font-semibold tracking-wider text-text-3 uppercase mb-3">创意 Brief</h3>
             <p className="text-sm leading-relaxed text-text-2 whitespace-pre-wrap">
               {project.description || "（无描述）"}
             </p>
           </section>
 
-          <section className="bg-bg-default border border-line rounded-xl p-5 shadow-sm space-y-4">
+          <section className="bg-bg-surface border border-line rounded-xl p-5 shadow-sm space-y-4">
             <h3 className="text-xs font-semibold tracking-wider text-text-3 uppercase">项目配置</h3>
             <div className="grid grid-cols-2 gap-4 text-xs">
               <div>
@@ -317,12 +327,19 @@ function RunsListPage() {
 
         {/* Right column: Run history list */}
         <div className="lg:col-span-2">
-          <section className="bg-bg-default border border-line rounded-xl p-5 shadow-sm min-h-[400px] flex flex-col">
+          <section className="bg-bg-surface border border-line rounded-xl p-5 shadow-sm min-h-[400px] flex flex-col">
             <h3 className="text-xs font-semibold tracking-wider text-text-3 uppercase mb-4">生成记录 / 运行历史</h3>
             
-            {plans.length === 0 ? (
+            {plansQuery.isError ? (
+              <div className="flex-1 flex flex-col items-center justify-center gap-3 text-center p-8">
+                <p className="text-sm text-text-2">生成记录加载失败</p>
+                <Button variant="ghost" onClick={() => void plansQuery.refetch()}>
+                  重试
+                </Button>
+              </div>
+            ) : plans.length === 0 ? (
               <div className="flex-1 flex flex-col items-center justify-center text-center p-8">
-                <div className="w-16 h-16 bg-bg-surface border border-line rounded-full flex items-center justify-center mb-4 text-text-3">
+                <div aria-hidden className="w-16 h-16 bg-bg-surface border border-line rounded-full flex items-center justify-center mb-4 text-text-3">
                   📋
                 </div>
                 <p className="text-sm text-text-2 mb-2 font-semibold">暂无生成记录</p>
@@ -361,7 +378,7 @@ function RunsListPage() {
                           <td className="py-3">
                             {plan.fallbackUsed ? (
                               <Badge variant="rejected">
-                                ⚠️ 已回落
+                                <span aria-hidden>⚠️</span> 已回落
                               </Badge>
                             ) : (
                               <span className="text-text-3 text-xs">-</span>

@@ -111,7 +111,7 @@ export function ProjectFields({
               className={cn(
                 "rounded-md border px-4 py-[7px] text-[13px] font-medium transition-colors",
                 kind === opt.v
-                  ? "border-amber bg-amber text-[#1a1408]"
+                  ? "border-amber bg-amber text-primary-foreground"
                   : "border-line text-text-2 hover:border-text-3 hover:text-text-1",
               )}
             >

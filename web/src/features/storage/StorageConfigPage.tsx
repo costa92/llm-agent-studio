@@ -2,6 +2,7 @@ import { useFormContext, useForm, FormProvider } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useState } from "react"
 import { Loader2 } from "lucide-react"
+import { toast } from "sonner"
 import { Button } from "@/components/studio/Button"
 import { Button as UiButton } from "@/components/ui/button"
 import { Badge } from "@/components/studio/Badge"
@@ -248,7 +249,16 @@ export function StorageConfigView({ org }: StorageConfigViewProps) {
                 c.isDefault ? (
                   <Badge variant="done">默认</Badge>
                 ) : (
-                  <UiButton size="sm" onClick={() => setDefaultMutation.mutate(c.id)}>
+                  <UiButton
+                    size="sm"
+                    disabled={setDefaultMutation.isPending}
+                    onClick={() =>
+                      setDefaultMutation.mutate(c.id, {
+                        onSuccess: () => toast.success("已设为默认"),
+                        onError: () => toast.error("设置默认失败"),
+                      })
+                    }
+                  >
                     设为默认
                   </UiButton>
                 ),

@@ -228,14 +228,15 @@ function UserResetPasswordDialog({
               />
               <button
                 type="button"
+                aria-label={showNewPwd ? "隐藏密码" : "显示密码"}
                 onClick={() => setShowNewPwd(!showNewPwd)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-text-3 hover:text-text-1 focus:outline-none"
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-text-3 hover:text-text-1"
               >
                 {showNewPwd ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
             </div>
             {tooShort && (
-              <p className="text-[12px] text-red-500">至少 8 个字符</p>
+              <p className="text-[12px] text-danger">至少 8 个字符</p>
             )}
           </div>
           <div className="flex flex-col gap-1">
@@ -251,14 +252,15 @@ function UserResetPasswordDialog({
               />
               <button
                 type="button"
+                aria-label={showConfirmPwd ? "隐藏密码" : "显示密码"}
                 onClick={() => setShowConfirmPwd(!showConfirmPwd)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-text-3 hover:text-text-1 focus:outline-none"
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-text-3 hover:text-text-1"
               >
                 {showConfirmPwd ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
             </div>
             {mismatch && (
-              <p className="text-[12px] text-red-500">两次输入不一致</p>
+              <p className="text-[12px] text-danger">两次输入不一致</p>
             )}
           </div>
         </div>

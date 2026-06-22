@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Button } from "@/components/studio/Button"
 import { useAuth } from "@/app/auth"
 import { ApiError } from "@/lib/apiClient"
+import { ThemeSwitcher } from "@/components/studio/ThemeSwitcher"
 
 // 自助注册：rhf+zod 表单 + AuthProvider.register。
 // 注册请求体 {email,password}（与后端契约一致）；成功即登录（响应 {access_token,expires_in} + Set-Cookie）。
@@ -251,6 +252,9 @@ function RegisterPage() {
 
   return (
     <div className="grid min-h-screen place-items-center bg-bg-base text-text-1">
+      <div className="fixed right-4 top-4 z-10">
+        <ThemeSwitcher />
+      </div>
       <div className="flex flex-col items-center gap-6">
         <h1 className="font-heading text-[22px] font-bold text-amber">
           AI Studio

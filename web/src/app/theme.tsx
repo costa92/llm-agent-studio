@@ -48,6 +48,25 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     document.documentElement.setAttribute("data-theme", theme)
   }, [theme])
 
+  // 用户未显式选择（localStorage 无值）时，跟随系统明暗的实时变化。
+  // 一旦用户手动选过（localStorage 有值），不再被系统切换覆盖。
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-color-scheme: light)")
+    const onChange = () => {
+      let stored: string | null = null
+      try {
+        stored = localStorage.getItem(STORAGE_KEY)
+      } catch {
+        /* localStorage 不可用：视为未显式选择，跟随系统 */
+      }
+      if (!isTheme(stored)) {
+        setThemeState(mq.matches ? "light" : "dark-studio")
+      }
+    }
+    mq.addEventListener("change", onChange)
+    return () => mq.removeEventListener("change", onChange)
+  }, [])
+
   const setTheme = useCallback((t: Theme) => {
     try {
       localStorage.setItem(STORAGE_KEY, t)
