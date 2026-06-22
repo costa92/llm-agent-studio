@@ -1,0 +1,18 @@
+/* ReactFlow v12 主题适配：把内置 --xy-* 变量映射到 studio 琥珀三主题 token。
+   作用域限定到 .workflow-canvas，避免污染全局。禁硬编码颜色——一律走 token。
+   token 来源见 src/index.css（--bg-base/-surface/-raised、--line、--text-1/2、--amber）。 */
+.workflow-canvas {
+  --xy-background-color: var(--bg-base);
+  --xy-node-background-color: var(--bg-surface);
+  --xy-node-border: 1px solid var(--line);
+  --xy-node-color: var(--text-1);
+  --xy-edge-stroke: var(--line);
+  --xy-edge-stroke-default: var(--line);
+  --xy-edge-stroke-selected: var(--amber);
+  --xy-connectionline-stroke: var(--amber);
+  --xy-controls-button-background-color: var(--bg-surface);
+  --xy-controls-button-background-color-hover: var(--bg-raised);
+  --xy-controls-button-color: var(--text-2);
+  --xy-minimap-background-color: var(--bg-surface);
+  --xy-attribution-background-color: transparent;
+}
