@@ -824,6 +824,52 @@ func TestLoadState_CustomGraph(t *testing.T) {
 	}
 }
 
+// TestListPlans_WorkflowID: ListPlans 应在每条 plan 上回填 WorkflowID
+// （自定义 run = 非空工作流 id；默认管线 run = COALESCE 空串）。供前端把
+// 自定义 run 直接定向到画布运行模式。
+func TestListPlans_WorkflowID(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	orgID := "org_lp_wf_" + uniqueSuffix()
+	p, err := s.Create(ctx, CreateInput{OrgID: orgID, Name: "LP-WF", CreatedBy: "u"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	wfID := "wf_lp_" + p.ID
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO workflows (id, project_id, name, nodes) VALUES ($1,$2,'wf','[]'::jsonb)`,
+		wfID, p.ID); err != nil {
+		t.Fatalf("insert workflow: %v", err)
+	}
+	customPlan := "pln_lpc_" + p.ID
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO plans (id, project_id, status, valid, fallback_used, workflow_id, created_at)
+		 VALUES ($1,$2,'running',true,false,$3, now() + interval '1 second')`,
+		customPlan, p.ID, wfID); err != nil {
+		t.Fatalf("insert custom plan: %v", err)
+	}
+	defaultPlan := "pln_lpd_" + p.ID
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO plans (id, project_id, status, valid, fallback_used, created_at)
+		 VALUES ($1,$2,'running',true,false, now())`, defaultPlan, p.ID); err != nil {
+		t.Fatalf("insert default plan: %v", err)
+	}
+	plans, err := s.ListPlans(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("ListPlans: %v", err)
+	}
+	got := map[string]string{}
+	for _, pl := range plans {
+		got[pl.ID] = pl.WorkflowID
+	}
+	if got[customPlan] != wfID {
+		t.Fatalf("custom plan WorkflowID = %q want %q", got[customPlan], wfID)
+	}
+	if got[defaultPlan] != "" {
+		t.Fatalf("default plan WorkflowID = %q want empty", got[defaultPlan])
+	}
+}
+
 // TestLoadState_LegacyCustomEnabled: custom_workflow_enabled=true 但 plan
 // 的 workflow_id 为 NULL(经 runHandler 的项目级自定义路径)→ 仍判 isCustom。
 func TestLoadState_LegacyCustomEnabled(t *testing.T) {
