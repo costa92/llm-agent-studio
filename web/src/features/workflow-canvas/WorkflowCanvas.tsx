@@ -11,6 +11,7 @@ import {
   addEdge,
   SelectionMode,
   type Node,
+  type Edge,
   type Connection,
   type OnSelectionChangeParams,
   type OnConnectStartParams,
@@ -35,6 +36,7 @@ import {
   toReactFlow,
   toStudioNodes,
   addNodeAt,
+  reconnectEdge,
   nextNodeId,
   duplicateNode,
   insertNodeOnEdge,
@@ -208,6 +210,27 @@ function CanvasInner({
           eds,
         ),
       )
+    },
+    [rfNodes, rfEdges, setRfEdges, takeSnapshot],
+  )
+
+  // ── 连线重连（Phase D）──────────────────────────────────────
+  // 拖动已有边的端点到新节点：建候选图（去旧边+加新边）跑环守卫；通过则重键。
+  // 拖到空白处时 ReactFlow 不触发 onReconnect → 边自动还原（不删，删除走 ×/Delete）。
+  const onReconnect = useCallback(
+    (oldEdge: Edge, conn: Connection) => {
+      if (!conn.source || !conn.target) return
+      const next = reconnectEdge(rfEdges, oldEdge.id, {
+        source: conn.source,
+        target: conn.target,
+      })
+      const err = findGraphError(toStudioNodes(rfNodes as RFNode[], next))
+      if (err) {
+        toast.error(err)
+        return
+      }
+      takeSnapshot()
+      setRfEdges(next)
     },
     [rfNodes, rfEdges, setRfEdges, takeSnapshot],
   )
@@ -686,6 +709,7 @@ function CanvasInner({
               onEdgesChange={onEdgesChange}
               onNodesDelete={onNodesDelete}
               onConnect={onConnect}
+              onReconnect={onReconnect}
               onConnectStart={onConnectStart}
               onConnectEnd={onConnectEnd}
               onSelectionChange={onSelectionChange}
