@@ -107,7 +107,7 @@ export function TimelineStage({
       {/* 节点。 */}
       <div
         className={cn(
-          "relative z-[1] ml-[7px] grid h-7 w-7 flex-shrink-0 place-items-center rounded-full border-2 bg-bg-base transition-[0.2s]",
+          "relative z-[1] ml-[7px] grid h-7 w-7 flex-shrink-0 place-items-center rounded-full border-2 bg-bg-base transition duration-200",
           isDone && "border-[var(--cur)] bg-[var(--cur)]",
           isRunning && "border-amber",
           isFailed && "border-danger bg-danger/15",
