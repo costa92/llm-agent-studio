@@ -6,6 +6,8 @@ import {
   nextNodeId,
   duplicateNode,
   insertNodeOnEdge,
+  cloneSelection,
+  getHelperLines,
   defaultPromptIdFor,
   seedPositions,
   standardPipeline,
@@ -483,6 +485,125 @@ describe("insertNodeOnEdge", () => {
     expect(out.nodes).toBe(nodes)
     expect(out.edges).toBe(edges)
     expect(out.newId).toBe("")
+  })
+})
+
+describe("cloneSelection (C2 clipboard)", () => {
+  it("clones {A,B} with internal edge A->B, drops incoming X->A, re-keys to fresh ids", () => {
+    // 图：X->A->B。选区 {A,B}，内部边 A->B；外部入边 X->A 应被丢弃。
+    const graph: WorkflowNode[] = [
+      { id: "X", type: "script", promptId: "", dependsOn: [] },
+      { id: "A", type: "storyboard", promptId: "", dependsOn: ["X"] },
+      { id: "B", type: "asset", promptId: "", dependsOn: ["A"] },
+    ]
+    const { nodes, edges } = toReactFlow(graph)
+    const sel = new Set(["A", "B"])
+    const { nodes: cloned, edges: clonedEdges } = cloneSelection(
+      nodes,
+      edges,
+      sel,
+      { x: 50, y: 60 },
+    )
+    // 2 个克隆节点，id 全新且唯一，与原图不冲突。
+    expect(cloned).toHaveLength(2)
+    const newIds = cloned.map((n) => n.id)
+    expect(new Set(newIds).size).toBe(2)
+    for (const id of newIds) {
+      expect(["X", "A", "B"]).not.toContain(id)
+    }
+    // 1 条克隆边（A->B 重键），type studio；X->A 被丢弃。
+    expect(clonedEdges).toHaveLength(1)
+    expect(clonedEdges[0].type).toBe("studio")
+    // position 偏移；data.node.id 同步；selected。
+    for (const n of cloned) {
+      expect(n.selected).toBe(true)
+      expect(n.data.node.id).toBe(n.id)
+    }
+    const aClone = cloned.find((n) => n.data.node.type === "storyboard")!
+    const aSrc = nodes.find((n) => n.id === "A")!
+    expect(aClone.position).toEqual({
+      x: aSrc.position.x + 50,
+      y: aSrc.position.y + 60,
+    })
+    // 反向转换：B'.dependsOn=[A']，A'.dependsOn=[]（外部依赖被切断）。
+    const bClone = cloned.find((n) => n.data.node.type === "asset")!
+    const studio = toStudioNodes(cloned, clonedEdges)
+    expect(studio.find((n) => n.id === bClone.id)!.dependsOn).toEqual([
+      aClone.id,
+    ])
+    expect(studio.find((n) => n.id === aClone.id)!.dependsOn).toEqual([])
+  })
+
+  it("allocates ids against existing canvas nodes (no collision)", () => {
+    // 选区只有一个节点 node-1；现有画布已占 node-1/node-2。粘贴时须避让到 node-3。
+    const sel: RFNode[] = [mkNode("node-1")]
+    const existing: RFNode[] = [mkNode("node-1"), mkNode("node-2")]
+    const { nodes: cloned } = cloneSelection(
+      sel,
+      [],
+      new Set(["node-1"]),
+      { x: 32, y: 32 },
+      undefined,
+      existing,
+    )
+    expect(cloned).toHaveLength(1)
+    expect(cloned[0].id).toBe("node-3")
+    expect(cloned[0].data.node.id).toBe("node-3")
+  })
+
+  it("assigns distinct ids within one batch (no intra-batch dup)", () => {
+    const sel: RFNode[] = [mkNode("node-1"), mkNode("node-2")]
+    const { nodes: cloned } = cloneSelection(
+      sel,
+      [],
+      new Set(["node-1", "node-2"]),
+      { x: 32, y: 32 },
+    )
+    const ids = cloned.map((n) => n.id)
+    expect(new Set(ids).size).toBe(2)
+    // 都不与原选区 id 冲突。
+    for (const id of ids) expect(["node-1", "node-2"]).not.toContain(id)
+  })
+})
+
+describe("getHelperLines (C3 alignment guides)", () => {
+  // 默认节点尺寸 180x64（与 canvasModel 内常量一致）。
+  it("returns a vertical guide + snapX when within threshold of another's left edge", () => {
+    const dragged = mkNode("d", { x: 103, y: 500 })
+    const other = mkNode("o", { x: 100, y: 0 })
+    const l = getHelperLines(dragged, [other], 5)
+    // 被拖左边 103 与目标左边 100 相距 3 < 5 → 竖线在 100，snapX=100。
+    expect(l.vertical).toBe(100)
+    expect(l.snapX).toBe(100)
+  })
+
+  it("aligns centers → guide at the shared center x (different widths)", () => {
+    // other 宽 100（中心 = x+50），dragged 宽 180（中心 = x+90）。
+    // other 左上角 200 → 中心 250；dragged 左上角 161 → 中心 251，与 250 相距 1（< 阈值）。
+    // 左边 161 vs 200（差 39）、右边 341 vs 300（差 41）均 > 阈值 → 唯一命中中心对齐 → 竖线 250。
+    const dragged = mkNode("d", { x: 161, y: 500 })
+    const other = { ...mkNode("o", { x: 200, y: 0 }), width: 100 } as RFNode
+    const l = getHelperLines(dragged, [other], 5)
+    expect(l.vertical).toBe(250)
+    // snapX 使被拖中心(251)对齐到 250 → 左上角 161 + (250-251) = 160。
+    expect(l.snapX).toBe(160)
+  })
+
+  it("returns empty when outside threshold", () => {
+    const dragged = mkNode("d", { x: 500, y: 500 })
+    const other = mkNode("o", { x: 0, y: 0 })
+    const l = getHelperLines(dragged, [other], 5)
+    expect(l.vertical).toBeUndefined()
+    expect(l.horizontal).toBeUndefined()
+    expect(l.snapX).toBeUndefined()
+    expect(l.snapY).toBeUndefined()
+  })
+
+  it("ignores the dragged node itself", () => {
+    const dragged = mkNode("d", { x: 100, y: 100 })
+    const l = getHelperLines(dragged, [dragged], 5)
+    expect(l.vertical).toBeUndefined()
+    expect(l.horizontal).toBeUndefined()
   })
 })
 

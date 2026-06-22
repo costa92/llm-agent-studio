@@ -9,6 +9,7 @@ import {
   useEdgesState,
   useReactFlow,
   addEdge,
+  SelectionMode,
   type Node,
   type Connection,
   type OnSelectionChangeParams,
@@ -37,6 +38,8 @@ import {
   nextNodeId,
   duplicateNode,
   insertNodeOnEdge,
+  cloneSelection,
+  getHelperLines,
   seedPositions,
   standardPipeline,
   type StudioNodeData,
@@ -48,6 +51,7 @@ import { WorkflowNode } from "./WorkflowNode"
 import { StudioEdge } from "./StudioEdge"
 import { NodeTypePicker } from "./NodeTypePicker"
 import { CanvasActionsProvider } from "./CanvasActionsContext"
+import { HelperLines } from "./HelperLines"
 import { NodePalette, PALETTE_DND_TYPE } from "./NodePalette"
 import { PropertiesPanel } from "./PropertiesPanel"
 import { NODE_COLOR } from "./nodeColor"
@@ -107,6 +111,15 @@ function CanvasInner({
   // onConnectStart 记录起点节点 + 句柄类型；onConnectEnd 若落在空白且起点为
   // source 句柄，则弹出节点类型选择器（create 模式）。边上「+」走 insert 模式。
   const connectFrom = useRef<{ nodeId: string; handleType: string } | null>(null)
+
+  // ── 剪贴板 + 对齐辅助线状态（Phase C）─────────────────────────
+  // clipboard 存 Ctrl+C 时的原始选区（节点 + 其内部边）；offset/重键延迟到粘贴时做。
+  const clipboard = useRef<{ nodes: RFNode[]; edges: RFEdge[] } | null>(null)
+  // helperLines 仅持有当前要画的引导线（flow 坐标）；拖动结束清空。
+  const [helperLines, setHelperLines] = useState<{
+    horizontal?: number
+    vertical?: number
+  }>({})
   const [picker, setPicker] = useState<
     | { mode: "create"; screenX: number; screenY: number; flow: { x: number; y: number }; source: string }
     | { mode: "insert"; screenX: number; screenY: number; flow: { x: number; y: number }; edgeId: string }
@@ -406,6 +419,38 @@ function CanvasInner({
     setTimeout(() => fitView({ duration: 300 }), 0)
   }, [getNodes, getEdges, setRfNodes, fitView, takeSnapshot])
 
+  // ── 对齐辅助线（C3）─────────────────────────────────────────
+  // 拖动中实时算引导线：与其它节点的边/中心落在阈值内则画线 + 吸附被拖节点位置。
+  // 不在此记快照（onNodeDragStart 已记）；拖动结束清空引导线。
+  const onNodeDrag = useCallback(
+    (_: unknown, node: Node) => {
+      const dragged = node as RFNode
+      const l = getHelperLines(
+        dragged,
+        getNodes().filter((n) => n.id !== node.id),
+      )
+      setHelperLines({ horizontal: l.horizontal, vertical: l.vertical })
+      if (l.snapX != null || l.snapY != null) {
+        setRfNodes((nds) =>
+          (nds as RFNode[]).map((n) =>
+            n.id === node.id
+              ? {
+                  ...n,
+                  position: {
+                    x: l.snapX ?? n.position.x,
+                    y: l.snapY ?? n.position.y,
+                  },
+                }
+              : n,
+          ),
+        )
+      }
+    },
+    [getNodes, setRfNodes],
+  )
+
+  const onNodeDragStop = useCallback(() => setHelperLines({}), [])
+
   // ── 撤销/重做键盘快捷键 ───────────────────────────────────
   // Ctrl/Cmd+Z → undo；Ctrl/Cmd+Shift+Z 或 Ctrl+Y → redo。
   // 编辑输入框（名称/提示词）时不劫持，让原生编辑撤销生效。
@@ -426,11 +471,63 @@ function CanvasInner({
       } else if ((key === "z" && e.shiftKey) || key === "y") {
         e.preventDefault()
         redo()
+      } else if (key === "c") {
+        // 复制：暂存当前选区（原始节点 + 其内部边）；offset/重键留给粘贴。
+        const selNodes = getNodes().filter((n) => n.selected)
+        if (selNodes.length === 0) return
+        e.preventDefault()
+        const ids = new Set(selNodes.map((n) => n.id))
+        const selEdges = getEdges().filter(
+          (ed) => ids.has(ed.source) && ids.has(ed.target),
+        )
+        clipboard.current = { nodes: selNodes, edges: selEdges as RFEdge[] }
+      } else if (key === "v") {
+        // 粘贴：按当前画布 id 重新分配 id（避让现有），整体偏移 +32/+32，选中克隆。
+        if (!clipboard.current) return
+        e.preventDefault()
+        const clip = clipboard.current
+        takeSnapshot()
+        const { nodes: cloned, edges: clonedEdges } = cloneSelection(
+          clip.nodes,
+          clip.edges,
+          new Set(clip.nodes.map((n) => n.id)),
+          { x: 32, y: 32 },
+          prompts,
+          getNodes(),
+        )
+        setRfNodes((nds) => [
+          ...(nds as RFNode[]).map((n) => ({ ...n, selected: false })),
+          ...cloned,
+        ])
+        setRfEdges((eds) => [...eds, ...clonedEdges])
+      } else if (key === "d") {
+        // 原地复制：等同于「复制+粘贴」一步完成，不写剪贴板。
+        const selNodes = getNodes().filter((n) => n.selected)
+        if (selNodes.length === 0) return
+        e.preventDefault()
+        const ids = new Set(selNodes.map((n) => n.id))
+        const selEdges = getEdges().filter(
+          (ed) => ids.has(ed.source) && ids.has(ed.target),
+        )
+        takeSnapshot()
+        const { nodes: cloned, edges: clonedEdges } = cloneSelection(
+          selNodes,
+          selEdges as RFEdge[],
+          ids,
+          { x: 32, y: 32 },
+          prompts,
+          getNodes(),
+        )
+        setRfNodes((nds) => [
+          ...(nds as RFNode[]).map((n) => ({ ...n, selected: false })),
+          ...cloned,
+        ])
+        setRfEdges((eds) => [...eds, ...clonedEdges])
       }
     }
     document.addEventListener("keydown", onKeyDown)
     return () => document.removeEventListener("keydown", onKeyDown)
-  }, [undo, redo])
+  }, [undo, redo, getNodes, getEdges, setRfNodes, setRfEdges, prompts, takeSnapshot])
 
   // ── 键盘删除（Delete / Backspace）────────────────────────
   // ReactFlow 在画布 pane 聚焦时才触发；属性面板输入框内的退格不会冒泡到这里。
@@ -576,6 +673,8 @@ function CanvasInner({
               onConnectEnd={onConnectEnd}
               onSelectionChange={onSelectionChange}
               onNodeDragStart={() => takeSnapshot()}
+              onNodeDrag={onNodeDrag}
+              onNodeDragStop={onNodeDragStop}
               onBeforeDelete={async () => {
                 // 键盘删除节点/边在应用前记快照（覆盖 Delete/Backspace 路径）。
                 takeSnapshot()
@@ -585,6 +684,9 @@ function CanvasInner({
               edgeTypes={edgeTypes}
               defaultEdgeOptions={defaultEdgeOptions}
               deleteKeyCode={["Delete", "Backspace"]}
+              selectionOnDrag
+              panOnDrag={[1, 2]}
+              selectionMode={SelectionMode.Partial}
               snapToGrid
               snapGrid={[GRID, GRID]}
               fitView
@@ -599,12 +701,18 @@ function CanvasInner({
                 }
               />
             </ReactFlow>
+            {/* 对齐辅助线覆盖层（C3）：读视口 transform 在屏幕空间画引导线。 */}
+            <HelperLines {...helperLines} />
           </CanvasActionsProvider>
-          {/* 空画布提示：引导拖拽或一键标准管线。 */}
+          {/* 空画布提示：引导拖拽或一键标准管线，并说明框选/平移交互。 */}
           {rfNodes.length === 0 && (
             <div className="pointer-events-none absolute inset-0 grid place-items-center">
-              <p className="rounded-md border border-line bg-bg-surface/80 px-4 py-2 text-[12.5px] text-text-3">
+              <p className="rounded-md border border-line bg-bg-surface/80 px-4 py-2 text-center text-[12.5px] text-text-3">
                 拖拽左侧节点到画布，或点「标准管线」快速开始
+                <br />
+                <span className="text-[11px] text-text-3">
+                  左键框选，中键/右键平移
+                </span>
               </p>
             </div>
           )}
