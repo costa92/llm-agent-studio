@@ -2,14 +2,17 @@ import type { Node, Edge } from "@xyflow/react"
 import { layerize } from "@/lib/graphLayout"
 import type { GraphNode, GraphEdge } from "@/lib/projectState"
 import type { Prompt, WorkflowNode } from "@/lib/types"
+import type { RunNodeStatus } from "./runOverlay"
 
 // 纯模型适配层（无 React）：把 studio 工作流 DAG（WorkflowNode[]）转成 ReactFlow
 // 的 nodes/edges。节点缺省 position 时用 layerize 分层种子坐标兜底。
 // 复用 lib/graphLayout 的拓扑分层 + lib/projectState 的 GraphEdge{from,to} 形状。
 
 // 自定义 studio 节点的 data 形状：透传原始 WorkflowNode 供节点组件渲染。
+// run 可选：仅运行模式注入（见 runOverlay.overlayRunStatus）；存在时节点渲染运行态指示器。
 export interface StudioNodeData {
   node: WorkflowNode
+  run?: RunNodeStatus
   [key: string]: unknown
 }
 
