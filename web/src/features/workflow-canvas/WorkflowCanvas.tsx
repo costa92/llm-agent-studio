@@ -55,6 +55,10 @@ import { HelperLines } from "./HelperLines"
 import { NodePalette, PALETTE_DND_TYPE } from "./NodePalette"
 import { PropertiesPanel } from "./PropertiesPanel"
 import { NODE_COLOR } from "./nodeColor"
+import { RunCanvas } from "./RunCanvas"
+import { ModeToggle } from "./ModeToggle"
+
+export type CanvasMode = "edit" | "run"
 
 // 吸附网格步长（snap-to-grid + Background 点距 共用，保证视觉对齐）。
 const GRID = 16
@@ -74,6 +78,14 @@ export interface WorkflowCanvasProps {
   onBack?: () => void
   // 新建成功后导航到 ?wf=<newId>（由路由注入）。
   onCreated?: (workflowId: string) => void
+  // 模式：编辑（默认）/ 运行。由路由 ?run= 派生。
+  mode?: CanvasMode
+  // 运行模式选中的 run（plan）id；无则显示「尚无运行」。
+  runId?: string
+  // 顶栏「编辑 | 运行」段切换 → 路由改 ?run=（由路由注入）。
+  onModeChange?: (next: CanvasMode) => void
+  // 运行选择器/运行控制切换 run → 路由 ?run=（由路由注入）。
+  onSelectRun?: (runId: string) => void
 }
 
 const nodeTypes = { studio: WorkflowNode }
@@ -95,6 +107,7 @@ function CanvasInner({
   basics,
   onBack,
   onCreated,
+  onModeChange,
 }: WorkflowCanvasProps) {
   const initial = useMemo(() => toReactFlow(nodes), [nodes])
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState(initial.nodes)
@@ -617,6 +630,10 @@ function CanvasInner({
               {workflowName}
             </h1>
           )}
+          {/* 编辑 | 运行 模式切换（新建态隐藏：尚无可运行的 workflow）。 */}
+          {!isCreate && onModeChange && (
+            <ModeToggle mode="edit" onChange={onModeChange} />
+          )}
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -739,7 +756,49 @@ function CanvasInner({
   )
 }
 
+// 运行模式壳：顶栏（返回 / 名 / 编辑|运行 切换）+ 只读运行画布。
+// 编辑态的所有 hook/handler/面板都在 CanvasInner 内，运行态走独立子树（避免条件 hook）。
+function RunShell({
+  workflowName,
+  projectId,
+  org,
+  nodes,
+  runId,
+  onBack,
+  onModeChange,
+  onSelectRun,
+}: WorkflowCanvasProps) {
+  return (
+    <div className="flex h-full flex-col bg-bg-base">
+      <header className="flex items-center justify-between border-b border-line bg-bg-surface px-4 py-2.5">
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={onBack}
+            className="text-[12px] text-text-3 hover:text-text-1"
+          >
+            ← 返回项目
+          </button>
+          <span className="text-[12px] text-text-3">/</span>
+          <h1 className="text-[14px] font-semibold text-text-1">{workflowName}</h1>
+          {onModeChange && <ModeToggle mode="run" onChange={onModeChange} />}
+        </div>
+      </header>
+      <RunCanvas
+        projectId={projectId}
+        org={org}
+        runId={runId}
+        nodes={nodes}
+        onSelectRun={(rid) => onSelectRun?.(rid)}
+      />
+    </div>
+  )
+}
+
 export function WorkflowCanvas(props: WorkflowCanvasProps) {
+  if (props.mode === "run") {
+    return <RunShell {...props} />
+  }
   return (
     <ReactFlowProvider>
       <CanvasInner {...props} />
