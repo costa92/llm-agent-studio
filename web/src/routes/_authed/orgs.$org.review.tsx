@@ -77,7 +77,10 @@ function ReviewPage() {
   //   保留 409 防重处理 + 成功后关闭 Drawer。
   function handleReject(id: string): void {
     reject.mutate(id, {
-      onSuccess: () => selectAsset(null),
+      onSuccess: () => {
+        toast.success("已退回")
+        selectAsset(null)
+      },
       onError: (err) => toast.error(hitlErrorMessage(err)),
     })
   }
@@ -113,6 +116,7 @@ function ReviewPage() {
         onAccept={handleAccept}
         onReject={handleReject}
         onRegenerate={handleRegenerate}
+        actionPending={accept.isPending || reject.isPending || regenerate.isPending}
       />
     </AdminGate>
   )

@@ -200,6 +200,7 @@ export function CoverDialog({ project, org, trigger, onSuccess }: CoverDialogPro
             <input
               ref={fileInputRef}
               type="file"
+              aria-label="选择封面图片"
               accept="image/png,image/jpeg,image/webp"
               onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)}
               className="text-[12px] text-text-2 file:mr-3 file:rounded-md file:border file:border-line file:bg-bg-raised file:px-3 file:py-1.5 file:text-text-1"

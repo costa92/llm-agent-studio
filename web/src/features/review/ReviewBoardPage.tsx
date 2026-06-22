@@ -49,6 +49,8 @@ export interface ReviewBoardViewProps {
   onAccept: (id: string) => void
   onReject: (id: string) => void
   onRegenerate: (id: string, prompt: string) => void
+  // 任一 HITL 动作进行中 → 禁用三动作按钮 + 键盘流，防双击触发 409。
+  actionPending?: boolean
 }
 
 // 审核看板：左过滤无（M5 简化为类型/状态固定 pending image）+ AssetCard 网格；
@@ -69,6 +71,7 @@ export function ReviewBoardView({
   onAccept,
   onReject,
   onRegenerate,
+  actionPending = false,
 }: ReviewBoardViewProps) {
   // 改 Prompt 重生成的编辑态（[E] 打开）。
   const [editing, setEditing] = useState(false)
@@ -117,7 +120,11 @@ export function ReviewBoardView({
       }
       // A/R/E 需有选中资产。
       if (!selectedId) return
-      if (action === "accept") onAccept(selectedId)
+      // 动作进行中：忽略会直接提交的 A（accept），防双触发 409。R/E 仅开弹窗/编辑，无副作用，放行。
+      if (action === "accept") {
+        if (actionPending) return
+        onAccept(selectedId)
+      }
       // T7：R 不直接提交退回，先开确认弹窗。
       else if (action === "reject") setRejectTarget(selectedId)
       else if (action === "regenerate") {
@@ -128,7 +135,7 @@ export function ReviewBoardView({
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
     // step/dispatch 闭包依赖以下值；重绑保证拿到最新。
-  }, [isAdmin, selectedId, selectedIndex, items, detail, onAccept, onReject]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isAdmin, selectedId, selectedIndex, items, detail, onAccept, onReject, actionPending]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="flex h-full flex-col p-6">
@@ -207,6 +214,7 @@ export function ReviewBoardView({
               isAdmin={isAdmin}
               editing={editing}
               draftPrompt={draftPrompt}
+              actionPending={actionPending}
               onDraftChange={setDraftPrompt}
               onStartEdit={() => {
                 setDraftPrompt(detail.asset.prompt)
@@ -263,6 +271,7 @@ interface ReviewDrawerBodyProps {
   isAdmin: boolean
   editing: boolean
   draftPrompt: string
+  actionPending: boolean
   onDraftChange: (v: string) => void
   onStartEdit: () => void
   onCancelEdit: () => void
@@ -276,6 +285,7 @@ function ReviewDrawerBody({
   isAdmin,
   editing,
   draftPrompt,
+  actionPending,
   onDraftChange,
   onStartEdit,
   onCancelEdit,
@@ -349,7 +359,7 @@ function ReviewDrawerBody({
           <div className="flex flex-wrap gap-2 border-t border-line pt-4">
             {editing ? (
               <>
-                <Button variant="amber" onClick={onRegenerate}>
+                <Button variant="amber" onClick={onRegenerate} disabled={actionPending}>
                   确认重生成
                 </Button>
                 <Button variant="ghost" onClick={onCancelEdit}>
@@ -358,10 +368,10 @@ function ReviewDrawerBody({
               </>
             ) : (
               <>
-                <Button variant="green" kbd="A" onClick={onAccept}>
+                <Button variant="green" kbd="A" onClick={onAccept} disabled={actionPending}>
                   ✓ 采纳
                 </Button>
-                <Button variant="red" kbd="R" onClick={onReject}>
+                <Button variant="red" kbd="R" onClick={onReject} disabled={actionPending}>
                   ✗ 退回
                 </Button>
                 <Button variant="ghost" kbd="E" onClick={onStartEdit}>

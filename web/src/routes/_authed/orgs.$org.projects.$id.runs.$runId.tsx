@@ -142,6 +142,18 @@ function RunWorkbenchPage() {
       </div>
     )
   }
+  if (plansQuery.isError) {
+    return (
+      <div className="grid h-full place-items-center">
+        <div className="flex flex-col items-center gap-3 text-text-2">
+          <p>运行记录加载失败</p>
+          <Button variant="ghost" onClick={() => void plansQuery.refetch()}>
+            重试
+          </Button>
+        </div>
+      </div>
+    )
+  }
 
   // 权威工作流状态（加载中回落 draft 草态）。
   const wfState: ProjectState = stateQuery.data ?? {
@@ -382,8 +394,9 @@ function RunWorkbenchPage() {
       live={isLive}
       fallbackUsed={showFallback || undefined}
       canRun={canRun}
+      canCancel={canCancel}
       onRun={handleRun}
-      onCancel={canCancel ? handleCancel : () => {}}
+      onCancel={handleCancel}
       isRunning={run.isPending || cancel.isPending}
       preview={
         previewAssetId ? (
