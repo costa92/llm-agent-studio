@@ -106,6 +106,29 @@ export function defaultPromptIdFor(
   return prompts?.find((p) => p.kind === kind && p.isDefault)?.id ?? ""
 }
 
+// 标准管线：脚本 → 分镜（storyboard 完成后 worker 自动为每个镜头扇出图片任务）。
+// 与旧 WorkflowNodesEditor.fillStandardPipeline 的形状逐字一致：
+// script-1（dependsOn []）→ storyboard-1（dependsOn ["script-1"]），promptId 取 org 默认。
+// 返回纯 WorkflowNode[]（含种子坐标），交由 toReactFlow 转 RF 状态。
+export function standardPipeline(prompts?: Prompt[]): WorkflowNode[] {
+  const base: WorkflowNode[] = [
+    {
+      id: "script-1",
+      type: "script",
+      promptId: defaultPromptIdFor(prompts, "script"),
+      dependsOn: [],
+    },
+    {
+      id: "storyboard-1",
+      type: "storyboard",
+      promptId: defaultPromptIdFor(prompts, "storyboard"),
+      dependsOn: ["script-1"],
+    },
+  ]
+  const seeded = seedPositions(base)
+  return base.map((n) => ({ ...n, position: seeded.get(n.id)! }))
+}
+
 // 在 pos 处追加一个新节点（纯 reducer，避免 DnD 事件测试抖动）。
 // id 形如 `node-${n}`，从 1 起递增直到与现有 id 不冲突；
 // promptId 取该 type 的 org 默认提示词，无则空串。

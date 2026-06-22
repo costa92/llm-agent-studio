@@ -5,6 +5,7 @@ import {
   addNodeAt,
   defaultPromptIdFor,
   seedPositions,
+  standardPipeline,
   type RFNode,
   type RFEdge,
 } from "./canvasModel"
@@ -202,6 +203,98 @@ describe("addNodeAt", () => {
     // length+1 = node-2，无冲突。
     const next = addNodeAt(existing, "asset", { x: 0, y: 0 })
     expect(next[next.length - 1].id).toBe("node-2")
+  })
+})
+
+describe("standardPipeline", () => {
+  const prompts: Prompt[] = [
+    {
+      id: "p-script",
+      orgId: "o",
+      name: "脚本默认",
+      content: "",
+      style: "",
+      kind: "script",
+      isDefault: true,
+      createdAt: "",
+      updatedAt: "",
+    },
+    {
+      id: "p-story",
+      orgId: "o",
+      name: "分镜默认",
+      content: "",
+      style: "",
+      kind: "storyboard",
+      isDefault: true,
+      createdAt: "",
+      updatedAt: "",
+    },
+  ]
+
+  it("returns script-1 → storyboard-1 with dependsOn=['script-1']", () => {
+    const nodes = standardPipeline(prompts)
+    expect(nodes.map((n) => n.id)).toEqual(["script-1", "storyboard-1"])
+    expect(nodes[0].dependsOn).toEqual([])
+    expect(nodes[1].dependsOn).toEqual(["script-1"])
+  })
+
+  it("resolves per-kind default promptId from prompts", () => {
+    const nodes = standardPipeline(prompts)
+    expect(nodes[0].promptId).toBe("p-script")
+    expect(nodes[1].promptId).toBe("p-story")
+  })
+
+  it("seeds positions and round-trips through toReactFlow", () => {
+    const nodes = standardPipeline(prompts)
+    expect(nodes.every((n) => n.position != null)).toBe(true)
+    const { nodes: rfNodes, edges } = toReactFlow(nodes)
+    expect(rfNodes).toHaveLength(2)
+    expect(edges).toHaveLength(1)
+    expect(edges[0]).toMatchObject({ source: "script-1", target: "storyboard-1" })
+  })
+
+  it("empty prompts → empty promptId", () => {
+    const nodes = standardPipeline(undefined)
+    expect(nodes[0].promptId).toBe("")
+    expect(nodes[1].promptId).toBe("")
+  })
+})
+
+// 键盘删除（T3.3）：删一个节点后，画布层 onNodesDelete 把它关联的边过滤掉
+//（边是 dependsOn 真源 → 依赖随之清理）。此处验证「过滤关联边 + 反向转换」纯逻辑。
+describe("keyboard delete cascade (node delete removes incident edges)", () => {
+  it("removes incident edges so dependsOn cleans up", () => {
+    const three: WorkflowNode[] = [
+      { id: "a", type: "script", promptId: "", dependsOn: [] },
+      { id: "b", type: "storyboard", promptId: "", dependsOn: ["a"] },
+      { id: "c", type: "asset", promptId: "", dependsOn: ["b"] },
+    ]
+    const { nodes, edges } = toReactFlow(three)
+    // 删除节点 b：节点过滤 + 关联边（a->b、b->c）过滤。
+    const deletedIds = new Set(["b"])
+    const remainingNodes = nodes.filter((n) => !deletedIds.has(n.id))
+    const remainingEdges = edges.filter(
+      (e) => !deletedIds.has(e.source) && !deletedIds.has(e.target),
+    )
+    expect(remainingNodes.map((n) => n.id).sort()).toEqual(["a", "c"])
+    expect(remainingEdges).toHaveLength(0)
+    const out = toStudioNodes(remainingNodes, remainingEdges)
+    // c 之前依赖 b，b 被删后依赖清空。
+    expect(out.find((n) => n.id === "c")!.dependsOn).toEqual([])
+    expect(out.find((n) => n.id === "a")!.dependsOn).toEqual([])
+  })
+
+  it("deleting a selected edge removes just that dependency", () => {
+    const ab: WorkflowNode[] = [
+      { id: "A", type: "script", promptId: "", dependsOn: [] },
+      { id: "B", type: "storyboard", promptId: "", dependsOn: ["A"] },
+    ]
+    const { nodes, edges } = toReactFlow(ab)
+    // 删边 A->B（ReactFlow onEdgesChange 内建移除）→ 反向转换 B 依赖清空。
+    const remaining = edges.filter((e) => e.id !== "A->B")
+    const out = toStudioNodes(nodes, remaining)
+    expect(out.find((n) => n.id === "B")!.dependsOn).toEqual([])
   })
 })
 

@@ -56,13 +56,12 @@ function WorkflowCanvasPage() {
     )
   }
 
-  if (!wf || !workflow) {
+  // ?wf 指定但找不到 → not-found 错误态。?wf 缺省 → 新建模式（空画布）。
+  if (wf && !workflow) {
     return (
       <div className="grid h-full place-items-center">
         <div className="flex flex-col items-center gap-3 text-center">
-          <p className="text-sm text-text-2">
-            {wf ? "未找到该工作流" : "未指定工作流"}
-          </p>
+          <p className="text-sm text-text-2">未找到该工作流</p>
           <Button variant="ghost" onClick={goBack}>
             返回项目
           </Button>
@@ -74,11 +73,11 @@ function WorkflowCanvasPage() {
   return (
     <div className="h-full">
       <WorkflowCanvas
-        workflowId={workflow.id}
+        workflowId={workflow?.id}
         projectId={id}
         org={org}
-        workflowName={workflow.name}
-        nodes={workflow.nodes}
+        workflowName={workflow?.name ?? ""}
+        nodes={workflow?.nodes ?? []}
         prompts={prompts}
         basics={basics}
         onBack={goBack}
