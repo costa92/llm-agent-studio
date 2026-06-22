@@ -107,7 +107,7 @@ function GraphNodeCard({
         <span
           className={cn(
             "font-sans text-[10px] font-bold",
-            isDone ? "text-[#14161a]" : isFailed ? "text-danger" : "text-text-3",
+            isDone ? "text-bg-base" : isFailed ? "text-danger" : "text-text-3",
           )}
         >
           {isDone ? "✓" : ""}
