@@ -127,4 +127,29 @@ describe("ThemeProvider", () => {
     await act(async () => fire(true)) // 系统切到亮 —— 不应覆盖
     expect(screen.getByTestId("theme").textContent).toBe("cinematic")
   })
+
+  it("显式选择即使未持久化（私有模式 setItem 抛错）也不被系统变化覆盖", async () => {
+    const fire = stubControllableMatchMedia(false) // 系统暗 → 默认 dark-studio
+    const setItemSpy = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("private mode")
+      })
+    const user = userEvent.setup()
+    render(<ThemeProvider><Probe /></ThemeProvider>)
+    expect(screen.getByTestId("theme").textContent).toBe("dark-studio")
+    await user.click(screen.getByText("to-light")) // setTheme 写盘抛错，但内存标记已置
+    expect(screen.getByTestId("theme").textContent).toBe("light")
+    await act(async () => fire(false)) // 系统切暗 —— 有 bug 才会覆盖回 dark-studio
+    expect(screen.getByTestId("theme").textContent).toBe("light")
+    setItemSpy.mockRestore()
+  })
+
+  it("matchMedia 缺失时不崩溃，回退 dark-studio", () => {
+    vi.stubGlobal("matchMedia", undefined)
+    expect(() =>
+      render(<ThemeProvider><Probe /></ThemeProvider>),
+    ).not.toThrow()
+    expect(screen.getByTestId("theme").textContent).toBe("dark-studio")
+  })
 })
