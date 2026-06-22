@@ -61,7 +61,12 @@ export function toReactFlow(nodes: WorkflowNode[]): {
   const rfEdges: RFEdge[] = []
   for (const n of nodes) {
     for (const dep of n.dependsOn) {
-      rfEdges.push({ id: `${dep}->${n.id}`, source: dep, target: n.id })
+      rfEdges.push({
+        id: `${dep}->${n.id}`,
+        source: dep,
+        target: n.id,
+        type: "studio",
+      })
     }
   }
   return { nodes: rfNodes, edges: rfEdges }
@@ -129,24 +134,32 @@ export function standardPipeline(prompts?: Prompt[]): WorkflowNode[] {
   return base.map((n) => ({ ...n, position: seeded.get(n.id)! }))
 }
 
+// 生成一个不与现有 rfNodes 冲突的新 id（形如 `node-${n}`，从 1 起递增）。
+// 纯函数：供 addNodeAt / duplicateNode / insertNodeOnEdge 共用。
+export function nextNodeId(rfNodes: RFNode[]): string {
+  const existing = new Set(rfNodes.map((n) => n.id))
+  let i = 1
+  let id = `node-${i}`
+  while (existing.has(id)) {
+    i += 1
+    id = `node-${i}`
+  }
+  return id
+}
+
 // 在 pos 处追加一个新节点（纯 reducer，避免 DnD 事件测试抖动）。
-// id 形如 `node-${n}`，从 1 起递增直到与现有 id 不冲突；
+// 默认 id 由 nextNodeId 生成；调用方可传 id 覆盖（B2 拖到空白后需与新建的边对齐）。
 // promptId 取该 type 的 org 默认提示词，无则空串。
 export function addNodeAt(
   rfNodes: RFNode[],
   type: string,
   pos: { x: number; y: number },
   prompts?: Prompt[],
+  id?: string,
 ): RFNode[] {
-  const existing = new Set(rfNodes.map((n) => n.id))
-  let i = rfNodes.length + 1
-  let id = `node-${i}`
-  while (existing.has(id)) {
-    i += 1
-    id = `node-${i}`
-  }
+  const nodeId = id ?? nextNodeId(rfNodes)
   const node: WorkflowNode = {
-    id,
+    id: nodeId,
     type,
     promptId: defaultPromptIdFor(prompts, type),
     promptText: "",
@@ -155,6 +168,77 @@ export function addNodeAt(
   }
   return [
     ...rfNodes,
-    { id, type: "studio", position: pos, data: { node } },
+    { id: nodeId, type: "studio", position: pos, data: { node } },
   ]
+}
+
+// 复制节点（纯函数）：克隆 data.node 为新对象，分配新 id（nextNodeId），
+// data.node.id 同步为新 id，position 偏移 +{40,40}。dependsOn 置空——
+// 副本作为未连接的孤立节点（边是 dependsOn 真源，不复制任何边）。
+export function duplicateNode(
+  rfNodes: RFNode[],
+  id: string,
+  _prompts?: Prompt[],
+): { nodes: RFNode[]; id: string } {
+  const src = rfNodes.find((n) => n.id === id)
+  if (!src) return { nodes: rfNodes, id }
+  const newId = nextNodeId(rfNodes)
+  const pos = { x: src.position.x + 40, y: src.position.y + 40 }
+  const clonedNode: WorkflowNode = {
+    ...src.data.node,
+    id: newId,
+    dependsOn: [],
+    position: pos,
+  }
+  const newRf: RFNode = {
+    id: newId,
+    type: "studio",
+    position: pos,
+    data: { node: clonedNode },
+  }
+  return { nodes: [...rfNodes, newRf], id: newId }
+}
+
+// 在边 A->B 上插入一个新节点 N（纯函数）：移除 A->B，新增 A->N 与 N->B。
+// 新节点经 nextNodeId 分配 id，落在 midPos；promptId 取该 type org 默认。
+// 边带 type:"studio"（与所有连边构造点一致）。
+export function insertNodeOnEdge(
+  rfNodes: RFNode[],
+  rfEdges: RFEdge[],
+  edgeId: string,
+  type: string,
+  midPos: { x: number; y: number },
+  prompts?: Prompt[],
+): { nodes: RFNode[]; edges: RFEdge[]; newId: string } {
+  const edge = rfEdges.find((e) => e.id === edgeId)
+  if (!edge) return { nodes: rfNodes, edges: rfEdges, newId: "" }
+  const newId = nextNodeId(rfNodes)
+  const node: WorkflowNode = {
+    id: newId,
+    type,
+    promptId: defaultPromptIdFor(prompts, type),
+    promptText: "",
+    dependsOn: [],
+    position: midPos,
+  }
+  const nodes: RFNode[] = [
+    ...rfNodes,
+    { id: newId, type: "studio", position: midPos, data: { node } },
+  ]
+  const edges: RFEdge[] = [
+    ...rfEdges.filter((e) => e.id !== edgeId),
+    {
+      id: `${edge.source}->${newId}`,
+      source: edge.source,
+      target: newId,
+      type: "studio",
+    },
+    {
+      id: `${newId}->${edge.target}`,
+      source: newId,
+      target: edge.target,
+      type: "studio",
+    },
+  ]
+  return { nodes, edges, newId }
 }

@@ -3,6 +3,9 @@ import {
   toReactFlow,
   toStudioNodes,
   addNodeAt,
+  nextNodeId,
+  duplicateNode,
+  insertNodeOnEdge,
   defaultPromptIdFor,
   seedPositions,
   standardPipeline,
@@ -359,6 +362,127 @@ describe("connect / cycle guard (edges authoritative for dependsOn)", () => {
     const { nodes } = rf(ab)
     const out = toStudioNodes(nodes, []) // 边删空。
     expect(out.find((n) => n.id === "B")!.dependsOn).toEqual([])
+  })
+})
+
+// 小工具：构造一个最小 RFNode（仅 id/position/data.node 关心）。
+function mkNode(id: string, pos = { x: 0, y: 0 }, type = "script"): RFNode {
+  return {
+    id,
+    type: "studio",
+    position: pos,
+    data: { node: { id, type, promptId: "", dependsOn: [] } },
+  }
+}
+
+describe("nextNodeId", () => {
+  it("returns node-1 for an empty graph", () => {
+    expect(nextNodeId([])).toBe("node-1")
+  })
+
+  it("returns a unique id not colliding with existing ids", () => {
+    const nodes = [mkNode("node-1"), mkNode("node-3")]
+    const id = nextNodeId(nodes)
+    // 第一个空位是 node-2。
+    expect(id).toBe("node-2")
+    expect(nodes.some((n) => n.id === id)).toBe(false)
+  })
+
+  it("skips occupied low ids", () => {
+    const nodes = [mkNode("node-1"), mkNode("node-2")]
+    expect(nextNodeId(nodes)).toBe("node-3")
+  })
+})
+
+describe("addNodeAt id override", () => {
+  it("uses the provided id instead of generating one", () => {
+    const next = addNodeAt([mkNode("node-1")], "asset", { x: 5, y: 6 }, undefined, "custom-id")
+    const added = next[next.length - 1]
+    expect(added.id).toBe("custom-id")
+    expect(added.data.node.id).toBe("custom-id")
+    expect(added.position).toEqual({ x: 5, y: 6 })
+  })
+
+  it("falls back to nextNodeId when no id is given", () => {
+    const next = addNodeAt([mkNode("node-1")], "asset", { x: 0, y: 0 })
+    expect(next[next.length - 1].id).toBe("node-2")
+  })
+})
+
+describe("duplicateNode", () => {
+  it("clones with a fresh unique id, updated data.node.id, +40/+40 offset, no deps, no edges", () => {
+    const nodes: RFNode[] = [
+      {
+        id: "node-1",
+        type: "studio",
+        position: { x: 100, y: 200 },
+        data: {
+          node: {
+            id: "node-1",
+            type: "storyboard",
+            promptId: "p-1",
+            promptText: "hi",
+            dependsOn: ["x"],
+          },
+        },
+      },
+    ]
+    const { nodes: out, id } = duplicateNode(nodes, "node-1")
+    expect(out).toHaveLength(2)
+    const clone = out[out.length - 1]
+    expect(id).toBe("node-2")
+    expect(clone.id).toBe("node-2")
+    expect(clone.data.node.id).toBe("node-2")
+    expect(clone.position).toEqual({ x: 140, y: 240 })
+    // 副本未连接：dependsOn 清空。
+    expect(clone.data.node.dependsOn).toEqual([])
+    // 其余字段保留（type/prompt）。
+    expect(clone.data.node.type).toBe("storyboard")
+    expect(clone.data.node.promptId).toBe("p-1")
+    // 原节点未被改动。
+    expect(out[0].data.node.dependsOn).toEqual(["x"])
+    expect(out[0].position).toEqual({ x: 100, y: 200 })
+  })
+
+  it("is a no-op when the id is not found", () => {
+    const nodes = [mkNode("node-1")]
+    const { nodes: out, id } = duplicateNode(nodes, "missing")
+    expect(out).toBe(nodes)
+    expect(id).toBe("missing")
+  })
+})
+
+describe("insertNodeOnEdge", () => {
+  it("splits A->B into A->N and N->B with correct ids/type and N at midPos", () => {
+    const ab: WorkflowNode[] = [
+      { id: "A", type: "script", promptId: "", dependsOn: [] },
+      { id: "B", type: "storyboard", promptId: "", dependsOn: ["A"] },
+    ]
+    const { nodes, edges } = toReactFlow(ab)
+    const out = insertNodeOnEdge(nodes, edges, "A->B", "asset", { x: 50, y: 70 })
+    expect(out.newId).toBe("node-1")
+    // 原 A->B 已删。
+    expect(out.edges.find((e) => e.id === "A->B")).toBeUndefined()
+    const an = out.edges.find((e) => e.id === "A->node-1")!
+    const nb = out.edges.find((e) => e.id === "node-1->B")!
+    expect(an).toMatchObject({ source: "A", target: "node-1", type: "studio" })
+    expect(nb).toMatchObject({ source: "node-1", target: "B", type: "studio" })
+    const n = out.nodes.find((x) => x.id === "node-1")!
+    expect(n.position).toEqual({ x: 50, y: 70 })
+    // 反向转换：N.dependsOn=[A]，B.dependsOn=[N]。
+    const studio = toStudioNodes(out.nodes, out.edges)
+    expect(studio.find((x) => x.id === "node-1")!.dependsOn).toEqual(["A"])
+    expect(studio.find((x) => x.id === "B")!.dependsOn).toEqual(["node-1"])
+  })
+
+  it("is a no-op when the edge id is not found", () => {
+    const { nodes, edges } = toReactFlow([
+      { id: "A", type: "script", promptId: "", dependsOn: [] },
+    ])
+    const out = insertNodeOnEdge(nodes, edges, "missing", "asset", { x: 0, y: 0 })
+    expect(out.nodes).toBe(nodes)
+    expect(out.edges).toBe(edges)
+    expect(out.newId).toBe("")
   })
 })
 
