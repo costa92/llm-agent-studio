@@ -4,7 +4,7 @@ import type { PipState as Pip, PipStatus2 as PipStatus } from "@/lib/projectStat
 
 // 原型 .pip：14×14 radius4 1.5px 边框。
 //   done=asset 琥珀实心 / running=琥珀斜条纹 / failed=danger 半透 / idle=line 空框。
-const pipVariants = cva("h-3.5 w-3.5 rounded-[4px] border-[1.5px] transition-[0.2s]", {
+const pipVariants = cva("h-3.5 w-3.5 rounded-[4px] border-[1.5px] transition duration-200", {
   variants: {
     status: {
       idle: "border-line",
