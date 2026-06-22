@@ -60,12 +60,12 @@ function RailLinks({ items, currentOrg }: { items: NavItem[]; currentOrg: string
       key={item.to}
       to={item.to}
       params={{ org: currentOrg, ...item.params }}
-      className="grid h-11 w-11 place-items-center rounded-[10px] text-[11px] leading-tight text-text-3 transition-colors hover:bg-bg-raised hover:text-text-2"
+      className="grid h-14 w-14 place-items-center rounded-[10px] text-[11px] leading-tight text-text-3 transition-colors hover:bg-bg-raised hover:text-text-2"
       activeProps={{ className: "bg-amber/12 text-amber hover:bg-amber/12 hover:text-amber" }}
     >
       <span className="grid place-items-center gap-0.5">
         <span className="[&>svg]:h-[18px] [&>svg]:w-[18px]">{item.icon}</span>
-        {item.label}
+        <span className="whitespace-nowrap">{item.label}</span>
       </span>
     </Link>
   ))
@@ -102,14 +102,14 @@ function PlatformRailLink() {
   return (
     <Link
       to="/platform"
-      className="grid h-11 w-11 place-items-center rounded-[10px] text-[11px] leading-tight text-text-3 transition-colors hover:bg-bg-raised hover:text-text-2"
+      className="grid h-14 w-14 place-items-center rounded-[10px] text-[11px] leading-tight text-text-3 transition-colors hover:bg-bg-raised hover:text-text-2"
       activeProps={{ className: "bg-amber/12 text-amber hover:bg-amber/12 hover:text-amber" }}
     >
       <span className="grid place-items-center gap-0.5">
         <span className="[&>svg]:h-[18px] [&>svg]:w-[18px]">
           <ShieldCheck />
         </span>
-        平台
+        <span className="whitespace-nowrap">平台</span>
       </span>
     </Link>
   )
@@ -137,14 +137,14 @@ function PlatformOrgsRailLink() {
   return (
     <Link
       to="/platform/orgs"
-      className="grid h-11 w-11 place-items-center rounded-[10px] text-[11px] leading-tight text-text-3 transition-colors hover:bg-bg-raised hover:text-text-2"
+      className="grid h-14 w-14 place-items-center rounded-[10px] text-[11px] leading-tight text-text-3 transition-colors hover:bg-bg-raised hover:text-text-2"
       activeProps={{ className: "bg-amber/12 text-amber hover:bg-amber/12 hover:text-amber" }}
     >
       <span className="grid place-items-center gap-0.5">
         <span className="[&>svg]:h-[18px] [&>svg]:w-[18px]">
           <Building2 />
         </span>
-        全部组织
+        <span className="whitespace-nowrap">全部组织</span>
       </span>
     </Link>
   )
@@ -172,14 +172,14 @@ function PlatformUsersRailLink() {
   return (
     <Link
       to="/platform/users"
-      className="grid h-11 w-11 place-items-center rounded-[10px] text-[11px] leading-tight text-text-3 transition-colors hover:bg-bg-raised hover:text-text-2"
+      className="grid h-14 w-14 place-items-center rounded-[10px] text-[11px] leading-tight text-text-3 transition-colors hover:bg-bg-raised hover:text-text-2"
       activeProps={{ className: "bg-amber/12 text-amber hover:bg-amber/12 hover:text-amber" }}
     >
       <span className="grid place-items-center gap-0.5">
         <span className="[&>svg]:h-[18px] [&>svg]:w-[18px]">
           <Users />
         </span>
-        用户管理
+        <span className="whitespace-nowrap">用户管理</span>
       </span>
     </Link>
   )
@@ -207,14 +207,14 @@ function PlatformHealthRailLink() {
   return (
     <Link
       to="/platform/health"
-      className="grid h-11 w-11 place-items-center rounded-[10px] text-[11px] leading-tight text-text-3 transition-colors hover:bg-bg-raised hover:text-text-2"
+      className="grid h-14 w-14 place-items-center rounded-[10px] text-[11px] leading-tight text-text-3 transition-colors hover:bg-bg-raised hover:text-text-2"
       activeProps={{ className: "bg-amber/12 text-amber hover:bg-amber/12 hover:text-amber" }}
     >
       <span className="grid place-items-center gap-0.5">
         <span className="[&>svg]:h-[18px] [&>svg]:w-[18px]">
           <Activity />
         </span>
-        监控
+        <span className="whitespace-nowrap">监控</span>
       </span>
     </Link>
   )
@@ -354,7 +354,7 @@ export function AppShell({
       {/* 桌面竖向轨道：<md 隐藏，≥md 与原型一致（64px）。 */}
       <nav
         aria-label="主导航"
-        className="hidden w-16 flex-shrink-0 flex-col items-center gap-1.5 border-r border-line bg-bg-surface py-3.5 md:flex"
+        className="hidden w-[72px] flex-shrink-0 flex-col items-center gap-1.5 border-r border-line bg-bg-surface py-3.5 md:flex"
       >
         <div className="mb-3.5">{logo}</div>
         {hasOrg ? (
@@ -365,7 +365,7 @@ export function AppShell({
             title="选择组织"
             aria-label="选择组织"
             onClick={() => void navigate({ to: "/" })}
-            className="grid h-11 w-11 place-items-center rounded-[10px] text-text-3 transition-colors hover:bg-bg-raised hover:text-text-2"
+            className="grid h-14 w-14 place-items-center rounded-[10px] text-text-3 transition-colors hover:bg-bg-raised hover:text-text-2"
           >
             <Building2 className="h-[18px] w-[18px]" />
           </button>
