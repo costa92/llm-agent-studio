@@ -423,6 +423,41 @@ function CanvasInner({
     [getNodes, screenToFlowPosition],
   )
 
+  // 粘贴（Phase D 抽取）：at 给定时把克隆整体平移到该 flow 落点（右键菜单用），
+  // 否则沿用 +32/+32（键盘 ⌘V 用）。克隆 fresh id + remap 内部边。
+  const doPaste = useCallback(
+    (at?: { x: number; y: number }) => {
+      const clip = clipboard.current
+      if (!clip || clip.nodes.length === 0) return
+      let offset = { x: 32, y: 32 }
+      if (at) {
+        const minX = Math.min(...clip.nodes.map((n) => n.position.x))
+        const minY = Math.min(...clip.nodes.map((n) => n.position.y))
+        offset = { x: at.x - minX, y: at.y - minY }
+      }
+      takeSnapshot()
+      const { nodes: cloned, edges: clonedEdges } = cloneSelection(
+        clip.nodes,
+        clip.edges,
+        new Set(clip.nodes.map((n) => n.id)),
+        offset,
+        prompts,
+        getNodes(),
+      )
+      setRfNodes((nds) => [
+        ...(nds as RFNode[]).map((n) => ({ ...n, selected: false })),
+        ...cloned,
+      ])
+      setRfEdges((eds) => [...eds, ...clonedEdges])
+    },
+    [prompts, getNodes, setRfNodes, setRfEdges, takeSnapshot],
+  )
+
+  // 全选（Phase D 抽取）：键盘 ⌘A / 右键菜单 共用。
+  const selectAll = useCallback(() => {
+    setRfNodes((nds) => (nds as RFNode[]).map((n) => ({ ...n, selected: true })))
+  }, [setRfNodes])
+
   const canvasActions = useMemo(
     () => ({ onDuplicateNode, onDeleteNode, onDeleteEdge, onInsertOnEdge, onQuickAddFrom }),
     [onDuplicateNode, onDeleteNode, onDeleteEdge, onInsertOnEdge, onQuickAddFrom],
@@ -523,24 +558,12 @@ function CanvasInner({
         )
         clipboard.current = { nodes: selNodes, edges: selEdges as RFEdge[] }
       } else if (key === "v") {
-        // 粘贴：按当前画布 id 重新分配 id（避让现有），整体偏移 +32/+32，选中克隆。
         if (!clipboard.current) return
         e.preventDefault()
-        const clip = clipboard.current
-        takeSnapshot()
-        const { nodes: cloned, edges: clonedEdges } = cloneSelection(
-          clip.nodes,
-          clip.edges,
-          new Set(clip.nodes.map((n) => n.id)),
-          { x: 32, y: 32 },
-          prompts,
-          getNodes(),
-        )
-        setRfNodes((nds) => [
-          ...(nds as RFNode[]).map((n) => ({ ...n, selected: false })),
-          ...cloned,
-        ])
-        setRfEdges((eds) => [...eds, ...clonedEdges])
+        doPaste()
+      } else if (key === "a") {
+        e.preventDefault()
+        selectAll()
       } else if (key === "d") {
         // 原地复制：等同于「复制+粘贴」一步完成，不写剪贴板。
         const selNodes = getNodes().filter((n) => n.selected)
@@ -568,7 +591,7 @@ function CanvasInner({
     }
     document.addEventListener("keydown", onKeyDown)
     return () => document.removeEventListener("keydown", onKeyDown)
-  }, [undo, redo, getNodes, getEdges, setRfNodes, setRfEdges, prompts, takeSnapshot])
+  }, [undo, redo, getNodes, getEdges, setRfNodes, setRfEdges, prompts, takeSnapshot, doPaste, selectAll])
 
   // ── 键盘删除（Delete / Backspace）────────────────────────
   // ReactFlow 在画布 pane 聚焦时才触发；属性面板输入框内的退格不会冒泡到这里。
