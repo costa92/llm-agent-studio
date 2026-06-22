@@ -725,8 +725,8 @@ function CanvasInner({
               edgeTypes={edgeTypes}
               defaultEdgeOptions={defaultEdgeOptions}
               deleteKeyCode={["Delete", "Backspace"]}
-              selectionOnDrag
-              panOnDrag={[1, 2]}
+              panOnDrag
+              selectionKeyCode="Shift"
               selectionMode={SelectionMode.Partial}
               snapToGrid
               snapGrid={[GRID, GRID]}
@@ -752,7 +752,7 @@ function CanvasInner({
                 拖拽左侧节点到画布，或点「标准管线」快速开始
                 <br />
                 <span className="text-[11px] text-text-3">
-                  左键框选，中键/右键平移
+                  左键拖拽平移，Shift+拖拽框选
                 </span>
               </p>
             </div>
