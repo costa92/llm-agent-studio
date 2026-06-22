@@ -10,9 +10,11 @@ export const PALETTE_DND_TYPE = "application/studio-node-type"
 export interface NodePaletteProps {
   // 点「标准管线」一键把画布填充为 脚本→分镜（由画布层实现，含确认替换）。
   onStandardPipeline: () => void
+  // 点「自动整理」按分层种子坐标重排现有节点（由画布层实现，可撤销 + fitView）。
+  onAutoTidy?: () => void
 }
 
-export function NodePalette({ onStandardPipeline }: NodePaletteProps) {
+export function NodePalette({ onStandardPipeline, onAutoTidy }: NodePaletteProps) {
   return (
     <aside className="flex w-44 shrink-0 flex-col gap-3 border-r border-line bg-bg-surface p-3">
       <h4 className="text-[11px] font-semibold uppercase tracking-wider text-text-3">
@@ -48,6 +50,16 @@ export function NodePalette({ onStandardPipeline }: NodePaletteProps) {
       >
         标准管线
       </button>
+      {onAutoTidy && (
+        <button
+          type="button"
+          onClick={onAutoTidy}
+          className="rounded-md border border-line px-2.5 py-1.5 text-[12px] font-medium text-text-2 hover:border-text-3 hover:text-text-1"
+          title="按分层重新排列画布节点"
+        >
+          自动整理
+        </button>
+      )}
     </aside>
   )
 }
