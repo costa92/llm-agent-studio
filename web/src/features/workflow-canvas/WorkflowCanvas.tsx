@@ -37,7 +37,6 @@ import {
   toStudioNodes,
   addNodeAt,
   reconnectEdge,
-  nextNodeId,
   duplicateNode,
   insertNodeOnEdge,
   cloneSelection,
@@ -144,7 +143,7 @@ function CanvasInner({
   >(null)
   // 右键上下文菜单态（Phase D）：kind 决定菜单项；targetId 为节点/边 id。
   const [menu, setMenu] = useState<
-    | { kind: "pane"; screenX: number; screenY: number }
+    | { kind: "pane"; screenX: number; screenY: number; canPaste: boolean }
     | { kind: "node"; screenX: number; screenY: number; targetId: string }
     | { kind: "edge"; screenX: number; screenY: number; targetId: string }
     | null
@@ -516,7 +515,7 @@ function CanvasInner({
         },
         {
           label: "粘贴",
-          disabled: !clipboard.current,
+          disabled: !menu.canPaste,
           onClick: () => doPaste(flow),
         },
         { label: "全选", onClick: selectAll },
@@ -804,7 +803,12 @@ function CanvasInner({
               onPaneContextMenu={(e) => {
                 e.preventDefault()
                 const ev = e as MouseEvent
-                setMenu({ kind: "pane", screenX: ev.clientX, screenY: ev.clientY })
+                setMenu({
+                  kind: "pane",
+                  screenX: ev.clientX,
+                  screenY: ev.clientY,
+                  canPaste: !!clipboard.current,
+                })
               }}
               onNodeContextMenu={(e, node) => {
                 e.preventDefault()
