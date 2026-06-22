@@ -1,46 +1,22 @@
 import { useState, type ReactNode } from "react"
 import { Link, useNavigate } from "@tanstack/react-router"
-import {
-  Activity,
-  Building2,
-  CheckSquare,
-  FolderKanban,
-  HardDrive,
-  Image,
-  ListChecks,
-  Menu,
-  ShieldCheck,
-  SlidersHorizontal,
-  Users,
-  Wallet,
-  Wand2,
-} from "lucide-react"
+import { Building2, Menu, PanelLeftClose, PanelLeftOpen } from "lucide-react"
 import { Button } from "@/components/studio/Button"
 import { ThemeSwitcher } from "@/components/studio/ThemeSwitcher"
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
 import { cleanOrg } from "./org"
+import {
+  NAV_SECTIONS,
+  readNavCollapsed,
+  writeNavCollapsed,
+  type NavItem,
+  type NavSection,
+} from "./nav"
 
-// 原型 .rail: 64px 宽 / bg-surface / 右描边 line；.nav-btn 44×44 radius10 text-3；
-// .on = amber 12% 底 + amber 字。审核/成本入口 admin-only（角色由 T6 rbac 注入）。
-interface NavItem {
-  to: string
-  params: Record<string, string>
-  icon: ReactNode
-  label: string
-  adminOnly?: boolean
-}
-
-const NAV_ITEMS: NavItem[] = [
-  { to: "/orgs/$org/projects", params: {}, icon: <FolderKanban />, label: "项目" },
-  { to: "/orgs/$org/tasks", params: {}, icon: <ListChecks />, label: "任务中心" },
-  { to: "/orgs/$org/review", params: {}, icon: <CheckSquare />, label: "审核", adminOnly: true },
-  { to: "/orgs/$org/assets", params: {}, icon: <Image />, label: "资产" },
-  { to: "/orgs/$org/prompt", params: {}, icon: <Wand2 />, label: "提示词" },
-  { to: "/orgs/$org/cost", params: {}, icon: <Wallet />, label: "成本", adminOnly: true },
-  { to: "/orgs/$org/model-configs", params: {}, icon: <SlidersHorizontal />, label: "模型", adminOnly: true },
-  { to: "/orgs/$org/storage-config", params: {}, icon: <HardDrive />, label: "存储", adminOnly: true },
-  { to: "/orgs/$org/members", params: {}, icon: <Users />, label: "成员", adminOnly: true },
-]
+// 宽分组侧栏（借鉴 wechat-account 的分组宽侧栏）：展开 ~256px / 折叠 ~72px 图标轨道，
+// 折叠态持久化于 localStorage。路由/图标/文案/adminOnly 与旧轨道完全一致；仅视觉重组为
+// 工作区 / 配置 / 平台管理 三段。审核/成本/模型/存储/成员 admin-only（T6 rbac 注入）；
+// 平台段非 org-scoped，仅平台超级管理员可见。
 
 export interface AppShellProps {
   org: string
@@ -53,190 +29,6 @@ export interface AppShellProps {
   children: ReactNode
 }
 
-// 桌面竖向轨道里的导航链接（图标 + 文案竖排）。
-function RailLinks({ items, currentOrg }: { items: NavItem[]; currentOrg: string }) {
-  return items.map((item) => (
-    <Link
-      key={item.to}
-      to={item.to}
-      params={{ org: currentOrg, ...item.params }}
-      className="grid h-14 w-14 place-items-center rounded-[10px] text-[11px] leading-tight text-text-3 transition-colors hover:bg-bg-raised hover:text-text-2"
-      activeProps={{ className: "bg-amber/12 text-amber hover:bg-amber/12 hover:text-amber" }}
-    >
-      <span className="grid place-items-center gap-0.5">
-        <span className="[&>svg]:h-[18px] [&>svg]:w-[18px]">{item.icon}</span>
-        <span className="whitespace-nowrap">{item.label}</span>
-      </span>
-    </Link>
-  ))
-}
-
-// 移动抽屉里的导航链接（图标 + 文案横排，更适合窄屏点选）；选中后关闭抽屉。
-function DrawerLinks({
-  items,
-  currentOrg,
-  onNavigate,
-}: {
-  items: NavItem[]
-  currentOrg: string
-  onNavigate: () => void
-}) {
-  return items.map((item) => (
-    <Link
-      key={item.to}
-      to={item.to}
-      params={{ org: currentOrg, ...item.params }}
-      onClick={onNavigate}
-      className="flex items-center gap-3 rounded-[10px] px-3 py-2.5 text-[14px] text-text-2 transition-colors hover:bg-bg-raised hover:text-text-1"
-      activeProps={{ className: "bg-amber/12 text-amber hover:bg-amber/12 hover:text-amber" }}
-    >
-      <span className="[&>svg]:h-[18px] [&>svg]:w-[18px]">{item.icon}</span>
-      {item.label}
-    </Link>
-  ))
-}
-
-// 「平台」入口：非 org-scoped（无 $org 参数），仅平台超级管理员可见。
-// 桌面轨道竖排样式。
-function PlatformRailLink() {
-  return (
-    <Link
-      to="/platform"
-      className="grid h-14 w-14 place-items-center rounded-[10px] text-[11px] leading-tight text-text-3 transition-colors hover:bg-bg-raised hover:text-text-2"
-      activeProps={{ className: "bg-amber/12 text-amber hover:bg-amber/12 hover:text-amber" }}
-    >
-      <span className="grid place-items-center gap-0.5">
-        <span className="[&>svg]:h-[18px] [&>svg]:w-[18px]">
-          <ShieldCheck />
-        </span>
-        <span className="whitespace-nowrap">平台</span>
-      </span>
-    </Link>
-  )
-}
-
-// 移动抽屉横排样式；选中后关闭抽屉。
-function PlatformDrawerLink({ onNavigate }: { onNavigate: () => void }) {
-  return (
-    <Link
-      to="/platform"
-      onClick={onNavigate}
-      className="flex items-center gap-3 rounded-[10px] px-3 py-2.5 text-[14px] text-text-2 transition-colors hover:bg-bg-raised hover:text-text-1"
-      activeProps={{ className: "bg-amber/12 text-amber hover:bg-amber/12 hover:text-amber" }}
-    >
-      <span className="[&>svg]:h-[18px] [&>svg]:w-[18px]">
-        <ShieldCheck />
-      </span>
-      平台
-    </Link>
-  )
-}
-
-// 「全部组织」入口：非 org-scoped，仅平台超级管理员可见。桌面轨道竖排样式。
-function PlatformOrgsRailLink() {
-  return (
-    <Link
-      to="/platform/orgs"
-      className="grid h-14 w-14 place-items-center rounded-[10px] text-[11px] leading-tight text-text-3 transition-colors hover:bg-bg-raised hover:text-text-2"
-      activeProps={{ className: "bg-amber/12 text-amber hover:bg-amber/12 hover:text-amber" }}
-    >
-      <span className="grid place-items-center gap-0.5">
-        <span className="[&>svg]:h-[18px] [&>svg]:w-[18px]">
-          <Building2 />
-        </span>
-        <span className="whitespace-nowrap">全部组织</span>
-      </span>
-    </Link>
-  )
-}
-
-// 移动抽屉横排样式；选中后关闭抽屉。
-function PlatformOrgsDrawerLink({ onNavigate }: { onNavigate: () => void }) {
-  return (
-    <Link
-      to="/platform/orgs"
-      onClick={onNavigate}
-      className="flex items-center gap-3 rounded-[10px] px-3 py-2.5 text-[14px] text-text-2 transition-colors hover:bg-bg-raised hover:text-text-1"
-      activeProps={{ className: "bg-amber/12 text-amber hover:bg-amber/12 hover:text-amber" }}
-    >
-      <span className="[&>svg]:h-[18px] [&>svg]:w-[18px]">
-        <Building2 />
-      </span>
-      全部组织
-    </Link>
-  )
-}
-
-// 「用户管理」入口：非 org-scoped，仅平台超级管理员可见。桌面轨道竖排样式。
-function PlatformUsersRailLink() {
-  return (
-    <Link
-      to="/platform/users"
-      className="grid h-14 w-14 place-items-center rounded-[10px] text-[11px] leading-tight text-text-3 transition-colors hover:bg-bg-raised hover:text-text-2"
-      activeProps={{ className: "bg-amber/12 text-amber hover:bg-amber/12 hover:text-amber" }}
-    >
-      <span className="grid place-items-center gap-0.5">
-        <span className="[&>svg]:h-[18px] [&>svg]:w-[18px]">
-          <Users />
-        </span>
-        <span className="whitespace-nowrap">用户管理</span>
-      </span>
-    </Link>
-  )
-}
-
-// 移动抽屉横排样式；选中后关闭抽屉。
-function PlatformUsersDrawerLink({ onNavigate }: { onNavigate: () => void }) {
-  return (
-    <Link
-      to="/platform/users"
-      onClick={onNavigate}
-      className="flex items-center gap-3 rounded-[10px] px-3 py-2.5 text-[14px] text-text-2 transition-colors hover:bg-bg-raised hover:text-text-1"
-      activeProps={{ className: "bg-amber/12 text-amber hover:bg-amber/12 hover:text-amber" }}
-    >
-      <span className="[&>svg]:h-[18px] [&>svg]:w-[18px]">
-        <Users />
-      </span>
-      用户管理
-    </Link>
-  )
-}
-
-// 「监控」入口：非 org-scoped，仅平台超级管理员可见。桌面轨道竖排样式。
-function PlatformHealthRailLink() {
-  return (
-    <Link
-      to="/platform/health"
-      className="grid h-14 w-14 place-items-center rounded-[10px] text-[11px] leading-tight text-text-3 transition-colors hover:bg-bg-raised hover:text-text-2"
-      activeProps={{ className: "bg-amber/12 text-amber hover:bg-amber/12 hover:text-amber" }}
-    >
-      <span className="grid place-items-center gap-0.5">
-        <span className="[&>svg]:h-[18px] [&>svg]:w-[18px]">
-          <Activity />
-        </span>
-        <span className="whitespace-nowrap">监控</span>
-      </span>
-    </Link>
-  )
-}
-
-// 移动抽屉横排样式；选中后关闭抽屉。
-function PlatformHealthDrawerLink({ onNavigate }: { onNavigate: () => void }) {
-  return (
-    <Link
-      to="/platform/health"
-      onClick={onNavigate}
-      className="flex items-center gap-3 rounded-[10px] px-3 py-2.5 text-[14px] text-text-2 transition-colors hover:bg-bg-raised hover:text-text-1"
-      activeProps={{ className: "bg-amber/12 text-amber hover:bg-amber/12 hover:text-amber" }}
-    >
-      <span className="[&>svg]:h-[18px] [&>svg]:w-[18px]">
-        <Activity />
-      </span>
-      监控
-    </Link>
-  )
-}
-
 export function AppShell({
   org,
   isAdmin = false,
@@ -244,12 +36,69 @@ export function AppShell({
   avatar,
   children,
 }: AppShellProps) {
-  const items = NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin)
   const currentOrg = cleanOrg(org)
   const hasOrg = currentOrg !== ""
   const navigate = useNavigate()
   // 移动抽屉开合（CSS 断点切换显隐；此 state 仅控制 Sheet 本身）。
   const [drawerOpen, setDrawerOpen] = useState(false)
+  // 桌面侧栏折叠态（默认展开）；持久化于 localStorage。
+  const [collapsed, setCollapsed] = useState<boolean>(readNavCollapsed)
+  const toggleCollapsed = () =>
+    setCollapsed((prev) => {
+      const next = !prev
+      writeNavCollapsed(next)
+      return next
+    })
+
+  // 区段是否应展示：平台段需平台管理员；可见项为空则跳过；org-scoped 段需有当前 org。
+  const sectionVisibleItems = (section: NavSection): NavItem[] =>
+    section.items.filter((i) => !i.adminOnly || isAdmin)
+  const shouldShowSection = (section: NavSection, visible: NavItem[]): boolean => {
+    if (section.platformOnly && !isPlatformAdmin) return false
+    if (visible.length === 0) return false
+    if (section.items.every((i) => i.orgScoped) && !hasOrg) return false
+    return true
+  }
+
+  // 单个导航项：org-scoped 项注入 currentOrg；折叠态为纯图标 + title 提示。
+  // 选中态：amber 12% 底 + amber 字 + 左侧发光琥珀竖条（随主题 var(--amber) 重着色）。
+  const renderItem = (item: NavItem, isCollapsed: boolean, onNavigate?: () => void) => (
+    <Link
+      key={item.to}
+      to={item.to}
+      params={item.orgScoped ? { org: currentOrg, ...item.params } : item.params}
+      onClick={onNavigate}
+      title={isCollapsed ? item.label : undefined}
+      className={
+        isCollapsed
+          ? "relative grid h-12 w-12 place-items-center rounded-[10px] text-text-3 transition-colors hover:bg-bg-raised hover:text-text-2"
+          : "relative flex items-center gap-3 rounded-[8px] px-2.5 py-2 mb-0.5 text-[13px] font-medium text-text-3 transition-colors hover:bg-bg-raised hover:text-text-2"
+      }
+      activeProps={{
+        className:
+          "bg-amber/12 text-amber font-semibold hover:bg-amber/12 hover:text-amber before:absolute before:-left-3 before:top-[7px] before:bottom-[7px] before:w-[3px] before:rounded-r-[3px] before:bg-amber before:shadow-[0_0_10px_var(--amber)]",
+      }}
+    >
+      <span className="[&>svg]:h-[18px] [&>svg]:w-[18px]">{item.icon}</span>
+      {!isCollapsed && <span className="whitespace-nowrap">{item.label}</span>}
+    </Link>
+  )
+
+  // 区段渲染（桌面侧栏）：折叠态隐藏标题。
+  const renderSection = (section: NavSection, isCollapsed: boolean, onNavigate?: () => void) => {
+    const visible = sectionVisibleItems(section)
+    if (!shouldShowSection(section, visible)) return null
+    return (
+      <div key={section.id} className={isCollapsed ? "mb-2 flex flex-col items-center gap-0.5" : "mb-4"}>
+        {!isCollapsed && (
+          <div className="px-2.5 mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-text-3">
+            {section.title}
+          </div>
+        )}
+        {visible.map((item) => renderItem(item, isCollapsed, onNavigate))}
+      </div>
+    )
+  }
 
   const logo = (
     <div
@@ -258,6 +107,12 @@ export function AppShell({
       className="grid h-[34px] w-[34px] place-items-center rounded-[8px] bg-bg-raised font-heading text-[11px] font-bold text-amber"
     >
       AS
+    </div>
+  )
+
+  const userAvatar = avatar ?? (
+    <div className="grid h-[30px] w-[30px] place-items-center rounded-full bg-gradient-to-br from-script to-board font-heading text-[11px] font-semibold text-text-1">
+      小A
     </div>
   )
 
@@ -275,22 +130,13 @@ export function AppShell({
               <Menu className="h-[20px] w-[20px]" />
             </button>
           </SheetTrigger>
-          <SheetContent
-            side="left"
-            className="w-72 border-line bg-bg-surface p-0"
-          >
+          <SheetContent side="left" className="w-72 border-line bg-bg-surface p-0">
             <SheetTitle className="sr-only">主导航</SheetTitle>
             <nav
               aria-label="主导航"
-              className="flex h-full flex-col gap-1 overflow-y-auto p-4 pt-12"
+              className="flex h-full flex-col overflow-y-auto p-4 pt-12"
             >
-              {hasOrg ? (
-                <DrawerLinks
-                  items={items}
-                  currentOrg={currentOrg}
-                  onNavigate={() => setDrawerOpen(false)}
-                />
-              ) : (
+              {!hasOrg && (
                 <button
                   type="button"
                   aria-label="选择组织"
@@ -298,26 +144,14 @@ export function AppShell({
                     setDrawerOpen(false)
                     void navigate({ to: "/" })
                   }}
-                  className="flex items-center gap-3 rounded-[10px] px-3 py-2.5 text-[14px] text-text-2 transition-colors hover:bg-bg-raised hover:text-text-1"
+                  className="mb-4 flex items-center gap-3 rounded-[10px] px-3 py-2.5 text-[14px] text-text-2 transition-colors hover:bg-bg-raised hover:text-text-1"
                 >
                   <Building2 className="h-[18px] w-[18px]" />
                   选择组织
                 </button>
               )}
-              {/* 平台入口：非 org-scoped，无论有无当前 org 都对平台管理员展示。
-                  区段标题标识进入「平台管理」层级。 */}
-              {isPlatformAdmin && (
-                <>
-                  <div className="mt-2 border-t border-line pt-3">
-                    <h2 className="px-3 pb-1 text-[11px] font-semibold tracking-[0.08em] text-text-3">
-                      平台管理
-                    </h2>
-                  </div>
-                  <PlatformDrawerLink onNavigate={() => setDrawerOpen(false)} />
-                  <PlatformOrgsDrawerLink onNavigate={() => setDrawerOpen(false)} />
-                  <PlatformUsersDrawerLink onNavigate={() => setDrawerOpen(false)} />
-                  <PlatformHealthDrawerLink onNavigate={() => setDrawerOpen(false)} />
-                </>
+              {NAV_SECTIONS.map((section) =>
+                renderSection(section, false, () => setDrawerOpen(false)),
               )}
               <div className="flex-1" />
               {hasOrg && (
@@ -343,61 +177,110 @@ export function AppShell({
         {logo}
         <div className="ml-auto flex items-center gap-2">
           <ThemeSwitcher />
-          {avatar ?? (
-            <div className="grid h-[30px] w-[30px] place-items-center rounded-full bg-gradient-to-br from-script to-board font-heading text-[11px] font-semibold text-text-1">
-              小A
-            </div>
-          )}
+          {userAvatar}
         </div>
       </div>
 
-      {/* 桌面竖向轨道：<md 隐藏，≥md 与原型一致（64px）。 */}
+      {/* 桌面侧栏：<md 隐藏。展开 ~256px / 折叠 ~72px 图标轨道。 */}
       <nav
         aria-label="主导航"
-        className="hidden w-[72px] flex-shrink-0 flex-col items-center gap-1.5 border-r border-line bg-bg-surface py-3.5 md:flex"
+        className={
+          collapsed
+            ? "hidden md:flex flex-col flex-shrink-0 items-center border-r border-line bg-bg-surface w-[72px]"
+            : "hidden md:flex flex-col flex-shrink-0 border-r border-line bg-bg-surface w-64"
+        }
       >
-        <div className="mb-3.5">{logo}</div>
-        {hasOrg ? (
-          <RailLinks items={items} currentOrg={currentOrg} />
-        ) : (
+        {/* 品牌头：logo + 标题（展开）+ 折叠开关。 */}
+        <div
+          className={
+            collapsed
+              ? "flex flex-col items-center gap-2 py-3 border-b border-line flex-shrink-0 w-full"
+              : "flex items-center gap-2.5 h-14 px-4 border-b border-line flex-shrink-0"
+          }
+        >
+          {logo}
+          {!collapsed && (
+            <span className="font-heading text-[15px] font-bold text-text-1">AI Studio</span>
+          )}
           <button
             type="button"
-            title="选择组织"
-            aria-label="选择组织"
-            onClick={() => void navigate({ to: "/" })}
-            className="grid h-14 w-14 place-items-center rounded-[10px] text-text-3 transition-colors hover:bg-bg-raised hover:text-text-2"
+            onClick={toggleCollapsed}
+            aria-label={collapsed ? "展开导航" : "收起导航"}
+            className={
+              collapsed
+                ? "grid h-8 w-8 place-items-center rounded-[8px] text-text-3 transition-colors hover:bg-bg-raised hover:text-text-1"
+                : "ml-auto grid h-8 w-8 place-items-center rounded-[8px] text-text-3 transition-colors hover:bg-bg-raised hover:text-text-1"
+            }
           >
-            <Building2 className="h-[18px] w-[18px]" />
+            {collapsed ? <PanelLeftOpen className="h-[18px] w-[18px]" /> : <PanelLeftClose className="h-[18px] w-[18px]" />}
           </button>
-        )}
-        {/* 平台入口：非 org-scoped，无论有无当前 org 都对平台管理员展示。
-            上方分隔线标识进入「平台管理」区域（窄轨道仅以描边区分层级）。 */}
-        {isPlatformAdmin && (
-          <>
-            <div className="my-1.5 w-7 border-t border-line" aria-hidden />
-            <PlatformRailLink />
-            <PlatformOrgsRailLink />
-            <PlatformUsersRailLink />
-            <PlatformHealthRailLink />
-          </>
-        )}
-        <div className="flex-1" />
-        {hasOrg && (
-          <Button
-            type="button"
-            variant="ghost"
-            title={`当前组织：${currentOrg}`}
-            aria-label="切换组织"
-            onClick={() => void navigate({ to: "/" })}
-            className="h-8 w-8 px-0 text-[10px]"
-          >
-            {currentOrg.slice(0, 2).toUpperCase()}
-          </Button>
-        )}
-        <ThemeSwitcher />
-        {avatar ?? (
-          <div className="grid h-[30px] w-[30px] place-items-center rounded-full bg-gradient-to-br from-script to-board font-heading text-[11px] font-semibold text-text-1">
-            小A
+        </div>
+
+        {/* 导航主体。 */}
+        <div className="flex-1 overflow-y-auto p-3">
+          {!hasOrg && (
+            <button
+              type="button"
+              title="选择组织"
+              aria-label="选择组织"
+              onClick={() => void navigate({ to: "/" })}
+              className={
+                collapsed
+                  ? "grid h-12 w-12 place-items-center rounded-[10px] text-text-3 transition-colors hover:bg-bg-raised hover:text-text-2"
+                  : "mb-4 flex items-center gap-3 rounded-[8px] px-2.5 py-2 text-[13px] font-medium text-text-3 transition-colors hover:bg-bg-raised hover:text-text-2"
+              }
+            >
+              <Building2 className="h-[18px] w-[18px]" />
+              {!collapsed && <span className="whitespace-nowrap">选择组织</span>}
+            </button>
+          )}
+          {NAV_SECTIONS.map((section) => renderSection(section, collapsed))}
+        </div>
+
+        {/* 底部用户块。展开：横排（org meta + 控件）；折叠：竖排居中。 */}
+        {collapsed ? (
+          <div className="mt-auto flex flex-col items-center gap-2 border-t border-line p-2.5 flex-shrink-0">
+            {hasOrg && (
+              <Button
+                type="button"
+                variant="ghost"
+                title={`当前组织：${currentOrg}`}
+                aria-label="切换组织"
+                onClick={() => void navigate({ to: "/" })}
+                className="h-8 w-8 px-0 text-[10px]"
+              >
+                {currentOrg.slice(0, 2).toUpperCase()}
+              </Button>
+            )}
+            <ThemeSwitcher />
+            {userAvatar}
+          </div>
+        ) : (
+          <div className="mt-auto flex items-center gap-2.5 border-t border-line p-2.5 flex-shrink-0">
+            <div className="min-w-0 flex-1">
+              <div className="text-[13px] font-semibold text-text-1 truncate">
+                {currentOrg || "未选择组织"}
+              </div>
+              <div className="text-[11px] text-text-3 truncate">
+                {isPlatformAdmin ? "平台管理员" : isAdmin ? "管理员" : "成员"}
+              </div>
+            </div>
+            <div className="ml-auto flex items-center gap-1.5">
+              {hasOrg && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  title={`当前组织：${currentOrg}`}
+                  aria-label="切换组织"
+                  onClick={() => void navigate({ to: "/" })}
+                  className="h-8 w-8 px-0 text-[10px]"
+                >
+                  {currentOrg.slice(0, 2).toUpperCase()}
+                </Button>
+              )}
+              <ThemeSwitcher />
+              {userAvatar}
+            </div>
           </div>
         )}
       </nav>

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, beforeEach } from "vitest"
 import { render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import {
@@ -59,6 +59,10 @@ function renderShell(
 }
 
 describe("AppShell", () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
   it("renders all nav entries for admin", async () => {
     renderShell({ isAdmin: true })
     expect(await screen.findByText("项目")).toBeInTheDocument()
@@ -149,5 +153,54 @@ describe("AppShell", () => {
     renderShell({ org: "", initialEntry: "/platform", isPlatformAdmin: true })
     expect(await screen.findByLabelText("选择组织")).toBeInTheDocument()
     expect(screen.getAllByText("平台").length).toBeGreaterThan(0)
+  })
+
+  // ── 宽分组侧栏改造 ──
+
+  it("renders all 3 section titles when expanded (admin + platformAdmin)", async () => {
+    renderShell({ isAdmin: true, isPlatformAdmin: true })
+    expect(await screen.findByText("工作区")).toBeInTheDocument()
+    expect(screen.getByText("配置")).toBeInTheDocument()
+    expect(screen.getByText("平台管理")).toBeInTheDocument()
+  })
+
+  it("hides the 配置 section for non-admin (all its items are admin-only)", async () => {
+    renderShell({ isAdmin: false })
+    expect(await screen.findByText("工作区")).toBeInTheDocument()
+    // 配置 全段 adminOnly → 非 admin 下可见项为空 → 整段隐藏。
+    expect(screen.queryByText("配置")).not.toBeInTheDocument()
+  })
+
+  it("collapse toggle hides labels + section titles but keeps the link present", async () => {
+    const user = userEvent.setup()
+    renderShell({ isAdmin: true })
+    expect(await screen.findByText("项目")).toBeInTheDocument()
+    expect(screen.getByText("工作区")).toBeInTheDocument()
+
+    // 收起 → 标题与文案消失，但链接仍在（折叠态用 title 标识）。
+    await user.click(screen.getByLabelText("收起导航"))
+    expect(screen.queryByText("工作区")).not.toBeInTheDocument()
+    expect(screen.queryByText("项目")).not.toBeInTheDocument()
+    expect(screen.getByTitle("项目")).toBeInTheDocument()
+
+    // 展开 → 恢复。
+    await user.click(screen.getByLabelText("展开导航"))
+    expect(screen.getByText("工作区")).toBeInTheDocument()
+    expect(screen.getByText("项目")).toBeInTheDocument()
+  })
+
+  it("persists collapse state: collapsing writes localStorage; fresh render starts collapsed", async () => {
+    const user = userEvent.setup()
+    const { unmount } = renderShell({ isAdmin: true })
+    await user.click(await screen.findByLabelText("收起导航"))
+    expect(localStorage.getItem("studio-nav-collapsed")).toBe("1")
+
+    // 重新挂载 → 读取持久化值，初始即为折叠态。
+    unmount()
+    renderShell({ isAdmin: true })
+    expect(await screen.findByLabelText("展开导航")).toBeInTheDocument()
+    expect(screen.queryByText("项目")).not.toBeInTheDocument()
+    expect(screen.getByTitle("项目")).toBeInTheDocument()
+    localStorage.clear()
   })
 })
