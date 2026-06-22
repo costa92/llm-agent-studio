@@ -109,6 +109,8 @@ export interface WorkflowNode {
   promptId: string
   promptText?: string
   dependsOn: string[]
+  // 画布坐标（Phase 2）；缺省时画布用 seedPositions 分层兜底。后端只存储/回放，不解释。
+  position?: { x: number; y: number }
 }
 
 // workflow/store.go。一个项目可有多条工作流；nodes 是 JSON 数组（非字符串）。

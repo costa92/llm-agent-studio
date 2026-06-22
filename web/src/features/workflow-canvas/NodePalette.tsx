@@ -1,8 +1,11 @@
 import { NODE_COLOR, TYPE_LABEL } from "./nodeColor"
 
-// 节点面板（Phase 1 占位，纯展示）：列出可拖入的节点类型 chips + 标准管线按钮。
-// 拖拽添加 / 一键填充 行为留到 Phase 2 接线，当前均不可用。
+// 节点面板（Phase 2）：列出可拖入的节点类型 chips。dragstart 写入节点类型，
+// 画布的 onDrop 读取后在落点创建节点。标准管线一键填充留到 Phase 3。
 const PALETTE_TYPES = ["script", "storyboard", "asset"] as const
+
+// 与画布 onDrop 约定的 dataTransfer key。
+export const PALETTE_DND_TYPE = "application/studio-node-type"
 
 export function NodePalette() {
   return (
@@ -15,9 +18,13 @@ export function NodePalette() {
           <div
             key={t}
             data-slot="palette-chip"
-            aria-disabled
-            className="flex cursor-not-allowed items-center gap-2 rounded-md border border-line bg-bg-base px-2.5 py-1.5 opacity-70"
-            title="拖入添加（即将上线）"
+            draggable
+            onDragStart={(e) => {
+              e.dataTransfer.setData(PALETTE_DND_TYPE, t)
+              e.dataTransfer.effectAllowed = "move"
+            }}
+            className="flex cursor-grab items-center gap-2 rounded-md border border-line bg-bg-base px-2.5 py-1.5 hover:border-text-3 active:cursor-grabbing"
+            title="拖入画布添加"
           >
             <span
               aria-hidden

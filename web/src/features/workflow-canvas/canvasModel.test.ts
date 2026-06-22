@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest"
-import { toReactFlow, seedPositions } from "./canvasModel"
-import type { WorkflowNode } from "@/lib/types"
+import {
+  toReactFlow,
+  toStudioNodes,
+  addNodeAt,
+  defaultPromptIdFor,
+  seedPositions,
+  type RFNode,
+  type RFEdge,
+} from "./canvasModel"
+import { findGraphError } from "@/features/projects/WorkflowDialog.schema"
+import type { Prompt, WorkflowNode } from "@/lib/types"
 
 // 3 节点链：script-1 → storyboard-1 → asset-1。
 const chain: WorkflowNode[] = [
@@ -56,5 +65,203 @@ describe("seedPositions", () => {
     const seeded = seedPositions(fanout)
     expect(seeded.get("a")).toEqual({ x: 0, y: 0 })
     expect(seeded.get("b")).toEqual({ x: 240, y: 0 })
+  })
+})
+
+// 小工具：把 studio nodes 转成 RF 状态供反向转换测试用。
+function rf(nodes: WorkflowNode[]): { nodes: RFNode[]; edges: RFEdge[] } {
+  return toReactFlow(nodes)
+}
+
+describe("toStudioNodes", () => {
+  it("round-trips dependsOn both ways (edges are the source of truth)", () => {
+    const { nodes, edges } = rf(chain)
+    const out = toStudioNodes(nodes, edges)
+    const byId = new Map(out.map((n) => [n.id, n]))
+    expect(byId.get("script-1")!.dependsOn).toEqual([])
+    expect(byId.get("storyboard-1")!.dependsOn).toEqual(["script-1"])
+    expect(byId.get("asset-1")!.dependsOn).toEqual(["storyboard-1"])
+  })
+
+  it("includes integer position for every node", () => {
+    const { edges } = rf(chain)
+    // 模拟自由拖动后的小数坐标。
+    const nodes: RFNode[] = [
+      {
+        id: "script-1",
+        type: "studio",
+        position: { x: 10.4, y: 20.6 },
+        data: { node: chain[0] },
+      },
+      {
+        id: "storyboard-1",
+        type: "studio",
+        position: { x: 0, y: 140 },
+        data: { node: chain[1] },
+      },
+      {
+        id: "asset-1",
+        type: "studio",
+        position: { x: 0, y: 280 },
+        data: { node: chain[2] },
+      },
+    ]
+    const out = toStudioNodes(nodes, edges)
+    for (const n of out) {
+      expect(n.position).toBeDefined()
+      expect(Number.isInteger(n.position!.x)).toBe(true)
+      expect(Number.isInteger(n.position!.y)).toBe(true)
+    }
+    const moved = out.find((n) => n.id === "script-1")!
+    // 10.4 → 10, 20.6 → 21（四舍五入）。
+    expect(moved.position).toEqual({ x: 10, y: 21 })
+  })
+
+  it("omits empty promptText, keeps non-empty", () => {
+    const nodes: RFNode[] = [
+      {
+        id: "a",
+        type: "studio",
+        position: { x: 0, y: 0 },
+        data: {
+          node: { id: "a", type: "script", promptId: "", promptText: "", dependsOn: [] },
+        },
+      },
+      {
+        id: "b",
+        type: "studio",
+        position: { x: 0, y: 0 },
+        data: {
+          node: { id: "b", type: "script", promptId: "", promptText: "hi", dependsOn: [] },
+        },
+      },
+    ]
+    const out = toStudioNodes(nodes, [])
+    expect(out.find((n) => n.id === "a")!.promptText).toBeUndefined()
+    expect(out.find((n) => n.id === "b")!.promptText).toBe("hi")
+  })
+})
+
+describe("defaultPromptIdFor", () => {
+  const prompts: Prompt[] = [
+    {
+      id: "p-script",
+      orgId: "o",
+      name: "脚本默认",
+      content: "",
+      style: "",
+      kind: "script",
+      isDefault: true,
+      createdAt: "",
+      updatedAt: "",
+    },
+  ]
+  it("returns the org default prompt id for the kind, else empty", () => {
+    expect(defaultPromptIdFor(prompts, "script")).toBe("p-script")
+    expect(defaultPromptIdFor(prompts, "storyboard")).toBe("")
+    expect(defaultPromptIdFor(undefined, "script")).toBe("")
+  })
+})
+
+describe("addNodeAt", () => {
+  it("appends a new node at pos with a unique id and default-ish prompt", () => {
+    const { nodes } = rf(chain) // 3 nodes
+    const prompts: Prompt[] = [
+      {
+        id: "p-script",
+        orgId: "o",
+        name: "x",
+        content: "",
+        style: "",
+        kind: "script",
+        isDefault: true,
+        createdAt: "",
+        updatedAt: "",
+      },
+    ]
+    const next = addNodeAt(nodes, "script", { x: 50, y: 60 }, prompts)
+    expect(next).toHaveLength(4)
+    const added = next[next.length - 1]
+    expect(added.position).toEqual({ x: 50, y: 60 })
+    expect(added.data.node.type).toBe("script")
+    expect(added.data.node.promptId).toBe("p-script")
+    // id 唯一。
+    const ids = next.map((n) => n.id)
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
+  it("collision-checks the generated id against existing ids", () => {
+    const existing: RFNode[] = [
+      {
+        id: "node-1",
+        type: "studio",
+        position: { x: 0, y: 0 },
+        data: { node: { id: "node-1", type: "script", promptId: "", dependsOn: [] } },
+      },
+    ]
+    // length+1 = node-2，无冲突。
+    const next = addNodeAt(existing, "asset", { x: 0, y: 0 })
+    expect(next[next.length - 1].id).toBe("node-2")
+  })
+})
+
+describe("connect / cycle guard (edges authoritative for dependsOn)", () => {
+  it("connecting A->B makes toStudioNodes give B.dependsOn=[A]", () => {
+    const two: WorkflowNode[] = [
+      { id: "A", type: "script", promptId: "", dependsOn: [] },
+      { id: "B", type: "storyboard", promptId: "", dependsOn: [] },
+    ]
+    const { nodes } = rf(two)
+    const edges: RFEdge[] = [{ id: "A->B", source: "A", target: "B" }]
+    const out = toStudioNodes(nodes, edges)
+    expect(out.find((n) => n.id === "B")!.dependsOn).toEqual(["A"])
+  })
+
+  it("rejects a back-edge that would create a cycle", () => {
+    const ab: WorkflowNode[] = [
+      { id: "A", type: "script", promptId: "", dependsOn: [] },
+      { id: "B", type: "storyboard", promptId: "", dependsOn: ["A"] },
+    ]
+    const { nodes } = rf(ab)
+    // 现有 A->B；候选再加 B->A。
+    const candidate = toStudioNodes(nodes, [
+      { id: "A->B", source: "A", target: "B" },
+      { id: "B->A", source: "B", target: "A" },
+    ])
+    expect(findGraphError(candidate)).not.toBeNull()
+  })
+
+  it("disconnecting an edge removes the dependency", () => {
+    const ab: WorkflowNode[] = [
+      { id: "A", type: "script", promptId: "", dependsOn: [] },
+      { id: "B", type: "storyboard", promptId: "", dependsOn: ["A"] },
+    ]
+    const { nodes } = rf(ab)
+    const out = toStudioNodes(nodes, []) // 边删空。
+    expect(out.find((n) => n.id === "B")!.dependsOn).toEqual([])
+  })
+})
+
+describe("rename cascade (re-key edges)", () => {
+  it("toStudioNodes follows the new id after edges are re-keyed", () => {
+    // 重命名把节点 A → A2，并把以 A 为端点的边重键。
+    const nodes: RFNode[] = [
+      {
+        id: "A2",
+        type: "studio",
+        position: { x: 0, y: 0 },
+        data: { node: { id: "A2", type: "script", promptId: "", dependsOn: [] } },
+      },
+      {
+        id: "B",
+        type: "studio",
+        position: { x: 0, y: 0 },
+        data: { node: { id: "B", type: "storyboard", promptId: "", dependsOn: [] } },
+      },
+    ]
+    const edges: RFEdge[] = [{ id: "A2->B", source: "A2", target: "B" }]
+    const out = toStudioNodes(nodes, edges)
+    expect(out.map((n) => n.id).sort()).toEqual(["A2", "B"])
+    expect(out.find((n) => n.id === "B")!.dependsOn).toEqual(["A2"])
   })
 })
