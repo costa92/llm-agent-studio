@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
-import { render, screen } from "@testing-library/react"
+import { render, screen, act } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { ThemeProvider, useTheme } from "./theme"
 
@@ -18,6 +18,32 @@ function stubMatchMedia(matches: boolean) {
       dispatchEvent: () => false,
     })),
   )
+}
+
+// 可控 matchMedia：捕获 change 监听器，测试里可手动 fire（携带翻转后的 matches）。
+function stubControllableMatchMedia(initialMatches: boolean) {
+  const listeners = new Set<() => void>()
+  const state = { matches: initialMatches }
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn((query: string) => ({
+      get matches() {
+        return state.matches
+      },
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: (_: string, cb: () => void) => listeners.add(cb),
+      removeEventListener: (_: string, cb: () => void) => listeners.delete(cb),
+      dispatchEvent: () => false,
+    })),
+  )
+  // 返回一个触发器：把系统偏好切到 matches 并通知监听器。
+  return (matches: boolean) => {
+    state.matches = matches
+    listeners.forEach((cb) => cb())
+  }
 }
 
 // 探针组件：把当前 theme 写进 DOM，并暴露一个切到 light 的按钮。
@@ -81,5 +107,24 @@ describe("ThemeProvider", () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => {})
     expect(() => render(<Probe />)).toThrow(/ThemeProvider/)
     spy.mockRestore()
+  })
+
+  it("未显式选择时，系统明暗变化实时跟随", async () => {
+    const fire = stubControllableMatchMedia(false) // 初始系统暗 → dark-studio
+    render(<ThemeProvider><Probe /></ThemeProvider>)
+    expect(screen.getByTestId("theme").textContent).toBe("dark-studio")
+    await act(async () => fire(true)) // 系统切到亮
+    expect(screen.getByTestId("theme").textContent).toBe("light")
+    await act(async () => fire(false)) // 系统切回暗
+    expect(screen.getByTestId("theme").textContent).toBe("dark-studio")
+  })
+
+  it("已显式选择时，系统变化不覆盖用户选择", async () => {
+    const fire = stubControllableMatchMedia(false)
+    localStorage.setItem("studio-theme", "cinematic") // 用户已选
+    render(<ThemeProvider><Probe /></ThemeProvider>)
+    expect(screen.getByTestId("theme").textContent).toBe("cinematic")
+    await act(async () => fire(true)) // 系统切到亮 —— 不应覆盖
+    expect(screen.getByTestId("theme").textContent).toBe("cinematic")
   })
 })
