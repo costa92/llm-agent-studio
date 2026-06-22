@@ -152,4 +152,18 @@ describe("ThemeProvider", () => {
     ).not.toThrow()
     expect(screen.getByTestId("theme").textContent).toBe("dark-studio")
   })
+
+  it("localStorage.getItem 抛错时回退系统默认（系统亮→light，不硬编码 dark）", () => {
+    stubMatchMedia(true) // 系统亮
+    const getItemSpy = vi
+      .spyOn(Storage.prototype, "getItem")
+      .mockImplementation(() => {
+        throw new Error("private mode")
+      })
+    render(<ThemeProvider><Probe /></ThemeProvider>)
+    // readStored 的 catch 须落到 systemDefault（→light），与 index.html 内联脚本收敛；
+    // 若回退成硬编码 dark-studio 则首屏会与内联脚本不一致而闪烁。
+    expect(screen.getByTestId("theme").textContent).toBe("light")
+    getItemSpy.mockRestore()
+  })
 })
