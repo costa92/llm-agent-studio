@@ -70,6 +70,27 @@ export const NAV_SECTIONS: NavSection[] = [
   },
 ]
 
+// 由当前 pathname 推导页面标签（面包屑右段）。遍历所有区段所有项，解析每项的实际路径：
+// orgScoped 项把 $org 段替换为 currentOrg；非 orgScoped 项直接用 item.to。
+// 匹配 path 完全相等或以「resolved + "/"」开头者，返回最长匹配项的 label
+// （故 /platform/orgs 胜过 /platform）。无匹配返回 null。纯函数，不引 router。
+export function findActiveLabel(pathname: string, currentOrg: string): string | null {
+  let best: { label: string; len: number } | null = null
+  for (const section of NAV_SECTIONS) {
+    for (const item of section.items) {
+      const resolved = item.orgScoped
+        ? item.to.replace("$org", currentOrg)
+        : item.to
+      if (pathname === resolved || pathname.startsWith(resolved + "/")) {
+        if (!best || resolved.length > best.len) {
+          best = { label: item.label, len: resolved.length }
+        }
+      }
+    }
+  }
+  return best ? best.label : null
+}
+
 const COLLAPSE_KEY = "studio-nav-collapsed"
 
 // 读取折叠状态。localStorage 不可用（隐私模式/老 webview）则回退展开。

@@ -1,11 +1,12 @@
 import { useState, type ReactNode } from "react"
-import { Link, useNavigate } from "@tanstack/react-router"
-import { Building2, Menu, PanelLeftClose, PanelLeftOpen } from "lucide-react"
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
+import { Building2, ChevronRight, Menu, PanelLeftClose, PanelLeftOpen } from "lucide-react"
 import { Button } from "@/components/studio/Button"
 import { ThemeSwitcher } from "@/components/studio/ThemeSwitcher"
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
 import { cleanOrg } from "./org"
 import {
+  findActiveLabel,
   NAV_SECTIONS,
   readNavCollapsed,
   writeNavCollapsed,
@@ -39,6 +40,9 @@ export function AppShell({
   const currentOrg = cleanOrg(org)
   const hasOrg = currentOrg !== ""
   const navigate = useNavigate()
+  // 当前路径 → 页面标签（面包屑右段）。
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const pageLabel = findActiveLabel(pathname, currentOrg)
   // 移动抽屉开合（CSS 断点切换显隐；此 state 仅控制 Sheet 本身）。
   const [drawerOpen, setDrawerOpen] = useState(false)
   // 桌面侧栏折叠态（默认展开）；持久化于 localStorage。
@@ -237,54 +241,57 @@ export function AppShell({
           {NAV_SECTIONS.map((section) => renderSection(section, collapsed))}
         </div>
 
-        {/* 底部用户块。展开：横排（org meta + 控件）；折叠：竖排居中。 */}
+        {/* 底部身份块（仅身份）。全局控件已上移至桌面顶栏；org 切换改由面包屑承担。 */}
         {collapsed ? (
           <div className="mt-auto flex flex-col items-center gap-2 border-t border-line p-2.5 flex-shrink-0">
             {hasOrg && (
-              <Button
-                type="button"
-                variant="ghost"
+              <div
                 title={`当前组织：${currentOrg}`}
-                aria-label="切换组织"
-                onClick={() => void navigate({ to: "/" })}
-                className="h-8 w-8 px-0 text-[10px]"
+                className="grid h-8 w-8 place-items-center rounded-[8px] bg-bg-raised text-[10px] font-semibold text-text-2"
               >
                 {currentOrg.slice(0, 2).toUpperCase()}
-              </Button>
+              </div>
             )}
-            <ThemeSwitcher />
-            {userAvatar}
           </div>
         ) : (
-          <div className="mt-auto flex items-center gap-2.5 border-t border-line p-2.5 flex-shrink-0">
-            <div className="min-w-0 flex-1">
-              <div className="text-[13px] font-semibold text-text-1 truncate">
-                {currentOrg || "未选择组织"}
-              </div>
-              <div className="text-[11px] text-text-3 truncate">
+          <div className="mt-auto flex items-center gap-2.5 border-t border-line p-3 flex-shrink-0">
+            <div className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-[8px] bg-bg-raised text-[10px] font-semibold text-text-2">
+              {(currentOrg || "—").slice(0, 2).toUpperCase()}
+            </div>
+            <div className="min-w-0">
+              <div className="truncate text-[13px] font-semibold text-text-1">{currentOrg || "未选择组织"}</div>
+              <div className="truncate text-[11px] text-text-3">
                 {isPlatformAdmin ? "平台管理员" : isAdmin ? "管理员" : "成员"}
               </div>
-            </div>
-            <div className="ml-auto flex items-center gap-1.5">
-              {hasOrg && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  title={`当前组织：${currentOrg}`}
-                  aria-label="切换组织"
-                  onClick={() => void navigate({ to: "/" })}
-                  className="h-8 w-8 px-0 text-[10px]"
-                >
-                  {currentOrg.slice(0, 2).toUpperCase()}
-                </Button>
-              )}
-              <ThemeSwitcher />
-              {userAvatar}
             </div>
           </div>
         )}
       </nav>
-      <main className="min-w-0 flex-1 overflow-auto">{children}</main>
+      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="hidden md:flex items-center gap-3 h-14 flex-shrink-0 border-b border-line bg-bg-surface px-6">
+          {/* 面包屑（左）：org 切换按钮 + 当前页标签。 */}
+          <nav aria-label="面包屑" className="flex min-w-0 items-center gap-1.5 text-[13px]">
+            {hasOrg && (
+              <button
+                type="button"
+                aria-label="切换组织"
+                onClick={() => void navigate({ to: "/" })}
+                className="max-w-[180px] truncate text-text-2 transition-colors hover:text-text-1"
+              >
+                {currentOrg}
+              </button>
+            )}
+            {hasOrg && pageLabel && <ChevronRight className="h-3.5 w-3.5 flex-shrink-0 text-text-3" aria-hidden />}
+            {pageLabel && <span className="truncate font-medium text-text-1">{pageLabel}</span>}
+          </nav>
+          {/* 控件（右）。 */}
+          <div className="ml-auto flex items-center gap-2">
+            <ThemeSwitcher />
+            {userAvatar}
+          </div>
+        </header>
+        <div className="min-w-0 flex-1 overflow-auto">{children}</div>
+      </main>
     </div>
   )
 }
