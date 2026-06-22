@@ -410,9 +410,22 @@ function CanvasInner({
     [screenToFlowPosition],
   )
 
+  // 节点尾部「+」快加（Phase D）：新节点落在 source 节点正下方（版式整洁，不取光标），
+  // 选择器浮层落在点击 screen 坐标；选中类型后走 create(source=nodeId)。
+  const onQuickAddFrom = useCallback(
+    (nodeId: string, screenX: number, screenY: number) => {
+      const src = getNodes().find((n) => n.id === nodeId)
+      const flow = src
+        ? { x: src.position.x, y: src.position.y + 120 }
+        : screenToFlowPosition({ x: screenX, y: screenY })
+      setPicker({ mode: "create", screenX, screenY, flow, source: nodeId })
+    },
+    [getNodes, screenToFlowPosition],
+  )
+
   const canvasActions = useMemo(
-    () => ({ onDuplicateNode, onDeleteNode, onDeleteEdge, onInsertOnEdge }),
-    [onDuplicateNode, onDeleteNode, onDeleteEdge, onInsertOnEdge],
+    () => ({ onDuplicateNode, onDeleteNode, onDeleteEdge, onInsertOnEdge, onQuickAddFrom }),
+    [onDuplicateNode, onDeleteNode, onDeleteEdge, onInsertOnEdge, onQuickAddFrom],
   )
 
   // ── 标准管线一键填充 ─────────────────────────────────────

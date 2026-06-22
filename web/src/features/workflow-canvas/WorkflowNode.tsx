@@ -21,7 +21,7 @@ export function WorkflowNode({ id, data, selected }: NodeProps<StudioRFNode>) {
   const node = data.node
   const color = NODE_COLOR[node.type] ?? "var(--line)"
   const typeLabel = TYPE_LABEL[node.type] ?? node.type
-  const { onDuplicateNode, onDeleteNode } = useCanvasActions()
+  const { onDuplicateNode, onDeleteNode, onQuickAddFrom } = useCanvasActions()
 
   // 运行模式：data.run 注入了该节点对应 run 节点的状态（见 runOverlay.overlayRunStatus）。
   const run = data.run
@@ -32,7 +32,7 @@ export function WorkflowNode({ id, data, selected }: NodeProps<StudioRFNode>) {
     <div
       data-slot="canvas-node"
       data-status={isRunMode ? (runStatus ?? "pending") : undefined}
-      className="flex items-center gap-2.5 rounded-lg border border-line bg-bg-surface px-3 py-2 shadow-sm min-w-[140px]"
+      className="group relative flex items-center gap-2.5 rounded-lg border border-line bg-bg-surface px-3 py-2 shadow-sm min-w-[140px]"
     >
       {/* 选中时浮出工具条：复制 / 删除。仅编辑模式（运行模式只读，隐藏工具条）。
           NodeToolbar portal 到 flow viewport，必须在 <ReactFlow> 内（CanvasInner 满足）。 */}
@@ -72,6 +72,21 @@ export function WorkflowNode({ id, data, selected }: NodeProps<StudioRFNode>) {
         <span className="text-[12.5px] font-semibold text-text-1">{node.id}</span>
         <span className="text-[11px] text-text-2">{typeLabel}</span>
       </div>
+      {/* 尾部「+」快加（Phase D）：hover 提亮，nodrag 防触发画布拖拽；run mode 隐藏。 */}
+      {!isRunMode && (
+        <button
+          type="button"
+          aria-label="添加下游节点"
+          title="添加下游节点"
+          className="nodrag nopan absolute -bottom-3 left-1/2 z-10 grid h-5 w-5 -translate-x-1/2 place-items-center rounded-full border border-line bg-bg-raised text-[12px] leading-none text-text-2 opacity-0 shadow transition group-hover:opacity-100 hover:text-text-1"
+          onClick={(e) => {
+            e.stopPropagation()
+            onQuickAddFrom(id, e.clientX, e.clientY)
+          }}
+        >
+          +
+        </button>
+      )}
       <Handle type="source" position={Position.Bottom} />
     </div>
   )
