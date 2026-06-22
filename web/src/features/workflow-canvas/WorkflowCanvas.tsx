@@ -12,6 +12,8 @@ import {
   type Node,
   type Connection,
   type OnSelectionChangeParams,
+  type OnConnectStartParams,
+  type FinalConnectionState,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
 import { Redo2, Undo2 } from "lucide-react"
@@ -32,6 +34,9 @@ import {
   toReactFlow,
   toStudioNodes,
   addNodeAt,
+  nextNodeId,
+  duplicateNode,
+  insertNodeOnEdge,
   seedPositions,
   standardPipeline,
   type StudioNodeData,
@@ -40,6 +45,9 @@ import {
 } from "./canvasModel"
 import { useUndoRedo } from "./useUndoRedo"
 import { WorkflowNode } from "./WorkflowNode"
+import { StudioEdge } from "./StudioEdge"
+import { NodeTypePicker } from "./NodeTypePicker"
+import { CanvasActionsProvider } from "./CanvasActionsContext"
 import { NodePalette, PALETTE_DND_TYPE } from "./NodePalette"
 import { PropertiesPanel } from "./PropertiesPanel"
 import { NODE_COLOR } from "./nodeColor"
@@ -65,6 +73,8 @@ export interface WorkflowCanvasProps {
 }
 
 const nodeTypes = { studio: WorkflowNode }
+const edgeTypes = { studio: StudioEdge }
+const defaultEdgeOptions = { type: "studio" }
 
 // 保存载荷的稳定签名（name + studio nodes）。用于 dirty 比较。
 function snapshotOf(name: string, studioNodes: WorkflowNodeType[]): string {
@@ -92,6 +102,16 @@ function CanvasInner({
     useReactFlow<RFNode, RFEdge>()
   const { takeSnapshot, undo, redo, canUndo, canRedo } = useUndoRedo()
   const isCreate = !workflowId
+
+  // ── 连线交互态（Phase B）────────────────────────────────────
+  // onConnectStart 记录起点节点 + 句柄类型；onConnectEnd 若落在空白且起点为
+  // source 句柄，则弹出节点类型选择器（create 模式）。边上「+」走 insert 模式。
+  const connectFrom = useRef<{ nodeId: string; handleType: string } | null>(null)
+  const [picker, setPicker] = useState<
+    | { mode: "create"; screenX: number; screenY: number; flow: { x: number; y: number }; source: string }
+    | { mode: "insert"; screenX: number; screenY: number; flow: { x: number; y: number }; edgeId: string }
+    | null
+  >(null)
 
   // 载入时的 studio-model 快照，作为 dirty 比较基线。
   const loadedSnapshot = useRef(
@@ -158,12 +178,100 @@ function CanvasInner({
       takeSnapshot()
       setRfEdges((eds) =>
         addEdge(
-          { ...conn, id: `${conn.source}->${conn.target}` },
+          { ...conn, id: `${conn.source}->${conn.target}`, type: "studio" },
           eds,
         ),
       )
     },
     [rfNodes, rfEdges, setRfEdges, takeSnapshot],
+  )
+
+  // ── 从句柄拖到空白 → 弹选择器 → 新建并连接（Phase B）──────────
+  const onConnectStart = useCallback(
+    (_: unknown, { nodeId, handleType }: OnConnectStartParams) => {
+      connectFrom.current = nodeId
+        ? { nodeId, handleType: handleType ?? "source" }
+        : null
+    },
+    [],
+  )
+
+  const onConnectEnd = useCallback(
+    (event: MouseEvent | TouchEvent, connectionState: FinalConnectionState) => {
+      // v12：toNode == null 表示落在空白 pane（未连到任何节点）。
+      const droppedOnPane = connectionState.toNode == null
+      const from = connectFrom.current
+      if (droppedOnPane && from?.handleType === "source") {
+        const { clientX, clientY } =
+          "changedTouches" in event ? event.changedTouches[0] : event
+        const flow = screenToFlowPosition({ x: clientX, y: clientY })
+        setPicker({
+          mode: "create",
+          screenX: clientX,
+          screenY: clientY,
+          flow,
+          source: from.nodeId,
+        })
+      }
+      connectFrom.current = null
+    },
+    [screenToFlowPosition],
+  )
+
+  // 选择器选中类型后落地：create 模式新建节点 + 连边；insert 模式在边上拆分。
+  const onPickType = useCallback(
+    (type: string) => {
+      if (!picker) return
+      if (picker.mode === "create") {
+        const id = nextNodeId(getNodes())
+        // 一致性环路守卫：与全新节点不可能成环，但保留 pattern。
+        const candidate = toStudioNodes(
+          addNodeAt(getNodes(), type, picker.flow, prompts, id),
+          [
+            ...getEdges(),
+            { id: `${picker.source}->${id}`, source: picker.source, target: id },
+          ],
+        )
+        const err = findGraphError(candidate)
+        if (err) {
+          toast.error(err)
+          setPicker(null)
+          return
+        }
+        takeSnapshot()
+        setRfNodes((nds) => addNodeAt(nds as RFNode[], type, picker.flow, prompts, id))
+        setRfEdges((eds) => [
+          ...eds,
+          {
+            id: `${picker.source}->${id}`,
+            source: picker.source,
+            target: id,
+            type: "studio",
+          },
+        ])
+      } else {
+        // insert 模式：在边 A->B 上插入新节点 N（A->N, N->B）。
+        const candidate = insertNodeOnEdge(
+          getNodes(),
+          getEdges(),
+          picker.edgeId,
+          type,
+          picker.flow,
+          prompts,
+        )
+        const err = findGraphError(toStudioNodes(candidate.nodes, candidate.edges))
+        if (err) {
+          toast.error(err)
+          setPicker(null)
+          return
+        }
+        takeSnapshot()
+        setRfNodes(candidate.nodes)
+        setRfEdges(candidate.edges)
+      }
+      setPicker(null)
+    },
+    [picker, getNodes, getEdges, prompts, setRfNodes, setRfEdges, takeSnapshot],
   )
 
   // ── 属性面板回调 ─────────────────────────────────────────
@@ -219,6 +327,52 @@ function CanvasInner({
     setRfEdges((eds) => eds.filter((e) => e.source !== id && e.target !== id))
     setSelectedId(null)
   }, [selectedId, setRfNodes, setRfEdges, takeSnapshot])
+
+  // ── 节点工具条 / 边控件回调（Phase B，经 CanvasActionsContext 下发）──────
+  const onDuplicateNode = useCallback(
+    (id: string) => {
+      takeSnapshot()
+      setRfNodes((nds) => duplicateNode(nds as RFNode[], id, prompts).nodes)
+    },
+    [setRfNodes, prompts, takeSnapshot],
+  )
+
+  // 工具条「删除节点」：程序化删除不触发 onBeforeDelete，故显式记快照 + 级联清边。
+  const onDeleteNode = useCallback(
+    (id: string) => {
+      takeSnapshot()
+      setRfNodes((nds) => (nds as RFNode[]).filter((n) => n.id !== id))
+      setRfEdges((eds) => eds.filter((e) => e.source !== id && e.target !== id))
+      setSelectedId((cur) => (cur === id ? null : cur))
+    },
+    [setRfNodes, setRfEdges, takeSnapshot],
+  )
+
+  const onDeleteEdge = useCallback(
+    (id: string) => {
+      takeSnapshot()
+      setRfEdges((eds) => eds.filter((e) => e.id !== id))
+    },
+    [setRfEdges, takeSnapshot],
+  )
+
+  const onInsertOnEdge = useCallback(
+    (id: string, screenX: number, screenY: number) => {
+      setPicker({
+        mode: "insert",
+        screenX,
+        screenY,
+        flow: screenToFlowPosition({ x: screenX, y: screenY }),
+        edgeId: id,
+      })
+    },
+    [screenToFlowPosition],
+  )
+
+  const canvasActions = useMemo(
+    () => ({ onDuplicateNode, onDeleteNode, onDeleteEdge, onInsertOnEdge }),
+    [onDuplicateNode, onDeleteNode, onDeleteEdge, onInsertOnEdge],
+  )
 
   // ── 标准管线一键填充 ─────────────────────────────────────
   // 画布非空时确认替换；填充后清空选中（旧节点已移除）。dirty 由快照比较自动反映。
@@ -410,36 +564,42 @@ function CanvasInner({
           onDragOver={onDragOver}
           onDrop={onDrop}
         >
-          <ReactFlow
-            nodes={rfNodes}
-            edges={rfEdges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onNodesDelete={onNodesDelete}
-            onConnect={onConnect}
-            onSelectionChange={onSelectionChange}
-            onNodeDragStart={() => takeSnapshot()}
-            onBeforeDelete={async () => {
-              // 键盘删除节点/边在应用前记快照（覆盖 Delete/Backspace 路径）。
-              takeSnapshot()
-              return true
-            }}
-            nodeTypes={nodeTypes}
-            deleteKeyCode={["Delete", "Backspace"]}
-            snapToGrid
-            snapGrid={[GRID, GRID]}
-            fitView
-            proOptions={{ hideAttribution: false }}
-          >
-            <Background gap={GRID} />
-            <Controls />
-            <MiniMap
-              nodeColor={(n) =>
-                NODE_COLOR[(n as Node<StudioNodeData>).data.node.type] ??
-                "var(--line)"
-              }
-            />
-          </ReactFlow>
+          <CanvasActionsProvider value={canvasActions}>
+            <ReactFlow
+              nodes={rfNodes}
+              edges={rfEdges}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onNodesDelete={onNodesDelete}
+              onConnect={onConnect}
+              onConnectStart={onConnectStart}
+              onConnectEnd={onConnectEnd}
+              onSelectionChange={onSelectionChange}
+              onNodeDragStart={() => takeSnapshot()}
+              onBeforeDelete={async () => {
+                // 键盘删除节点/边在应用前记快照（覆盖 Delete/Backspace 路径）。
+                takeSnapshot()
+                return true
+              }}
+              nodeTypes={nodeTypes}
+              edgeTypes={edgeTypes}
+              defaultEdgeOptions={defaultEdgeOptions}
+              deleteKeyCode={["Delete", "Backspace"]}
+              snapToGrid
+              snapGrid={[GRID, GRID]}
+              fitView
+              proOptions={{ hideAttribution: false }}
+            >
+              <Background gap={GRID} />
+              <Controls />
+              <MiniMap
+                nodeColor={(n) =>
+                  NODE_COLOR[(n as Node<StudioNodeData>).data.node.type] ??
+                  "var(--line)"
+                }
+              />
+            </ReactFlow>
+          </CanvasActionsProvider>
           {/* 空画布提示：引导拖拽或一键标准管线。 */}
           {rfNodes.length === 0 && (
             <div className="pointer-events-none absolute inset-0 grid place-items-center">
@@ -448,6 +608,13 @@ function CanvasInner({
               </p>
             </div>
           )}
+          <NodeTypePicker
+            open={!!picker}
+            screenX={picker?.screenX ?? 0}
+            screenY={picker?.screenY ?? 0}
+            onPick={onPickType}
+            onClose={() => setPicker(null)}
+          />
         </div>
         <PropertiesPanel
           node={selected}
