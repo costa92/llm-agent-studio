@@ -60,6 +60,7 @@ import { PropertiesPanel } from "./PropertiesPanel"
 import { NODE_COLOR } from "./nodeColor"
 import { RunCanvas } from "./RunCanvas"
 import { ModeToggle } from "./ModeToggle"
+import { CanvasContextMenu, type ContextMenuItem } from "./CanvasContextMenu"
 
 export type CanvasMode = "edit" | "run"
 
@@ -139,6 +140,13 @@ function CanvasInner({
   const [picker, setPicker] = useState<
     | { mode: "create"; screenX: number; screenY: number; flow: { x: number; y: number }; source?: string }
     | { mode: "insert"; screenX: number; screenY: number; flow: { x: number; y: number }; edgeId: string }
+    | null
+  >(null)
+  // 右键上下文菜单态（Phase D）：kind 决定菜单项；targetId 为节点/边 id。
+  const [menu, setMenu] = useState<
+    | { kind: "pane"; screenX: number; screenY: number }
+    | { kind: "node"; screenX: number; screenY: number; targetId: string }
+    | { kind: "edge"; screenX: number; screenY: number; targetId: string }
     | null
   >(null)
 
@@ -495,6 +503,58 @@ function CanvasInner({
     setTimeout(() => fitView({ duration: 300 }), 0)
   }, [getNodes, getEdges, setRfNodes, fitView, takeSnapshot])
 
+  // 按右键目标构建菜单项（复用既有 handler / doPaste / selectAll / fitView / 泛化 picker）。
+  const menuItems = useMemo<ContextMenuItem[]>(() => {
+    if (!menu) return []
+    if (menu.kind === "pane") {
+      const flow = screenToFlowPosition({ x: menu.screenX, y: menu.screenY })
+      return [
+        {
+          label: "添加节点",
+          onClick: () =>
+            setPicker({ mode: "create", screenX: menu.screenX, screenY: menu.screenY, flow }),
+        },
+        {
+          label: "粘贴",
+          disabled: !clipboard.current,
+          onClick: () => doPaste(flow),
+        },
+        { label: "全选", onClick: selectAll },
+        { label: "自动整理", onClick: onAutoTidy },
+        { label: "适应视图", onClick: () => fitView({ duration: 300 }) },
+      ]
+    }
+    if (menu.kind === "node") {
+      return [
+        { label: "复制", onClick: () => onDuplicateNode(menu.targetId) },
+        {
+          label: "从此添加下游",
+          onClick: () => onQuickAddFrom(menu.targetId, menu.screenX, menu.screenY),
+        },
+        { label: "删除", danger: true, onClick: () => onDeleteNode(menu.targetId) },
+      ]
+    }
+    return [
+      {
+        label: "插入节点",
+        onClick: () => onInsertOnEdge(menu.targetId, menu.screenX, menu.screenY),
+      },
+      { label: "删除", danger: true, onClick: () => onDeleteEdge(menu.targetId) },
+    ]
+  }, [
+    menu,
+    screenToFlowPosition,
+    doPaste,
+    selectAll,
+    onAutoTidy,
+    fitView,
+    onDuplicateNode,
+    onQuickAddFrom,
+    onDeleteNode,
+    onInsertOnEdge,
+    onDeleteEdge,
+  ])
+
   // ── 对齐辅助线（C3）─────────────────────────────────────────
   // 拖动中实时算引导线：与其它节点的边/中心落在阈值内则画线 + 吸附被拖节点位置。
   // 不在此记快照（onNodeDragStart 已记）；拖动结束清空引导线。
@@ -741,6 +801,19 @@ function CanvasInner({
               onConnectStart={onConnectStart}
               onConnectEnd={onConnectEnd}
               onSelectionChange={onSelectionChange}
+              onPaneContextMenu={(e) => {
+                e.preventDefault()
+                const ev = e as MouseEvent
+                setMenu({ kind: "pane", screenX: ev.clientX, screenY: ev.clientY })
+              }}
+              onNodeContextMenu={(e, node) => {
+                e.preventDefault()
+                setMenu({ kind: "node", screenX: e.clientX, screenY: e.clientY, targetId: node.id })
+              }}
+              onEdgeContextMenu={(e, edge) => {
+                e.preventDefault()
+                setMenu({ kind: "edge", screenX: e.clientX, screenY: e.clientY, targetId: edge.id })
+              }}
               onNodeDragStart={() => takeSnapshot()}
               onNodeDrag={onNodeDrag}
               onNodeDragStop={onNodeDragStop}
@@ -780,7 +853,7 @@ function CanvasInner({
                 拖拽左侧节点到画布，或点「标准管线」快速开始
                 <br />
                 <span className="text-[11px] text-text-3">
-                  左键拖拽平移，Shift+拖拽框选
+                  左键拖拽平移，Shift+拖拽框选，右键打开菜单
                 </span>
               </p>
             </div>
@@ -791,6 +864,13 @@ function CanvasInner({
             screenY={picker?.screenY ?? 0}
             onPick={onPickType}
             onClose={() => setPicker(null)}
+          />
+          <CanvasContextMenu
+            open={!!menu}
+            screenX={menu?.screenX ?? 0}
+            screenY={menu?.screenY ?? 0}
+            items={menuItems}
+            onClose={() => setMenu(null)}
           />
         </div>
         <PropertiesPanel
