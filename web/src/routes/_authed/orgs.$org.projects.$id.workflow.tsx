@@ -3,9 +3,10 @@ import { z } from "zod"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/studio/Button"
 import { useWorkflows } from "@/features/projects/workflowApi"
+import { useBasicPrompts, usePrompts } from "@/features/prompt/api"
 import { WorkflowCanvas } from "@/features/workflow-canvas/WorkflowCanvas"
 
-// Phase 1：只读工作流画布路由。?wf= 选中要编辑的工作流（按 id 匹配项目下工作流）。
+// Phase 2：可编辑工作流画布路由。?wf= 选中要编辑的工作流（按 id 匹配项目下工作流）。
 const workflowSearchSchema = z.object({
   wf: z.string().optional(),
 })
@@ -23,6 +24,9 @@ function WorkflowCanvasPage() {
   const workflowsQuery = useWorkflows(id)
   // workflowApi 已把信封 items 解析为 Workflow[]（nodes 为已解析的数组）。
   const workflow = workflowsQuery.data?.find((w) => w.id === wf)
+  // 属性面板提示词选择所需：org 自建提示词 + 内置基础提示词（与旧编辑器同源）。
+  const { data: prompts } = usePrompts(org)
+  const { data: basics } = useBasicPrompts()
 
   const goBack = () =>
     void navigate({
@@ -70,9 +74,21 @@ function WorkflowCanvasPage() {
   return (
     <div className="h-full">
       <WorkflowCanvas
+        workflowId={workflow.id}
+        projectId={id}
+        org={org}
         workflowName={workflow.name}
         nodes={workflow.nodes}
+        prompts={prompts}
+        basics={basics}
         onBack={goBack}
+        onCreated={(newId) =>
+          void navigate({
+            to: "/orgs/$org/projects/$id/workflow",
+            params: { org, id },
+            search: { wf: newId },
+          })
+        }
       />
     </div>
   )
