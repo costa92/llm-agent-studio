@@ -1,4 +1,4 @@
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -16,16 +16,33 @@ import type { ProjectState } from "@/lib/projectState"
 import { Badge } from "@/components/studio/Badge"
 import { Button } from "@/components/studio/Button"
 import { SseIndicator, type SseStatus } from "@/components/studio/SseIndicator"
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
+import { EventLog } from "@/components/studio/EventLog"
 import { getAccessToken } from "@/lib/apiClient"
 import { statusLabel, statusVariant } from "@/features/projects/status"
 import {
   fetchAllEvents,
   useCancel,
+  useProjectAssets,
   useProjectState,
   usePlans,
   useRun,
+  useScript,
+  useShots,
   type Plan,
 } from "@/features/workflow/api"
+import { useAsset } from "@/features/review/api"
+import { useRole } from "@/app/rbac"
+import { ScriptView } from "@/features/workflow/ScriptView"
+import { StoryboardView } from "@/features/workflow/StoryboardView"
+import { SelectedAssetPanel } from "@/features/workflow/SelectedAssetPanel"
+import { AssetGalleryModal } from "@/features/workflow/AssetGalleryModal"
+import { RunSummary } from "@/features/workflow/RunSummary"
 import {
   useProductionTimeline,
   type SseConnState,
@@ -33,6 +50,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query"
 import { toReactFlow, type RFNode, type RFEdge, type StudioNodeData } from "./canvasModel"
 import { overlayRunStatus } from "./runOverlay"
+import { resolveSelection, type RunSelection } from "./resolveSelection"
 import { WorkflowNode } from "./WorkflowNode"
 import { StudioEdge } from "./StudioEdge"
 import { NODE_COLOR } from "./nodeColor"
@@ -78,11 +96,41 @@ function RunCanvasInner({
 }: RunCanvasProps) {
   const navigate = useNavigate()
   const qc = useQueryClient()
+  const { isAdmin } = useRole(org)
 
   const plansQuery = usePlans(projectId)
   const stateQuery = useProjectState(projectId, runId ?? "")
   const run = useRun(projectId)
   const cancel = useCancel(projectId)
+
+  // 选中态：点节点 → 看工件（剧本/分镜抽屉 或 右栏资产预览）。
+  const [selection, setSelection] = useState<RunSelection>(null)
+  // 素材画廊开合。
+  const [galleryOpen, setGalleryOpen] = useState(false)
+
+  // 抽屉数据 gated 拉取：非该类型时传 "" 不发请求（与 RunWorkbenchPage 一致）。
+  const scriptQuery = useScript(
+    selection?.kind === "script" ? projectId : "",
+    runId,
+    selection?.kind === "script" ? selection.todoId : undefined,
+  )
+  const shotsQuery = useShots(
+    selection?.kind === "storyboard" ? projectId : "",
+    runId,
+    selection?.kind === "storyboard" ? selection.todoId : undefined,
+  )
+  // 该 run 项目资产：供画廊提示词元信息（按 assetId）。无 runId 时传 "" 不发请求。
+  const projectAssetsQuery = useProjectAssets(runId ? projectId : "", undefined, runId)
+
+  // 选中资产详情（hooks 规则：early return 前无条件调用）。
+  // 用 stateQuery 的 pips 算回落 latestAssetId 得完整 previewAssetId；
+  // useAsset 内部 enabled: id !== "" 防护空串不发请求。
+  const latestAssetIdEarly = [...(stateQuery.data?.pips ?? [])]
+    .reverse()
+    .find((p) => p.status === "done" && p.assetId)?.assetId
+  const previewAssetIdEarly =
+    selection?.kind === "asset" ? selection.assetId : latestAssetIdEarly
+  const previewDetailQuery = useAsset(previewAssetIdEarly ?? "")
 
   // 权威工作流状态（加载中回落 draft 草态）。
   const wfState: ProjectState = stateQuery.data ?? {
@@ -98,8 +146,8 @@ function RunCanvasInner({
     isCustom: false,
   }
 
-  // SSE：驱动 live/conn 指示器（完整日志面板留 Phase 2）。state 帧写回缓存使画布实时刷新。
-  const { conn } = useProductionTimeline({
+  // SSE：回放 → 续接实时；驱动 live/conn 指示器与事件日志。state 帧写回缓存使画布实时刷新。
+  const { log, conn } = useProductionTimeline({
     projectId,
     accessToken: getAccessToken(),
     status: stateQuery.data?.status,
@@ -110,16 +158,27 @@ function RunCanvasInner({
   })
   const live = wfState.runStatus !== "done" && !!runId
 
+  // overlay map：画布节点 id → run 状态（点节点解析选中态、画布注入 data.run 共用）。
+  const overlay = useMemo(() => overlayRunStatus(nodes, wfState), [nodes, wfState])
+
   // 运行 rfNodes：从已保存节点（自存 position）建，按 overlay 注入 data.run。
   const { rfNodes, rfEdges } = useMemo(() => {
     const { nodes: rn, edges: re } = toReactFlow(nodes)
-    const overlay = overlayRunStatus(nodes, wfState)
     const withRun: RFNode[] = rn.map((n) => ({
       ...n,
       data: { ...n.data, run: overlay.get(n.id) },
     }))
     return { rfNodes: withRun, rfEdges: re as RFEdge[] }
-  }, [nodes, wfState])
+  }, [nodes, overlay])
+
+  // 点节点（运行模式只读）：按 overlay 命中项 + 节点类型解析选中态。
+  // 未命中（pending/未匹配）节点点击无操作。
+  function handleSelectNode(canvasNodeId: string) {
+    const node = nodes.find((n) => n.id === canvasNodeId)
+    if (!node) return
+    const sel = resolveSelection(node.type, overlay.get(canvasNodeId))
+    if (sel) setSelection(sel)
+  }
 
   // 运行控制（移植 RunWorkbenchPage.handleRun/handleCancel）。
   const isLatestPlan = !!(
@@ -177,6 +236,30 @@ function RunCanvasInner({
     <Badge variant={statusVariant(status)}>{statusLabel(status)}</Badge>
   )
 
+  // 资产预览：选中资产则看选中，否则回落最近一个 done 且有 assetId 的 pip。
+  const latestAssetId = [...wfState.pips]
+    .reverse()
+    .find((p) => p.status === "done" && p.assetId)?.assetId
+  const previewAssetId =
+    selection?.kind === "asset" ? selection.assetId : latestAssetId
+  // 已生成素材（done 且有 assetId），按生成顺序——供「查看全部素材」画廊。
+  const doneAssetIds = wfState.pips
+    .filter((p) => p.status === "done" && p.assetId)
+    .map((p) => p.assetId as string)
+  // 画廊灯箱提示词：done 资产的 prompt/provider/model（按 assetId）。
+  const assetMeta: Record<string, { prompt?: string; provider?: string; model?: string }> = {}
+  for (const a of projectAssetsQuery.data ?? []) {
+    if (a.status === "done") {
+      assetMeta[a.id] = { prompt: a.prompt, provider: a.provider, model: a.model }
+    }
+  }
+
+  // 抽屉：选中 script/storyboard 时打开 Sheet 看工件。
+  const drawerKind =
+    selection?.kind === "script" || selection?.kind === "storyboard"
+      ? selection.kind
+      : null
+
   // 无 runId：居中「尚无运行」空态 + 运行按钮。
   if (!runId) {
     return (
@@ -192,8 +275,8 @@ function RunCanvasInner({
 
   return (
     <div className="flex min-h-0 flex-1">
-      {/* 左栏：运行选择器 + 运行汇总占位。 */}
-      <aside className="flex w-[240px] shrink-0 flex-col gap-4 border-r border-line bg-bg-surface p-4">
+      {/* 左栏：运行选择器 + 运行汇总 + 事件日志。 */}
+      <aside className="flex w-[240px] shrink-0 flex-col gap-4 overflow-y-auto border-r border-line bg-bg-surface p-4">
         <section>
           <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
             运行记录
@@ -208,18 +291,17 @@ function RunCanvasInner({
           <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
             运行汇总
           </h4>
-          <div className="space-y-1.5 text-[12px] text-text-2">
-            <SummaryRow label="状态" value={statusLabel(status)} />
-            <SummaryRow
-              label="素材"
-              value={`${wfState.assets.done}/${wfState.assets.total || "?"}`}
-            />
-            <SummaryRow label="待处理" value={String(wfState.assets.pending)} />
-          </div>
+          <RunSummary state={wfState} className="rounded-lg border border-line bg-bg-base px-3 py-2" />
+        </section>
+        <section>
+          <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
+            事件日志
+          </h4>
+          <EventLog lines={log} />
         </section>
       </aside>
 
-      {/* 中：只读画布。 */}
+      {/* 中：只读画布。点节点 → 选中工件。 */}
       <div className="workflow-canvas relative flex-1">
         <ReactFlow
           nodes={rfNodes}
@@ -230,6 +312,7 @@ function RunCanvasInner({
           nodesConnectable={false}
           elementsSelectable
           deleteKeyCode={null}
+          onNodeClick={(_, node) => handleSelectNode(node.id)}
           fitView
           proOptions={{ hideAttribution: false }}
         >
@@ -251,15 +334,24 @@ function RunCanvasInner({
         )}
       </div>
 
-      {/* 右：选中产物占位（Phase 2 实现点节点看产物）。 */}
-      <aside className="flex w-[260px] shrink-0 flex-col border-l border-line bg-bg-surface p-4">
+      {/* 右：选中工件预览（资产）。无选中则回落最近 done 资产。 */}
+      <aside className="flex w-[260px] shrink-0 flex-col overflow-y-auto border-l border-line bg-bg-surface p-4">
         <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
           选中工件
         </h4>
-        <div className="flex flex-1 flex-col items-center justify-center gap-1.5 py-16 text-center">
-          <p className="text-[13px] text-text-2">选择一个节点查看产物</p>
-          <p className="text-[12px] text-text-3">（下一阶段）</p>
-        </div>
+        {previewAssetId ? (
+          <SelectedAssetPanel
+            org={org}
+            assetId={previewAssetId}
+            isAdmin={isAdmin}
+            detail={previewDetailQuery.data}
+          />
+        ) : (
+          <div className="flex flex-1 flex-col items-center justify-center gap-1.5 py-16 text-center">
+            <p className="text-[13px] text-text-2">选择一个节点查看产物</p>
+            <p className="text-[12px] text-text-3">点剧本/分镜节点看文本，点图片节点看素材</p>
+          </div>
+        )}
       </aside>
 
       {/* 运行顶栏控制：徽标 / SSE / 去审核 / 运行控制——挂在主区右上浮层，与编辑顶栏区分。 */}
@@ -267,6 +359,11 @@ function RunCanvasInner({
         <div className="pointer-events-auto flex items-center gap-2 rounded-md border border-line bg-bg-surface/90 px-3 py-1.5 shadow-sm">
           {badge}
           {live && <SseIndicator status={CONN_TO_STATUS[conn]} />}
+          {doneAssetIds.length > 0 && (
+            <Button variant="ghost" onClick={() => setGalleryOpen(true)}>
+              查看全部素材 ({doneAssetIds.length})
+            </Button>
+          )}
           {readyForReview && (
             <Button
               variant="ghost"
@@ -291,15 +388,42 @@ function RunCanvasInner({
           </Button>
         </div>
       </div>
-    </div>
-  )
-}
 
-function SummaryRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex justify-between">
-      <span>{label}</span>
-      <b className="font-medium text-text-1">{value}</b>
+      {/* 剧本/分镜抽屉：选中 script/storyboard 节点时打开。 */}
+      <Sheet
+        open={drawerKind != null}
+        onOpenChange={(open) => {
+          if (!open) setSelection(null)
+        }}
+      >
+        <SheetContent className="w-full overflow-y-auto sm:max-w-xl">
+          <SheetHeader>
+            <SheetTitle>{drawerKind === "storyboard" ? "分镜" : "剧本"}</SheetTitle>
+          </SheetHeader>
+          {drawerKind === "script" && (
+            <ScriptView
+              script={scriptQuery.data}
+              isLoading={scriptQuery.isLoading}
+              isError={scriptQuery.isError}
+            />
+          )}
+          {drawerKind === "storyboard" && (
+            <StoryboardView
+              shots={shotsQuery.data}
+              isLoading={shotsQuery.isLoading}
+              isError={shotsQuery.isError}
+            />
+          )}
+        </SheetContent>
+      </Sheet>
+
+      {/* 素材画廊：top-bar「查看全部素材」打开。 */}
+      <AssetGalleryModal
+        assetIds={doneAssetIds}
+        metaById={assetMeta}
+        open={galleryOpen}
+        onOpenChange={setGalleryOpen}
+      />
     </div>
   )
 }
