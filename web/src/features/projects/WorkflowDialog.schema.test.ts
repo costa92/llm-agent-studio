@@ -70,10 +70,56 @@ describe("workflowFormSchema superRefine", () => {
   })
 })
 
-// findGraphError 行为单测从 WorkflowDialog.test.tsx 继续覆盖（独立 import）；
-// 此处只确认 schema 文件正确导出同一函数。
-describe("findGraphError (from schema)", () => {
-  it("self-loop 返回循环依赖文案", () => {
-    expect(findGraphError([{ id: "A", dependsOn: ["A"] }])).toMatch(/循环依赖/)
+// findGraphError 行为单测（Phase 3 从已删除的 WorkflowDialog.test.tsx 迁来）。
+describe("findGraphError", () => {
+  it("returns null for a valid linear graph", () => {
+    const nodes = [
+      { id: "a", dependsOn: [] },
+      { id: "b", dependsOn: ["a"] },
+      { id: "c", dependsOn: ["b"] },
+    ]
+    expect(findGraphError(nodes)).toBeNull()
+  })
+
+  it("returns null for an empty graph", () => {
+    expect(findGraphError([])).toBeNull()
+  })
+
+  it("returns a message for a direct cycle (A↔B)", () => {
+    const nodes = [
+      { id: "A", dependsOn: ["B"] },
+      { id: "B", dependsOn: ["A"] },
+    ]
+    const result = findGraphError(nodes)
+    expect(result).not.toBeNull()
+    expect(result).toMatch(/循环依赖/)
+  })
+
+  it("returns a message for a self-loop (A→A)", () => {
+    const nodes = [{ id: "A", dependsOn: ["A"] }]
+    const result = findGraphError(nodes)
+    expect(result).not.toBeNull()
+    expect(result).toMatch(/循环依赖/)
+  })
+
+  it("returns a message for a longer cycle (A→B→C→A)", () => {
+    const nodes = [
+      { id: "A", dependsOn: ["C"] },
+      { id: "B", dependsOn: ["A"] },
+      { id: "C", dependsOn: ["B"] },
+    ]
+    const result = findGraphError(nodes)
+    expect(result).not.toBeNull()
+    expect(result).toMatch(/循环依赖/)
+  })
+
+  it("returns a message for a dependency on an unknown node", () => {
+    const nodes = [
+      { id: "a", dependsOn: [] },
+      { id: "b", dependsOn: ["unknown-node"] },
+    ]
+    const result = findGraphError(nodes)
+    expect(result).not.toBeNull()
+    expect(result).toContain("unknown-node")
   })
 })

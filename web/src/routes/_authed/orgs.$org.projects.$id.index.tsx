@@ -19,7 +19,6 @@ import {
 import { useOrgTextModels, useOrgImageModels } from "@/features/cost/api"
 import { useStorageConfigs } from "@/features/storage/api"
 import { EditProjectDialog } from "@/features/projects/EditProjectDialog"
-import { WorkflowDialog } from "@/features/projects/WorkflowDialog"
 import { statusLabel, statusVariant } from "@/features/projects/status"
 import type { ProjectStatus } from "@/lib/types"
 
@@ -200,12 +199,17 @@ function RunsListPage() {
       <section className="bg-bg-surface border border-line rounded-xl p-5 shadow-sm mb-8">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-xs font-semibold tracking-wider text-text-3 uppercase">工作流</h3>
-          <WorkflowDialog
-            projectId={id}
-            orgId={org}
-            trigger={<Button variant="amber">新建工作流</Button>}
-            onSuccess={() => toast.success("工作流已保存")}
-          />
+          <Button
+            variant="amber"
+            onClick={() =>
+              void navigate({
+                to: "/orgs/$org/projects/$id/workflow",
+                params: { org, id },
+              })
+            }
+          >
+            新建工作流
+          </Button>
         </div>
 
         {workflowsQuery.isError ? (
@@ -268,15 +272,8 @@ function RunsListPage() {
                             })
                           }
                         >
-                          编辑工作流
+                          编辑
                         </Button>
-                        <WorkflowDialog
-                          projectId={id}
-                          orgId={org}
-                          initial={wf}
-                          trigger={<Button variant="ghost">编辑</Button>}
-                          onSuccess={() => toast.success("工作流已保存")}
-                        />
                         {wf.latestPlanId && (
                           <Button
                             variant="ghost"

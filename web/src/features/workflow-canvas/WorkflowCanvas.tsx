@@ -31,8 +31,10 @@ import {
   toReactFlow,
   toStudioNodes,
   addNodeAt,
+  standardPipeline,
   type StudioNodeData,
   type RFNode,
+  type RFEdge,
 } from "./canvasModel"
 import { WorkflowNode } from "./WorkflowNode"
 import { NodePalette, PALETTE_DND_TYPE } from "./NodePalette"
@@ -67,7 +69,7 @@ function CanvasInner({
   workflowId,
   projectId,
   org,
-  workflowName,
+  workflowName: initialName,
   nodes,
   prompts,
   basics,
@@ -78,11 +80,14 @@ function CanvasInner({
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState(initial.nodes)
   const [rfEdges, setRfEdges, onEdgesChange] = useEdgesState(initial.edges)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  // 名称：编辑态用既有名（只读展示），新建态可编辑（无独立名称对话框）。
+  const [workflowName, setWorkflowName] = useState(initialName)
   const { screenToFlowPosition } = useReactFlow()
+  const isCreate = !workflowId
 
   // 载入时的 studio-model 快照，作为 dirty 比较基线。
   const loadedSnapshot = useRef(
-    snapshotOf(workflowName, toStudioNodes(initial.nodes, initial.edges)),
+    snapshotOf(initialName, toStudioNodes(initial.nodes, initial.edges)),
   )
 
   const createWorkflow = useCreateWorkflow(projectId)
@@ -200,6 +205,37 @@ function CanvasInner({
     setSelectedId(null)
   }, [selectedId, setRfNodes, setRfEdges])
 
+  // ── 标准管线一键填充 ─────────────────────────────────────
+  // 画布非空时确认替换；填充后清空选中（旧节点已移除）。dirty 由快照比较自动反映。
+  const onStandardPipeline = useCallback(() => {
+    if (
+      rfNodes.length > 0 &&
+      !window.confirm("标准管线将替换当前画布上的全部节点，确认继续？")
+    ) {
+      return
+    }
+    const { nodes: pn, edges: pe } = toReactFlow(standardPipeline(prompts))
+    setRfNodes(pn)
+    setRfEdges(pe)
+    setSelectedId(null)
+  }, [rfNodes.length, prompts, setRfNodes, setRfEdges])
+
+  // ── 键盘删除（Delete / Backspace）────────────────────────
+  // ReactFlow 在画布 pane 聚焦时才触发；属性面板输入框内的退格不会冒泡到这里。
+  // 删节点：级联清理其关联边（边是 dependsOn 真源 → 依赖随之清理）。
+  const onNodesDelete = useCallback(
+    (deleted: Node[]) => {
+      const ids = new Set(deleted.map((n) => n.id))
+      setRfEdges((eds) =>
+        (eds as RFEdge[]).filter(
+          (e) => !ids.has(e.source) && !ids.has(e.target),
+        ),
+      )
+      setSelectedId((cur) => (cur && ids.has(cur) ? null : cur))
+    },
+    [setRfEdges],
+  )
+
   // ── 保存 ─────────────────────────────────────────────────
   const onSave = useCallback(() => {
     const studioNodes = toStudioNodes(rfNodes as RFNode[], rfEdges)
@@ -258,9 +294,20 @@ function CanvasInner({
             ← 返回项目
           </button>
           <span className="text-[12px] text-text-3">/</span>
-          <h1 className="text-[14px] font-semibold text-text-1">
-            {workflowName}
-          </h1>
+          {isCreate ? (
+            <input
+              type="text"
+              value={workflowName}
+              onChange={(e) => setWorkflowName(e.target.value)}
+              placeholder="工作流名称"
+              aria-label="工作流名称"
+              className="rounded-md border border-line bg-bg-base px-2 py-1 text-[14px] font-semibold text-text-1 placeholder:text-text-3 focus:border-amber focus:outline-none"
+            />
+          ) : (
+            <h1 className="text-[14px] font-semibold text-text-1">
+              {workflowName}
+            </h1>
+          )}
         </div>
         <button
           type="button"
@@ -274,7 +321,7 @@ function CanvasInner({
 
       {/* 主区：三栏。 */}
       <div className="flex min-h-0 flex-1">
-        <NodePalette />
+        <NodePalette onStandardPipeline={onStandardPipeline} />
         <div
           className="workflow-canvas relative flex-1"
           onDragOver={onDragOver}
@@ -285,9 +332,11 @@ function CanvasInner({
             edges={rfEdges}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
+            onNodesDelete={onNodesDelete}
             onConnect={onConnect}
             onSelectionChange={onSelectionChange}
             nodeTypes={nodeTypes}
+            deleteKeyCode={["Delete", "Backspace"]}
             fitView
             proOptions={{ hideAttribution: false }}
           >
@@ -300,6 +349,14 @@ function CanvasInner({
               }
             />
           </ReactFlow>
+          {/* 空画布提示：引导拖拽或一键标准管线。 */}
+          {rfNodes.length === 0 && (
+            <div className="pointer-events-none absolute inset-0 grid place-items-center">
+              <p className="rounded-md border border-line bg-bg-surface/80 px-4 py-2 text-[12.5px] text-text-3">
+                拖拽左侧节点到画布，或点「标准管线」快速开始
+              </p>
+            </div>
+          )}
         </div>
         <PropertiesPanel
           node={selected}
