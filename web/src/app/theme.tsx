@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react"
@@ -18,12 +19,19 @@ function isTheme(v: unknown): v is Theme {
 }
 
 // 首次（无合法存储值）按系统明暗偏好选：系统亮→light，系统暗→dark-studio。
+// matchMedia 缺失/抛错（老 webview、测试环境）时回退 dark-studio —— 与 index.html
+// 内联脚本同款防御，避免 Provider 初始化崩溃（两处逻辑必须一致以保证不闪烁）。
 function systemDefault(): Theme {
-  return window.matchMedia("(prefers-color-scheme: light)").matches
-    ? "light"
-    : "dark-studio"
+  try {
+    return window.matchMedia("(prefers-color-scheme: light)").matches
+      ? "light"
+      : "dark-studio"
+  } catch {
+    return "dark-studio"
+  }
 }
 
+// 解析当前应用主题：合法存储值优先，否则系统默认。与 index.html 内联脚本逐分支等价。
 function readStored(): Theme {
   try {
     const v = localStorage.getItem(STORAGE_KEY)
@@ -43,16 +51,25 @@ const ThemeContext = createContext<ThemeCtx | null>(null)
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>(readStored)
+  // 用户是否在本会话显式选过主题。以内存为准（而非 localStorage），这样即便
+  // 隐私模式 setItem 失败、选择没持久化，系统明暗变化也不会覆盖这次选择。
+  const explicitlyChosen = useRef(false)
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme)
   }, [theme])
 
-  // 用户未显式选择（localStorage 无值）时，跟随系统明暗的实时变化。
-  // 一旦用户手动选过（localStorage 有值），不再被系统切换覆盖。
+  // 用户未显式选择时，跟随系统明暗的实时变化；一旦手动选过（本会话内存标记或
+  // localStorage 有合法值）即不再被系统切换覆盖。matchMedia 缺失则静默跳过监听。
   useEffect(() => {
-    const mq = window.matchMedia("(prefers-color-scheme: light)")
+    let mq: MediaQueryList
+    try {
+      mq = window.matchMedia("(prefers-color-scheme: light)")
+    } catch {
+      return
+    }
     const onChange = () => {
+      if (explicitlyChosen.current) return
       let stored: string | null = null
       try {
         stored = localStorage.getItem(STORAGE_KEY)
@@ -68,10 +85,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const setTheme = useCallback((t: Theme) => {
+    explicitlyChosen.current = true
     try {
       localStorage.setItem(STORAGE_KEY, t)
     } catch {
-      /* 隐私模式：本会话内仍生效，仅不持久化 */
+      /* 隐私模式：本会话内仍生效（靠 explicitlyChosen 防系统覆盖），仅不持久化 */
     }
     setThemeState(t)
   }, [])

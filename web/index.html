@@ -11,20 +11,27 @@
     />
     <script>
       // 防闪烁：paint 前据 localStorage / prefers-color-scheme 预设 html[data-theme]。
-      // 白名单须与 src/app/theme.tsx THEMES 一致。
+      // 逻辑须与 src/app/theme.tsx 的 readStored/systemDefault 逐分支一致（含 localStorage
+      // 与 matchMedia 各自独立 try/catch 的降级路径），否则首屏与 React 初值不一致会闪烁。
+      // 白名单须与 theme.tsx THEMES 一致。
       (function () {
-        try {
-          var valid = ["dark-studio", "light", "cinematic"]
-          var t = localStorage.getItem("studio-theme")
-          if (valid.indexOf(t) === -1) {
-            t = window.matchMedia("(prefers-color-scheme: light)").matches
+        function systemTheme() {
+          try {
+            return window.matchMedia("(prefers-color-scheme: light)").matches
               ? "light"
               : "dark-studio"
+          } catch (e) {
+            return "dark-studio"
           }
-          document.documentElement.setAttribute("data-theme", t)
-        } catch (e) {
-          document.documentElement.setAttribute("data-theme", "dark-studio")
         }
+        var t
+        try {
+          var v = localStorage.getItem("studio-theme")
+          if (["dark-studio", "light", "cinematic"].indexOf(v) !== -1) t = v
+        } catch (e) {
+          /* localStorage 不可用：落到系统默认 */
+        }
+        document.documentElement.setAttribute("data-theme", t || systemTheme())
       })()
     </script>
     <title>AI Studio</title>
