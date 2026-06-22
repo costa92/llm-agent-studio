@@ -7,10 +7,14 @@ import { useBasicPrompts, usePrompts } from "@/features/prompt/api"
 import { WorkflowCanvas } from "@/features/workflow-canvas/WorkflowCanvas"
 
 // Phase 2：可编辑工作流画布路由。?wf= 选中要编辑的工作流（按 id 匹配项目下工作流）。
-// canvas run mode：?run= 在时进入运行模式（叠加该 run 的执行状态，只读）；无 ?run= = 编辑模式。
+// canvas run mode 模式派生（URL 唯一真源）：
+//   ?run=X        → 运行模式，看该次 run；
+//   ?mode=edit    → 显式编辑模式（「编辑」切换设此，避免被下面的默认态拉回运行）；
+//   都没有        → 有 latestPlan 默认进运行模式（看最近一次 run），否则编辑（新建/未跑过）。
 const workflowSearchSchema = z.object({
   wf: z.string().optional(),
   run: z.string().optional(),
+  mode: z.enum(["edit", "run"]).optional(),
 })
 
 export const Route = createFileRoute("/_authed/orgs/$org/projects/$id/workflow")({
@@ -20,7 +24,7 @@ export const Route = createFileRoute("/_authed/orgs/$org/projects/$id/workflow")
 
 function WorkflowCanvasPage() {
   const { org, id } = Route.useParams()
-  const { wf, run } = Route.useSearch()
+  const { wf, run, mode: modeParam } = Route.useSearch()
   const navigate = useNavigate()
 
   const workflowsQuery = useWorkflows(id)
@@ -30,9 +34,10 @@ function WorkflowCanvasPage() {
   const { data: prompts } = usePrompts(org)
   const { data: basics } = useBasicPrompts()
 
-  // 模式由 ?run= 派生（URL 唯一真源）。运行模式 runId = ?run ?? 工作流最近一次 plan。
-  const mode = run ? "run" : "edit"
-  const runId = mode === "run" ? (run ?? workflow?.latestPlanId) : undefined
+  // 模式派生：显式 ?run= 优先；?mode=edit 强制编辑；否则有 latestPlan 默认运行。
+  const explicitEdit = modeParam === "edit"
+  const runId = run ?? (explicitEdit ? undefined : workflow?.latestPlanId)
+  const mode = runId ? "run" : "edit"
 
   const goBack = () =>
     void navigate({
@@ -100,11 +105,11 @@ function WorkflowCanvasPage() {
           void navigate({
             to: "/orgs/$org/projects/$id/workflow",
             params: { org, id },
-            // 切运行：默认带工作流最近一次 plan；切编辑：丢弃 ?run。
+            // 切运行：带工作流最近一次 plan；切编辑：显式 ?mode=edit（否则会被默认运行态拉回）。
             search:
               next === "run"
                 ? { wf, run: workflow?.latestPlanId }
-                : { wf },
+                : { wf, mode: "edit" },
           })
         }
         onSelectRun={(rid) =>
