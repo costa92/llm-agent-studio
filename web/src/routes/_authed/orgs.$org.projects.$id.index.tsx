@@ -258,6 +258,18 @@ function RunsListPage() {
                             ? "运行中…"
                             : "运行"}
                         </Button>
+                        <Button
+                          variant="ghost"
+                          onClick={() =>
+                            void navigate({
+                              to: "/orgs/$org/projects/$id/workflow",
+                              params: { org, id },
+                              search: { wf: wf.id },
+                            })
+                          }
+                        >
+                          编辑工作流
+                        </Button>
                         <WorkflowDialog
                           projectId={id}
                           orgId={org}
