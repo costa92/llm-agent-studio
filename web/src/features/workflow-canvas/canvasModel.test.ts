@@ -298,6 +298,33 @@ describe("keyboard delete cascade (node delete removes incident edges)", () => {
   })
 })
 
+// 自动整理（A3）：onAutoTidy 用当前 RF 状态反推 studio 模型，再跑 seedPositions
+// 仅覆盖坐标。此处验证「toStudioNodes → seedPositions」对扇出图给出分层坐标。
+describe("auto-tidy layout (seedPositions over toStudioNodes)", () => {
+  it("re-layers a fan-out graph into layered coords using live edges", () => {
+    // root → {child-a, child-b}（root 为上游，两子节点同层并排）。
+    const fan: WorkflowNode[] = [
+      { id: "root", type: "script", promptId: "", dependsOn: [] },
+      { id: "child-a", type: "storyboard", promptId: "", dependsOn: ["root"] },
+      { id: "child-b", type: "storyboard", promptId: "", dependsOn: ["root"] },
+    ]
+    const { nodes, edges } = toReactFlow(fan)
+    // 模拟用户把节点拖到杂乱坐标后点「自动整理」。
+    const messy = nodes.map((n) => ({
+      ...n,
+      position: { x: 777, y: 999 },
+    }))
+    const seeded = seedPositions(toStudioNodes(messy, edges))
+    // root 在第 0 层，两子节点在第 1 层（y=140）并排（x=0 与 x=240）。
+    expect(seeded.get("root")).toEqual({ x: 0, y: 0 })
+    const a = seeded.get("child-a")!
+    const b = seeded.get("child-b")!
+    expect(a.y).toBe(140)
+    expect(b.y).toBe(140)
+    expect(new Set([a.x, b.x])).toEqual(new Set([0, 240]))
+  })
+})
+
 describe("connect / cycle guard (edges authoritative for dependsOn)", () => {
   it("connecting A->B makes toStudioNodes give B.dependsOn=[A]", () => {
     const two: WorkflowNode[] = [

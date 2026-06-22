@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -14,6 +14,7 @@ import {
   type OnSelectionChangeParams,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
+import { Redo2, Undo2 } from "lucide-react"
 import { toast } from "sonner"
 import "./canvasTheme.css"
 import { ApiError } from "@/lib/apiClient"
@@ -31,15 +32,20 @@ import {
   toReactFlow,
   toStudioNodes,
   addNodeAt,
+  seedPositions,
   standardPipeline,
   type StudioNodeData,
   type RFNode,
   type RFEdge,
 } from "./canvasModel"
+import { useUndoRedo } from "./useUndoRedo"
 import { WorkflowNode } from "./WorkflowNode"
 import { NodePalette, PALETTE_DND_TYPE } from "./NodePalette"
 import { PropertiesPanel } from "./PropertiesPanel"
 import { NODE_COLOR } from "./nodeColor"
+
+// 吸附网格步长（snap-to-grid + Background 点距 共用，保证视觉对齐）。
+const GRID = 16
 
 // Phase 2：可编辑工作流画布。三栏布局（节点面板 / 画布 / 属性面板）。
 // EDGES 是 dependsOn 的唯一真源（见 canvasModel.toStudioNodes）：连线/断线/重命名
@@ -82,7 +88,9 @@ function CanvasInner({
   const [selectedId, setSelectedId] = useState<string | null>(null)
   // 名称：编辑态用既有名（只读展示），新建态可编辑（无独立名称对话框）。
   const [workflowName, setWorkflowName] = useState(initialName)
-  const { screenToFlowPosition } = useReactFlow()
+  const { screenToFlowPosition, getNodes, getEdges, fitView } =
+    useReactFlow<RFNode, RFEdge>()
+  const { takeSnapshot, undo, redo, canUndo, canRedo } = useUndoRedo()
   const isCreate = !workflowId
 
   // 载入时的 studio-model 快照，作为 dirty 比较基线。
@@ -121,10 +129,11 @@ function CanvasInner({
       e.preventDefault()
       const type = e.dataTransfer.getData(PALETTE_DND_TYPE)
       if (!type) return
+      takeSnapshot()
       const pos = screenToFlowPosition({ x: e.clientX, y: e.clientY })
       setRfNodes((nds) => addNodeAt(nds as RFNode[], type, pos, prompts))
     },
-    [screenToFlowPosition, setRfNodes, prompts],
+    [screenToFlowPosition, setRfNodes, prompts, takeSnapshot],
   )
 
   // ── 连线（带环路守卫） ───────────────────────────────────
@@ -145,6 +154,8 @@ function CanvasInner({
         toast.error(err)
         return
       }
+      // 仅在确实落边时记快照（被环路守卫拒绝的连接不应产生空撤销步）。
+      takeSnapshot()
       setRfEdges((eds) =>
         addEdge(
           { ...conn, id: `${conn.source}->${conn.target}` },
@@ -152,13 +163,14 @@ function CanvasInner({
         ),
       )
     },
-    [rfNodes, rfEdges, setRfEdges],
+    [rfNodes, rfEdges, setRfEdges, takeSnapshot],
   )
 
   // ── 属性面板回调 ─────────────────────────────────────────
   const patchSelected = useCallback(
     (patch: Partial<WorkflowNodeType>) => {
       if (!selectedId) return
+      takeSnapshot()
       setRfNodes((nds) =>
         (nds as RFNode[]).map((n) =>
           n.id === selectedId
@@ -167,7 +179,7 @@ function CanvasInner({
         ),
       )
     },
-    [selectedId, setRfNodes],
+    [selectedId, setRfNodes, takeSnapshot],
   )
 
   // id 重命名：替换 RF 节点 id + data.node.id，并重键所有 source/target===oldId 的边
@@ -176,6 +188,7 @@ function CanvasInner({
     (newId: string) => {
       const oldId = selectedId
       if (!oldId || newId === oldId) return
+      takeSnapshot()
       setRfNodes((nds) =>
         (nds as RFNode[]).map((n) =>
           n.id === oldId
@@ -194,16 +207,18 @@ function CanvasInner({
       )
       setSelectedId(newId)
     },
-    [selectedId, setRfNodes, setRfEdges],
+    [selectedId, setRfNodes, setRfEdges, takeSnapshot],
   )
 
+  // 属性面板「删除节点」：程序化删除不会触发 <ReactFlow onBeforeDelete>，故此处显式记快照。
   const deleteSelected = useCallback(() => {
     const id = selectedId
     if (!id) return
+    takeSnapshot()
     setRfNodes((nds) => (nds as RFNode[]).filter((n) => n.id !== id))
     setRfEdges((eds) => eds.filter((e) => e.source !== id && e.target !== id))
     setSelectedId(null)
-  }, [selectedId, setRfNodes, setRfEdges])
+  }, [selectedId, setRfNodes, setRfEdges, takeSnapshot])
 
   // ── 标准管线一键填充 ─────────────────────────────────────
   // 画布非空时确认替换；填充后清空选中（旧节点已移除）。dirty 由快照比较自动反映。
@@ -214,11 +229,54 @@ function CanvasInner({
     ) {
       return
     }
+    takeSnapshot()
     const { nodes: pn, edges: pe } = toReactFlow(standardPipeline(prompts))
     setRfNodes(pn)
     setRfEdges(pe)
     setSelectedId(null)
-  }, [rfNodes.length, prompts, setRfNodes, setRfEdges])
+  }, [rfNodes.length, prompts, setRfNodes, setRfEdges, takeSnapshot])
+
+  // ── 自动整理 ─────────────────────────────────────────────
+  // 按当前 EDGES 推导的依赖跑分层种子布局，仅覆盖 position（保留节点其余字段）；
+  // 排完后 fitView 居中。可撤销（先记快照）。
+  const onAutoTidy = useCallback(() => {
+    takeSnapshot()
+    const studio = toStudioNodes(getNodes(), getEdges())
+    const seeded = seedPositions(studio)
+    setRfNodes((nds) =>
+      (nds as RFNode[]).map((n) => ({
+        ...n,
+        position: seeded.get(n.id) ?? n.position,
+      })),
+    )
+    setTimeout(() => fitView({ duration: 300 }), 0)
+  }, [getNodes, getEdges, setRfNodes, fitView, takeSnapshot])
+
+  // ── 撤销/重做键盘快捷键 ───────────────────────────────────
+  // Ctrl/Cmd+Z → undo；Ctrl/Cmd+Shift+Z 或 Ctrl+Y → redo。
+  // 编辑输入框（名称/提示词）时不劫持，让原生编辑撤销生效。
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const el = document.activeElement as HTMLElement | null
+      const tag = el?.tagName
+      const editing =
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        el?.isContentEditable === true
+      if (editing) return
+      if (!(e.metaKey || e.ctrlKey)) return
+      const key = e.key.toLowerCase()
+      if (key === "z" && !e.shiftKey) {
+        e.preventDefault()
+        undo()
+      } else if ((key === "z" && e.shiftKey) || key === "y") {
+        e.preventDefault()
+        redo()
+      }
+    }
+    document.addEventListener("keydown", onKeyDown)
+    return () => document.removeEventListener("keydown", onKeyDown)
+  }, [undo, redo])
 
   // ── 键盘删除（Delete / Backspace）────────────────────────
   // ReactFlow 在画布 pane 聚焦时才触发；属性面板输入框内的退格不会冒泡到这里。
@@ -309,19 +367,44 @@ function CanvasInner({
             </h1>
           )}
         </div>
-        <button
-          type="button"
-          disabled={!dirty || saving}
-          onClick={onSave}
-          className="rounded-md border border-amber/30 px-3 py-1.5 text-[12px] font-medium text-amber hover:border-amber disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {saving ? "保存中…" : "保存"}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            aria-label="撤销"
+            title="撤销 (Ctrl/Cmd+Z)"
+            disabled={!canUndo}
+            onClick={undo}
+            className="text-text-3 hover:text-text-1 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Undo2 className="h-4 w-4" aria-hidden />
+          </button>
+          <button
+            type="button"
+            aria-label="重做"
+            title="重做 (Ctrl/Cmd+Shift+Z)"
+            disabled={!canRedo}
+            onClick={redo}
+            className="text-text-3 hover:text-text-1 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Redo2 className="h-4 w-4" aria-hidden />
+          </button>
+          <button
+            type="button"
+            disabled={!dirty || saving}
+            onClick={onSave}
+            className="rounded-md border border-amber/30 px-3 py-1.5 text-[12px] font-medium text-amber hover:border-amber disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {saving ? "保存中…" : "保存"}
+          </button>
+        </div>
       </header>
 
       {/* 主区：三栏。 */}
       <div className="flex min-h-0 flex-1">
-        <NodePalette onStandardPipeline={onStandardPipeline} />
+        <NodePalette
+          onStandardPipeline={onStandardPipeline}
+          onAutoTidy={onAutoTidy}
+        />
         <div
           className="workflow-canvas relative flex-1"
           onDragOver={onDragOver}
@@ -335,12 +418,20 @@ function CanvasInner({
             onNodesDelete={onNodesDelete}
             onConnect={onConnect}
             onSelectionChange={onSelectionChange}
+            onNodeDragStart={() => takeSnapshot()}
+            onBeforeDelete={async () => {
+              // 键盘删除节点/边在应用前记快照（覆盖 Delete/Backspace 路径）。
+              takeSnapshot()
+              return true
+            }}
             nodeTypes={nodeTypes}
             deleteKeyCode={["Delete", "Backspace"]}
+            snapToGrid
+            snapGrid={[GRID, GRID]}
             fitView
             proOptions={{ hideAttribution: false }}
           >
-            <Background />
+            <Background gap={GRID} />
             <Controls />
             <MiniMap
               nodeColor={(n) =>
