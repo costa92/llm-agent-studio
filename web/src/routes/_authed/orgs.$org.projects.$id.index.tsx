@@ -196,7 +196,7 @@ function RunsListPage() {
       </header>
 
       {/* 工作流 section：一个项目可有多条 DAG 工作流，各自独立运行。 */}
-      <section className="bg-bg-default border border-line rounded-xl p-5 shadow-sm mb-8">
+      <section className="bg-bg-surface border border-line rounded-xl p-5 shadow-sm mb-8">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-xs font-semibold tracking-wider text-text-3 uppercase">工作流</h3>
           <WorkflowDialog
@@ -289,14 +289,14 @@ function RunsListPage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Left column: Brief & config */}
         <div className="lg:col-span-1 space-y-6">
-          <section className="bg-bg-default border border-line rounded-xl p-5 shadow-sm">
+          <section className="bg-bg-surface border border-line rounded-xl p-5 shadow-sm">
             <h3 className="text-xs font-semibold tracking-wider text-text-3 uppercase mb-3">创意 Brief</h3>
             <p className="text-sm leading-relaxed text-text-2 whitespace-pre-wrap">
               {project.description || "（无描述）"}
             </p>
           </section>
 
-          <section className="bg-bg-default border border-line rounded-xl p-5 shadow-sm space-y-4">
+          <section className="bg-bg-surface border border-line rounded-xl p-5 shadow-sm space-y-4">
             <h3 className="text-xs font-semibold tracking-wider text-text-3 uppercase">项目配置</h3>
             <div className="grid grid-cols-2 gap-4 text-xs">
               <div>
@@ -317,7 +317,7 @@ function RunsListPage() {
 
         {/* Right column: Run history list */}
         <div className="lg:col-span-2">
-          <section className="bg-bg-default border border-line rounded-xl p-5 shadow-sm min-h-[400px] flex flex-col">
+          <section className="bg-bg-surface border border-line rounded-xl p-5 shadow-sm min-h-[400px] flex flex-col">
             <h3 className="text-xs font-semibold tracking-wider text-text-3 uppercase mb-4">生成记录 / 运行历史</h3>
             
             {plans.length === 0 ? (

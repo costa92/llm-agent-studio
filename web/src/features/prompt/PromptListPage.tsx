@@ -320,8 +320,8 @@ export function PromptListPage({ org }: PromptListPageProps) {
                   >
                     {copiedId === p.id ? (
                       <>
-                        <Check className="h-3 w-3 text-done" />
-                        <span className="text-done">已复制</span>
+                        <Check className="h-3 w-3 text-review" />
+                        <span className="text-review">已复制</span>
                       </>
                     ) : (
                       <>

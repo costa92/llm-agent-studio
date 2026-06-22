@@ -9,7 +9,7 @@ const pipVariants = cva("h-3.5 w-3.5 rounded-[4px] border-[1.5px] transition-[0.
     status: {
       idle: "border-line",
       running:
-        "border-amber bg-[repeating-linear-gradient(115deg,rgba(232,163,61,.7)_0_4px,transparent_4px_8px)]",
+        "border-amber bg-[repeating-linear-gradient(115deg,color-mix(in_srgb,var(--amber)_70%,transparent)_0_4px,transparent_4px_8px)]",
       done: "border-asset bg-asset",
       failed: "border-danger bg-danger/30",
     } satisfies Record<PipStatus, string>,
