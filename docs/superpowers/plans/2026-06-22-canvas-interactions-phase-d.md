@@ -60,10 +60,11 @@ describe("reconnectEdge", () => {
 
   it("produces a candidate graph findGraphError can reject when reconnect would cycle", () => {
     const { nodes, edges } = toReactFlow(chain)
-    // reconnect script-1->storyboard-1 so storyboard-1 now feeds script-1 (cycle)
+    // reconnect script-1->storyboard-1 into asset-1->storyboard-1: keeps storyboard-1->asset-1,
+    // adds the back-edge → storyboard-1 ↔ asset-1 cycle.
     const candidateEdges = reconnectEdge(edges as RFEdge[], "script-1->storyboard-1", {
       source: "asset-1",
-      target: "script-1",
+      target: "storyboard-1",
     })
     const err = findGraphError(toStudioNodes(nodes as RFNode[], candidateEdges))
     expect(err).toBeTruthy()
