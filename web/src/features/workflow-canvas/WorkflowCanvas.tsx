@@ -44,6 +44,7 @@ import {
   getHelperLines,
   seedPositions,
   standardPipeline,
+  createNode,
   type StudioNodeData,
   type RFNode,
   type RFEdge,
@@ -136,7 +137,7 @@ function CanvasInner({
     vertical?: number
   }>({})
   const [picker, setPicker] = useState<
-    | { mode: "create"; screenX: number; screenY: number; flow: { x: number; y: number }; source: string }
+    | { mode: "create"; screenX: number; screenY: number; flow: { x: number; y: number }; source?: string }
     | { mode: "insert"; screenX: number; screenY: number; flow: { x: number; y: number }; edgeId: string }
     | null
   >(null)
@@ -272,32 +273,23 @@ function CanvasInner({
     (type: string) => {
       if (!picker) return
       if (picker.mode === "create") {
-        const id = nextNodeId(getNodes())
-        // 一致性环路守卫：与全新节点不可能成环，但保留 pattern。
-        const candidate = toStudioNodes(
-          addNodeAt(getNodes(), type, picker.flow, prompts, id),
-          [
-            ...getEdges(),
-            { id: `${picker.source}->${id}`, source: picker.source, target: id },
-          ],
+        const built = createNode(
+          getNodes(),
+          getEdges(),
+          type,
+          picker.flow,
+          prompts,
+          picker.source,
         )
-        const err = findGraphError(candidate)
+        const err = findGraphError(toStudioNodes(built.nodes, built.edges))
         if (err) {
           toast.error(err)
           setPicker(null)
           return
         }
         takeSnapshot()
-        setRfNodes((nds) => addNodeAt(nds as RFNode[], type, picker.flow, prompts, id))
-        setRfEdges((eds) => [
-          ...eds,
-          {
-            id: `${picker.source}->${id}`,
-            source: picker.source,
-            target: id,
-            type: "studio",
-          },
-        ])
+        setRfNodes(built.nodes)
+        setRfEdges(built.edges)
       } else {
         // insert 模式：在边 A->B 上插入新节点 N（A->N, N->B）。
         const candidate = insertNodeOnEdge(
