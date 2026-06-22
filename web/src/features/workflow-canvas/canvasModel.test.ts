@@ -11,6 +11,7 @@ import {
   defaultPromptIdFor,
   seedPositions,
   standardPipeline,
+  reconnectEdge,
   type RFNode,
   type RFEdge,
 } from "./canvasModel"
@@ -604,6 +605,41 @@ describe("getHelperLines (C3 alignment guides)", () => {
     const l = getHelperLines(dragged, [dragged], 5)
     expect(l.vertical).toBeUndefined()
     expect(l.horizontal).toBeUndefined()
+  })
+})
+
+describe("reconnectEdge", () => {
+  it("removes the old edge and adds a re-keyed edge for the new connection", () => {
+    const { edges } = toReactFlow(chain) // script-1->storyboard-1, storyboard-1->asset-1
+    const next = reconnectEdge(edges as RFEdge[], "storyboard-1->asset-1", {
+      source: "script-1",
+      target: "asset-1",
+    })
+    const ids = next.map((e) => e.id).sort()
+    expect(ids).toEqual(["script-1->asset-1", "script-1->storyboard-1"])
+    const re = next.find((e) => e.id === "script-1->asset-1")
+    expect(re).toMatchObject({ source: "script-1", target: "asset-1", type: "studio" })
+  })
+
+  it("produces a candidate graph findGraphError can reject when reconnect would cycle", () => {
+    const { nodes, edges } = toReactFlow(chain)
+    // 重连 script-1->storyboard-1 为 asset-1->storyboard-1：保留 storyboard-1->asset-1，
+    // 新增反向边 → storyboard-1 ↔ asset-1 成环。
+    const candidateEdges = reconnectEdge(edges as RFEdge[], "script-1->storyboard-1", {
+      source: "asset-1",
+      target: "storyboard-1",
+    })
+    const err = findGraphError(toStudioNodes(nodes as RFNode[], candidateEdges))
+    expect(err).toBeTruthy()
+  })
+
+  it("leaves other edges untouched and is a no-op id-wise when old id is absent", () => {
+    const { edges } = toReactFlow(chain)
+    const next = reconnectEdge(edges as RFEdge[], "missing->edge", {
+      source: "script-1",
+      target: "asset-1",
+    })
+    expect(next).toHaveLength(3)
   })
 })
 

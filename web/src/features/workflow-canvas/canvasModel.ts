@@ -373,3 +373,21 @@ export function insertNodeOnEdge(
   ]
   return { nodes, edges, newId }
 }
+
+// 连线重连（Phase D）：移除旧边、按新 source/target 追加重键后的边，其余边不动。
+// 纯函数：环检测由调用方用 toStudioNodes(...)+findGraphError 在提交前做。
+export function reconnectEdge(
+  rfEdges: RFEdge[],
+  oldEdgeId: string,
+  conn: { source: string; target: string },
+): RFEdge[] {
+  return [
+    ...rfEdges.filter((e) => e.id !== oldEdgeId),
+    {
+      id: `${conn.source}->${conn.target}`,
+      source: conn.source,
+      target: conn.target,
+      type: "studio",
+    },
+  ]
+}
