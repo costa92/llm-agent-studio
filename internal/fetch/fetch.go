@@ -176,17 +176,36 @@ func validateScheme(u *url.URL) error {
 // cgnat is the RFC 6598 carrier-grade NAT range (100.64.0.0/10).
 var cgnat = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
 
+// nat64 is the well-known NAT64 prefix (RFC 6052, 64:ff9b::/96). An attacker can
+// smuggle an IPv4 metadata target (e.g. 64:ff9b::169.254.169.254) past an
+// IPv4-only check, so embedded IPv4 must be extracted and re-checked.
+var nat64 = &net.IPNet{IP: net.ParseIP("64:ff9b::"), Mask: net.CIDRMask(96, 128)}
+
 // isBlockedIP returns true for any IP that is NOT a routable public address:
 // loopback, private, link-local (incl. 169.254.169.254 metadata), multicast,
-// unspecified, interface-local, and RFC 6598 CGNAT.
+// unspecified, interface-local, RFC 6598 CGNAT. IPv4-mapped IPv6 and NAT64
+// (64:ff9b::/96) embeddings are normalized to their embedded IPv4 and re-checked
+// (else 64:ff9b::169.254.169.254 / ::ffff:169.254.169.254 would slip past an
+// IPv4-only test).
 func isBlockedIP(ip net.IP) bool {
 	if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
 		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
 		ip.IsMulticast() || ip.IsInterfaceLocalMulticast() {
 		return true
 	}
-	if v4 := ip.To4(); v4 != nil && cgnat.Contains(v4) {
-		return true
+	// IPv4-mapped IPv6 (::ffff:a.b.c.d): To4() returns the embedded v4; check it
+	// against CGNAT (the std predicates above already see through ::ffff:).
+	if v4 := ip.To4(); v4 != nil {
+		if cgnat.Contains(v4) {
+			return true
+		}
+		return false
+	}
+	// NAT64 (64:ff9b::a.b.c.d): the last 4 bytes are an embedded IPv4 — extract and
+	// recurse so all v4 rules (loopback/private/link-local/CGNAT) apply.
+	if nat64.Contains(ip) {
+		embedded := net.IPv4(ip[12], ip[13], ip[14], ip[15])
+		return isBlockedIP(embedded)
 	}
 	return false
 }
