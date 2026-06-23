@@ -32,6 +32,8 @@ func isTypeAllowed(typ string) bool {
 // isCustomType reports whether typ is a user-defined custom node type
 // (prefix "custom:" with a non-empty slug). Custom types are accepted by
 // ValidateCustomGraph (save path) but refused at run time (no executor yet).
+// The slug is case-sensitive and not trimmed, so the frontend must mirror the
+// exact byte sequence (e.g. "custom:translate" ≠ "custom:Translate").
 func isCustomType(typ string) bool {
 	return strings.HasPrefix(typ, "custom:") && len(typ) > len("custom:")
 }
