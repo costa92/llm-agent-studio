@@ -13,6 +13,9 @@ import {
   standardPipeline,
   reconnectEdge,
   createNode,
+  collectCustomTypes,
+  applyTypeDisplay,
+  hasCustomNode,
   type RFNode,
   type RFEdge,
 } from "./canvasModel"
@@ -717,6 +720,40 @@ describe("createNode", () => {
     const { nodes, edges } = toReactFlow(chain)
     const res = createNode(nodes as RFNode[], edges as RFEdge[], "script", { x: 0, y: 0 })
     expect(nodes.map((n) => n.id)).not.toContain(res.newId)
+  })
+})
+
+describe("custom-type registry + cascade", () => {
+  const mk = (id: string, type: string, label?: string, color?: string): RFNode => ({
+    id, type: "studio", position: { x: 0, y: 0 },
+    data: { node: { id, type, promptId: "", dependsOn: [], ...(label ? { label } : {}), ...(color ? { color } : {}) } },
+  })
+
+  it("collectCustomTypes dedupes custom nodes by type", () => {
+    const nodes = [mk("a", "custom:t", "翻译", "#111111"), mk("b", "custom:t", "翻译", "#111111"), mk("s", "script")]
+    const types = collectCustomTypes(nodes)
+    expect(types).toHaveLength(1)
+    expect(types[0]).toEqual({ type: "custom:t", label: "翻译", color: "#111111" })
+  })
+
+  it("applyTypeDisplay updates label/color on every same-type node", () => {
+    const nodes = [mk("a", "custom:t", "old", "#111111"), mk("b", "custom:t", "old", "#111111"), mk("s", "script")]
+    const next = applyTypeDisplay(nodes, "custom:t", "新名", "#222222")
+    const changed = next.filter((n) => n.data.node.type === "custom:t")
+    expect(changed.every((n) => n.data.node.label === "新名" && n.data.node.color === "#222222")).toBe(true)
+    expect(next.find((n) => n.id === "s")!.data.node.label).toBeUndefined()
+  })
+
+  it("hasCustomNode detects a custom node", () => {
+    expect(hasCustomNode([mk("s", "script")])).toBe(false)
+    expect(hasCustomNode([mk("s", "script"), mk("c", "custom:t")])).toBe(true)
+  })
+
+  it("createNode threads display onto the new node", () => {
+    const res = createNode([], [], "custom:t", { x: 0, y: 0 }, undefined, undefined, { label: "翻译", color: "#333333" })
+    const n = res.nodes[0].data.node
+    expect(n.label).toBe("翻译")
+    expect(n.color).toBe("#333333")
   })
 })
 
