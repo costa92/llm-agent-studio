@@ -81,24 +81,38 @@
 
 **判别器 = 节点 JSON 上显式的 `typeId` 字段**（对评审：不依赖“slug 是否在注册表”，避免后续注册某 slug 静默把已有注解变 typed）。planner：有 `typeId` → 解析注册表 → 可运行；无 `typeId` → 注解 → 拒绝运行。
 
-## `llm` kind 参数（Rich）
+## `llm` kind 参数（Rich）——类型行为 vs 节点绑定 分离
 
-`params` JSON：
+**关键校正（计划阶段评审发现）**：注册表条目是**组织级、可跨工作流复用**的；而变量的 `sourceNodeId` 是 **workflow-local 节点 id**，无法存在组织级注册表里（同一 typed 类型被多个工作流/多个节点复用，local id 各不相同）。故拆成两层：
+
+**① 注册表 `params`（组织级类型行为，存 `custom_node_types.params`）**：
 
 ```jsonc
 {
-  "systemPrompt": "string，可空",
+  "systemPrompt": "string，可空，支持 {{name}} 模板",
   "userPrompt": "string，支持 {{name}} 模板",
-  "variables": [{ "name": "draft", "sourceNodeId": "<workflow-local node id>" }],
   "model": "可选，覆盖默认路由模型",
   "temperature": 0.7,            // 可选
   "outputFormat": "text"         // "text" | "json"
 }
 ```
 
-- **变量绑定**：`name` ← 上游 workflow-local 节点 id。源**必须是产文本节点**（`script` 或另一个 `custom` 节点）；绑定到 asset/shots（二进制/扇出）输出在 A 是**校验错误**。
-- **模板替换**：`userPrompt`/`systemPrompt` 里 `{{name}}` 替换为解析后的上游内容。
+变量名是模板里 `{{name}}` 的**隐式声明**——注册表**不单列 `variables`**，模板即变量名单一来源。
+
+**② 节点实例 `varBindings`（per-node，存工作流节点 JSON 上，与 `typeId` 一样随 raw-JSONB 透传）**：
+
+```jsonc
+"varBindings": [{ "name": "draft", "sourceNodeId": "<workflow-local 上游节点 id>" }]
+```
+
+- **绑定位置**：在**属性面板**逐节点绑定（属性面板有工作流上下文，知道上游节点）；组织级类型编辑器只写模板+行为，**不绑上游**（它没有工作流上下文）。
+- **源约束**：`sourceNodeId` **必须 ∈ 该节点 `DependsOn`** 且指向**产文本节点**（`script` 或另一个 `custom`）；绑到 asset/shots（二进制/扇出）输出在 A 是**校验错误**。
+- **模板替换**：执行时 `{{name}}` 替换为绑定上游的文本输出；未绑定的 `{{name}}` 留空。
 - **`outputFormat: "json"`**：executor 指示模型产 JSON → 校验/解析 → `node_outputs.content` + `format="json"` 落地；解析失败按执行失败重试。
+
+**合并（PlanCustom）**：todo 的 `input_json` = `{kind, params}`，其中 `params` = 注册表 `params` **＋ 注入** `variables:[{name, sourceTodoId}]`（由节点 `varBindings` 经 `idMap` 本地→todo 改写得到，见执行流）。executor 只读 `params.variables[].sourceTodoId`，不关心来源。
+
+> 两个 per-node 透传字段（`typeId` + `varBindings`）都受 T1 约束：`toStudioNodes` 逐字段重建，必须显式拷贝，否则首次保存即丢失。
 
 ## 执行流
 
