@@ -44,6 +44,9 @@ import {
   seedPositions,
   standardPipeline,
   createNode,
+  collectCustomTypes,
+  applyTypeDisplay,
+  hasCustomNode,
   type StudioNodeData,
   type RFNode,
   type RFEdge,
@@ -56,10 +59,11 @@ import { CanvasActionsProvider } from "./CanvasActionsContext"
 import { HelperLines } from "./HelperLines"
 import { NodePalette, PALETTE_DND_TYPE } from "./NodePalette"
 import { PropertiesPanel } from "./PropertiesPanel"
-import { NODE_COLOR } from "./nodeColor"
+import { NODE_COLOR, isCustomType, slugify } from "./nodeColor"
 import { RunCanvas } from "./RunCanvas"
 import { ModeToggle } from "./ModeToggle"
 import { CanvasContextMenu, type ContextMenuItem } from "./CanvasContextMenu"
+import { CustomTypeDialog, type CustomTypePayload } from "./CustomTypeDialog"
 
 export type CanvasMode = "edit" | "run"
 
@@ -141,6 +145,12 @@ function CanvasInner({
     | { mode: "insert"; screenX: number; screenY: number; flow: { x: number; y: number }; edgeId: string }
     | null
   >(null)
+  const customTypes = useMemo(() => collectCustomTypes(rfNodes as RFNode[]), [rfNodes])
+  const [typeDialog, setTypeDialog] = useState<
+    | { mode: "create" }
+    | { mode: "edit"; type: string; initial: CustomTypePayload }
+    | null
+  >(null)
   // 右键上下文菜单态（Phase D）：kind 决定菜单项；targetId 为节点/边 id。
   const [menu, setMenu] = useState<
     | { kind: "pane"; screenX: number; screenY: number; canPaste: boolean }
@@ -187,9 +197,12 @@ function CanvasInner({
       if (!type) return
       takeSnapshot()
       const pos = screenToFlowPosition({ x: e.clientX, y: e.clientY })
-      setRfNodes((nds) => addNodeAt(nds as RFNode[], type, pos, prompts))
+      const display = isCustomType(type)
+        ? customTypes.find((c) => c.type === type)
+        : undefined
+      setRfNodes((nds) => addNodeAt(nds as RFNode[], type, pos, prompts, undefined, display))
     },
-    [screenToFlowPosition, setRfNodes, prompts, takeSnapshot],
+    [screenToFlowPosition, setRfNodes, prompts, takeSnapshot, customTypes],
   )
 
   // ── 连线（带环路守卫） ───────────────────────────────────
@@ -277,7 +290,7 @@ function CanvasInner({
 
   // 选择器选中类型后落地：create 模式新建节点 + 连边；insert 模式在边上拆分。
   const onPickType = useCallback(
-    (type: string) => {
+    (type: string, display?: { label: string; color: string }) => {
       if (!picker) return
       if (picker.mode === "create") {
         const built = createNode(
@@ -287,6 +300,7 @@ function CanvasInner({
           picker.flow,
           prompts,
           picker.source,
+          display,
         )
         const err = findGraphError(toStudioNodes(built.nodes, built.edges))
         if (err) {
@@ -306,6 +320,7 @@ function CanvasInner({
           type,
           picker.flow,
           prompts,
+          display,
         )
         const err = findGraphError(toStudioNodes(candidate.nodes, candidate.edges))
         if (err) {
@@ -320,6 +335,31 @@ function CanvasInner({
       setPicker(null)
     },
     [picker, getNodes, getEdges, prompts, setRfNodes, setRfEdges, takeSnapshot],
+  )
+
+  const onCreateCustomType = useCallback(
+    (p: CustomTypePayload) => {
+      const base = `custom:${slugify(p.label)}`
+      const existing = new Set(collectCustomTypes(getNodes()).map((c) => c.type))
+      let type = base
+      let i = 2
+      while (existing.has(type)) { type = `${base}-${i}`; i += 1 }
+      takeSnapshot()
+      const pos = screenToFlowPosition({ x: 300, y: 200 })
+      setRfNodes((nds) => createNode(nds as RFNode[], [], type, pos, prompts, undefined, p).nodes)
+      setTypeDialog(null)
+    },
+    [getNodes, prompts, screenToFlowPosition, setRfNodes, takeSnapshot],
+  )
+
+  const onEditCustomTypeSubmit = useCallback(
+    (p: CustomTypePayload) => {
+      if (typeDialog?.mode !== "edit") return
+      takeSnapshot()
+      setRfNodes((nds) => applyTypeDisplay(nds as RFNode[], typeDialog.type, p.label, p.color))
+      setTypeDialog(null)
+    },
+    [typeDialog, setRfNodes, takeSnapshot],
   )
 
   // ── 属性面板回调 ─────────────────────────────────────────
@@ -709,6 +749,8 @@ function CanvasInner({
     onCreated,
   ])
 
+  const runDisabled = useMemo(() => hasCustomNode(rfNodes as RFNode[]), [rfNodes])
+
   const otherIds = (rfNodes as RFNode[])
     .filter((n) => n.id !== selectedId)
     .map((n) => n.id)
@@ -742,7 +784,13 @@ function CanvasInner({
           )}
           {/* 编辑 | 运行 模式切换（新建态隐藏：尚无可运行的 workflow）。 */}
           {!isCreate && onModeChange && (
-            <ModeToggle mode="edit" onChange={onModeChange} />
+            runDisabled ? (
+              <span className="text-[12px] text-text-3" title="当前 Workflow 包含自定义节点，暂不支持运行">
+                含自定义节点 · 暂不支持运行
+              </span>
+            ) : (
+              <ModeToggle mode="edit" onChange={onModeChange} />
+            )
           )}
         </div>
         <div className="flex items-center gap-2">
@@ -782,6 +830,9 @@ function CanvasInner({
         <NodePalette
           onStandardPipeline={onStandardPipeline}
           onAutoTidy={onAutoTidy}
+          customTypes={customTypes}
+          onAddCustomType={() => setTypeDialog({ mode: "create" })}
+          onEditCustomType={(type) => { const c = customTypes.find((x) => x.type === type); if (c) setTypeDialog({ mode: "edit", type, initial: { label: c.label, color: c.color } }) }}
         />
         <div
           className="workflow-canvas relative flex-1"
@@ -866,6 +917,7 @@ function CanvasInner({
             open={!!picker}
             screenX={picker?.screenX ?? 0}
             screenY={picker?.screenY ?? 0}
+            customTypes={customTypes}
             onPick={onPickType}
             onClose={() => setPicker(null)}
           />
@@ -875,6 +927,13 @@ function CanvasInner({
             screenY={menu?.screenY ?? 0}
             items={menuItems}
             onClose={() => setMenu(null)}
+          />
+          <CustomTypeDialog
+            open={!!typeDialog}
+            mode={typeDialog?.mode ?? "create"}
+            initial={typeDialog?.mode === "edit" ? typeDialog.initial : undefined}
+            onSubmit={typeDialog?.mode === "edit" ? onEditCustomTypeSubmit : onCreateCustomType}
+            onCancel={() => setTypeDialog(null)}
           />
         </div>
         <PropertiesPanel
