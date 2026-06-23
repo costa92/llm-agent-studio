@@ -256,6 +256,35 @@ export interface BuildPromptResponse {
   prompt: string
 }
 
+// custom_node_types/store.go CustomNodeType。组织级 typed 自定义节点注册表条目。
+export interface CustomNodeType {
+  id: string
+  orgId: string
+  slug: string
+  label: string
+  color: string
+  kind: "llm"
+  params: LlmParams
+}
+
+// llm kind 参数 (组织级)。NO variables — 变量名隐含于 {{name}} 模板，
+// 绑定 (name→sourceNodeId) 存在节点实例的 varBindings 上 (per-node, workflow-local)。
+export interface LlmParams {
+  systemPrompt?: string
+  userPrompt: string
+  model?: string
+  temperature?: number
+  outputFormat?: "text" | "json"
+}
+
+// POST/PUT 入参：/api/orgs/{org}/custom-node-types[/{id}]。
+export interface UpsertCustomNodeTypeInput {
+  label: string
+  color: string
+  kind: "llm"
+  params: LlmParams
+}
+
 // models/store.go CatalogEntry。GET /api/model-catalog → {catalog: CatalogEntry[]}。
 export interface CatalogEntry {
   provider: string
