@@ -1606,6 +1606,12 @@ func (w *Worker) runCustom(ctx context.Context, c claimed) (string, error) {
 			return "", fmt.Errorf("worker: custom http params unmarshal: %w", err)
 		}
 		return w.runCustomHTTP(ctx, c, p)
+	case "script":
+		var p scriptParams
+		if err := json.Unmarshal(env.Params, &p); err != nil {
+			return "", fmt.Errorf("worker: custom script params unmarshal: %w", err)
+		}
+		return w.runCustomScript(ctx, c, p)
 	default:
 		return "", fmt.Errorf("worker: unsupported custom kind %q", env.Kind)
 	}
@@ -1799,6 +1805,41 @@ func (w *Worker) runCustomHTTP(ctx context.Context, c claimed, in httpParams) (s
 		 VALUES ($1,$2,$3,$4,$5,$6)`,
 		outID, c.projectID, c.todoID, c.typ, content, format).Error; err != nil {
 		return "", errRequestFailed
+	}
+	return "custom:" + outID, nil
+}
+
+// runCustomScript executes the "script" kind: resolve {{name}} upstream
+// variables, inject them as Starlark data-globals, run the sandboxed engine
+// (no I/O, no secrets), and land node_outputs. ALL errors are opaque
+// (scriptError enum) — never surface the raw Starlark error.
+func (w *Worker) runCustomScript(ctx context.Context, c claimed, in scriptParams) (string, error) {
+	if secretRefRe.MatchString(in.Code) || strings.Contains(in.Code, "{{secret:") {
+		return "", errScriptFailed // D1 runtime defense-in-depth
+	}
+	inputs, err := w.resolveVariables(ctx, in.Variables)
+	if err != nil {
+		return "", errScriptFailed // opaque: never leak the variable/source
+	}
+	out, err := scriptengine.Run(ctx, in.Code, inputs, scriptengine.Options{})
+	if err != nil {
+		return "", classifyScriptError(err)
+	}
+	format := "text"
+	if in.OutputFormat == "json" {
+		var probe any
+		if jerr := json.Unmarshal([]byte(strings.TrimSpace(out)), &probe); jerr != nil {
+			return "", errScriptFailed
+		}
+		out = strings.TrimSpace(out)
+		format = "json"
+	}
+	outID := newID()
+	if err := w.cfg.DB.WithContext(ctx).Exec(
+		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format)
+		 VALUES ($1,$2,$3,$4,$5,$6)`,
+		outID, c.projectID, c.todoID, c.typ, out, format).Error; err != nil {
+		return "", fmt.Errorf("worker: insert node_output: %w", err)
 	}
 	return "custom:" + outID, nil
 }
