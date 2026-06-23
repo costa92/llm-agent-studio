@@ -1538,11 +1538,10 @@ type httpError string
 func (e httpError) Error() string { return string(e) }
 
 const (
-	errRequestFailed  httpError = "request_failed"
-	errHostNotAllowed httpError = "host_not_allowed"
-	errTimeout        httpError = "timeout"
-	errBodyTooLarge   httpError = "body_too_large"
-	errBlockedDest    httpError = "blocked_destination"
+	errRequestFailed httpError = "request_failed"
+	errTimeout       httpError = "timeout"
+	errBodyTooLarge  httpError = "body_too_large"
+	errBlockedDest   httpError = "blocked_destination"
 )
 
 // secretRefRe matches {{secret:NAME}} (whitespace-tolerant). NAME is the org secret
@@ -1673,15 +1672,19 @@ func (w *Worker) runCustomHTTP(ctx context.Context, c claimed, in httpParams) (s
 		return "", errRequestFailed
 	}
 
-	// 3. Substitute headers: {{name}} via substituteVars, then {{secret:NAME}} via
-	// the SEPARATE secret channel. secretBearing tracks whether ANY secret was
-	// injected (reliable; not a post-hoc header scan).
+	// 3. Substitute headers. The {{secret:NAME}} channel resolves on the ORIGINAL
+	// author template FIRST, THEN the {{name}} upstream-variable channel runs on the
+	// result. Ordering is security-critical: {{name}} values come from upstream node
+	// output (editor/attacker-influenceable), so resolving secrets first guarantees
+	// {{secret:NAME}} only ever matches text the node author wrote. A {{secret:...}}
+	// that arrives via a {{name}} value is therefore NOT resolved — it is emitted as
+	// harmless literal text — which preserves the editor→admin admin-gate.
+	// secretBearing tracks whether ANY secret was injected (reliable; not a post-hoc
+	// header scan).
 	secretBearing := false
 	resolvedHeaders := make(map[string]string, len(in.Headers))
 	for k, val := range in.Headers {
-		// {{name}} first.
-		val = substituteVars(val, nameVals)
-		// {{secret:NAME}} next.
+		// {{secret:NAME}} first, on the raw author template.
 		var secErr error
 		val = secretRefRe.ReplaceAllStringFunc(val, func(m string) string {
 			name := secretRefRe.FindStringSubmatch(m)[1]
@@ -1700,6 +1703,9 @@ func (w *Worker) runCustomHTTP(ctx context.Context, c claimed, in httpParams) (s
 		if secErr != nil {
 			return "", secErr
 		}
+		// {{name}} upstream variables next. A {{secret:...}} smuggled in via a
+		// {{name}} value has already passed the secret pass untouched and stays literal.
+		val = substituteVars(val, nameVals)
 		resolvedHeaders[k] = val
 	}
 
@@ -1774,7 +1780,9 @@ func classifyFetchError(err error) error {
 	case strings.Contains(msg, "byte cap"):
 		return errBodyTooLarge
 	case strings.Contains(msg, "not allowed"):
-		return errHostNotAllowed
+		// fetch's "not allowed" covers content-type/scheme rejections (there is
+		// no host allowlist), so this is a blocked destination, not a host-allow miss.
+		return errBlockedDest
 	default:
 		return errRequestFailed
 	}

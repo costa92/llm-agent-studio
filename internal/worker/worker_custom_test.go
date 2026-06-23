@@ -364,15 +364,18 @@ func TestRunCustomLLM_TextAndJSON(t *testing.T) {
 
 // ---- B2.3: http custom node tests ----
 
-// fakeDoer is a scripted HTTPDoer. callCount lets tests assert "no request made".
+// fakeDoer is a scripted HTTPDoer. callCount lets tests assert "no request made";
+// gotReq captures the last request so tests can assert what was sent on the wire.
 type fakeDoer struct {
 	resp      fetch.Response
 	err       error
 	callCount int
+	gotReq    fetch.Request
 }
 
 func (f *fakeDoer) Do(ctx context.Context, in fetch.Request) (fetch.Response, error) {
 	f.callCount++
+	f.gotReq = in
 	return f.resp, f.err
 }
 
@@ -616,5 +619,85 @@ func TestRunCustomHTTP_OrgScopedSecret(t *testing.T) {
 	}
 	if secrets.calledName != "K" {
 		t.Fatalf("secret resolved with name %q, want K", secrets.calledName)
+	}
+}
+
+// TestRunCustomHTTP_NameChannelCannotSmuggleSecret is the F1 regression test:
+// an upstream node whose output text is the LITERAL string "{{secret:LEAKME}}"
+// is bound to a header via the {{name}} channel (X-Test: {{up}}). Because the
+// secret channel resolves on the author template FIRST, the {{name}} value is
+// substituted AFTER the secret pass and its embedded {{secret:...}} stays literal.
+// The org secret value must NEVER appear on the wire; the header must carry the
+// literal "{{secret:LEAKME}}". This proves the editor-influenced {{name}} channel
+// cannot smuggle an admin-only secret (defeating the editor→admin admin-gate).
+//
+// WITHOUT the reorder (name-channel-first), substituteVars would expand {{up}} to
+// "{{secret:LEAKME}}" and the secret pass would then resolve it to the secret value
+// and send it on the wire — this test would fail.
+func TestRunCustomHTTP_NameChannelCannotSmuggleSecret(t *testing.T) {
+	if os.Getenv("LLM_AGENT_STUDIO_PG_URL") == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker custom tests")
+	}
+	const secretValue = "supersecretvalue"
+	const smuggle = "{{secret:LEAKME}}"
+	ctx := context.Background()
+	db := assetTestGorm(t)
+	orgID := "org_http_" + randHex3()
+	projID, c := seedHTTPProjectTodo(t, db, orgID)
+
+	// Seed an upstream custom node whose text output is the literal {{secret:LEAKME}}.
+	upOutID := newID()
+	if err := db.WithContext(ctx).Exec(
+		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format)
+		 VALUES ($1,$2,'t-up','custom:up',$3,'text')`,
+		upOutID, projID, smuggle).Error; err != nil {
+		t.Fatalf("seed upstream node_output: %v", err)
+	}
+	upTodoID := newID()
+	if err := db.WithContext(ctx).Exec(
+		`INSERT INTO todos (id, project_id, plan_id, type, status, output_ref, input_json)
+		 VALUES ($1,$2,'plan-x','custom:up','done',$3,'{}')`,
+		upTodoID, projID, "custom:"+upOutID).Error; err != nil {
+		t.Fatalf("seed upstream todo: %v", err)
+	}
+
+	// Org secret LEAKME resolves to the sentinel value. fakeSecrets records the
+	// name it was asked for, so we can assert it was NEVER asked for LEAKME.
+	secrets := &fakeSecrets{value: secretValue}
+	doer := &fakeDoer{resp: fetch.Response{Status: 200, Body: []byte("ok")}}
+	w := httpTestWorker(t, db, secrets, doer)
+
+	// Header binds {{up}} (a {{name}} binding, NOT an authored {{secret:}}).
+	_, err := w.runCustomHTTP(ctx, c, httpParams{
+		Method:  "GET",
+		URL:     "https://api.example.com",
+		Headers: map[string]string{"X-Test": "{{up}}"},
+		Variables: []customVariable{
+			{Name: "up", SourceTodoId: upTodoID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("runCustomHTTP: %v", err)
+	}
+
+	// The received X-Test header must be the LITERAL {{secret:LEAKME}}, not resolved.
+	got := doer.gotReq.Headers["X-Test"]
+	if got != smuggle {
+		t.Fatalf("X-Test header = %q, want literal %q (name channel must not smuggle a secret)", got, smuggle)
+	}
+
+	// The secret value must NOT appear anywhere in the outgoing request.
+	for hk, hv := range doer.gotReq.Headers {
+		if strings.Contains(hv, secretValue) {
+			t.Fatalf("secret value leaked into header %q: %q", hk, hv)
+		}
+	}
+	if strings.Contains(string(doer.gotReq.Body), secretValue) {
+		t.Fatalf("secret value leaked into request body")
+	}
+
+	// The secret resolver must never have been asked for the smuggled name.
+	if secrets.calledName == "LEAKME" {
+		t.Fatalf("secret resolver was asked for LEAKME via the name channel — smuggle succeeded")
 	}
 }
