@@ -102,6 +102,8 @@ export function toStudioNodes(
     }
     // promptText 为空则省略（与既有保存载荷一致）。
     if (n.promptText) out.promptText = n.promptText
+    if (n.label) out.label = n.label
+    if (n.color) out.color = n.color
     return out
   })
 }

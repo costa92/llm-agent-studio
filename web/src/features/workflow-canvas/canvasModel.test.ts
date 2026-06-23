@@ -719,3 +719,33 @@ describe("createNode", () => {
     expect(nodes.map((n) => n.id)).not.toContain(res.newId)
   })
 })
+
+describe("custom node label/color round-trip", () => {
+  it("toStudioNodes carries label+color for custom nodes, omits for builtin", () => {
+    const nodes: RFNode[] = [
+      {
+        id: "c1", type: "studio", position: { x: 0, y: 0 },
+        data: { node: { id: "c1", type: "custom:translate", promptId: "", dependsOn: [], label: "翻译", color: "#7c93ff" } },
+      },
+      {
+        id: "s1", type: "studio", position: { x: 0, y: 0 },
+        data: { node: { id: "s1", type: "script", promptId: "", dependsOn: [] } },
+      },
+    ]
+    const out = toStudioNodes(nodes, [])
+    const c = out.find((n) => n.id === "c1")!
+    expect(c.label).toBe("翻译")
+    expect(c.color).toBe("#7c93ff")
+    const s = out.find((n) => n.id === "s1")!
+    expect(s.label).toBeUndefined()
+    expect(s.color).toBeUndefined()
+  })
+
+  it("toReactFlow preserves label/color into data.node", () => {
+    const { nodes } = toReactFlow([
+      { id: "c1", type: "custom:translate", promptId: "", dependsOn: [], label: "翻译", color: "#7c93ff" },
+    ])
+    expect(nodes[0].data.node.label).toBe("翻译")
+    expect(nodes[0].data.node.color).toBe("#7c93ff")
+  })
+})
