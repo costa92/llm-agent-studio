@@ -28,7 +28,7 @@
 1. **`runCustom` switch 即扩展点**:`internal/worker/worker.go:1498-1511`,`default:` 返回「unsupported custom kind」。加 `case "http"` 是一行改动。
 2. **planner 对 params 形状无知**:`PlanCustom` 把 `params` 当 opaque,只注入 `variables`(`planner.go:316-331`),`ResolvedType{Kind, Params json.RawMessage}` 是 kind 无关的。→ http params 经 `input_json.params` 流过 planner **零改动**。
 3. **`node_outputs` 落地路径可复用**:`runCustomLLM` 经 raw `INSERT … ($1..$6)` 写 `node_outputs`,`format` text|json(`worker.go:1568-1576`)。`runCustomHTTP` 原样复用。
-4. **现有 SSRF 加固 client 已存在**:`internal/fetch/fetch.go` 自己解析 DNS 并**拨号到已校验 IP**(`resolveAndValidate`,~`fetch.go:139-184`),正确防 DNS-rebinding/TOCTOU;`isBlockedIP`(~`:182-192`)已挡 loopback/RFC1918/link-local(169.254 元数据)/CGNAT/IPv4-mapped;`CheckRedirect`(~`:70-72`)逐跳重校验 scheme+IP;`LimitReader(MaxBytes+1)` body cap(~`:114-122`);scheme + content-type 白名单。**复用,不重造。**
+4. **现有 SSRF 加固 transport 已存在,但唯一公开入口是 GET-only**:`internal/fetch/fetch.go` 自己解析 DNS 并**拨号到已校验 IP**(`resolveAndValidate`,`fetch.go:141-158`),正确防 DNS-rebinding/TOCTOU;`isBlockedIP`(`:182-192`)已挡 loopback/RFC1918/link-local(169.254 元数据)/CGNAT/IPv4-mapped(`To4()`);`CheckRedirect`(`:72-77`)逐跳**仅校验 scheme**(IP 在 DialContext 再校验);`LimitReader(MaxBytes+1)` body cap(`:116-122`);scheme + content-type 白名单。**但**:唯一公开方法是 `Get(ctx, rawURL) ([]byte, string, error)`(`:89`)——**硬编码 `http.MethodGet`、不收 headers/body、非 2xx 直接报错**;`client`/`Config`/`resolveAndValidate`/`isBlockedIP` 全是**包私有**。→ **B 必须给 `fetch` 包加一个通用请求方法**(见 B1),复用同一安全 transport,允许 method/headers/body 并返回 `(status, body, contentType, err)`(err 仅传输/SSRF/cap 失败,非 2xx 不报错而是回 status 让调用方决定)。**复用 transport,不重造;但 `Get` 满足不了 http kind。**
 5. **`secretbox.Box` 加密原语成熟**:AES-256-GCM,env `STUDIO_CONFIG_ENC_KEY`,nonce 自含,`Decrypt` 防篡改;`box.Enabled()==false` 时写路径须显式 `ErrEncUnavailable`(参 `internal/storageconfig/store.go` / `internal/models/store.go:124-125`)。box 在 `cmd/studiod/main.go:196` 构造,**当前未传入 `worker.Config`**。
 6. **密钥"写-only、admin 把关、明文绝不过 HTTP"是既有铁律**:`internal/models/store.go:124-125`(「绝不回传 key」),DTO 只 `HasAPIKey bool`;reveal 是 `roleAdmin` 单一审计例外(`httpapi.go:227`)。`org_secrets` 必须继承此姿态。
 7. **权限模型(role 全序)**:`viewer(1) < editor(2) < admin(3) < org_admin(4)`,`RequireScopeRole` 用 `AtLeast`。http 自定义类型 CRUD = `roleEditor`(`httpapi.go:236-238`,list=`roleViewer`:235);org 密钥型资源(model/storage configs)= `roleAdmin`(`httpapi.go:222-234`)。role 别名 `handlers.go:649-651`。
@@ -89,8 +89,8 @@
 **裁决(多 agent 讨论收敛 + 综合)——分层"默认安全、可用":**
 
 1. **org-scoped 密钥解析(关死跨组织)**:`{{secret:NAME}}` 按**运行时可信上下文的 org**(`w.cfg.Projects.OrgIDForProject(ctx, projectID)`,worker.go:957)解析,`WHERE org_id=$1 AND name=$2`,**绝不**取 `input_json`/node 里的 org。无全局回退。
-2. **带密钥的 http 类型,创建/编辑要求 `roleAdmin`(关死 editor→admin 越权)**:`custom-node-types` 的 create/update handler 解析 http params,若任一 header 值含 `{{secret:...}}` → 该请求额外要求调用者 `AtLeast(roleAdmin)`(路由仍挂 `roleEditor`,handler 内做条件升级)。**只有本就能读该密钥的人才能把它接进请求** → 越权链上无"可泄露给"的对象。不含密钥的 http 类型仍 `roleEditor` 可建。
-3. **带密钥请求默认抑制响应体**:若解析后的请求**任一 header 含已解密的 `{{secret:}}` 值**,默认 `node_outputs` 只存 `{"status":<code>}`,`format="http-status"`,**不存 body/响应头/请求回显**;下游节点拿到同样的抑制对象。**例外**:类型 params `allowResponseBody:true`(admin 创建时显式背书"此端点不回显密钥")→ 放行 body 落地。**无密钥**节点 body 正常落地(`text|json`)。该开关在 org 级类型 params,**无新增 per-node 字段**(避开 A 的 T1 陷阱)。
+2. **带密钥的 http 类型,创建/编辑要求 `roleAdmin`(关死 editor→admin 越权)**:`custom-node-types` 的 create/update handler 解析 http params,若任一 header 值含 `{{secret:...}}` → 该请求额外要求调用者 `AtLeast(roleAdmin)`(路由仍挂 `roleEditor`,handler 内做条件升级)。**机制(已核验)**:`authzhttp.RequireScopeRole`(`middleware.go:57-78`)解析出 `eff` role 后**只做 `AtLeast(min)` 判断,不把 role 塞进 context**——handler 只能拿到 `authzhttp.UserID(ctx)`(`middleware.go:41` 塞入)与 path 里的 `org`,**拿不到已解析 role**。故 handler 须**自己调** `d.RoleResolver.ResolveRole(ctx, UserID(ctx), org, "org", "")` 再 `AtLeast(roleAdmin)`(`d.RoleResolver` 已存在,middleware 同款),非 admin→403。→ 须把 `RoleResolver` 接进 customnodetype create/update handler 的依赖。**只有本就能读该密钥的人才能把它接进请求** → 越权链上无"可泄露给"的对象。不含密钥的 http 类型仍 `roleEditor` 可建。
+3. **带密钥请求默认抑制响应体**:`runCustomHTTP` 在 `{{secret:NAME}}` 解析通道**自己记一个 `secretBearing` 布尔**(注入过任一密钥即 true)——**非事后扫 header 值**(可靠、不脆弱)。`secretBearing && !allowResponseBody` 时,`node_outputs` 只存 `{"status":<code>}`,`format="http-status"`,**不存 body/响应头/请求回显**;下游节点拿到同样的抑制对象。**例外**:类型 params `allowResponseBody:true`(admin 创建时显式背书"此端点不回显密钥")→ 放行 body 落地。**无密钥**节点 body 正常落地(`text|json`)。该开关在 org 级类型 params,**无新增 per-node 字段**(避开 A 的 T1 陷阱)。
 
 > 为何"既 admin-gate 又默认抑制":admin-gate 关死越权链;默认抑制再挡住 admin 误指向回显端点导致密钥意外现于 viewer 的残余风险(纵深);`allowResponseBody` 把"此端点安全"的判断绑回密钥所有者(admin),恢复 http 节点核心价值。
 
@@ -147,7 +147,7 @@
 
 **B0(先,独立安全评审)**:`org_secrets` 迁移 + store(keep-or-replace/HasSecret/ErrEncUnavailable/org-scoped)+ CRUD handlers(`roleAdmin`)+ authz 路由 + worker Config 接 secretbox。
 
-**B1**:`internal/fetch` 加固(NAT64 + 重定向 host 重校验/剥 Authorization)+ 单测。
+**B1**:`internal/fetch` —(a)**新增通用请求方法**(如 `Fetcher.Do(ctx, Request{Method, Headers, Body}) (Response{Status, Body, ContentType}, error)`),复用现有私有安全 transport(`resolveAndValidate`/`client`),非 2xx 不报错而回 status;`AllowedContentTypes` 对 http kind 置空(允许任意类型);(b)加固:`isBlockedIP` 加 NAT64 `64:ff9b::/96`(防 `64:ff9b::169.254.169.254` 绕 IPv4-only),`CheckRedirect` 每跳重校验 host(非仅 scheme)且 host 变更剥离 Authorization/带密钥 header。+ 全编码绕过单测向量表。
 
 **B2**:`runCustom` 重构(`{kind, params:RawMessage}` 按 kind decode)+ `runCustomHTTP`(变量/密钥解析、替换、SSRF 校验、body policy、不透明错误)+ `node_outputs` + worker org 解析接线。
 
