@@ -29,6 +29,7 @@ import (
 
 	studioagents "github.com/costa92/llm-agent-studio/internal/agents"
 	"github.com/costa92/llm-agent-studio/internal/assets"
+	"github.com/costa92/llm-agent-studio/internal/customnodetype"
 	"github.com/costa92/llm-agent-studio/internal/blob"
 	blobgithub "github.com/costa92/llm-agent-studio/internal/blob/github"
 	"github.com/costa92/llm-agent-studio/internal/blob/localfs"
@@ -144,6 +145,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	projectStore := project.New(st.GORM())
 	healthStore := health.New(st.GORM(), projectStore)
 	workflowStore := workflows.New(st.GORM())
+	customNodeTypeStore := customnodetype.New(st.GORM())
 	todoStore := todos.New(st.GORM())
 	eventStore := events.New(st.GORM())
 	plannerSvc := planner.New(model, todoStore, st.GORM())
@@ -359,6 +361,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		BlobServer:     localfsDefault,
 		Models:         modelStore,
 		StorageConfig:  storageStore,
+		CustomNodeType: customNodeTypeStore,
 		Members:        membersSvc,
 		Platform:       platformSvc,
 		TaskBoard:      taskBoard,
