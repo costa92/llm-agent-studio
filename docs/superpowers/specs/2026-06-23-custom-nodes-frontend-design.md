@@ -37,7 +37,7 @@
 ## 前端：管理 UI（per-workflow）
 
 - **NodePalette** 左栏：内置 3 类 + 「**+ 自定义类型**」按钮 + 本工作流已用自定义类型列表（每项可拖入 = 新建该 type 节点；hover 显「改名 / 改色」）。
-- **CustomTypeDialog**（新建 / 编辑）：输入 显示名 + 选颜色（hex 色板，单选）。新建 → `slug = normalize(显示名)`（小写 / 空格转 `-` / 去非法字符 / 与现有 `custom:` 去重加序号），`type = custom:<slug>`。
+- **CustomTypeDialog**（新建 / 编辑）：输入 显示名 + 选颜色（**仅从预设调色板单选，不开放自由 hex 输入**——避免可读性差的配色）。预设色板 = 一组固定 hex 常量（前端定义）。新建 → `slug = normalize(显示名)`（小写 / 空格转 `-` / 去非法字符 / 与现有 `custom:` 去重加序号），`type = custom:<slug>`。
 - **改名 / 改色级联**：对画布上同 `type` 的所有节点批量更新 `label`/`color`（沿用现有 id-rename 级联模式：`takeSnapshot()` 一次 = 一步撤销）。type 本身（slug）不可改（避免重键），仅改显示 `label`/`color`。
 - **入口统一**：`NodeTypePicker`（拖空白 / 边插入 / 尾部「+」/ 右键「添加节点」）列出 内置 + 本工作流自定义类型；选自定义项 → 用其 `type`/`label`/`color` 建节点。`createNode` / `addNodeAt` 透传 `label`/`color`。
 - **PropertiesPanel**：选中自定义节点时，类型区展示其自定义类型（不强塞 3 内置下拉），并给「改名 / 改色」入口；prompt 选择器对自定义节点隐藏（Phase 1 无执行 / 无 prompt 绑定）。
