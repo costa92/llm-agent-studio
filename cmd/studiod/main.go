@@ -50,6 +50,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/modelrouter"
 	"github.com/costa92/llm-agent-studio/internal/models"
 	"github.com/costa92/llm-agent-studio/internal/obs"
+	"github.com/costa92/llm-agent-studio/internal/orgsecret"
 	"github.com/costa92/llm-agent-studio/internal/planner"
 	"github.com/costa92/llm-agent-studio/internal/project"
 	"github.com/costa92/llm-agent-studio/internal/prompt"
@@ -216,6 +217,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	// 既有的 adapter 构造器 (绝不重实现 adapter)。零 storage_config 行时 ResolveForOrg
 	// 返回 !ok，router 始终回落 localfsDefault → 全流程仍可跑 (内置默认)。
 	storageStore := storageconfig.New(st.GORM(), encBox)
+	orgSecretStore := orgsecret.New(st.GORM(), encBox)
 	buildStorageStore := func(rs storageconfig.ResolvedStorage) (blob.BlobStore, error) {
 		switch rs.Mode {
 		case "localfs":
@@ -294,6 +296,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 			Script: scriptAgent, Storyboard: storyboardAgent,
 			Asset: assetAgent, Review: reviewAgent, Narration: narrationSafety, Storage: storageRouter, Assets: assetStore, Cost: costStore,
 			Models: modelStore, Registry: registry, Router: router,
+			Secrets:                  orgSecretStore,
 			WorkerID:                 fmt.Sprintf("studiod-%d", i),
 			GenQuota:                 cfg.OrgDailyGenQuota,
 			MaxConcurrentGen:         cfg.MaxConcurrentGen,
@@ -362,6 +365,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		Models:         modelStore,
 		StorageConfig:  storageStore,
 		CustomNodeType: customNodeTypeStore,
+		OrgSecret:      orgSecretStore,
 		Members:        membersSvc,
 		Platform:       platformSvc,
 		TaskBoard:      taskBoard,

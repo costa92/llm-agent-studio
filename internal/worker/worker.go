@@ -72,6 +72,7 @@ type Config struct {
 	Models           *models.Store           // resolve org default provider+model; nil → registry default
 	Registry         *generate.Registry      // nil → use Asset's bound generator directly
 	Router           *modelrouter.Router     // BYOK per-org 模型路由 (chat + media); nil → legacy Models/Registry path
+	Secrets          SecretResolver          // org-scoped named-secret resolver for http custom nodes; nil → secret-bearing http nodes fail opaquely
 	CustomExecutors  map[string]TaskExecutor // custom executors registered for task types
 	WorkerID         string
 	GenQuota         int // rolling-24h per-org generation quota; 0 = unlimited (backstop for fan-out)
@@ -1015,6 +1016,13 @@ func (w *Worker) discardCanceledAsset(ctx context.Context, c claimed, outputRef 
 // Mirrors image.Puller; the seam lets tests inject a loopback fetcher (T8).
 type Puller interface {
 	Get(ctx context.Context, url string) ([]byte, string, error)
+}
+
+// SecretResolver resolves an org's named secret plaintext (satisfied by
+// *orgsecret.Store). The ONLY path that exposes plaintext; worker injects it into
+// http request headers and never logs it. nil/ErrEncUnavailable → opaque failure.
+type SecretResolver interface {
+	Resolve(ctx context.Context, orgID, name string) (string, error)
 }
 
 // renewLease extends the lease on a todo this worker still holds (heartbeat).
