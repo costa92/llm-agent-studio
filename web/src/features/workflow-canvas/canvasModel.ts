@@ -374,6 +374,27 @@ export function insertNodeOnEdge(
   return { nodes, edges, newId }
 }
 
+// 建节点（Phase D，泛化 onConnectEnd/边插入的「建点」语义）：
+// 有 source → 同时连 source→新节点；无 source → 仅建点。复用 addNodeAt + nextNodeId。
+export function createNode(
+  rfNodes: RFNode[],
+  rfEdges: RFEdge[],
+  type: string,
+  pos: { x: number; y: number },
+  prompts?: Prompt[],
+  source?: string,
+): { nodes: RFNode[]; edges: RFEdge[]; newId: string } {
+  const newId = nextNodeId(rfNodes)
+  const nodes = addNodeAt(rfNodes, type, pos, prompts, newId)
+  const edges = source
+    ? [
+        ...rfEdges,
+        { id: `${source}->${newId}`, source, target: newId, type: "studio" },
+      ]
+    : rfEdges
+  return { nodes, edges, newId }
+}
+
 // 连线重连（Phase D）：移除旧边、按新 source/target 追加重键后的边，其余边不动。
 // 纯函数：环检测由调用方用 toStudioNodes(...)+findGraphError 在提交前做。
 // 同时去掉与新边 id 重复的既有边（重连到已连节点时避免重复 id / 重复 dependsOn）。

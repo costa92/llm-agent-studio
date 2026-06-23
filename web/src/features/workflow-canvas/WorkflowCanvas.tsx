@@ -37,13 +37,13 @@ import {
   toStudioNodes,
   addNodeAt,
   reconnectEdge,
-  nextNodeId,
   duplicateNode,
   insertNodeOnEdge,
   cloneSelection,
   getHelperLines,
   seedPositions,
   standardPipeline,
+  createNode,
   type StudioNodeData,
   type RFNode,
   type RFEdge,
@@ -59,6 +59,7 @@ import { PropertiesPanel } from "./PropertiesPanel"
 import { NODE_COLOR } from "./nodeColor"
 import { RunCanvas } from "./RunCanvas"
 import { ModeToggle } from "./ModeToggle"
+import { CanvasContextMenu, type ContextMenuItem } from "./CanvasContextMenu"
 
 export type CanvasMode = "edit" | "run"
 
@@ -136,8 +137,15 @@ function CanvasInner({
     vertical?: number
   }>({})
   const [picker, setPicker] = useState<
-    | { mode: "create"; screenX: number; screenY: number; flow: { x: number; y: number }; source: string }
+    | { mode: "create"; screenX: number; screenY: number; flow: { x: number; y: number }; source?: string }
     | { mode: "insert"; screenX: number; screenY: number; flow: { x: number; y: number }; edgeId: string }
+    | null
+  >(null)
+  // 右键上下文菜单态（Phase D）：kind 决定菜单项；targetId 为节点/边 id。
+  const [menu, setMenu] = useState<
+    | { kind: "pane"; screenX: number; screenY: number; canPaste: boolean }
+    | { kind: "node"; screenX: number; screenY: number; targetId: string }
+    | { kind: "edge"; screenX: number; screenY: number; targetId: string }
     | null
   >(null)
 
@@ -272,32 +280,23 @@ function CanvasInner({
     (type: string) => {
       if (!picker) return
       if (picker.mode === "create") {
-        const id = nextNodeId(getNodes())
-        // 一致性环路守卫：与全新节点不可能成环，但保留 pattern。
-        const candidate = toStudioNodes(
-          addNodeAt(getNodes(), type, picker.flow, prompts, id),
-          [
-            ...getEdges(),
-            { id: `${picker.source}->${id}`, source: picker.source, target: id },
-          ],
+        const built = createNode(
+          getNodes(),
+          getEdges(),
+          type,
+          picker.flow,
+          prompts,
+          picker.source,
         )
-        const err = findGraphError(candidate)
+        const err = findGraphError(toStudioNodes(built.nodes, built.edges))
         if (err) {
           toast.error(err)
           setPicker(null)
           return
         }
         takeSnapshot()
-        setRfNodes((nds) => addNodeAt(nds as RFNode[], type, picker.flow, prompts, id))
-        setRfEdges((eds) => [
-          ...eds,
-          {
-            id: `${picker.source}->${id}`,
-            source: picker.source,
-            target: id,
-            type: "studio",
-          },
-        ])
+        setRfNodes(built.nodes)
+        setRfEdges(built.edges)
       } else {
         // insert 模式：在边 A->B 上插入新节点 N（A->N, N->B）。
         const candidate = insertNodeOnEdge(
@@ -418,9 +417,57 @@ function CanvasInner({
     [screenToFlowPosition],
   )
 
+  // 节点尾部「+」快加（Phase D）：新节点落在 source 节点正下方（版式整洁，不取光标），
+  // 选择器浮层落在点击 screen 坐标；选中类型后走 create(source=nodeId)。
+  const onQuickAddFrom = useCallback(
+    (nodeId: string, screenX: number, screenY: number) => {
+      const src = getNodes().find((n) => n.id === nodeId)
+      const flow = src
+        ? { x: src.position.x, y: src.position.y + 120 }
+        : screenToFlowPosition({ x: screenX, y: screenY })
+      setPicker({ mode: "create", screenX, screenY, flow, source: nodeId })
+    },
+    [getNodes, screenToFlowPosition],
+  )
+
+  // 粘贴（Phase D 抽取）：at 给定时把克隆整体平移到该 flow 落点（右键菜单用），
+  // 否则沿用 +32/+32（键盘 ⌘V 用）。克隆 fresh id + remap 内部边。
+  const doPaste = useCallback(
+    (at?: { x: number; y: number }) => {
+      const clip = clipboard.current
+      if (!clip || clip.nodes.length === 0) return
+      let offset = { x: 32, y: 32 }
+      if (at) {
+        const minX = Math.min(...clip.nodes.map((n) => n.position.x))
+        const minY = Math.min(...clip.nodes.map((n) => n.position.y))
+        offset = { x: at.x - minX, y: at.y - minY }
+      }
+      takeSnapshot()
+      const { nodes: cloned, edges: clonedEdges } = cloneSelection(
+        clip.nodes,
+        clip.edges,
+        new Set(clip.nodes.map((n) => n.id)),
+        offset,
+        prompts,
+        getNodes(),
+      )
+      setRfNodes((nds) => [
+        ...(nds as RFNode[]).map((n) => ({ ...n, selected: false })),
+        ...cloned,
+      ])
+      setRfEdges((eds) => [...eds, ...clonedEdges])
+    },
+    [prompts, getNodes, setRfNodes, setRfEdges, takeSnapshot],
+  )
+
+  // 全选（Phase D 抽取）：键盘 ⌘A / 右键菜单 共用。
+  const selectAll = useCallback(() => {
+    setRfNodes((nds) => (nds as RFNode[]).map((n) => ({ ...n, selected: true })))
+  }, [setRfNodes])
+
   const canvasActions = useMemo(
-    () => ({ onDuplicateNode, onDeleteNode, onDeleteEdge, onInsertOnEdge }),
-    [onDuplicateNode, onDeleteNode, onDeleteEdge, onInsertOnEdge],
+    () => ({ onDuplicateNode, onDeleteNode, onDeleteEdge, onInsertOnEdge, onQuickAddFrom }),
+    [onDuplicateNode, onDeleteNode, onDeleteEdge, onInsertOnEdge, onQuickAddFrom],
   )
 
   // ── 标准管线一键填充 ─────────────────────────────────────
@@ -454,6 +501,58 @@ function CanvasInner({
     )
     setTimeout(() => fitView({ duration: 300 }), 0)
   }, [getNodes, getEdges, setRfNodes, fitView, takeSnapshot])
+
+  // 按右键目标构建菜单项（复用既有 handler / doPaste / selectAll / fitView / 泛化 picker）。
+  const menuItems = useMemo<ContextMenuItem[]>(() => {
+    if (!menu) return []
+    if (menu.kind === "pane") {
+      const flow = screenToFlowPosition({ x: menu.screenX, y: menu.screenY })
+      return [
+        {
+          label: "添加节点",
+          onClick: () =>
+            setPicker({ mode: "create", screenX: menu.screenX, screenY: menu.screenY, flow }),
+        },
+        {
+          label: "粘贴",
+          disabled: !menu.canPaste,
+          onClick: () => doPaste(flow),
+        },
+        { label: "全选", onClick: selectAll },
+        { label: "自动整理", onClick: onAutoTidy },
+        { label: "适应视图", onClick: () => fitView({ duration: 300 }) },
+      ]
+    }
+    if (menu.kind === "node") {
+      return [
+        { label: "复制", onClick: () => onDuplicateNode(menu.targetId) },
+        {
+          label: "从此添加下游",
+          onClick: () => onQuickAddFrom(menu.targetId, menu.screenX, menu.screenY),
+        },
+        { label: "删除", danger: true, onClick: () => onDeleteNode(menu.targetId) },
+      ]
+    }
+    return [
+      {
+        label: "插入节点",
+        onClick: () => onInsertOnEdge(menu.targetId, menu.screenX, menu.screenY),
+      },
+      { label: "删除", danger: true, onClick: () => onDeleteEdge(menu.targetId) },
+    ]
+  }, [
+    menu,
+    screenToFlowPosition,
+    doPaste,
+    selectAll,
+    onAutoTidy,
+    fitView,
+    onDuplicateNode,
+    onQuickAddFrom,
+    onDeleteNode,
+    onInsertOnEdge,
+    onDeleteEdge,
+  ])
 
   // ── 对齐辅助线（C3）─────────────────────────────────────────
   // 拖动中实时算引导线：与其它节点的边/中心落在阈值内则画线 + 吸附被拖节点位置。
@@ -518,24 +617,12 @@ function CanvasInner({
         )
         clipboard.current = { nodes: selNodes, edges: selEdges as RFEdge[] }
       } else if (key === "v") {
-        // 粘贴：按当前画布 id 重新分配 id（避让现有），整体偏移 +32/+32，选中克隆。
         if (!clipboard.current) return
         e.preventDefault()
-        const clip = clipboard.current
-        takeSnapshot()
-        const { nodes: cloned, edges: clonedEdges } = cloneSelection(
-          clip.nodes,
-          clip.edges,
-          new Set(clip.nodes.map((n) => n.id)),
-          { x: 32, y: 32 },
-          prompts,
-          getNodes(),
-        )
-        setRfNodes((nds) => [
-          ...(nds as RFNode[]).map((n) => ({ ...n, selected: false })),
-          ...cloned,
-        ])
-        setRfEdges((eds) => [...eds, ...clonedEdges])
+        doPaste()
+      } else if (key === "a") {
+        e.preventDefault()
+        selectAll()
       } else if (key === "d") {
         // 原地复制：等同于「复制+粘贴」一步完成，不写剪贴板。
         const selNodes = getNodes().filter((n) => n.selected)
@@ -563,7 +650,7 @@ function CanvasInner({
     }
     document.addEventListener("keydown", onKeyDown)
     return () => document.removeEventListener("keydown", onKeyDown)
-  }, [undo, redo, getNodes, getEdges, setRfNodes, setRfEdges, prompts, takeSnapshot])
+  }, [undo, redo, getNodes, getEdges, setRfNodes, setRfEdges, prompts, takeSnapshot, doPaste, selectAll])
 
   // ── 键盘删除（Delete / Backspace）────────────────────────
   // ReactFlow 在画布 pane 聚焦时才触发；属性面板输入框内的退格不会冒泡到这里。
@@ -713,6 +800,24 @@ function CanvasInner({
               onConnectStart={onConnectStart}
               onConnectEnd={onConnectEnd}
               onSelectionChange={onSelectionChange}
+              onPaneContextMenu={(e) => {
+                e.preventDefault()
+                const ev = e as MouseEvent
+                setMenu({
+                  kind: "pane",
+                  screenX: ev.clientX,
+                  screenY: ev.clientY,
+                  canPaste: !!clipboard.current,
+                })
+              }}
+              onNodeContextMenu={(e, node) => {
+                e.preventDefault()
+                setMenu({ kind: "node", screenX: e.clientX, screenY: e.clientY, targetId: node.id })
+              }}
+              onEdgeContextMenu={(e, edge) => {
+                e.preventDefault()
+                setMenu({ kind: "edge", screenX: e.clientX, screenY: e.clientY, targetId: edge.id })
+              }}
               onNodeDragStart={() => takeSnapshot()}
               onNodeDrag={onNodeDrag}
               onNodeDragStop={onNodeDragStop}
@@ -752,7 +857,7 @@ function CanvasInner({
                 拖拽左侧节点到画布，或点「标准管线」快速开始
                 <br />
                 <span className="text-[11px] text-text-3">
-                  左键拖拽平移，Shift+拖拽框选
+                  左键拖拽平移，Shift+拖拽框选，右键打开菜单
                 </span>
               </p>
             </div>
@@ -763,6 +868,13 @@ function CanvasInner({
             screenY={picker?.screenY ?? 0}
             onPick={onPickType}
             onClose={() => setPicker(null)}
+          />
+          <CanvasContextMenu
+            open={!!menu}
+            screenX={menu?.screenX ?? 0}
+            screenY={menu?.screenY ?? 0}
+            items={menuItems}
+            onClose={() => setMenu(null)}
           />
         </div>
         <PropertiesPanel

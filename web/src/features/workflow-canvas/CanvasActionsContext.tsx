@@ -10,6 +10,8 @@ export interface CanvasActions {
   onDeleteEdge: (id: string) => void
   // screenX/Y：浮层选择器的屏幕落点（边中点的屏幕坐标）。
   onInsertOnEdge: (id: string, screenX: number, screenY: number) => void
+  // 节点尾部「+」：在该节点下方快加下游节点（screenX/Y 用于浮层选择器定位）。
+  onQuickAddFrom: (nodeId: string, screenX: number, screenY: number) => void
 }
 
 const noop = () => {}
@@ -19,6 +21,7 @@ const CanvasActionsContext = createContext<CanvasActions>({
   onDeleteNode: noop,
   onDeleteEdge: noop,
   onInsertOnEdge: noop,
+  onQuickAddFrom: noop,
 })
 
 export const CanvasActionsProvider = CanvasActionsContext.Provider

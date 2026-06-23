@@ -12,6 +12,7 @@ import {
   seedPositions,
   standardPipeline,
   reconnectEdge,
+  createNode,
   type RFNode,
   type RFEdge,
 } from "./canvasModel"
@@ -679,5 +680,42 @@ describe("rename cascade (re-key edges)", () => {
     const out = toStudioNodes(nodes, edges)
     expect(out.map((n) => n.id).sort()).toEqual(["A2", "B"])
     expect(out.find((n) => n.id === "B")!.dependsOn).toEqual(["A2"])
+  })
+})
+
+describe("createNode", () => {
+  it("with a source: adds a node and an edge source->newId", () => {
+    const { nodes, edges } = toReactFlow(chain)
+    const res = createNode(
+      nodes as RFNode[],
+      edges as RFEdge[],
+      "asset",
+      { x: 10, y: 20 },
+      undefined,
+      "asset-1",
+    )
+    expect(res.nodes).toHaveLength(4)
+    const added = res.nodes.find((n) => n.id === res.newId)
+    expect(added?.data.node.type).toBe("asset")
+    expect(added?.position).toEqual({ x: 10, y: 20 })
+    expect(res.edges.map((e) => e.id)).toContain(`asset-1->${res.newId}`)
+  })
+
+  it("without a source: adds only a node, no new edge", () => {
+    const { nodes, edges } = toReactFlow(chain)
+    const res = createNode(
+      nodes as RFNode[],
+      edges as RFEdge[],
+      "script",
+      { x: 0, y: 0 },
+    )
+    expect(res.nodes).toHaveLength(4)
+    expect(res.edges).toHaveLength(edges.length) // unchanged
+  })
+
+  it("assigns a fresh non-colliding id", () => {
+    const { nodes, edges } = toReactFlow(chain)
+    const res = createNode(nodes as RFNode[], edges as RFEdge[], "script", { x: 0, y: 0 })
+    expect(nodes.map((n) => n.id)).not.toContain(res.newId)
   })
 })
