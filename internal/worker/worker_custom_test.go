@@ -36,6 +36,24 @@ func TestSubstituteVars(t *testing.T) {
 	if strings.Contains(out, "{{draft}}") {
 		t.Fatalf("{{draft}} should be replaced, got %q", out)
 	}
+
+	// Whitespace-tolerant: frontend extractTemplateVars trims token names, so
+	// "{{ draft }}" authored in a template must resolve to the same binding as
+	// "{{draft}}". Verify BOTH forms in a single template are replaced (Blocker 2).
+	tpl := "A={{draft}}, B={{ draft }}, C={{ draft   }}, X={{other}}"
+	out2 := substituteVars(tpl, map[string]string{"draft": "VALUE"})
+	// All three {{draft}} variants must be replaced.
+	if strings.Contains(out2, "{{draft}}") || strings.Contains(out2, "{{ draft }}") || strings.Contains(out2, "{{ draft   }}") {
+		t.Fatalf("whitespace variants not replaced, got %q", out2)
+	}
+	// The replacement must appear 3 times.
+	if strings.Count(out2, "VALUE") != 3 {
+		t.Fatalf("want 3 replacements, got output %q", out2)
+	}
+	// {{other}} must survive (unbound variable left intact).
+	if !strings.Contains(out2, "{{other}}") {
+		t.Fatalf("unbound {{other}} should be intact, got %q", out2)
+	}
 }
 
 // customTestWorker builds a Worker wired with a real Router (so routedChatModel

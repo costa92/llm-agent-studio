@@ -153,14 +153,20 @@ function CanvasInner({
   // 合并画布 annotation 类型（来自 collectCustomTypes）+ org 注册表 typed 类型。
   // typed 类型带 typeId（= org registry id），区分于 annotation（无 typeId）。
   const customTypes = useMemo(() => {
-    const annotation = collectCustomTypes(rfNodes as RFNode[])
+    // Only feed annotation nodes (no typeId) into collectCustomTypes — typed nodes
+    // (typeId set) are already represented by their org-registry entry and must NOT
+    // shadow it. If they were included, placing one typed node would replace the
+    // registry entry's typeId with undefined, so re-dragging the slug creates a
+    // non-runnable annotation node instead of a typed one (Important 3).
+    const annotationOnly = (rfNodes as RFNode[]).filter((n) => !n.data.node.typeId)
+    const annotation = collectCustomTypes(annotationOnly)
     const typed = orgTypedTypes.map((ct) => ({
       type: `custom:${ct.slug}`,
       label: ct.label,
       color: ct.color,
       typeId: ct.id,
     }))
-    // annotation 类型以 type 去重；typed 类型以 typeId 去重（不覆盖 annotation 条目）。
+    // annotation 类型以 type 去重；typed 类型优先（registry entry 始终覆盖 annotation）。
     const allAnnotationTypes = new Set(annotation.map((a) => a.type))
     const mergedTyped = typed.filter((t) => !allAnnotationTypes.has(t.type))
     return [...annotation, ...mergedTyped]

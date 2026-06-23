@@ -267,6 +267,22 @@ describe("PropertiesPanel typed node (Task 13)", () => {
     })
   })
 
+  it("typed node with no upstream renders without crashing and has no empty-string option (Blocker 1)", () => {
+    // Radix Select throws on value="" when a SelectItem with value="" mounts on
+    // open (jsdom). Guard: when upstreamNodes=[] we render a plain <div> hint
+    // instead of <SelectItem value="">. Assert:
+    // 1. The component renders without throwing.
+    // 2. No Radix option element with an empty value is present in the DOM
+    //    (the hint div is not a role="option").
+    expect(() => renderTypedPanel(typedNode(), defaultTypedParams, [] /* no upstream */)).not.toThrow()
+    // No <SelectItem value=""> should be in the DOM (Radix renders options as
+    // role="option" with data-value; an empty-string value would be data-value="").
+    const emptyOptions = document.querySelectorAll('[role="option"][data-value=""]')
+    expect(emptyOptions).toHaveLength(0)
+    // Confirm the panel did render (sanity: heading present).
+    expect(screen.getByText("变量绑定")).toBeInTheDocument()
+  })
+
   it("annotation custom node (no typeId) does not show typed UI, shows 编辑类型 button", () => {
     const annotationNode: WorkflowNode = {
       id: "custom-2",

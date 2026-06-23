@@ -255,15 +255,18 @@ export function PropertiesPanel({
                         <SelectValue placeholder="选择上游节点" />
                       </SelectTrigger>
                       <SelectContent className="text-[11px]">
-                        {upstreamNodes.map((u) => (
-                          <SelectItem key={u.id} value={u.id}>
-                            {u.label}
-                          </SelectItem>
-                        ))}
-                        {upstreamNodes.length === 0 && (
-                          <SelectItem value="" disabled>
-                            无可用上游节点
-                          </SelectItem>
+                        {upstreamNodes.length === 0 ? (
+                          // Radix Select throws on an empty-string value=""; render a
+                          // plain non-item hint instead (Blocker 1).
+                          <div className="px-2 py-1.5 text-[11px] text-text-3">
+                            先连接上游节点
+                          </div>
+                        ) : (
+                          upstreamNodes.map((u) => (
+                            <SelectItem key={u.id} value={u.id}>
+                              {u.label}
+                            </SelectItem>
+                          ))
                         )}
                       </SelectContent>
                     </Select>

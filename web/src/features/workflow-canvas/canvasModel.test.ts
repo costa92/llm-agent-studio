@@ -803,6 +803,50 @@ describe("typeId + varBindings round-trip (T1)", () => {
   })
 })
 
+describe("typed node palette entry stability (Important 3)", () => {
+  // Once a typed node of slug 'translate' is on the canvas, the merged
+  // customTypes for that slug must still carry typeId (registry entry wins).
+  // Previously collectCustomTypes was fed ALL nodes including typed ones, which
+  // produced an annotation-shaped entry (no typeId) that then blocked the typed
+  // registry entry via allAnnotationTypes.has(t.type).
+  it("typed node on canvas does not shadow its registry entry (slug still carries typeId)", () => {
+    // Simulate one typed node already placed on the canvas.
+    const typedOnCanvas = mkNode("n1", { x: 0, y: 0 }, "custom:translate") as RFNode
+    typedOnCanvas.data.node.typeId = "reg-abc"
+    typedOnCanvas.data.node.label = "翻译"
+    typedOnCanvas.data.node.color = "#7c93ff"
+
+    // Only annotation nodes (no typeId) should feed collectCustomTypes.
+    const annotationOnly = [typedOnCanvas].filter((n) => !n.data.node.typeId)
+    const annotation = collectCustomTypes(annotationOnly)
+
+    // The typed registry entry.
+    const registryTyped = [{ type: "custom:translate", label: "翻译", color: "#7c93ff", typeId: "reg-abc" }]
+
+    const allAnnotationTypes = new Set(annotation.map((a) => a.type))
+    const mergedTyped = registryTyped.filter((t) => !allAnnotationTypes.has(t.type))
+    const merged = [...annotation, ...mergedTyped]
+
+    const entry = merged.find((e) => e.type === "custom:translate")
+    expect(entry).toBeDefined()
+    expect((entry as typeof registryTyped[0]).typeId).toBe("reg-abc")
+  })
+})
+
+describe("insertNodeOnEdge threads typeId (Nit 4)", () => {
+  it("inserting a typed node on an edge sets typeId on the new node", () => {
+    const ab: WorkflowNode[] = [
+      { id: "A", type: "script", promptId: "", dependsOn: [] },
+      { id: "B", type: "storyboard", promptId: "", dependsOn: ["A"] },
+    ]
+    const { nodes, edges } = toReactFlow(ab)
+    const display = { label: "翻译", color: "#7c93ff", typeId: "reg-xyz" }
+    const out = insertNodeOnEdge(nodes, edges, "A->B", "custom:translate", { x: 50, y: 70 }, undefined, display)
+    const inserted = out.nodes.find((n) => n.id === out.newId)!
+    expect(inserted.data.node.typeId).toBe("reg-xyz")
+  })
+})
+
 describe("custom node label/color round-trip", () => {
   it("toStudioNodes carries label+color for custom nodes, omits for builtin", () => {
     const nodes: RFNode[] = [

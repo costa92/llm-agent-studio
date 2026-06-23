@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -1575,11 +1576,17 @@ func (w *Worker) runCustomLLM(ctx context.Context, c claimed, in customInput) (s
 	return "custom:" + outID, nil
 }
 
-// substituteVars replaces every {{name}} occurrence with its resolved value.
+// substituteVars replaces every {{name}} (or {{ name }}) occurrence with its
+// resolved value. Names in vars are expected to be already trimmed; the regexp
+// matches optional whitespace around the name inside the braces so that a
+// frontend-trimmed name like "draft" resolves both {{draft}} and {{ draft }}.
+// regexp.QuoteMeta prevents injection for names that contain regex metacharacters.
 func substituteVars(tpl string, vars map[string]string) string {
 	out := tpl
 	for name, val := range vars {
-		out = strings.ReplaceAll(out, "{{"+name+"}}", val)
+		trimmed := strings.TrimSpace(name)
+		re := regexp.MustCompile(`\{\{\s*` + regexp.QuoteMeta(trimmed) + `\s*\}\}`)
+		out = re.ReplaceAllString(out, val)
 	}
 	return out
 }
