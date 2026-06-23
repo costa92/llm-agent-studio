@@ -6,7 +6,7 @@ import {
   type Node,
 } from "@xyflow/react"
 import { cn } from "@/lib/utils"
-import { NODE_COLOR, TYPE_LABEL } from "./nodeColor"
+import { nodeDisplay } from "./nodeColor"
 import type { StudioNodeData } from "./canvasModel"
 import type { RunNodeStatus } from "./runOverlay"
 import { useCanvasActions } from "./CanvasActionsContext"
@@ -19,8 +19,7 @@ export type StudioRFNode = Node<StudioNodeData, "studio">
 
 export function WorkflowNode({ id, data, selected }: NodeProps<StudioRFNode>) {
   const node = data.node
-  const color = NODE_COLOR[node.type] ?? "var(--line)"
-  const typeLabel = TYPE_LABEL[node.type] ?? node.type
+  const { label: typeLabel, color } = nodeDisplay(node)
   const { onDuplicateNode, onDeleteNode, onQuickAddFrom } = useCanvasActions()
 
   // 运行模式：data.run 注入了该节点对应 run 节点的状态（见 runOverlay.overlayRunStatus）。
