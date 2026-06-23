@@ -65,7 +65,7 @@ import { ModeToggle } from "./ModeToggle"
 import { CanvasContextMenu, type ContextMenuItem } from "./CanvasContextMenu"
 import { CustomTypeDialog, type CustomTypePayload } from "./CustomTypeDialog"
 import { useCustomNodeTypes } from "@/features/custom-node-types/api"
-import type { CustomNodeType, HttpParams, LlmParams } from "@/lib/types"
+import type { CustomNodeType, HttpParams, LlmParams, ScriptParams } from "@/lib/types"
 
 export type CanvasMode = "edit" | "run"
 
@@ -173,7 +173,7 @@ function CanvasInner({
   }, [rfNodes, orgTypedTypes])
 
   // typeId → 注册表条目的快速查找表（PropertiesPanel 用于解析 {{name}} 模板 + 摘要）。
-  // 携带完整条目（含 kind），调用方据 kind 取 LlmParams 或 HttpParams。
+  // 携带完整条目（含 kind），调用方据 kind 取 LlmParams / HttpParams / ScriptParams。
   const typedTypeById = useMemo(() => {
     const m = new Map<string, CustomNodeType>()
     for (const ct of orgTypedTypes) {
@@ -997,6 +997,10 @@ function CanvasInner({
           typedHttpParams={(() => {
             const ct = selected?.typeId ? typedTypeById.get(selected.typeId) : undefined
             return ct?.kind === "http" ? (ct.params as HttpParams) : undefined
+          })()}
+          typedScriptParams={(() => {
+            const ct = selected?.typeId ? typedTypeById.get(selected.typeId) : undefined
+            return ct?.kind === "script" ? (ct.params as ScriptParams) : undefined
           })()}
           upstreamNodes={
             selected

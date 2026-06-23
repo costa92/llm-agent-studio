@@ -17,6 +17,7 @@ import type {
   CustomNodeType,
   HttpParams,
   LlmParams,
+  ScriptParams,
   UpsertCustomNodeTypeInput,
 } from "@/lib/types"
 import {
@@ -29,6 +30,7 @@ import { useOrgSecrets } from "@/features/org-secrets/api"
 import { useRole } from "@/app/rbac"
 import { LlmParamForm } from "./LlmParamForm"
 import { HttpParamForm } from "./HttpParamForm"
+import { ScriptParamForm } from "./ScriptParamForm"
 import { CUSTOM_PALETTE } from "@/features/workflow-canvas/nodeColor"
 import {
   useCrudResource,
@@ -43,6 +45,9 @@ const DEFAULT_LLM_PARAMS: LlmParams = { userPrompt: "" }
 // 默认 http 参数：method/url/headers 必填（其余可选）。
 const DEFAULT_HTTP_PARAMS: HttpParams = { method: "GET", url: "", headers: {}, outputFormat: "text" }
 
+// 默认 script 参数：code 必填（outputFormat 可选，默认 text）。
+const DEFAULT_SCRIPT_PARAMS: ScriptParams = { code: "", outputFormat: "text" }
+
 // 空表单状态（新建时使用）；默认 kind=llm。
 function emptyDraft(): FormDraft {
   return { label: "", color: CUSTOM_PALETTE[0], kind: "llm", params: DEFAULT_LLM_PARAMS }
@@ -56,8 +61,8 @@ function draftFrom(ct: CustomNodeType): FormDraft {
 interface FormDraft {
   label: string
   color: string
-  kind: "llm" | "http"
-  params: LlmParams | HttpParams
+  kind: "llm" | "http" | "script"
+  params: LlmParams | HttpParams | ScriptParams
 }
 
 // http header 值引用了密钥则为 secret-bearing（与 HttpParamForm 判定一致）。
@@ -73,6 +78,10 @@ function draftValid(draft: FormDraft): boolean {
   if (draft.label.trim() === "") return false
   if (draft.kind === "llm") {
     return (draft.params as LlmParams).userPrompt.trim() !== ""
+  }
+  if (draft.kind === "script") {
+    // code 必填（{{secret:}} 由后端拒绝，前端不重复校验）。
+    return (draft.params as ScriptParams).code.trim() !== ""
   }
   const p = draft.params as HttpParams
   // url 必填且不得含 {{...}} 模板。
@@ -119,11 +128,16 @@ function TypeDialog({
   }
 
   // 切换 kind 时重置 params 为该 kind 的默认形状（仅新建态可切 kind）。
-  function setKind(kind: "llm" | "http") {
+  function setKind(kind: "llm" | "http" | "script") {
     setDraft((d) => ({
       ...d,
       kind,
-      params: kind === "llm" ? DEFAULT_LLM_PARAMS : DEFAULT_HTTP_PARAMS,
+      params:
+        kind === "llm"
+          ? DEFAULT_LLM_PARAMS
+          : kind === "http"
+            ? DEFAULT_HTTP_PARAMS
+            : DEFAULT_SCRIPT_PARAMS,
     }))
   }
 
@@ -145,7 +159,7 @@ function TypeDialog({
           <DialogTitle>{mode === "create" ? "新建自定义节点类型" : "编辑自定义节点类型"}</DialogTitle>
           <DialogDescription>
             {mode === "create"
-              ? "定义一个可复用的自定义节点类型（组织级，LLM 或 HTTP）。"
+              ? "定义一个可复用的自定义节点类型（组织级，LLM / HTTP / Script）。"
               : "修改节点类型的标签、颜色或参数（同名节点自动继承）；类型 kind 不可变。"}
           </DialogDescription>
         </DialogHeader>
@@ -193,11 +207,12 @@ function TypeDialog({
                 id="cnt-kind"
                 aria-label="kind"
                 value={draft.kind}
-                onChange={(e) => setKind(e.target.value as "llm" | "http")}
+                onChange={(e) => setKind(e.target.value as "llm" | "http" | "script")}
                 className="h-8 rounded-md border border-input bg-background px-2 text-[13px] text-text-1 focus:ring-1 focus:ring-ring"
               >
                 <option value="llm">LLM</option>
                 <option value="http">HTTP</option>
+                <option value="script">Script</option>
               </select>
             ) : (
               <Input
@@ -209,21 +224,26 @@ function TypeDialog({
             )}
           </div>
 
-          {/* 参数表单：按 kind 渲染 LLM 或 HTTP。 */}
+          {/* 参数表单：按 kind 渲染 LLM / HTTP / Script。 */}
           <div className="border-t border-line pt-3">
             <p className="text-[12px] text-text-2 mb-3">
-              {draft.kind === "llm" ? "LLM 参数" : "HTTP 参数"}
+              {draft.kind === "llm" ? "LLM 参数" : draft.kind === "http" ? "HTTP 参数" : "Script 参数"}
             </p>
             {draft.kind === "llm" ? (
               <LlmParamForm
                 value={draft.params as LlmParams}
                 onChange={(params) => patch({ params })}
               />
-            ) : (
+            ) : draft.kind === "http" ? (
               <HttpParamForm
                 value={draft.params as HttpParams}
                 onChange={(params) => patch({ params })}
                 secretNames={secretNames}
+              />
+            ) : (
+              <ScriptParamForm
+                value={draft.params as ScriptParams}
+                onChange={(params) => patch({ params })}
               />
             )}
           </div>
