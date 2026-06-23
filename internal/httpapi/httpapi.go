@@ -56,7 +56,7 @@ type Deps struct {
 	PromptBuilder *prompt.Builder
 	PromptStore   *prompt.Store
 	GenQuota      int // rolling-24h per-org generation quota; 0 = unlimited
-	CustomNodeType CustomNodeTypeResolver // org-scoped typed custom node registry; nil in focused unit tests
+	CustomNodeType CustomNodeTypeStore // org-scoped typed custom node registry; nil in focused unit tests
 
 	// ModelAvailable reports whether a catalog (provider, kind) entry is actually
 	// usable — i.e. its provider API key is configured so the adapter is/will be
@@ -231,6 +231,12 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("PUT /api/orgs/{org}/storage-configs/{id}", scoped(roleAdmin, orgScope, updateOrgStorageConfigHandler(d.StorageConfig)))
 	mux.Handle("DELETE /api/orgs/{org}/storage-configs/{id}", scoped(roleAdmin, orgScope, deleteOrgStorageConfigHandler(d.StorageConfig)))
 	mux.Handle("POST /api/orgs/{org}/storage-configs/{id}/default", scoped(roleAdmin, orgScope, setDefaultStorageConfigHandler(d.StorageConfig)))
+	if d.CustomNodeType != nil {
+		mux.Handle("GET /api/orgs/{org}/custom-node-types", scoped(roleViewer, orgScope, listCustomNodeTypesHandler(d.CustomNodeType)))
+		mux.Handle("POST /api/orgs/{org}/custom-node-types", scoped(roleEditor, orgScope, createCustomNodeTypeHandler(d.CustomNodeType)))
+		mux.Handle("PUT /api/orgs/{org}/custom-node-types/{id}", scoped(roleEditor, orgScope, updateCustomNodeTypeHandler(d.CustomNodeType)))
+		mux.Handle("DELETE /api/orgs/{org}/custom-node-types/{id}", scoped(roleEditor, orgScope, deleteCustomNodeTypeHandler(d.CustomNodeType)))
+	}
 	// Org 成员管理 (org-scoped). 列出对任意 org 成员开放 (viewer)；增删改角色限 org_admin (admin).
 	mux.Handle("GET /api/orgs/{org}/members", scoped(roleViewer, orgScope, listMembersHandler(d.Members)))
 	mux.Handle("POST /api/orgs/{org}/members", scoped(roleAdmin, orgScope, addMemberHandler(d.Members)))
