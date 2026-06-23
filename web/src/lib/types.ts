@@ -257,14 +257,15 @@ export interface BuildPromptResponse {
 }
 
 // custom_node_types/store.go CustomNodeType。组织级 typed 自定义节点注册表条目。
+// kind 判别 params 形状：'llm' → LlmParams；'http' → HttpParams。
 export interface CustomNodeType {
   id: string
   orgId: string
   slug: string
   label: string
   color: string
-  kind: "llm"
-  params: LlmParams
+  kind: "llm" | "http"
+  params: LlmParams | HttpParams
 }
 
 // llm kind 参数 (组织级)。NO variables — 变量名隐含于 {{name}} 模板，
@@ -277,12 +278,33 @@ export interface LlmParams {
   outputFormat?: "text" | "json"
 }
 
+// org_secrets DTO（永不含 value）。
+export interface OrgSecret {
+  id: string
+  orgId: string
+  name: string
+  hasValue: boolean
+}
+
+// http kind 参数（组织级类型行为）。url 必须是静态字面量（禁 {{...}}）；
+// header 值可含 {{name}} 与 {{secret:NAME}}；bodyTemplate 仅 {{name}}。
+export interface HttpParams {
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
+  url: string
+  headers: Record<string, string>
+  bodyTemplate?: string
+  outputFormat?: "text" | "json"
+  // 仅含密钥类型相关：admin 显式背书才放行响应体（默认抑制带密钥请求的响应体）。
+  allowResponseBody?: boolean
+}
+
 // POST/PUT 入参：/api/orgs/{org}/custom-node-types[/{id}]。
+// kind 判别 params 形状（与 CustomNodeType 一致）。
 export interface UpsertCustomNodeTypeInput {
   label: string
   color: string
-  kind: "llm"
-  params: LlmParams
+  kind: "llm" | "http"
+  params: LlmParams | HttpParams
 }
 
 // models/store.go CatalogEntry。GET /api/model-catalog → {catalog: CatalogEntry[]}。
