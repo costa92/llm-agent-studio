@@ -477,10 +477,26 @@ var m18Migrations = []string{
 	`CREATE INDEX IF NOT EXISTS node_outputs_project_idx ON node_outputs (project_id)`,
 }
 
-// Migrate applies the M1 + M2 + M3 + M4 + M5 + M6 + M7 + M8 + M9 + M10 + M11 + M12 + M13 + M14 + M15 + M16 + M17 + M18 migrations in order. Idempotent.
+// m19Migrations 建 org_secrets (组织级命名密钥注册表)：value_enc 是 AES-256-GCM 密文
+// (secretbox)，永不出服务端。被 http 自定义节点的 {{secret:NAME}} 自由文本引用。
+// 唯一索引 (org_id, name)。无 delete-in-use 守卫 (自由文本引用无结构化 FK；执行时缺
+// 密钥 → 不透明失败，见 spec 安全节)。additive only。
+var m19Migrations = []string{
+	`CREATE TABLE IF NOT EXISTS org_secrets (
+		id TEXT PRIMARY KEY,
+		org_id TEXT NOT NULL,
+		name TEXT NOT NULL,
+		value_enc BYTEA NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+	)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS org_secrets_org_name_uniq ON org_secrets (org_id, name)`,
+}
+
+// Migrate applies the M1 + M2 + M3 + M4 + M5 + M6 + M7 + M8 + M9 + M10 + M11 + M12 + M13 + M14 + M15 + M16 + M17 + M18 + M19 migrations in order. Idempotent.
 func (s *Storage) Migrate(ctx context.Context) error {
-	all := append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append([]string{},
-		m1Migrations...), m2Migrations...), m3Migrations...), m4Migrations...), m5Migrations...), m6Migrations...), m7Migrations...), m8Migrations...), m9Migrations...), m10Migrations...), m11Migrations...), m12Migrations...), m13Migrations...), m14Migrations...), m15Migrations...), m16Migrations...), m17Migrations...), m18Migrations...)
+	all := append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append([]string{},
+		m1Migrations...), m2Migrations...), m3Migrations...), m4Migrations...), m5Migrations...), m6Migrations...), m7Migrations...), m8Migrations...), m9Migrations...), m10Migrations...), m11Migrations...), m12Migrations...), m13Migrations...), m14Migrations...), m15Migrations...), m16Migrations...), m17Migrations...), m18Migrations...), m19Migrations...)
 	for _, stmt := range all {
 		if _, err := s.pool.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("storage: migrate: %w", err)
