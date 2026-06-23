@@ -608,5 +608,26 @@ func (s *Store) LoadState(ctx context.Context, projectID, planID string) (projec
 		return projectstate.ProjectState{}, fmt.Errorf("project: load state assets rows: %w", err)
 	}
 
+	// custom 节点产物 (node_outputs)，按本 plan 的 todo 关联 (T3 运行视图最小面板)。
+	norows, err := s.db.WithContext(ctx).Raw(
+		`SELECT no.todo_id, no.content, no.format
+		 FROM node_outputs no
+		 JOIN todos t ON no.todo_id = t.id
+		 WHERE t.plan_id=$1`, planRowID).Rows()
+	if err != nil {
+		return projectstate.ProjectState{}, fmt.Errorf("project: load node outputs: %w", err)
+	}
+	defer norows.Close()
+	for norows.Next() {
+		var o projectstate.NodeOutput
+		if err := norows.Scan(&o.TodoID, &o.Content, &o.Format); err != nil {
+			return projectstate.ProjectState{}, fmt.Errorf("project: scan node output: %w", err)
+		}
+		in.Outputs = append(in.Outputs, o)
+	}
+	if err := norows.Err(); err != nil {
+		return projectstate.ProjectState{}, fmt.Errorf("project: node outputs rows: %w", err)
+	}
+
 	return projectstate.Compute(in), nil
 }

@@ -185,7 +185,7 @@ func TestBuildGraph_LinearChain(t *testing.T) {
 		{ID: "a", Type: "script", Status: "done", CreatedAt: tAt(1)},
 		{ID: "b", Type: "storyboard", Status: "running", DependsOn: []string{"a"}, CreatedAt: tAt(2)},
 	}
-	nodes, edges := buildGraph(todos, map[string]Asset{})
+	nodes, edges := buildGraph(todos, map[string]Asset{}, map[string]NodeOutput{})
 	if len(nodes) != 2 || nodes[0].ID != "a" || nodes[1].ID != "b" {
 		t.Fatalf("nodes = %+v", nodes)
 	}
@@ -205,7 +205,7 @@ func TestBuildGraph_PerTypeSequence(t *testing.T) {
 		{ID: "s1", Type: "script", Status: "done", CreatedAt: tAt(1)},
 		{ID: "s2", Type: "script", Status: "ready", CreatedAt: tAt(2)},
 	}
-	nodes, _ := buildGraph(todos, map[string]Asset{})
+	nodes, _ := buildGraph(todos, map[string]Asset{}, map[string]NodeOutput{})
 	if nodes[0].Label != "剧本生成 #1" || nodes[1].Label != "剧本生成 #2" {
 		t.Fatalf("labels = %q,%q", nodes[0].Label, nodes[1].Label)
 	}
@@ -216,7 +216,7 @@ func TestBuildGraph_StableOrderIgnoresInputOrder(t *testing.T) {
 		{ID: "s2", Type: "script", Status: "ready", CreatedAt: tAt(2)},
 		{ID: "s1", Type: "script", Status: "done", CreatedAt: tAt(1)},
 	}
-	nodes, _ := buildGraph(todos, map[string]Asset{})
+	nodes, _ := buildGraph(todos, map[string]Asset{}, map[string]NodeOutput{})
 	if nodes[0].ID != "s1" || nodes[1].ID != "s2" {
 		t.Fatalf("order = %s,%s want s1,s2", nodes[0].ID, nodes[1].ID)
 	}
@@ -230,7 +230,7 @@ func TestBuildGraph_TieBreakByID(t *testing.T) {
 		{ID: "b", Type: "asset", Status: "ready", CreatedAt: tAt(5)},
 		{ID: "a", Type: "asset", Status: "ready", CreatedAt: tAt(5)},
 	}
-	nodes, _ := buildGraph(todos, map[string]Asset{})
+	nodes, _ := buildGraph(todos, map[string]Asset{}, map[string]NodeOutput{})
 	if nodes[0].ID != "a" || nodes[1].ID != "b" {
 		t.Fatalf("tiebreak order = %s,%s want a,b", nodes[0].ID, nodes[1].ID)
 	}
@@ -242,7 +242,7 @@ func TestBuildGraph_FanInMultiParent(t *testing.T) {
 		{ID: "b", Type: "script", Status: "done", CreatedAt: tAt(2)},
 		{ID: "c", Type: "storyboard", Status: "ready", DependsOn: []string{"a", "b"}, CreatedAt: tAt(3)},
 	}
-	_, edges := buildGraph(todos, map[string]Asset{})
+	_, edges := buildGraph(todos, map[string]Asset{}, map[string]NodeOutput{})
 	if len(edges) != 2 {
 		t.Fatalf("edges = %+v want 2", edges)
 	}
@@ -261,7 +261,7 @@ func TestBuildGraph_FanOut(t *testing.T) {
 		{ID: "b", Type: "storyboard", Status: "ready", DependsOn: []string{"a"}, CreatedAt: tAt(2)},
 		{ID: "c", Type: "storyboard", Status: "ready", DependsOn: []string{"a"}, CreatedAt: tAt(3)},
 	}
-	_, edges := buildGraph(todos, map[string]Asset{})
+	_, edges := buildGraph(todos, map[string]Asset{}, map[string]NodeOutput{})
 	if len(edges) != 2 {
 		t.Fatalf("edges = %+v want 2", edges)
 	}
@@ -278,7 +278,7 @@ func TestBuildGraph_DropsDanglingEdge(t *testing.T) {
 	todos := []Todo{
 		{ID: "a", Type: "asset", Status: "ready", DependsOn: []string{"ghost"}, CreatedAt: tAt(1)},
 	}
-	_, edges := buildGraph(todos, map[string]Asset{})
+	_, edges := buildGraph(todos, map[string]Asset{}, map[string]NodeOutput{})
 	if len(edges) != 0 {
 		t.Fatalf("dangling edge not dropped: %+v", edges)
 	}
@@ -286,14 +286,14 @@ func TestBuildGraph_DropsDanglingEdge(t *testing.T) {
 
 func TestBuildGraph_AssetIDPassthrough(t *testing.T) {
 	todos := []Todo{{ID: "a", Type: "asset", Status: "done", CreatedAt: tAt(1)}}
-	nodes, _ := buildGraph(todos, map[string]Asset{"a": {ID: "as1", TodoID: "a"}})
+	nodes, _ := buildGraph(todos, map[string]Asset{"a": {ID: "as1", TodoID: "a"}}, map[string]NodeOutput{})
 	if nodes[0].AssetID != "as1" {
 		t.Fatalf("assetId = %q want as1", nodes[0].AssetID)
 	}
 }
 
 func TestBuildGraph_Empty(t *testing.T) {
-	nodes, edges := buildGraph(nil, map[string]Asset{})
+	nodes, edges := buildGraph(nil, map[string]Asset{}, map[string]NodeOutput{})
 	if nodes == nil || edges == nil {
 		t.Fatalf("must return non-nil slices: nodes=%v edges=%v", nodes, edges)
 	}
@@ -329,5 +329,31 @@ func TestCompute_PopulatesGraph(t *testing.T) {
 	got := Compute(in)
 	if len(got.Nodes) != 1 || got.Nodes[0].ID != "a" {
 		t.Fatalf("nodes = %+v", got.Nodes)
+	}
+}
+
+func TestBuildGraph_CustomOutput(t *testing.T) {
+	todos := []Todo{
+		{ID: "c1", Type: "custom:llm", Status: "done", CreatedAt: tAt(1)},
+		{ID: "s1", Type: "script", Status: "done", CreatedAt: tAt(2)},
+	}
+	outputs := map[string]NodeOutput{
+		"c1": {TodoID: "c1", Content: "Hello world", Format: "text"},
+	}
+	nodes, _ := buildGraph(todos, map[string]Asset{}, outputs)
+	var c1Node, s1Node GraphNode
+	for _, n := range nodes {
+		if n.ID == "c1" {
+			c1Node = n
+		}
+		if n.ID == "s1" {
+			s1Node = n
+		}
+	}
+	if c1Node.Output != "Hello world" || c1Node.OutputFormat != "text" {
+		t.Fatalf("c1 output = %q/%q, want Hello world/text", c1Node.Output, c1Node.OutputFormat)
+	}
+	if s1Node.Output != "" {
+		t.Fatalf("s1 (no output) should have empty Output, got %q", s1Node.Output)
 	}
 }
