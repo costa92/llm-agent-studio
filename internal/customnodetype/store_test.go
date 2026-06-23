@@ -129,3 +129,28 @@ func TestDeleteInUse(t *testing.T) {
 		t.Fatalf("Delete after removing ref should succeed, got %v", err)
 	}
 }
+
+// TestValidate_HTTP exercises http kind save-time validation directly (no DB):
+// method enum, static url (no {{}}), {{secret:}} only in headers, outputFormat enum.
+func TestValidate_HTTP(t *testing.T) {
+	mk := func(params string) UpsertInput {
+		return UpsertInput{Label: "调接口", Kind: "http", Params: json.RawMessage(params)}
+	}
+	ok := `{"method":"POST","url":"https://api.example.com","headers":{"Authorization":"Bearer {{secret:K}}","X-Q":"{{draft}}"},"bodyTemplate":"{\"q\":\"{{draft}}\"}","outputFormat":"json"}`
+	if err := validate(mk(ok)); err != nil {
+		t.Fatalf("valid http params rejected: %v", err)
+	}
+	bad := map[string]string{
+		"bad method":       `{"method":"TRACE","url":"https://x.com"}`,
+		"templated url":    `{"method":"GET","url":"https://{{host}}/x"}`,
+		"secret in url":    `{"method":"GET","url":"https://x.com/{{secret:K}}"}`,
+		"secret in body":   `{"method":"POST","url":"https://x.com","bodyTemplate":"{{secret:K}}"}`,
+		"bad outputFormat": `{"method":"GET","url":"https://x.com","outputFormat":"xml"}`,
+		"missing url":      `{"method":"GET"}`,
+	}
+	for name, p := range bad {
+		if err := validate(mk(p)); err == nil {
+			t.Errorf("%s should be rejected", name)
+		}
+	}
+}
