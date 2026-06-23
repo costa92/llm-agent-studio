@@ -109,17 +109,14 @@ func TestRun(t *testing.T) {
 // TestNoIOGlobals proves no I/O is reachable: after a benign run, the
 // predeclared environment must not expose open/load.
 func TestNoIOGlobals(t *testing.T) {
-	for _, code := range []string{
-		`output = "ok"
-forbidden = "open" in dir(json)`,
-	} {
-		_ = code
-	}
-
-	// open/load must not be callable as predeclared builtins.
+	// `open` must not be a predeclared builtin.
 	if _, err := Run(context.Background(), `y = open`, nil, Options{}); err == nil {
 		t.Fatal("expected error referencing undefined `open`")
 	} else if !strings.Contains(err.Error(), "open") {
 		t.Fatalf("err should mention undefined open, got %v", err)
+	}
+	// `load(...)` must be rejected (thread.Load left nil).
+	if _, err := Run(context.Background(), `load("m", "x")`, nil, Options{}); err == nil {
+		t.Fatal("expected load(...) to be rejected")
 	}
 }

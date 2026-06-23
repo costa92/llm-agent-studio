@@ -39,7 +39,16 @@ type Options struct {
 // globals (plus a pure `json` module). The script must assign a string to the
 // global `output`. ctx cancellation / step-budget overrun → ErrTimeout; any
 // other failure → ErrFailed (raw err wrapped for logs only).
-func Run(ctx context.Context, code string, inputs map[string]string, opt Options) (string, error) {
+func Run(ctx context.Context, code string, inputs map[string]string, opt Options) (out string, err error) {
+	// This is the isolation boundary for untrusted author code, and the worker
+	// does not recover around node execution — convert any library panic into a
+	// classified failure rather than crashing the (single, multi-tenant) binary.
+	defer func() {
+		if r := recover(); r != nil {
+			out, err = "", fmt.Errorf("%w: panic: %v", ErrFailed, r)
+		}
+	}()
+
 	maxSteps := opt.MaxSteps
 	if maxSteps == 0 {
 		maxSteps = DefaultMaxSteps
@@ -49,10 +58,13 @@ func Run(ctx context.Context, code string, inputs map[string]string, opt Options
 		outCap = DefaultOutputCap
 	}
 
-	predeclared := starlark.StringDict{"json": starlarkjson.Module}
+	// Inject inputs first, THEN the json module, so the module always wins and an
+	// input named "json" cannot shadow it.
+	predeclared := starlark.StringDict{}
 	for k, v := range inputs {
 		predeclared[k] = starlark.String(v)
 	}
+	predeclared["json"] = starlarkjson.Module
 
 	thread := &starlark.Thread{Name: "node"}
 	thread.SetMaxExecutionSteps(maxSteps)
@@ -86,11 +98,11 @@ func Run(ctx context.Context, code string, inputs map[string]string, opt Options
 		return "", fmt.Errorf("%w: %v", ErrFailed, err)
 	}
 
-	out, ok := globals["output"]
+	outVal, ok := globals["output"]
 	if !ok {
 		return "", ErrOutputMissing
 	}
-	s, ok := out.(starlark.String)
+	s, ok := outVal.(starlark.String)
 	if !ok {
 		return "", fmt.Errorf("%w: output must be a string (use json.encode for JSON)", ErrFailed)
 	}
