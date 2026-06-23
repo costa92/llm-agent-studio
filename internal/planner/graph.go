@@ -29,6 +29,13 @@ func isTypeAllowed(typ string) bool {
 	return whitelistedTypes[typ]
 }
 
+// isCustomType reports whether typ is a user-defined custom node type
+// (prefix "custom:" with a non-empty slug). Custom types are accepted by
+// ValidateCustomGraph (save path) but refused at run time (no executor yet).
+func isCustomType(typ string) bool {
+	return strings.HasPrefix(typ, "custom:") && len(typ) > len("custom:")
+}
+
 // Node is one planner-emitted todo node.
 type Node struct {
 	ID        string   `json:"id"`

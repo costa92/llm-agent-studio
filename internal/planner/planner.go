@@ -172,7 +172,7 @@ func ValidateCustomGraph(nodes []WorkflowNode) error {
 			return fmt.Errorf("custom workflow: duplicate node id %q", n.ID)
 		}
 		ids[n.ID] = true
-		if !isTypeAllowed(n.Type) {
+		if !isTypeAllowed(n.Type) && !isCustomType(n.Type) {
 			return fmt.Errorf("custom workflow: node %q has non-whitelisted type %q", n.ID, n.Type)
 		}
 	}
