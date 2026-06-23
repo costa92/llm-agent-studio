@@ -320,6 +320,17 @@ func TestHasCustomNode(t *testing.T) {
 	}
 }
 
+func TestHasUnboundCustomNode(t *testing.T) {
+	annotated := []WorkflowNode{{ID: "a", Type: "custom:note"}}
+	if !HasUnboundCustomNode(annotated) {
+		t.Fatal("annotation custom node must be unbound")
+	}
+	typed := []WorkflowNode{{ID: "a", Type: "custom:llm", TypeId: "reg-1"}}
+	if HasUnboundCustomNode(typed) {
+		t.Fatal("typed custom node must NOT be unbound")
+	}
+}
+
 // TestPlanCustomInlinePromptText: an inline PromptText on a node is used directly
 // as systemPrompt and takes precedence over PromptID (no DB/builtin lookup).
 func TestPlanCustomInlinePromptText(t *testing.T) {

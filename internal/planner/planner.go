@@ -154,6 +154,35 @@ type WorkflowNode struct {
 	// (not saved to the library). Takes precedence over PromptID when non-empty.
 	PromptText string   `json:"promptText"`
 	DependsOn  []string `json:"dependsOn"`
+	// TypeId references a custom_node_types.id (org registry). Non-empty ⇒ a
+	// runnable "typed" custom node; empty on a custom:* node ⇒ Phase 1 annotation
+	// (non-runnable). Discriminator for HasUnboundCustomNode + run resolution.
+	TypeId string `json:"typeId"`
+	// VarBindings binds the template's {{name}} tokens to upstream workflow-LOCAL
+	// node ids. Lives on the node instance (NOT registry params) because sourceNodeId
+	// is workflow-local. PlanCustom reads THIS to inject params.variables + two-pass
+	// rewrite local→todo. Empty for annotation nodes.
+	VarBindings []CustomVariable `json:"varBindings"`
+}
+
+// CustomVariable binds a template var name to an upstream node's text output.
+// SourceNodeId is a workflow-LOCAL node id at plan time (lives on the node's
+// VarBindings); PlanCustom rewrites it to the produced todo id (SourceTodoId)
+// after CreateGraph (two-pass) and injects it into params.variables.
+type CustomVariable struct {
+	Name         string `json:"name"`
+	SourceNodeId string `json:"sourceNodeId,omitempty"`
+	SourceTodoId string `json:"sourceTodoId,omitempty"`
+}
+
+// ResolvedType is the run handler's per-node registry resolution (org-scoped):
+// the entry's Kind + raw Params (LlmParams: systemPrompt/userPrompt/model/
+// temperature/outputFormat — NO variables; variable bindings come from the node's
+// VarBindings). The handler builds map[nodeID]ResolvedType and passes it into
+// PlanCustom; the planner never reads the registry (store-thin).
+type ResolvedType struct {
+	Kind   string
+	Params json.RawMessage
 }
 
 // ValidateCustomGraph enforces the custom-workflow DAG rules (non-empty, unique
@@ -226,6 +255,18 @@ func ValidateCustomGraph(nodes []WorkflowNode) error {
 func HasCustomNode(nodes []WorkflowNode) bool {
 	for _, n := range nodes {
 		if isCustomType(n.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+// HasUnboundCustomNode reports whether any node is a custom:* node WITHOUT a
+// typeId (= a Phase 1 annotation, non-runnable). Run handlers refuse such
+// workflows (typed-only workflows are runnable). Discriminator = explicit typeId.
+func HasUnboundCustomNode(nodes []WorkflowNode) bool {
+	for _, n := range nodes {
+		if isCustomType(n.Type) && n.TypeId == "" {
 			return true
 		}
 	}
