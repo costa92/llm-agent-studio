@@ -163,6 +163,10 @@ func runWorkflowHandler(ps ProjectStore, ws WorkflowStore, pl PlannerPort, ev Ev
 			http.Error(w, "invalid workflow: "+err.Error(), http.StatusBadRequest)
 			return
 		}
+		if planner.HasCustomNode(nodes) {
+			http.Error(w, "当前 Workflow 包含自定义节点，暂不支持运行", http.StatusBadRequest)
+			return
+		}
 		if over, err := quotaExceeded(r.Context(), cs, quota, p.OrgID); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

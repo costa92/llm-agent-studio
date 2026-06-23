@@ -188,6 +188,66 @@ func TestRunHandlerQuotaZeroDisabled(t *testing.T) {
 	}
 }
 
+// fixedProjectStore is a ProjectStore stub whose Get always returns the
+// pre-configured project (used to inject CustomWorkflowEnabled / WorkflowNodes
+// without a real database).
+type fixedProjectStore struct {
+	p project.Project
+}
+
+func (s fixedProjectStore) Create(_ context.Context, _ project.CreateInput) (project.Project, error) {
+	return project.Project{}, nil
+}
+func (s fixedProjectStore) Get(_ context.Context, _ string) (project.Project, error) {
+	return s.p, nil
+}
+func (s fixedProjectStore) ListByOrg(_ context.Context, _ string, _ int, _ string) ([]project.Project, string, error) {
+	return nil, "", nil
+}
+func (s fixedProjectStore) Update(_ context.Context, _ string, _ project.UpdateInput) (project.Project, error) {
+	return project.Project{}, nil
+}
+func (s fixedProjectStore) SetStatus(_ context.Context, _, _ string) error  { return nil }
+func (s fixedProjectStore) SetCover(_ context.Context, _, _ string) error   { return nil }
+func (s fixedProjectStore) Cancel(_ context.Context, _ string) error        { return nil }
+func (s fixedProjectStore) OrgIDForProject(_ context.Context, _ string) (string, error) {
+	return s.p.OrgID, nil
+}
+func (s fixedProjectStore) ListPlans(_ context.Context, _ string) ([]project.Plan, error) {
+	return nil, nil
+}
+func (s fixedProjectStore) LoadState(_ context.Context, _, _ string) (projectstate.ProjectState, error) {
+	return projectstate.ProjectState{}, nil
+}
+
+// TestRunHandlerRefusesCustomNodes verifies that the project-level run path
+// (POST /api/projects/{id}/run) returns 400 when the project's WorkflowNodes
+// contains a custom:* node type, before any side effects are triggered.
+func TestRunHandlerRefusesCustomNodes(t *testing.T) {
+	nodes, _ := json.Marshal([]planner.WorkflowNode{
+		{ID: "s1", Type: "script"},
+		{ID: "c1", Type: "custom:translate", DependsOn: []string{"s1"}},
+	})
+	ps := fixedProjectStore{p: project.Project{
+		ID:                    "p1",
+		OrgID:                 "o1",
+		Status:                "draft",
+		CustomWorkflowEnabled: true,
+		WorkflowNodes:         json.RawMessage(nodes),
+	}}
+	h := runHandler(ps, stubPlanner{}, stubAppender{}, &stubCost{count: 0}, 100, nil)
+	req := httptest.NewRequest("POST", "/api/projects/p1/run", nil)
+	req.SetPathValue("id", "p1")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("custom-node project run should 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "暂不支持运行") {
+		t.Fatalf("body should contain \"暂不支持运行\", got: %s", rr.Body.String())
+	}
+}
+
 type secretRejectingModels struct{}
 
 func (secretRejectingModels) Create(_ context.Context, _ models.CreateInput) (models.ModelConfig, error) {

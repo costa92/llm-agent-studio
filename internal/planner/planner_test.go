@@ -151,6 +151,21 @@ func TestValidateCustomGraph(t *testing.T) {
 			},
 			wantErr: "",
 		},
+		{
+			name: "custom type accepted",
+			nodes: []WorkflowNode{
+				{ID: "node1", Type: "script"},
+				{ID: "node2", Type: "custom:translate", DependsOn: []string{"node1"}},
+			},
+			wantErr: "",
+		},
+		{
+			name: "empty custom slug rejected",
+			nodes: []WorkflowNode{
+				{ID: "node1", Type: "custom:"},
+			},
+			wantErr: "custom workflow: node \"node1\" has non-whitelisted type \"custom:\"",
+		},
 	}
 
 	for _, tc := range cases {
@@ -290,6 +305,18 @@ func TestPlanCustomBuiltinPrompt(t *testing.T) {
 	}
 	if !strings.Contains(inputJSON, "专业的短视频编剧") {
 		t.Fatalf("built-in systemPrompt not resolved into input_json: %q", inputJSON)
+	}
+}
+
+func TestHasCustomNode(t *testing.T) {
+	if HasCustomNode([]WorkflowNode{{ID: "a", Type: "script"}}) {
+		t.Fatal("builtin-only graph should not report custom node")
+	}
+	if !HasCustomNode([]WorkflowNode{
+		{ID: "a", Type: "script"},
+		{ID: "b", Type: "custom:translate", DependsOn: []string{"a"}},
+	}) {
+		t.Fatal("graph with custom: node should report custom node")
 	}
 }
 
