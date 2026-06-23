@@ -310,6 +310,18 @@ func TestPlanCustomBuiltinPrompt(t *testing.T) {
 
 // TestPlanCustomInlinePromptText: an inline PromptText on a node is used directly
 // as systemPrompt and takes precedence over PromptID (no DB/builtin lookup).
+func TestHasCustomNode(t *testing.T) {
+	if HasCustomNode([]WorkflowNode{{ID: "a", Type: "script"}}) {
+		t.Fatal("builtin-only graph should not report custom node")
+	}
+	if !HasCustomNode([]WorkflowNode{
+		{ID: "a", Type: "script"},
+		{ID: "b", Type: "custom:translate", DependsOn: []string{"a"}},
+	}) {
+		t.Fatal("graph with custom: node should report custom node")
+	}
+}
+
 func TestPlanCustomInlinePromptText(t *testing.T) {
 	p, st, projID := newPlanner(t, nil)
 	ctx := context.Background()

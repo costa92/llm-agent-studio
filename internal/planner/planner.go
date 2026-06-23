@@ -220,6 +220,18 @@ func ValidateCustomGraph(nodes []WorkflowNode) error {
 	return nil
 }
 
+// HasCustomNode reports whether any node is a user-defined custom type
+// (custom:* prefix). Run handlers use this to refuse running workflows whose
+// custom nodes have no executor yet (Phase 1). Save handlers do NOT call this.
+func HasCustomNode(nodes []WorkflowNode) bool {
+	for _, n := range nodes {
+		if isCustomType(n.Type) {
+			return true
+		}
+	}
+	return false
+}
+
 // PlanCustom plans a workflow defined manually by the user, bypassing the LLM
 // planner. workflowID ties the run (plans row) to its first-class workflow so a
 // workflow's runs/assets/timeline can be isolated; pass "" for the legacy
