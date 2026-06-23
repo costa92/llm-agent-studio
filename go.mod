@@ -15,6 +15,7 @@ require (
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/sdk v1.43.0
 	go.opentelemetry.io/otel/trace v1.43.0
+	go.starlark.net v0.0.0-20260613233743-8ba36ccb83fb
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/gorm v1.31.1
 )
