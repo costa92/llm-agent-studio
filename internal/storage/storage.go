@@ -447,10 +447,40 @@ var m17Migrations = []string{
 	`ALTER TABLE projects ADD COLUMN IF NOT EXISTS picturebook_config TEXT NOT NULL DEFAULT ''`,
 }
 
-// Migrate applies the M1 + M2 + M3 + M4 + M5 + M6 + M7 + M8 + M9 + M10 + M11 + M12 + M13 + M14 + M15 + M16 + M17 migrations in order. Idempotent.
+// m18Migrations 建 custom_node_types (组织级 typed 自定义节点注册表) + node_outputs
+// (通用产物表，custom 执行结果落地，下游变量读取 + 运行视图消费)。
+// custom_node_types: 唯一索引 (org_id, slug)；编辑只改 label/color/params，不改 slug/kind。
+// node_outputs: project scope；content 存文本或 JSON，format 标注。additive only。
+var m18Migrations = []string{
+	`CREATE TABLE IF NOT EXISTS custom_node_types (
+		id TEXT PRIMARY KEY,
+		org_id TEXT NOT NULL,
+		slug TEXT NOT NULL,
+		label TEXT NOT NULL,
+		color TEXT NOT NULL DEFAULT '',
+		kind TEXT NOT NULL,
+		params JSONB NOT NULL DEFAULT '{}',
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+	)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS custom_node_types_org_slug_uniq ON custom_node_types (org_id, slug)`,
+	`CREATE TABLE IF NOT EXISTS node_outputs (
+		id TEXT PRIMARY KEY,
+		project_id TEXT NOT NULL,
+		todo_id TEXT NOT NULL,
+		type TEXT NOT NULL,
+		content TEXT NOT NULL DEFAULT '',
+		format TEXT NOT NULL DEFAULT 'text',
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+	)`,
+	`CREATE INDEX IF NOT EXISTS node_outputs_todo_idx ON node_outputs (todo_id)`,
+	`CREATE INDEX IF NOT EXISTS node_outputs_project_idx ON node_outputs (project_id)`,
+}
+
+// Migrate applies the M1 + M2 + M3 + M4 + M5 + M6 + M7 + M8 + M9 + M10 + M11 + M12 + M13 + M14 + M15 + M16 + M17 + M18 migrations in order. Idempotent.
 func (s *Storage) Migrate(ctx context.Context) error {
-	all := append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append([]string{},
-		m1Migrations...), m2Migrations...), m3Migrations...), m4Migrations...), m5Migrations...), m6Migrations...), m7Migrations...), m8Migrations...), m9Migrations...), m10Migrations...), m11Migrations...), m12Migrations...), m13Migrations...), m14Migrations...), m15Migrations...), m16Migrations...), m17Migrations...)
+	all := append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append([]string{},
+		m1Migrations...), m2Migrations...), m3Migrations...), m4Migrations...), m5Migrations...), m6Migrations...), m7Migrations...), m8Migrations...), m9Migrations...), m10Migrations...), m11Migrations...), m12Migrations...), m13Migrations...), m14Migrations...), m15Migrations...), m16Migrations...), m17Migrations...), m18Migrations...)
 	for _, stmt := range all {
 		if _, err := s.pool.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("storage: migrate: %w", err)
