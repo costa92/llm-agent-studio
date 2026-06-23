@@ -24,7 +24,7 @@ var ErrNotFound = errors.New("customnodetype: type not found")
 // ErrInUse 表示该类型被某 workflow 节点 (typeId) 引用，不可删除 (best-effort: 见 Delete)。
 var ErrInUse = errors.New("customnodetype: type in use by workflow nodes")
 
-// validKinds 是支持的 kind 集合 (后续 C 扩展 script/python)。
+// validKinds 是支持的 kind 集合 (llm=2A, http=2B, script=2C/Starlark)。
 var validKinds = map[string]bool{"llm": true, "http": true, "script": true}
 
 // secretRefRe 探测 {{secret:...}} 引用 (与 worker 同语义)；httpMethods 是允许的方法集。

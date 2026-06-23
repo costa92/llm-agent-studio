@@ -1568,6 +1568,11 @@ const (
 	errScriptTooLarge   scriptError = "script_output_too_large"
 )
 
+// scriptWallTimeout caps Starlark execution. The step budget does not bound
+// heap, so this short deadline is the primary OOM-window mitigation (spec D4);
+// a pure in-memory transform of node outputs completes in milliseconds.
+const scriptWallTimeout = 5 * time.Second
+
 // classifyScriptError maps a scriptengine sentinel to a bare opaque enum.
 func classifyScriptError(err error) error {
 	switch {
@@ -1821,7 +1826,14 @@ func (w *Worker) runCustomScript(ctx context.Context, c claimed, in scriptParams
 	if err != nil {
 		return "", errScriptFailed // opaque: never leak the variable/source
 	}
-	out, err := scriptengine.Run(ctx, in.Code, inputs, scriptengine.Options{})
+	// Dedicated short wall-time for Starlark execution: the step budget does NOT
+	// bound heap (a comprehension can OOM the shared binary in few steps), so a
+	// tight deadline is the primary OOM-window mitigation (spec D4). This is
+	// independent of the much larger WORKER_CALL_TIMEOUT (sized for LLM calls);
+	// a pure in-memory transform completes in milliseconds, so 5s is generous.
+	runCtx, cancel := context.WithTimeout(ctx, scriptWallTimeout)
+	defer cancel()
+	out, err := scriptengine.Run(runCtx, in.Code, inputs, scriptengine.Options{})
 	if err != nil {
 		return "", classifyScriptError(err)
 	}

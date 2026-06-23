@@ -50,7 +50,7 @@ Starlark 的 error 文本含**源码行号、变量值、堆栈**——`fail()` 
 ### D4：资源限制（含内存残留风险的诚实陈述）
 
 - **步数预算**：`thread.SetMaxExecutionSteps(N)`——指令计数超限即中断（含无限循环、`while`/递归默认已禁）。常量，保守默认。
-- **Wall-time**：以 `ctx`（worker 既有 `CallTimeout`）驱动一个 goroutine，超时调 `thread.Cancel(reason)`（`Cancel` 跨 goroutine 安全，原子 CAS）。**默认须保守（如 5s）**——见下方内存风险，wall-time 是限制 OOM 窗口的主要杠杆。
+- **Wall-time**：`runCustomScript` 用**专属短超时** `scriptWallTimeout = 5s`（`context.WithTimeout` 包住 `scriptengine.Run`），驱动 goroutine 超时调 `thread.Cancel`（`Cancel` 跨 goroutine 安全，原子 CAS）。**关键**：这是独立于 `WORKER_CALL_TIMEOUT`（默认 90s，为 LLM/生成调用设计）的专属值——纯内存变换以毫秒计，5s 已很宽裕，而 90s 的 OOM 窗口太大。wall-time 是限制 OOM 窗口的主要杠杆（终审发现）。
 - **输出上限**：读出 `output` 后检查长度 ≤ 上限（如 256KB），超限 → `errOutputTooLarge`。
 - **内存（已知残留风险，验证发现 #3，HIGH）**：**步数预算并不约束堆内存。** `for`/推导式是允许的，`["x"*1000000 for _ in range(100000)]` 这类脚本能在极少步数内分配数十 GB、在步数预算触发前就 **OOM 掉整个 `studiod` 进程**（单二进制 → 影响全部租户的可用性）。由于 `script` 类型 editor 可建（D1），这是一个对每个 editor 开放的**可用性 DoS**（非数据泄露）。
   - **v1 取舍**：本项目以"最简且构造即安全"为取向，且 org editor 为半可信成员；v1 **接受此可用性残留风险**，缓解 = 保守 wall-time（5s 量级，缩小 OOM 窗口）+ 步数预算 + 对 org editor 的信任。
