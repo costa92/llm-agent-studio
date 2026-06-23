@@ -168,11 +168,41 @@ describe("CustomNodeTypeManager", () => {
     })
   })
 
-  it("a 409 on delete surfaces an in-use error message", async () => {
+  // ─── 成功 toast ──────────────────────────────────────────────────────────────
+
+  it("shows 已创建 toast after successful create", async () => {
     const user = userEvent.setup()
-    deleteMutateAsync.mockRejectedValue(
-      new ApiError(409, "该类型已被使用"),
-    )
+    renderManager()
+    await user.click(screen.getByRole("button", { name: /新建类型/ }))
+
+    await user.clear(screen.getByLabelText(/名称/))
+    await user.type(screen.getByLabelText(/名称/), "测试类型")
+    await user.clear(screen.getByLabelText(/用户提示词/))
+    await user.type(screen.getByLabelText(/用户提示词/), "请处理：{{input}}")
+    await user.click(screen.getByRole("button", { name: /创建/ }))
+
+    await waitFor(() => {
+      expect(screen.getByText(/已创建/)).toBeInTheDocument()
+    })
+  })
+
+  it("shows 已更新 toast after successful update", async () => {
+    const user = userEvent.setup()
+    queryState.value = { data: [TYPE_A], isLoading: false, isError: false, refetch: vi.fn() }
+    renderManager()
+
+    await user.click(screen.getByRole("button", { name: /编辑/ }))
+    await user.clear(screen.getByLabelText(/名称/))
+    await user.type(screen.getByLabelText(/名称/), "翻译助手v2")
+    await user.click(screen.getByRole("button", { name: /保存/ }))
+
+    await waitFor(() => {
+      expect(screen.getByText(/已更新/)).toBeInTheDocument()
+    })
+  })
+
+  it("shows 已删除 toast after successful delete", async () => {
+    const user = userEvent.setup()
     queryState.value = { data: [TYPE_A], isLoading: false, isError: false, refetch: vi.fn() }
     renderManager()
 
@@ -180,8 +210,104 @@ describe("CustomNodeTypeManager", () => {
     await user.click(screen.getByRole("button", { name: /确认删除/ }))
 
     await waitFor(() => {
+      expect(screen.getByText(/已删除/)).toBeInTheDocument()
+    })
+  })
+
+  // ─── 409 错误 ─────────────────────────────────────────────────────────────────
+
+  it("a 409 on delete toasts the in-use error message", async () => {
+    const user = userEvent.setup()
+    deleteMutateAsync.mockRejectedValue(new ApiError(409, "该类型已被使用"))
+    queryState.value = { data: [TYPE_A], isLoading: false, isError: false, refetch: vi.fn() }
+    renderManager()
+
+    await user.click(screen.getByRole("button", { name: /删除/ }))
+    await user.click(screen.getByRole("button", { name: /确认删除/ }))
+
+    // useCrudResource.confirmDelete 把 delete 错误 toast.error()（而非内联 alert）。
+    // 匹配 toast 中「请先移除引用」子串，避免与页面描述文字（"移除所有引用节点"）冲突。
+    await waitFor(() => {
+      expect(screen.getByText(/请先移除引用/)).toBeInTheDocument()
+    })
+  })
+
+  it("a 409 on create surfaces the 名称或slug 已被占用 error in the dialog", async () => {
+    const user = userEvent.setup()
+    createMutateAsync.mockRejectedValue(new ApiError(409, "slug conflict"))
+    renderManager()
+
+    await user.click(screen.getByRole("button", { name: /新建类型/ }))
+    await user.clear(screen.getByLabelText(/名称/))
+    await user.type(screen.getByLabelText(/名称/), "冲突类型")
+    await user.clear(screen.getByLabelText(/用户提示词/))
+    await user.type(screen.getByLabelText(/用户提示词/), "提示词")
+    await user.click(screen.getByRole("button", { name: /创建/ }))
+
+    await waitFor(() => {
       expect(screen.getByRole("alert")).toBeInTheDocument()
     })
-    expect(screen.getByRole("alert").textContent).toMatch(/引用/)
+    expect(screen.getByRole("alert").textContent).toMatch(/slug 已被占用/)
+  })
+
+  it("a 409 on update surfaces the 名称或slug 已被占用 error in the dialog", async () => {
+    const user = userEvent.setup()
+    updateMutateAsync.mockRejectedValue(new ApiError(409, "slug conflict"))
+    queryState.value = { data: [TYPE_A], isLoading: false, isError: false, refetch: vi.fn() }
+    renderManager()
+
+    await user.click(screen.getByRole("button", { name: /编辑/ }))
+    await user.clear(screen.getByLabelText(/名称/))
+    await user.type(screen.getByLabelText(/名称/), "冲突名称")
+    await user.click(screen.getByRole("button", { name: /保存/ }))
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toBeInTheDocument()
+    })
+    expect(screen.getByRole("alert").textContent).toMatch(/slug 已被占用/)
+  })
+
+  // ─── 对话框重新挂载（key prop 防陈旧状态）────────────────────────────────────
+
+  it("editing type A then type B prefills B (not A) — key remount", async () => {
+    const user = userEvent.setup()
+    queryState.value = { data: [TYPE_A, TYPE_B], isLoading: false, isError: false, refetch: vi.fn() }
+    renderManager()
+
+    // 编辑 A
+    const [editA] = screen.getAllByRole("button", { name: /编辑/ })
+    await user.click(editA)
+    expect(screen.getByLabelText(/名称/)).toHaveValue("翻译助手")
+    // 关闭
+    await user.click(screen.getByRole("button", { name: /取消/ }))
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+
+    // 编辑 B
+    const editBtns = screen.getAllByRole("button", { name: /编辑/ })
+    await user.click(editBtns[1])
+    // 应预填 B 的 label，而非陈旧的 A
+    await waitFor(() => {
+      expect(screen.getByLabelText(/名称/)).toHaveValue("摘要生成")
+    })
+  })
+
+  it("opening create dialog after an edit shows an empty form", async () => {
+    const user = userEvent.setup()
+    queryState.value = { data: [TYPE_A], isLoading: false, isError: false, refetch: vi.fn() }
+    renderManager()
+
+    // 编辑 A（预填 label）
+    await user.click(screen.getByRole("button", { name: /编辑/ }))
+    expect(screen.getByLabelText(/名称/)).toHaveValue("翻译助手")
+    // 关闭
+    await user.click(screen.getByRole("button", { name: /取消/ }))
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+
+    // 打开新建对话框
+    await user.click(screen.getByRole("button", { name: /新建类型/ }))
+    // label 应为空（而非上次编辑的「翻译助手」）
+    await waitFor(() => {
+      expect(screen.getByLabelText(/名称/)).toHaveValue("")
+    })
   })
 })

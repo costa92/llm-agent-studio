@@ -22,7 +22,12 @@ import {
 } from "./api"
 import { LlmParamForm } from "./LlmParamForm"
 import { CUSTOM_PALETTE } from "@/features/workflow-canvas/nodeColor"
-import { CrudResourcePage, DataView, ConfirmDialog } from "../common/crud"
+import {
+  useCrudResource,
+  CrudResourcePage,
+  DataView,
+  ConfirmDialog,
+} from "../common/crud"
 
 // 默认 LLM 参数：userPrompt 为必填（其他可选）。
 const DEFAULT_PARAMS: LlmParams = { userPrompt: "" }
@@ -46,6 +51,10 @@ interface FormDraft {
 // ─── 类型编辑对话框 ────────────────────────────────────────────────────────────
 // 独立组件而非内联，确保 open→reopen 时 useState 能通过 key prop 重置（Phase-1 教训）。
 // 从父组件传 key={target?.id ?? "create"} 强制重新挂载以清除陈旧状态。
+//
+// 注：此处使用受控 value/onChange 表单（LlmParamForm），而非 FormDialog 的 react-hook-form
+// 合约（FormDialog 要求 zodResolver schema + register/handleSubmit）。两者接口不兼容，
+// 因此保留独立 Dialog，但把 submit/状态机委托给父组件的 useCrudResource（含 toast）。
 
 interface TypeDialogProps {
   open: boolean
@@ -181,78 +190,36 @@ export function CustomNodeTypeManager({ org }: CustomNodeTypeManagerProps) {
   const updateMutation = useUpdateCustomNodeType(org)
   const deleteMutation = useDeleteCustomNodeType(org)
 
-  // 对话框状态：null = 关闭；否则携带 mode + 目标（编辑时）。
-  const [dialog, setDialog] = useState<{ mode: "create" | "edit"; target: CustomNodeType | null } | null>(null)
-  // 删除确认目标。
-  const [deleteTarget, setDeleteTarget] = useState<CustomNodeType | null>(null)
-  const [deleteError, setDeleteError] = useState<string | null>(null)
-  const [deleting, setDeleting] = useState(false)
-  // 提交状态 + 错误。
-  const [submitting, setSubmitting] = useState(false)
-  const [submitError, setSubmitError] = useState<string | null>(null)
+  const crud = useCrudResource<CustomNodeType>({
+    getId: (ct) => ct.id,
+    create: (input) => createMutation.mutateAsync(input as UpsertCustomNodeTypeInput),
+    update: (id, input) =>
+      updateMutation.mutateAsync({ id, input: input as UpsertCustomNodeTypeInput }),
+    remove: (id) => deleteMutation.mutateAsync(id),
+    labels: { created: "自定义节点类型已创建", updated: "自定义节点类型已更新", deleted: "自定义节点类型已删除" },
+    errorMessage: (action, err) => {
+      if (action !== "delete" && err instanceof ApiError && err.status === 409) {
+        return "名称或 slug 已被占用，请使用其他名称"
+      }
+      if (action === "delete" && err instanceof ApiError && err.status === 409) {
+        return "该类型已被工作流节点引用，请先移除引用后再删除"
+      }
+      return err instanceof Error ? err.message : "操作失败，请重试"
+    },
+  })
 
-  function openCreate() {
-    setSubmitError(null)
-    setDialog({ mode: "create", target: null })
-  }
+  const editTarget = crud.dialog?.target ?? null
+  const dialogInitial = editTarget ? draftFrom(editTarget) : emptyDraft()
 
-  function openEdit(ct: CustomNodeType) {
-    setSubmitError(null)
-    setDialog({ mode: "edit", target: ct })
-  }
-
-  function closeDialog() {
-    setDialog(null)
-    setSubmitError(null)
-  }
-
-  async function handleSubmit(draft: FormDraft) {
-    if (!dialog) return
-    setSubmitting(true)
-    setSubmitError(null)
+  function handleDialogSubmit(draft: FormDraft) {
     const input: UpsertCustomNodeTypeInput = {
       label: draft.label.trim(),
       color: draft.color,
       kind: "llm",
       params: draft.params,
     }
-    try {
-      if (dialog.mode === "create") {
-        await createMutation.mutateAsync(input)
-      } else if (dialog.target) {
-        await updateMutation.mutateAsync({ id: dialog.target.id, input })
-      }
-      closeDialog()
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
-        setSubmitError("名称或 slug 已被占用，请使用其他名称")
-      } else {
-        setSubmitError(err instanceof Error ? err.message : "操作失败，请重试")
-      }
-    } finally {
-      setSubmitting(false)
-    }
+    void crud.submit(input)
   }
-
-  async function confirmDelete() {
-    if (!deleteTarget) return
-    setDeleting(true)
-    setDeleteError(null)
-    try {
-      await deleteMutation.mutateAsync(deleteTarget.id)
-      setDeleteTarget(null)
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
-        setDeleteError("该类型已被工作流节点引用，请先移除引用后再删除")
-      } else {
-        setDeleteError(err instanceof Error ? err.message : "删除失败，请重试")
-      }
-      setDeleting(false)
-    }
-  }
-
-  const editTarget = dialog?.target ?? null
-  const dialogInitial = editTarget ? draftFrom(editTarget) : emptyDraft()
 
   return (
     <>
@@ -260,7 +227,7 @@ export function CustomNodeTypeManager({ org }: CustomNodeTypeManagerProps) {
         title="自定义节点类型"
         description="管理组织级 LLM 自定义节点类型，在工作流中以 custom: 节点引用；删除前需移除所有引用节点。"
         createLabel="新建类型"
-        onCreate={openCreate}
+        onCreate={crud.openCreate}
         isLoading={query.isLoading}
         isError={query.isError}
         onRetry={() => void query.refetch()}
@@ -289,45 +256,36 @@ export function CustomNodeTypeManager({ org }: CustomNodeTypeManagerProps) {
             { key: "kind", header: "类型", cell: (ct) => ct.kind },
           ]}
           rowActions={[
-            { key: "edit", label: "编辑", onClick: openEdit },
-            { key: "delete", label: "删除", variant: "destructive" as const, onClick: (ct) => { setDeleteError(null); setDeleteTarget(ct) } },
+            { key: "edit", label: "编辑", onClick: crud.openEdit },
+            { key: "delete", label: "删除", variant: "destructive" as const, onClick: crud.requestDelete },
           ]}
         />
       </CrudResourcePage>
 
       {/* 新建/编辑对话框 — key 变化时强制重新挂载，清除内部 useState(initial) 陈旧值。 */}
-      {dialog !== null && (
+      {crud.dialog !== null && (
         <TypeDialog
           key={editTarget?.id ?? "create"}
-          open={dialog !== null}
-          mode={dialog.mode}
+          open={crud.dialog !== null}
+          mode={crud.dialog.mode}
           initial={dialogInitial}
-          submitting={submitting}
-          submitError={submitError}
-          onSubmit={(draft) => void handleSubmit(draft)}
-          onOpenChange={(open) => { if (!open) closeDialog() }}
+          submitting={crud.submitting}
+          submitError={crud.submitError}
+          onSubmit={handleDialogSubmit}
+          onOpenChange={(open) => { if (!open) crud.closeDialog() }}
         />
       )}
 
       {/* 删除确认对话框。 */}
       <ConfirmDialog
-        open={deleteTarget !== null}
+        open={crud.deleteTarget !== null}
         title="确认删除自定义节点类型？"
-        description={
-          <>
-            <span>删除「{deleteTarget?.label ?? ""}」后无法撤销。</span>
-            {deleteError && (
-              <span role="alert" className="block mt-2 text-danger text-[12px]">
-                {deleteError}
-              </span>
-            )}
-          </>
-        }
+        description={`删除「${crud.deleteTarget?.label ?? ""}」后无法撤销。`}
         confirmLabel="确认删除"
         variant="danger"
-        confirming={deleting}
-        onConfirm={() => void confirmDelete()}
-        onCancel={() => { setDeleteTarget(null); setDeleteError(null) }}
+        confirming={crud.deleting}
+        onConfirm={crud.confirmDelete}
+        onCancel={crud.cancelDelete}
       />
     </>
   )
