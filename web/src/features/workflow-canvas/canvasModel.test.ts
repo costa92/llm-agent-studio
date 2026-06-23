@@ -755,6 +755,30 @@ describe("custom-type registry + cascade", () => {
     expect(n.label).toBe("翻译")
     expect(n.color).toBe("#333333")
   })
+
+  it("createNode with display.typeId sets typeId on the created node (Task 13)", () => {
+    const res = createNode([], [], "custom:translate", { x: 0, y: 0 }, undefined, undefined, {
+      label: "翻译",
+      color: "#7c93ff",
+      typeId: "reg-abc",
+    })
+    const n = res.nodes[0].data.node
+    expect(n.typeId).toBe("reg-abc")
+    expect(n.label).toBe("翻译")
+    // toStudioNodes preserves typeId (already covered by T1 test, verify here end-to-end)
+    const { nodes: rfn, edges: rfe } = toReactFlow([n])
+    const out = toStudioNodes(rfn as RFNode[], rfe as RFEdge[])
+    expect(out[0].typeId).toBe("reg-abc")
+  })
+
+  it("addNodeAt with display.typeId sets typeId on the new node", () => {
+    const nodes = addNodeAt([], "custom:t", { x: 10, y: 20 }, undefined, undefined, {
+      label: "测试",
+      color: "#aabbcc",
+      typeId: "reg-xyz",
+    })
+    expect(nodes[0].data.node.typeId).toBe("reg-xyz")
+  })
 })
 
 describe("typeId + varBindings round-trip (T1)", () => {

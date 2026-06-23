@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { useCreatePrompt } from "@/features/prompt/api"
-import type { BasicPrompt, Prompt, WorkflowNode } from "@/lib/types"
+import type { BasicPrompt, LlmParams, Prompt, WorkflowNode } from "@/lib/types"
 import { defaultPromptIdFor } from "./canvasModel"
 import { isCustomType, nodeDisplay } from "./nodeColor"
 
@@ -19,6 +19,29 @@ import { isCustomType, nodeDisplay } from "./nodeColor"
 //（__default__/__custom__/__create__）、行内新建、type→promptId 重置、空串回吐守卫。
 // 与旧编辑器不同处：依赖（dependsOn）不在此面板编辑——连线在画布上以「边」为唯一真源
 // （见 canvasModel.toStudioNodes）；id 重命名的级联由画布的 onRename 处理（重键边）。
+
+// 从模板字符串中提取所有唯一 {{name}} 令牌名。
+// 跨 systemPrompt + userPrompt 两个模板合并去重（Set 保序）。
+// 恶意 {{ 无对应 }} 不崩溃（仅 match 完整 {{name}} 形式）。
+export function extractTemplateVars(
+  systemPrompt: string | undefined,
+  userPrompt: string,
+): string[] {
+  const re = /\{\{([^{}]+?)\}\}/g
+  const seen = new Set<string>()
+  const result: string[] = []
+  const combined = (systemPrompt ?? "") + "\n" + userPrompt
+  let m: RegExpExecArray | null
+  while ((m = re.exec(combined)) !== null) {
+    const name = m[1].trim()
+    if (!seen.has(name)) {
+      seen.add(name)
+      result.push(name)
+    }
+  }
+  return result
+}
+
 export interface PropertiesPanelProps {
   // 选中节点的 studio 字段（null = 未选中）。
   node: WorkflowNode | null
@@ -34,6 +57,11 @@ export interface PropertiesPanelProps {
   onDelete: () => void
   // 自定义节点：打开编辑该类型的对话框（仅 isCustomType 节点时传入）。
   onEditType?: () => void
+  // typed 节点（node.typeId 非空）时：org 注册表中该 typeId 对应的 LlmParams（由画布层注入）。
+  // 用于解析 {{name}} 令牌和展示只读参数摘要。annotation 节点时为 undefined。
+  typedParams?: LlmParams
+  // 当前节点 dependsOn 的上游节点列表（id + display label）。typed 节点变量绑定的候选 Select 来源。
+  upstreamNodes?: { id: string; label: string }[]
 }
 
 export function PropertiesPanel({
@@ -46,6 +74,8 @@ export function PropertiesPanel({
   onRename,
   onDelete,
   onEditType,
+  typedParams,
+  upstreamNodes = [],
 }: PropertiesPanelProps) {
   const createPrompt = useCreatePrompt(org)
   const [creating, setCreating] = useState(false)
@@ -80,6 +110,22 @@ export function PropertiesPanel({
 
   const showPrompt = node.type === "script" || node.type === "storyboard"
 
+  // typed 节点（node.typeId 非空 + typedParams 已注入）：展示参数摘要 + 变量绑定行。
+  const isTyped = !!(node.typeId && typedParams)
+
+  // typed 节点：从模板里提取唯一 {{name}} 令牌。
+  const templateVars = isTyped
+    ? extractTemplateVars(typedParams.systemPrompt, typedParams.userPrompt)
+    : []
+
+  // varBindings 合并更新：按 name 替换/追加绑定，不清除其它已存在的绑定。
+  // node 在此处一定非 null（早返回已在上方处理），断言为 WorkflowNode 避免 TS18047。
+  function patchVarBinding(name: string, sourceNodeId: string) {
+    const existing = (node as WorkflowNode).varBindings ?? []
+    const updated = existing.filter((b) => b.name !== name)
+    onPatch({ varBindings: [...updated, { name, sourceNodeId }] })
+  }
+
   return (
     <aside className="flex w-64 shrink-0 flex-col gap-3 overflow-y-auto border-l border-line bg-bg-surface p-3">
       <h4 className="text-[11px] font-semibold uppercase tracking-wider text-text-3">
@@ -113,8 +159,13 @@ export function PropertiesPanel({
               style={{ backgroundColor: nodeDisplay(node).color }}
             />
             <span className="text-[12px] text-text-1">{nodeDisplay(node).label}</span>
+            {isTyped && (
+              <span className="rounded bg-amber/20 px-1 text-[10px] font-medium text-amber">
+                typed
+              </span>
+            )}
           </div>
-          {onEditType && (
+          {onEditType && !isTyped && (
             <button
               type="button"
               className="mt-1 self-start rounded border border-line px-2.5 py-1 text-[11px] text-text-2 hover:border-amber hover:text-amber"
@@ -150,7 +201,81 @@ export function PropertiesPanel({
         </div>
       )}
 
-      {/* 提示词选择（仅内置 script/storyboard） */}
+      {/* typed 节点：只读参数摘要 + 变量绑定行。annotation/builtin 节点走下面的提示词选择块。 */}
+      {isTyped && (
+        <>
+          {/* 只读参数摘要 */}
+          <div className="flex flex-col gap-1 rounded border border-line/60 bg-bg-base p-2">
+            <Label className="text-[10px] font-semibold uppercase tracking-wider text-text-3">
+              类型参数（只读）
+            </Label>
+            {typedParams.systemPrompt && (
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[10px] text-text-3">系统提示词</span>
+                <span className="line-clamp-2 text-[11px] text-text-2">{typedParams.systemPrompt}</span>
+              </div>
+            )}
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[10px] text-text-3">用户提示词模板</span>
+              <span className="line-clamp-2 text-[11px] text-text-2">{typedParams.userPrompt}</span>
+            </div>
+            {typedParams.outputFormat && (
+              <div className="flex items-center gap-1">
+                <span className="text-[10px] text-text-3">输出格式</span>
+                <span className="text-[11px] text-text-2">{typedParams.outputFormat}</span>
+              </div>
+            )}
+            <button
+              type="button"
+              className="mt-1 self-start rounded border border-line px-2 py-0.5 text-[10px] text-text-3 hover:border-amber hover:text-amber"
+              onClick={onEditType}
+            >
+              编辑类型
+            </button>
+          </div>
+
+          {/* 变量绑定行：每个 {{name}} 一行，Select 候选 = dependsOn 上游节点。 */}
+          {templateVars.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <Label className="text-[11px] text-text-2">变量绑定</Label>
+              {templateVars.map((name) => {
+                const existing = node.varBindings?.find((b) => b.name === name)
+                return (
+                  <div key={name} className="flex flex-col gap-0.5">
+                    <span className="text-[10px] text-text-3">
+                      {`{{${name}}}`}
+                    </span>
+                    <Select
+                      value={existing?.sourceNodeId ?? ""}
+                      onValueChange={(val) => {
+                        if (val) patchVarBinding(name, val)
+                      }}
+                    >
+                      <SelectTrigger className="h-7 text-[11px]">
+                        <SelectValue placeholder="选择上游节点" />
+                      </SelectTrigger>
+                      <SelectContent className="text-[11px]">
+                        {upstreamNodes.map((u) => (
+                          <SelectItem key={u.id} value={u.id}>
+                            {u.label}
+                          </SelectItem>
+                        ))}
+                        {upstreamNodes.length === 0 && (
+                          <SelectItem value="" disabled>
+                            无可用上游节点
+                          </SelectItem>
+                        )}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* 提示词选择（仅内置 script/storyboard，typed 节点跳过） */}
       {!isCustomType(node.type) && showPrompt && (
         <div className="flex flex-col gap-1">
           <Label className="text-[11px] text-text-2">
