@@ -757,6 +757,28 @@ describe("custom-type registry + cascade", () => {
   })
 })
 
+describe("typeId + varBindings round-trip (T1)", () => {
+  it("preserves typeId + varBindings on a typed custom node round-trip (T1)", () => {
+    const typed: WorkflowNode[] = [
+      {
+        id: "n1",
+        type: "custom:translate",
+        typeId: "reg-123",
+        varBindings: [{ name: "draft", sourceNodeId: "script-1" }],
+        promptId: "",
+        dependsOn: ["script-1"],
+        label: "翻译",
+        color: "#7c93ff",
+      },
+    ]
+    const { nodes, edges } = toReactFlow(typed)
+    const out = toStudioNodes(nodes as RFNode[], edges as RFEdge[])
+    expect(out[0].typeId).toBe("reg-123")
+    expect(out[0].varBindings).toEqual([{ name: "draft", sourceNodeId: "script-1" }])
+    expect(out[0].label).toBe("翻译")
+  })
+})
+
 describe("custom node label/color round-trip", () => {
   it("toStudioNodes carries label+color for custom nodes, omits for builtin", () => {
     const nodes: RFNode[] = [

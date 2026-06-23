@@ -105,6 +105,11 @@ export function toStudioNodes(
     if (n.promptText) out.promptText = n.promptText
     if (n.label) out.label = n.label
     if (n.color) out.color = n.color
+    // typeId 不是免费透传：toStudioNodes 逐字段重建 WorkflowNode，必须显式拷贝，
+    // 否则首次画布编辑保存即丢 typeId (T1)。
+    if (n.typeId) out.typeId = n.typeId
+    // varBindings 同理：每节点变量绑定也必须显式拷贝，否则编辑保存即丢绑定 (T1)。
+    if (n.varBindings && n.varBindings.length) out.varBindings = n.varBindings
     return out
   })
 }

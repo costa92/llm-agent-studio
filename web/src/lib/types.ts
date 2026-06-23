@@ -114,6 +114,12 @@ export interface WorkflowNode {
   // 自定义节点（type 形如 custom:<slug>）的显示名与颜色（hex）。内置节点不设。
   label?: string
   color?: string
+  // typed 自定义节点：引用组织级注册表条目 id (custom_node_types.id)。
+  // 有 typeId = typed (可运行)；无 = annotation (Phase 1 草图，不可运行)。判别器。
+  typeId?: string
+  // 每节点变量绑定：把模板里的 {{name}} 绑到上游 workflow-local 节点 id。
+  // sourceNodeId 是 workflow-local，所以必须存在节点实例上 (而非组织级 registry params)。
+  varBindings?: { name: string; sourceNodeId: string }[]
 }
 
 // workflow/store.go。一个项目可有多条工作流；nodes 是 JSON 数组（非字符串）。
