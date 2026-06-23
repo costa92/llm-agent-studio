@@ -15,7 +15,6 @@ import {
   createNode,
   collectCustomTypes,
   applyTypeDisplay,
-  hasCustomNode,
   hasUnboundCustomNode,
   type RFNode,
   type RFEdge,
@@ -743,11 +742,6 @@ describe("custom-type registry + cascade", () => {
     const changed = next.filter((n) => n.data.node.type === "custom:t")
     expect(changed.every((n) => n.data.node.label === "新名" && n.data.node.color === "#222222")).toBe(true)
     expect(next.find((n) => n.id === "s")!.data.node.label).toBeUndefined()
-  })
-
-  it("hasCustomNode detects a custom node", () => {
-    expect(hasCustomNode([mk("s", "script")])).toBe(false)
-    expect(hasCustomNode([mk("s", "script"), mk("c", "custom:t")])).toBe(true)
   })
 
   describe("hasUnboundCustomNode (run-gate predicate)", () => {

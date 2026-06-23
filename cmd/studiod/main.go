@@ -29,7 +29,6 @@ import (
 
 	studioagents "github.com/costa92/llm-agent-studio/internal/agents"
 	"github.com/costa92/llm-agent-studio/internal/assets"
-	"github.com/costa92/llm-agent-studio/internal/customnodetype"
 	"github.com/costa92/llm-agent-studio/internal/blob"
 	blobgithub "github.com/costa92/llm-agent-studio/internal/blob/github"
 	"github.com/costa92/llm-agent-studio/internal/blob/localfs"
@@ -37,6 +36,7 @@ import (
 	blobs3 "github.com/costa92/llm-agent-studio/internal/blob/s3"
 	"github.com/costa92/llm-agent-studio/internal/config"
 	"github.com/costa92/llm-agent-studio/internal/cost"
+	"github.com/costa92/llm-agent-studio/internal/customnodetype"
 	"github.com/costa92/llm-agent-studio/internal/events"
 	"github.com/costa92/llm-agent-studio/internal/fetch"
 	"github.com/costa92/llm-agent-studio/internal/generate"

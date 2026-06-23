@@ -445,11 +445,6 @@ export function applyTypeDisplay(
   )
 }
 
-// 画布是否含自定义节点（兼容旧调用方；建议新代码用 hasUnboundCustomNode）。
-export function hasCustomNode(rfNodes: RFNode[]): boolean {
-  return rfNodes.some((n) => isCustomType(n.data.node.type))
-}
-
 // 画布是否含未绑定 (annotation) 自定义节点（用于禁运行；typed 节点放行）。
 export function hasUnboundCustomNode(rfNodes: RFNode[]): boolean {
   return rfNodes.some((n) => isCustomType(n.data.node.type) && !n.data.node.typeId)
