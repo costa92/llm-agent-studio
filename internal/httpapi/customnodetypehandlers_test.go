@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	authzrole "github.com/costa92/llm-agent-authz/role"
 	"github.com/costa92/llm-agent-contract/llm"
 	"github.com/costa92/llm-agent-studio/internal/customnodetype"
 	"github.com/costa92/llm-agent-studio/internal/planner"
@@ -48,8 +49,15 @@ func (s *stubCNTStore) Get(_ context.Context, id, _ string) (customnodetype.Cust
 	return ct, nil
 }
 
+// stubRoleResolver returns a fixed role, ignoring its args (DB-free).
+type stubRoleResolver struct{ role authzrole.Role }
+
+func (s stubRoleResolver) ResolveRole(_ context.Context, _, _, _, _ string) (authzrole.Role, error) {
+	return s.role, nil
+}
+
 func TestCreateCustomNodeType_Happy(t *testing.T) {
-	h := createCustomNodeTypeHandler(&stubCNTStore{})
+	h := createCustomNodeTypeHandler(&stubCNTStore{}, stubRoleResolver{role: authzrole.RoleEditor})
 	body := `{"label":"翻译","color":"#7c93ff","kind":"llm","params":{"userPrompt":"{{draft}}","outputFormat":"text"}}`
 	req := httptest.NewRequest("POST", "/api/orgs/o1/custom-node-types", strings.NewReader(body))
 	req.SetPathValue("org", "o1")
@@ -92,7 +100,7 @@ func TestDeleteCustomNodeType_NotFound404(t *testing.T) {
 }
 
 func TestUpdateCustomNodeType_CrossOrg404(t *testing.T) {
-	h := updateCustomNodeTypeHandler(&stubCNTStore{updateErr: customnodetype.ErrNotFound})
+	h := updateCustomNodeTypeHandler(&stubCNTStore{updateErr: customnodetype.ErrNotFound}, stubRoleResolver{role: authzrole.RoleEditor})
 	body := `{"label":"x","color":"","kind":"llm","params":{"userPrompt":"hi","outputFormat":"text"}}`
 	req := httptest.NewRequest("PUT", "/api/orgs/o2/custom-node-types/ct1", strings.NewReader(body))
 	req.SetPathValue("org", "o2")
@@ -101,6 +109,70 @@ func TestUpdateCustomNodeType_CrossOrg404(t *testing.T) {
 	h(rr, req)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("cross-org update should 404, got %d", rr.Code)
+	}
+}
+
+// secretHTTPBody is an http type whose header references {{secret:K}}.
+const secretHTTPBody = `{"label":"调接口","color":"","kind":"http","params":{"method":"POST","url":"https://api.example.com","headers":{"Authorization":"Bearer {{secret:K}}"},"outputFormat":"json"}}`
+
+// noSecretHTTPBody is an http type with no secret-bearing header.
+const noSecretHTTPBody = `{"label":"调接口","color":"","kind":"http","params":{"method":"GET","url":"https://api.example.com","outputFormat":"json"}}`
+
+// llmBody is a plain llm type (gate is http-only).
+const llmBody = `{"label":"翻译","color":"","kind":"llm","params":{"userPrompt":"{{draft}}","outputFormat":"text"}}`
+
+func postCNT(t *testing.T, role authzrole.Role, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	h := createCustomNodeTypeHandler(&stubCNTStore{}, stubRoleResolver{role: role})
+	req := httptest.NewRequest("POST", "/api/orgs/o1/custom-node-types", strings.NewReader(body))
+	req.SetPathValue("org", "o1")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	return rr
+}
+
+// TestCreateCustomNodeType_SecretRequiresAdmin: editor saving a secret-bearing
+// http type → 403; admin → ok.
+func TestCreateCustomNodeType_SecretRequiresAdmin(t *testing.T) {
+	if rr := postCNT(t, authzrole.RoleEditor, secretHTTPBody); rr.Code != http.StatusForbidden {
+		t.Fatalf("editor + secret http should 403, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if rr := postCNT(t, authzrole.RoleAdmin, secretHTTPBody); rr.Code != http.StatusOK {
+		t.Fatalf("admin + secret http should 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestCreateCustomNodeType_NoSecretEditorOK: editor saving a non-secret http
+// type → ok (gate fires only for secret-bearing bodies).
+func TestCreateCustomNodeType_NoSecretEditorOK(t *testing.T) {
+	if rr := postCNT(t, authzrole.RoleEditor, noSecretHTTPBody); rr.Code != http.StatusOK {
+		t.Fatalf("editor + non-secret http should 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestCreateCustomNodeType_LLMEditorOK: editor saving an llm type → ok (gate is http-only).
+func TestCreateCustomNodeType_LLMEditorOK(t *testing.T) {
+	if rr := postCNT(t, authzrole.RoleEditor, llmBody); rr.Code != http.StatusOK {
+		t.Fatalf("editor + llm should 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestUpdateCustomNodeType_SecretRequiresAdmin: same gate on update.
+func TestUpdateCustomNodeType_SecretRequiresAdmin(t *testing.T) {
+	mk := func(role authzrole.Role) *httptest.ResponseRecorder {
+		h := updateCustomNodeTypeHandler(&stubCNTStore{}, stubRoleResolver{role: role})
+		req := httptest.NewRequest("PUT", "/api/orgs/o1/custom-node-types/ct1", strings.NewReader(secretHTTPBody))
+		req.SetPathValue("org", "o1")
+		req.SetPathValue("id", "ct1")
+		rr := httptest.NewRecorder()
+		h(rr, req)
+		return rr
+	}
+	if rr := mk(authzrole.RoleEditor); rr.Code != http.StatusForbidden {
+		t.Fatalf("editor + secret http update should 403, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if rr := mk(authzrole.RoleAdmin); rr.Code != http.StatusOK {
+		t.Fatalf("admin + secret http update should 200, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
 
