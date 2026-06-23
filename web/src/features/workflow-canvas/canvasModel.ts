@@ -3,6 +3,7 @@ import { layerize } from "@/lib/graphLayout"
 import type { GraphNode, GraphEdge } from "@/lib/projectState"
 import type { Prompt, WorkflowNode } from "@/lib/types"
 import type { RunNodeStatus } from "./runOverlay"
+import { isCustomType, nodeDisplay } from "./nodeColor"
 
 // 纯模型适配层（无 React）：把 studio 工作流 DAG（WorkflowNode[]）转成 ReactFlow
 // 的 nodes/edges。节点缺省 position 时用 layerize 分层种子坐标兜底。
@@ -102,6 +103,8 @@ export function toStudioNodes(
     }
     // promptText 为空则省略（与既有保存载荷一致）。
     if (n.promptText) out.promptText = n.promptText
+    if (n.label) out.label = n.label
+    if (n.color) out.color = n.color
     return out
   })
 }
@@ -153,12 +156,14 @@ export function nextNodeId(rfNodes: RFNode[]): string {
 // 在 pos 处追加一个新节点（纯 reducer，避免 DnD 事件测试抖动）。
 // 默认 id 由 nextNodeId 生成；调用方可传 id 覆盖（B2 拖到空白后需与新建的边对齐）。
 // promptId 取该 type 的 org 默认提示词，无则空串。
+// display 可选：自定义节点的 label/color 透传到 WorkflowNode。
 export function addNodeAt(
   rfNodes: RFNode[],
   type: string,
   pos: { x: number; y: number },
   prompts?: Prompt[],
   id?: string,
+  display?: { label?: string; color?: string },
 ): RFNode[] {
   const nodeId = id ?? nextNodeId(rfNodes)
   const node: WorkflowNode = {
@@ -168,6 +173,8 @@ export function addNodeAt(
     promptText: "",
     dependsOn: [],
     position: pos,
+    ...(display?.label ? { label: display.label } : {}),
+    ...(display?.color ? { color: display.color } : {}),
   }
   return [
     ...rfNodes,
@@ -333,6 +340,7 @@ export function getHelperLines(
 // 在边 A->B 上插入一个新节点 N（纯函数）：移除 A->B，新增 A->N 与 N->B。
 // 新节点经 nextNodeId 分配 id，落在 midPos；promptId 取该 type org 默认。
 // 边带 type:"studio"（与所有连边构造点一致）。
+// display 可选：自定义节点的 label/color 透传到 WorkflowNode。
 export function insertNodeOnEdge(
   rfNodes: RFNode[],
   rfEdges: RFEdge[],
@@ -340,6 +348,7 @@ export function insertNodeOnEdge(
   type: string,
   midPos: { x: number; y: number },
   prompts?: Prompt[],
+  display?: { label?: string; color?: string },
 ): { nodes: RFNode[]; edges: RFEdge[]; newId: string } {
   const edge = rfEdges.find((e) => e.id === edgeId)
   if (!edge) return { nodes: rfNodes, edges: rfEdges, newId: "" }
@@ -351,6 +360,8 @@ export function insertNodeOnEdge(
     promptText: "",
     dependsOn: [],
     position: midPos,
+    ...(display?.label ? { label: display.label } : {}),
+    ...(display?.color ? { color: display.color } : {}),
   }
   const nodes: RFNode[] = [
     ...rfNodes,
@@ -376,6 +387,7 @@ export function insertNodeOnEdge(
 
 // 建节点（Phase D，泛化 onConnectEnd/边插入的「建点」语义）：
 // 有 source → 同时连 source→新节点；无 source → 仅建点。复用 addNodeAt + nextNodeId。
+// display 可选：自定义节点的 label/color 透传到 WorkflowNode。
 export function createNode(
   rfNodes: RFNode[],
   rfEdges: RFEdge[],
@@ -383,9 +395,10 @@ export function createNode(
   pos: { x: number; y: number },
   prompts?: Prompt[],
   source?: string,
+  display?: { label?: string; color?: string },
 ): { nodes: RFNode[]; edges: RFEdge[]; newId: string } {
   const newId = nextNodeId(rfNodes)
-  const nodes = addNodeAt(rfNodes, type, pos, prompts, newId)
+  const nodes = addNodeAt(rfNodes, type, pos, prompts, newId, display)
   const edges = source
     ? [
         ...rfEdges,
@@ -393,6 +406,40 @@ export function createNode(
       ]
     : rfEdges
   return { nodes, edges, newId }
+}
+
+// 本工作流的自定义类型登记表：从画布上的 custom: 节点按 type 去重（label/color 取 nodeDisplay）。
+export function collectCustomTypes(
+  rfNodes: RFNode[],
+): { type: string; label: string; color: string }[] {
+  const seen = new Map<string, { type: string; label: string; color: string }>()
+  for (const n of rfNodes) {
+    const t = n.data.node.type
+    if (isCustomType(t) && !seen.has(t)) {
+      const d = nodeDisplay(n.data.node)
+      seen.set(t, { type: t, label: d.label, color: d.color })
+    }
+  }
+  return [...seen.values()]
+}
+
+// 改名/改色级联：把同 type 的所有节点的 label/color 批量更新（纯函数）。
+export function applyTypeDisplay(
+  rfNodes: RFNode[],
+  type: string,
+  label: string,
+  color: string,
+): RFNode[] {
+  return rfNodes.map((n) =>
+    n.data.node.type === type
+      ? { ...n, data: { ...n.data, node: { ...n.data.node, label, color } } }
+      : n,
+  )
+}
+
+// 画布是否含自定义节点（用于禁运行）。
+export function hasCustomNode(rfNodes: RFNode[]): boolean {
+  return rfNodes.some((n) => isCustomType(n.data.node.type))
 }
 
 // 连线重连（Phase D）：移除旧边、按新 source/target 追加重键后的边，其余边不动。

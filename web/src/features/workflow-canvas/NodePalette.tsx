@@ -12,9 +12,12 @@ export interface NodePaletteProps {
   onStandardPipeline: () => void
   // 点「自动整理」按分层种子坐标重排现有节点（由画布层实现，可撤销 + fitView）。
   onAutoTidy?: () => void
+  customTypes?: { type: string; label: string; color: string }[]
+  onAddCustomType?: () => void
+  onEditCustomType?: (type: string) => void
 }
 
-export function NodePalette({ onStandardPipeline, onAutoTidy }: NodePaletteProps) {
+export function NodePalette({ onStandardPipeline, onAutoTidy, customTypes, onAddCustomType, onEditCustomType }: NodePaletteProps) {
   return (
     <aside className="flex w-44 shrink-0 flex-col gap-3 border-r border-line bg-bg-surface p-3">
       <h4 className="text-[11px] font-semibold uppercase tracking-wider text-text-3">
@@ -41,6 +44,40 @@ export function NodePalette({ onStandardPipeline, onAutoTidy }: NodePaletteProps
             <span className="text-[12px] text-text-1">{TYPE_LABEL[t]}</span>
           </div>
         ))}
+        {(customTypes ?? []).map((c) => (
+          <div
+            key={c.type}
+            data-slot="palette-chip-custom"
+            draggable
+            onDragStart={(e) => {
+              e.dataTransfer.setData(PALETTE_DND_TYPE, c.type)
+              e.dataTransfer.effectAllowed = "move"
+            }}
+            className="group flex cursor-grab items-center gap-2 rounded-md border border-line bg-bg-base px-2.5 py-1.5 hover:border-text-3 active:cursor-grabbing"
+            title="拖入画布添加"
+          >
+            <span aria-hidden className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: c.color }} />
+            <span className="flex-1 text-[12px] text-text-1">{c.label}</span>
+            {onEditCustomType && (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onEditCustomType(c.type) }}
+                className="text-[11px] text-text-3 opacity-0 group-hover:opacity-100 hover:text-text-1"
+              >
+                编辑
+              </button>
+            )}
+          </div>
+        ))}
+        {onAddCustomType && (
+          <button
+            type="button"
+            onClick={onAddCustomType}
+            className="rounded-md border border-dashed border-line px-2.5 py-1.5 text-left text-[12px] text-text-3 hover:border-text-3 hover:text-text-1"
+          >
+            + 自定义类型
+          </button>
+        )}
       </div>
       <button
         type="button"
