@@ -12,6 +12,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { useCreatePrompt } from "@/features/prompt/api"
 import type { BasicPrompt, Prompt, WorkflowNode } from "@/lib/types"
 import { defaultPromptIdFor } from "./canvasModel"
+import { isCustomType, nodeDisplay } from "./nodeColor"
 
 // 属性面板（Phase 2）：选中单个节点时编辑其字段。行为逐字移植自
 // features/projects/WorkflowNodesEditor.tsx——提示词选择哨兵
@@ -31,6 +32,8 @@ export interface PropertiesPanelProps {
   // 重命名当前节点 id → 级联重键边（画布实现）。
   onRename: (newId: string) => void
   onDelete: () => void
+  // 自定义节点：打开编辑该类型的对话框（仅 isCustomType 节点时传入）。
+  onEditType?: () => void
 }
 
 export function PropertiesPanel({
@@ -42,6 +45,7 @@ export function PropertiesPanel({
   onPatch,
   onRename,
   onDelete,
+  onEditType,
 }: PropertiesPanelProps) {
   const createPrompt = useCreatePrompt(org)
   const [creating, setCreating] = useState(false)
@@ -99,33 +103,55 @@ export function PropertiesPanel({
         {idError && <p className="text-[11px] text-danger">{idError}</p>}
       </div>
 
-      {/* 任务类型 */}
-      <div className="flex flex-col gap-1">
-        <Label className="text-[11px] text-text-2">任务类型</Label>
-        <Select
-          value={node.type}
-          onValueChange={(val) => {
-            setCustom(false)
-            onPatch({
-              type: val,
-              promptId: defaultPromptIdFor(prompts, val),
-              promptText: "",
-            })
-          }}
-        >
-          <SelectTrigger className="h-8 text-[12px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent className="text-[12px]">
-            <SelectItem value="script">剧本生成 (script)</SelectItem>
-            <SelectItem value="storyboard">分镜拆解 (storyboard)</SelectItem>
-            <SelectItem value="asset">生成资源 (asset)</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
+      {/* 任务类型：自定义节点只读展示；内置节点保留 Select。 */}
+      {isCustomType(node.type) ? (
+        <div className="flex flex-col gap-1">
+          <Label className="text-[11px] text-text-2">类型</Label>
+          <div className="flex items-center gap-2">
+            <span
+              className="inline-block h-3 w-3 shrink-0 rounded-full"
+              style={{ backgroundColor: nodeDisplay(node).color }}
+            />
+            <span className="text-[12px] text-text-1">{nodeDisplay(node).label}</span>
+          </div>
+          {onEditType && (
+            <button
+              type="button"
+              className="mt-1 self-start rounded border border-line px-2.5 py-1 text-[11px] text-text-2 hover:border-amber hover:text-amber"
+              onClick={onEditType}
+            >
+              编辑类型
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-1">
+          <Label className="text-[11px] text-text-2">任务类型</Label>
+          <Select
+            value={node.type}
+            onValueChange={(val) => {
+              setCustom(false)
+              onPatch({
+                type: val,
+                promptId: defaultPromptIdFor(prompts, val),
+                promptText: "",
+              })
+            }}
+          >
+            <SelectTrigger className="h-8 text-[12px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="text-[12px]">
+              <SelectItem value="script">剧本生成 (script)</SelectItem>
+              <SelectItem value="storyboard">分镜拆解 (storyboard)</SelectItem>
+              <SelectItem value="asset">生成资源 (asset)</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      )}
 
-      {/* 提示词选择（仅 script/storyboard） */}
-      {showPrompt && (
+      {/* 提示词选择（仅内置 script/storyboard） */}
+      {!isCustomType(node.type) && showPrompt && (
         <div className="flex flex-col gap-1">
           <Label className="text-[11px] text-text-2">
             系统提示词 (Prompt Library)

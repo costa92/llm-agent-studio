@@ -945,6 +945,14 @@ function CanvasInner({
           onPatch={patchSelected}
           onRename={renameSelected}
           onDelete={deleteSelected}
+          onEditType={
+            selected && isCustomType(selected.type)
+              ? () => {
+                  const c = customTypes.find((x) => x.type === selected.type)
+                  if (c) setTypeDialog({ mode: "edit", type: selected.type, initial: { label: c.label, color: c.color } })
+                }
+              : undefined
+          }
         />
       </div>
     </div>
