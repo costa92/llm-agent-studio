@@ -46,7 +46,7 @@ import {
   createNode,
   collectCustomTypes,
   applyTypeDisplay,
-  hasCustomNode,
+  hasUnboundCustomNode,
   type StudioNodeData,
   type RFNode,
   type RFEdge,
@@ -789,7 +789,7 @@ function CanvasInner({
     onCreated,
   ])
 
-  const runDisabled = useMemo(() => hasCustomNode(rfNodes as RFNode[]), [rfNodes])
+  const runDisabled = useMemo(() => hasUnboundCustomNode(rfNodes as RFNode[]), [rfNodes])
 
   const otherIds = (rfNodes as RFNode[])
     .filter((n) => n.id !== selectedId)
@@ -825,8 +825,8 @@ function CanvasInner({
           {/* 编辑 | 运行 模式切换（新建态隐藏：尚无可运行的 workflow）。 */}
           {!isCreate && onModeChange && (
             runDisabled ? (
-              <span className="text-[12px] text-text-3" title="当前 Workflow 包含自定义节点，暂不支持运行">
-                含自定义节点 · 暂不支持运行
+              <span className="text-[12px] text-text-3" title="含未绑定类型的自定义节点 · 暂不支持运行">
+                含未绑定类型的自定义节点 · 暂不支持运行
               </span>
             ) : (
               <ModeToggle mode="edit" onChange={onModeChange} />

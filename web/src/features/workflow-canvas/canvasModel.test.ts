@@ -16,6 +16,7 @@ import {
   collectCustomTypes,
   applyTypeDisplay,
   hasCustomNode,
+  hasUnboundCustomNode,
   type RFNode,
   type RFEdge,
 } from "./canvasModel"
@@ -747,6 +748,44 @@ describe("custom-type registry + cascade", () => {
   it("hasCustomNode detects a custom node", () => {
     expect(hasCustomNode([mk("s", "script")])).toBe(false)
     expect(hasCustomNode([mk("s", "script"), mk("c", "custom:t")])).toBe(true)
+  })
+
+  describe("hasUnboundCustomNode (run-gate predicate)", () => {
+    // helper that sets typeId on the data node
+    const mkTyped = (id: string, type: string, typeId: string): RFNode => ({
+      id, type: "studio", position: { x: 0, y: 0 },
+      data: { node: { id, type, promptId: "", dependsOn: [], typeId } },
+    })
+
+    it("returns false for no custom nodes", () => {
+      expect(hasUnboundCustomNode([mk("s", "script")])).toBe(false)
+    })
+
+    it("returns false for a typed custom node (has typeId)", () => {
+      expect(hasUnboundCustomNode([mkTyped("c", "custom:translate", "reg-abc")])).toBe(false)
+    })
+
+    it("returns true for an annotation custom node (no typeId)", () => {
+      expect(hasUnboundCustomNode([mk("c", "custom:annot")])).toBe(true)
+    })
+
+    it("returns true for a mix of typed + annotation custom nodes", () => {
+      expect(
+        hasUnboundCustomNode([
+          mkTyped("c1", "custom:translate", "reg-abc"),
+          mk("c2", "custom:annot"),
+        ]),
+      ).toBe(true)
+    })
+
+    it("returns false for only typed custom nodes (workflow is runnable)", () => {
+      expect(
+        hasUnboundCustomNode([
+          mk("s", "script"),
+          mkTyped("c1", "custom:translate", "reg-abc"),
+        ]),
+      ).toBe(false)
+    })
   })
 
   it("createNode threads display onto the new node", () => {
