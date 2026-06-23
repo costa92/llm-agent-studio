@@ -1611,6 +1611,28 @@ func (w *Worker) runCustom(ctx context.Context, c claimed) (string, error) {
 	}
 }
 
+// resolveVariables resolves each post-rewrite varBinding to its upstream node's
+// text output. Shared by every custom kind (llm/http/script).
+func (w *Worker) resolveVariables(ctx context.Context, vars []customVariable) (map[string]string, error) {
+	out := map[string]string{}
+	for _, v := range vars {
+		if v.SourceTodoId == "" {
+			continue
+		}
+		var outputRef string
+		if err := w.cfg.DB.WithContext(ctx).Raw(
+			`SELECT COALESCE(output_ref,'') FROM todos WHERE id=$1`, v.SourceTodoId).Row().Scan(&outputRef); err != nil {
+			return nil, fmt.Errorf("worker: load variable %q source todo: %w", v.Name, err)
+		}
+		text, err := w.resolveOutputText(ctx, outputRef)
+		if err != nil {
+			return nil, fmt.Errorf("worker: resolve variable %q: %w", v.Name, err)
+		}
+		out[v.Name] = text
+	}
+	return out, nil
+}
+
 // runCustomLLM executes the "llm" kind: resolve each variable's upstream text
 // output, substitute {{name}} in system/user prompt, call the routed chat model
 // (same routing as runScript), optionally instruct+validate JSON, write a
@@ -1618,21 +1640,9 @@ func (w *Worker) runCustom(ctx context.Context, c claimed) (string, error) {
 // This path requires a Router: routedChatModel returns (nil,false) when cfg.Router==nil.
 func (w *Worker) runCustomLLM(ctx context.Context, c claimed, in llmParams) (string, error) {
 	// 1. Resolve variables: sourceTodoId → that todo's output_ref → resolveOutputText.
-	replacer := map[string]string{}
-	for _, v := range in.Variables {
-		if v.SourceTodoId == "" {
-			continue
-		}
-		var outputRef string
-		if err := w.cfg.DB.WithContext(ctx).Raw(
-			`SELECT COALESCE(output_ref,'') FROM todos WHERE id=$1`, v.SourceTodoId).Row().Scan(&outputRef); err != nil {
-			return "", fmt.Errorf("worker: load variable %q source todo: %w", v.Name, err)
-		}
-		text, err := w.resolveOutputText(ctx, outputRef)
-		if err != nil {
-			return "", fmt.Errorf("worker: resolve variable %q: %w", v.Name, err)
-		}
-		replacer[v.Name] = text
+	replacer, err := w.resolveVariables(ctx, in.Variables)
+	if err != nil {
+		return "", err
 	}
 
 	system := substituteVars(in.SystemPrompt, replacer)
@@ -1686,22 +1696,12 @@ func (w *Worker) runCustomHTTP(ctx context.Context, c claimed, in httpParams) (s
 	if w.cfg.HTTPFetcher == nil {
 		return "", errRequestFailed
 	}
-	// 1. Resolve {{name}} upstream variables (same channel as llm).
-	nameVals := map[string]string{}
-	for _, v := range in.Variables {
-		if v.SourceTodoId == "" {
-			continue
-		}
-		var outputRef string
-		if err := w.cfg.DB.WithContext(ctx).Raw(
-			`SELECT COALESCE(output_ref,'') FROM todos WHERE id=$1`, v.SourceTodoId).Row().Scan(&outputRef); err != nil {
-			return "", errRequestFailed // opaque: never leak the variable/source
-		}
-		text, err := w.resolveOutputText(ctx, outputRef)
-		if err != nil {
-			return "", errRequestFailed
-		}
-		nameVals[v.Name] = text
+	// 1. Resolve {{name}} upstream variables (same channel as llm). Preserve the
+	// opaque-error behavior: any resolve failure surfaces as errRequestFailed
+	// (never leak the variable/source).
+	nameVals, err := w.resolveVariables(ctx, in.Variables)
+	if err != nil {
+		return "", errRequestFailed
 	}
 
 	// 2. Resolve org from the TRUSTED run context (never from input_json/node).
