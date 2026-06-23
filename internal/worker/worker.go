@@ -40,6 +40,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/modelrouter"
 	"github.com/costa92/llm-agent-studio/internal/models"
 	"github.com/costa92/llm-agent-studio/internal/project"
+	"github.com/costa92/llm-agent-studio/internal/scriptengine"
 	"github.com/costa92/llm-agent-studio/internal/storagerouter"
 	"github.com/costa92/llm-agent-studio/internal/todos"
 )
@@ -1543,6 +1544,43 @@ const (
 	errBodyTooLarge  httpError = "body_too_large"
 	errBlockedDest   httpError = "blocked_destination"
 )
+
+// scriptParams is the "script" kind's params. No Language (v1 Starlark only),
+// no secret field (D1: scripts forbid {{secret:}} — Starlark has no network so
+// a secret would be a pure exfil oracle).
+type scriptParams struct {
+	Code         string           `json:"code"`
+	OutputFormat string           `json:"outputFormat"` // "text" | "json"
+	Variables    []customVariable `json:"variables"`
+}
+
+// scriptError is the opaque enum surfaced to the frontend — mirrors httpError.
+// .Error() returns the BARE enum (never %w-wrap a scriptengine error onto the
+// surfaced path: the raw Starlark error embeds source lines + variable values).
+type scriptError string
+
+func (e scriptError) Error() string { return string(e) }
+
+const (
+	errScriptFailed     scriptError = "script_failed"
+	errScriptTimeout    scriptError = "script_timeout"
+	errScriptOutputMiss scriptError = "script_output_missing"
+	errScriptTooLarge   scriptError = "script_output_too_large"
+)
+
+// classifyScriptError maps a scriptengine sentinel to a bare opaque enum.
+func classifyScriptError(err error) error {
+	switch {
+	case errors.Is(err, scriptengine.ErrTimeout):
+		return errScriptTimeout
+	case errors.Is(err, scriptengine.ErrOutputMissing):
+		return errScriptOutputMiss
+	case errors.Is(err, scriptengine.ErrOutputTooLarge):
+		return errScriptTooLarge
+	default:
+		return errScriptFailed
+	}
+}
 
 // secretRefRe matches {{secret:NAME}} (whitespace-tolerant). NAME is the org secret
 // name; the substitution channel is SEPARATE from {{name}} upstream variables.
