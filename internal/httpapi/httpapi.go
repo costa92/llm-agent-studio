@@ -57,6 +57,7 @@ type Deps struct {
 	PromptStore   *prompt.Store
 	GenQuota      int // rolling-24h per-org generation quota; 0 = unlimited
 	CustomNodeType CustomNodeTypeStore // org-scoped typed custom node registry; nil in focused unit tests
+	OrgSecret      OrgSecretStore      // org-scoped named-secret registry (roleAdmin); nil in focused unit tests
 
 	// ModelAvailable reports whether a catalog (provider, kind) entry is actually
 	// usable — i.e. its provider API key is configured so the adapter is/will be
@@ -236,6 +237,13 @@ func NewMux(d Deps) *http.ServeMux {
 		mux.Handle("POST /api/orgs/{org}/custom-node-types", scoped(roleEditor, orgScope, createCustomNodeTypeHandler(d.CustomNodeType)))
 		mux.Handle("PUT /api/orgs/{org}/custom-node-types/{id}", scoped(roleEditor, orgScope, updateCustomNodeTypeHandler(d.CustomNodeType)))
 		mux.Handle("DELETE /api/orgs/{org}/custom-node-types/{id}", scoped(roleEditor, orgScope, deleteCustomNodeTypeHandler(d.CustomNodeType)))
+	}
+	// Org 命名密钥注册表 (org-scoped). 与 model/storage configs 同列：密钥型资源全程 roleAdmin。
+	if d.OrgSecret != nil {
+		mux.Handle("GET /api/orgs/{org}/secrets", scoped(roleAdmin, orgScope, listOrgSecretsHandler(d.OrgSecret)))
+		mux.Handle("POST /api/orgs/{org}/secrets", scoped(roleAdmin, orgScope, createOrgSecretHandler(d.OrgSecret)))
+		mux.Handle("PUT /api/orgs/{org}/secrets/{name}", scoped(roleAdmin, orgScope, updateOrgSecretHandler(d.OrgSecret)))
+		mux.Handle("DELETE /api/orgs/{org}/secrets/{name}", scoped(roleAdmin, orgScope, deleteOrgSecretHandler(d.OrgSecret)))
 	}
 	// Org 成员管理 (org-scoped). 列出对任意 org 成员开放 (viewer)；增删改角色限 org_admin (admin).
 	mux.Handle("GET /api/orgs/{org}/members", scoped(roleViewer, orgScope, listMembersHandler(d.Members)))
