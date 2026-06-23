@@ -1353,3 +1353,15 @@ TDD: form test first.
 - DB-gated Go tests need a FRESH DB and `-p 1` (parallel migrate race + stale-data uniqueness collisions are documented repo hazards).
 - studio changes land via branch → push → PR → rebase merge (no direct push to main; see memory `feedback_studio-changes-via-pr.md`). Do not commit to `main` directly.
 - The GORM house rules are non-negotiable: INSERT…RETURNING (never `gorm.Create`), no `AutoMigrate`, pure `$N` Raw, NULL columns marshaled via `[]byte`/`pq.StringArray`, multi-statement under `db.Transaction`.
+
+## Pre-execution review nits (GO-WITH-NITS gate, 2026-06-23)
+
+Fresh-eyes pre-flight confirmed the plan GO against real code. Handle these small items while executing:
+
+1. **(Task 6) `runCustomLLM` requires a `Router`.** Unlike `runScript` (which falls back to the bound `w.cfg.Script.Run` when `routedChatModel` returns `ok=false`), the llm executor needs a routed model. A worker started without a `Router` (legacy/non-BYOK) cannot run custom llm nodes. Add a one-line comment that this path requires a Router; make the "no chat model available" failure fast and clearly worded (don't silently retry-to-exhaustion as a vague error). Phase 2A assumes BYOK, so acceptable.
+2. **(Task 6) `SELECT COALESCE(output_ref,'')` is redundant** — `todos.output_ref` is `TEXT NOT NULL DEFAULT ''` (storage.go:121). Harmless; don't infer output_ref can be NULL.
+3. **(Task 6) `resolveOutputText("script:<id>")` returns the raw `scripts.content_json` blob** (serialized `ScriptOutput`), not extracted prose. Defensible A-scope choice, but `{{draft}}` will inject a JSON blob. If Task 15's `:5173` output looks JSON-y, that's the known shape, not a bug.
+4. **(Task 6 test) Mock-model seam = `scriptedRouterModel` (`worker/router_test.go:191`, an `llm.ScriptedLLM`) wired via `modelrouter.New(Config{BuildChat: ...})` (router_test.go:79-83).** `routedChatModel` returns `(nil,false)` if `cfg.Router==nil`, so the test MUST construct a `Router`, not just set a model field.
+5. **(Task 7) `res` name collision in `runWorkflowHandler`** — it already names the PlanCustom result `res` (workflowhandlers.go:186). Use distinct names and update the trailing `writeJSON` consuming the old `res`. Grep the function body after editing.
+6. **(Task 4/7) Actually run the `HasCustomNode` orphan grep**: `GOWORK=off grep -rn 'HasCustomNode' internal/ web/ cmd/`. Remove `HasCustomNode`+`TestHasCustomNode` only if the sole callers were the two now-flipped gate sites. The frontend `hasCustomNode` (canvasModel.ts:441) is a SEPARATE TS function Task 14 handles — don't conflate.
+7. **(Task 10) `node_outputs.todo_id` is a bare TEXT (no FK, intentional/additive)**; the LoadState join `JOIN todos t ON no.todo_id=t.id WHERE t.plan_id=$1` mirrors the assets join and is correct (append before `return Compute(in)`).
