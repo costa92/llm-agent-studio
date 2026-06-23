@@ -56,6 +56,7 @@ type Deps struct {
 	PromptBuilder *prompt.Builder
 	PromptStore   *prompt.Store
 	GenQuota      int // rolling-24h per-org generation quota; 0 = unlimited
+	CustomNodeType CustomNodeTypeResolver // org-scoped typed custom node registry; nil in focused unit tests
 
 	// ModelAvailable reports whether a catalog (provider, kind) entry is actually
 	// usable — i.e. its provider API key is configured so the adapter is/will be
@@ -151,7 +152,7 @@ func NewMux(d Deps) *http.ServeMux {
 	// Project-scoped routes ({id}).
 	mux.Handle("GET /api/projects/{id}", proj(roleViewer, getProjectHandler(d.Projects)))
 	mux.Handle("PUT /api/projects/{id}", proj(roleEditor, updateProjectHandler(d.Projects)))
-	mux.Handle("POST /api/projects/{id}/run", proj(roleEditor, runHandler(d.Projects, d.Planner, d.Events, d.Cost, d.GenQuota, d.ChatRouter)))
+	mux.Handle("POST /api/projects/{id}/run", proj(roleEditor, runHandler(d.Projects, d.Planner, d.Events, d.Cost, d.GenQuota, d.ChatRouter, d.CustomNodeType)))
 	mux.Handle("POST /api/projects/{id}/cancel", proj(roleEditor, cancelHandler(d.Projects)))
 	mux.Handle("GET /api/projects/{id}/plans", proj(roleViewer, listPlansHandler(d.Projects)))
 	mux.Handle("GET /api/projects/{id}/state", proj(roleViewer, stateHandler(d.Projects)))
@@ -169,7 +170,7 @@ func NewMux(d Deps) *http.ServeMux {
 		mux.Handle("POST /api/projects/{id}/workflows", proj(roleEditor, createWorkflowHandler(d.Workflows)))
 		mux.Handle("PUT /api/projects/{id}/workflows/{wfId}", proj(roleEditor, updateWorkflowHandler(d.Workflows)))
 		mux.Handle("DELETE /api/projects/{id}/workflows/{wfId}", proj(roleEditor, deleteWorkflowHandler(d.Workflows)))
-		mux.Handle("POST /api/projects/{id}/workflows/{wfId}/run", proj(roleEditor, runWorkflowHandler(d.Projects, d.Workflows, d.Planner, d.Events, d.Cost, d.GenQuota)))
+		mux.Handle("POST /api/projects/{id}/workflows/{wfId}/run", proj(roleEditor, runWorkflowHandler(d.Projects, d.Workflows, d.Planner, d.Events, d.Cost, d.GenQuota, d.CustomNodeType)))
 	}
 
 	// Project cover image (3 sources: AI-generate / upload / pick existing).

@@ -249,18 +249,6 @@ func ValidateCustomGraph(nodes []WorkflowNode) error {
 	return nil
 }
 
-// HasCustomNode reports whether any node is a user-defined custom type
-// (custom:* prefix). Run handlers use this to refuse running workflows whose
-// custom nodes have no executor yet (Phase 1). Save handlers do NOT call this.
-func HasCustomNode(nodes []WorkflowNode) bool {
-	for _, n := range nodes {
-		if isCustomType(n.Type) {
-			return true
-		}
-	}
-	return false
-}
-
 // HasUnboundCustomNode reports whether any node is a custom:* node WITHOUT a
 // typeId (= a Phase 1 annotation, non-runnable). Run handlers refuse such
 // workflows (typed-only workflows are runnable). Discriminator = explicit typeId.

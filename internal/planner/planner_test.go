@@ -309,18 +309,6 @@ func TestPlanCustomBuiltinPrompt(t *testing.T) {
 	}
 }
 
-func TestHasCustomNode(t *testing.T) {
-	if HasCustomNode([]WorkflowNode{{ID: "a", Type: "script"}}) {
-		t.Fatal("builtin-only graph should not report custom node")
-	}
-	if !HasCustomNode([]WorkflowNode{
-		{ID: "a", Type: "script"},
-		{ID: "b", Type: "custom:translate", DependsOn: []string{"a"}},
-	}) {
-		t.Fatal("graph with custom: node should report custom node")
-	}
-}
-
 func TestHasUnboundCustomNode(t *testing.T) {
 	annotated := []WorkflowNode{{ID: "a", Type: "custom:note"}}
 	if !HasUnboundCustomNode(annotated) {
