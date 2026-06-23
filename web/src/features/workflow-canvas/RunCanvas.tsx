@@ -340,14 +340,18 @@ function RunCanvasInner({
           选中工件
         </h4>
         {selection?.kind === "custom" ? (
-          <div className="flex flex-col gap-1.5">
-            <p className="text-[11px] text-text-3">
-              {selection.outputFormat === "json" ? "JSON 产物" : "文本产物"}
-            </p>
-            <pre className="overflow-auto rounded-md border border-line bg-bg-base p-2 text-[11px] leading-relaxed text-text-1 whitespace-pre-wrap break-words">
-              {selection.output}
-            </pre>
-          </div>
+          selection.outputFormat === "http-status" ? (
+            <SuppressedBodyPanel content={selection.output} />
+          ) : (
+            <div className="flex flex-col gap-1.5">
+              <p className="text-[11px] text-text-3">
+                {selection.outputFormat === "json" ? "JSON 产物" : "文本产物"}
+              </p>
+              <pre className="overflow-auto rounded-md border border-line bg-bg-base p-2 text-[11px] leading-relaxed text-text-1 whitespace-pre-wrap break-words">
+                {selection.output}
+              </pre>
+            </div>
+          )
         ) : previewAssetId ? (
           <SelectedAssetPanel
             org={org}
@@ -433,6 +437,34 @@ function RunCanvasInner({
         open={galleryOpen}
         onOpenChange={setGalleryOpen}
       />
+    </div>
+  )
+}
+
+// 从 http-status 产物内容 {"status":N} 解析状态码；解析失败返回 null。
+export function parseHttpStatus(content: string): number | null {
+  try {
+    const obj = JSON.parse(content) as { status?: unknown }
+    return typeof obj.status === "number" ? obj.status : null
+  } catch {
+    return null
+  }
+}
+
+// http 节点响应体被安全策略抑制时的产物面板：只展示「已完成 + 状态码」，绝不 dump body。
+export function SuppressedBodyPanel({ content }: { content: string }) {
+  const status = parseHttpStatus(content)
+  return (
+    <div className="flex flex-col gap-1.5">
+      <p className="text-[11px] text-text-3">HTTP 产物</p>
+      <div className="rounded-md border border-line bg-bg-base p-2.5 text-[11px] leading-relaxed text-text-1">
+        <p>已完成（响应体已按安全策略隐藏）</p>
+        {status !== null && (
+          <p className="mt-1 text-text-2">
+            状态码：<span className="font-mono text-text-1">{status}</span>
+          </p>
+        )}
+      </div>
     </div>
   )
 }

@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { useCreatePrompt } from "@/features/prompt/api"
-import type { BasicPrompt, LlmParams, Prompt, WorkflowNode } from "@/lib/types"
+import type { BasicPrompt, HttpParams, LlmParams, Prompt, WorkflowNode } from "@/lib/types"
 import { defaultPromptIdFor } from "./canvasModel"
 import { isCustomType, nodeDisplay } from "./nodeColor"
 
@@ -42,6 +42,29 @@ export function extractTemplateVars(
   return result
 }
 
+// http 类型的 {{name}} 令牌：跨 url + 所有 header 值 + bodyTemplate 合并去重。
+// 排除 {{secret:NAME}} 引用（密钥不是工作流变量，不产生绑定行）。
+export function extractHttpTemplateVars(params: HttpParams): string[] {
+  const re = /\{\{([^{}]+?)\}\}/g
+  const seen = new Set<string>()
+  const result: string[] = []
+  const combined = [
+    params.url,
+    ...Object.values(params.headers ?? {}),
+    params.bodyTemplate ?? "",
+  ].join("\n")
+  let m: RegExpExecArray | null
+  while ((m = re.exec(combined)) !== null) {
+    const name = m[1].trim()
+    if (name.startsWith("secret:")) continue
+    if (!seen.has(name)) {
+      seen.add(name)
+      result.push(name)
+    }
+  }
+  return result
+}
+
 export interface PropertiesPanelProps {
   // 选中节点的 studio 字段（null = 未选中）。
   node: WorkflowNode | null
@@ -57,9 +80,12 @@ export interface PropertiesPanelProps {
   onDelete: () => void
   // 自定义节点：打开编辑该类型的对话框（仅 isCustomType 节点时传入）。
   onEditType?: () => void
-  // typed 节点（node.typeId 非空）时：org 注册表中该 typeId 对应的 LlmParams（由画布层注入）。
-  // 用于解析 {{name}} 令牌和展示只读参数摘要。annotation 节点时为 undefined。
+  // typed llm 节点（node.typeId 非空 + kind=llm）时：org 注册表中该 typeId 对应的 LlmParams。
+  // 用于解析 {{name}} 令牌和展示只读参数摘要。annotation/非 llm 节点时为 undefined。
   typedParams?: LlmParams
+  // typed http 节点（node.typeId 非空 + kind=http）时：对应的 HttpParams（由画布层注入）。
+  // 与 typedParams 互斥——按 kind 取其一。
+  typedHttpParams?: HttpParams
   // 当前节点 dependsOn 的上游节点列表（id + display label）。typed 节点变量绑定的候选 Select 来源。
   upstreamNodes?: { id: string; label: string }[]
 }
@@ -75,6 +101,7 @@ export function PropertiesPanel({
   onDelete,
   onEditType,
   typedParams,
+  typedHttpParams,
   upstreamNodes = [],
 }: PropertiesPanelProps) {
   const createPrompt = useCreatePrompt(org)
@@ -110,13 +137,17 @@ export function PropertiesPanel({
 
   const showPrompt = node.type === "script" || node.type === "storyboard"
 
-  // typed 节点（node.typeId 非空 + typedParams 已注入）：展示参数摘要 + 变量绑定行。
-  const isTyped = !!(node.typeId && typedParams)
+  // typed 节点（node.typeId 非空 + 注入了 llm 或 http 参数）：展示参数摘要 + 变量绑定行。
+  const isTypedLlm = !!(node.typeId && typedParams)
+  const isTypedHttp = !!(node.typeId && typedHttpParams)
+  const isTyped = isTypedLlm || isTypedHttp
 
-  // typed 节点：从模板里提取唯一 {{name}} 令牌。
-  const templateVars = isTyped
-    ? extractTemplateVars(typedParams.systemPrompt, typedParams.userPrompt)
-    : []
+  // typed 节点：从模板里提取唯一 {{name}} 令牌（llm 取 prompt；http 取 url+headers+body，排除 {{secret:...}}）。
+  const templateVars = isTypedLlm
+    ? extractTemplateVars(typedParams!.systemPrompt, typedParams!.userPrompt)
+    : isTypedHttp
+      ? extractHttpTemplateVars(typedHttpParams!)
+      : []
 
   // varBindings 合并更新：按 name 替换/追加绑定，不清除其它已存在的绑定。
   // node 在此处一定非 null（早返回已在上方处理），断言为 WorkflowNode 避免 TS18047。
@@ -209,21 +240,43 @@ export function PropertiesPanel({
             <Label className="text-[10px] font-semibold uppercase tracking-wider text-text-3">
               类型参数（只读）
             </Label>
-            {typedParams.systemPrompt && (
-              <div className="flex flex-col gap-0.5">
-                <span className="text-[10px] text-text-3">系统提示词</span>
-                <span className="line-clamp-2 text-[11px] text-text-2">{typedParams.systemPrompt}</span>
-              </div>
+            {isTypedLlm && (
+              <>
+                {typedParams!.systemPrompt && (
+                  <div className="flex flex-col gap-0.5">
+                    <span className="text-[10px] text-text-3">系统提示词</span>
+                    <span className="line-clamp-2 text-[11px] text-text-2">{typedParams!.systemPrompt}</span>
+                  </div>
+                )}
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-[10px] text-text-3">用户提示词模板</span>
+                  <span className="line-clamp-2 text-[11px] text-text-2">{typedParams!.userPrompt}</span>
+                </div>
+                {typedParams!.outputFormat && (
+                  <div className="flex items-center gap-1">
+                    <span className="text-[10px] text-text-3">输出格式</span>
+                    <span className="text-[11px] text-text-2">{typedParams!.outputFormat}</span>
+                  </div>
+                )}
+              </>
             )}
-            <div className="flex flex-col gap-0.5">
-              <span className="text-[10px] text-text-3">用户提示词模板</span>
-              <span className="line-clamp-2 text-[11px] text-text-2">{typedParams.userPrompt}</span>
-            </div>
-            {typedParams.outputFormat && (
-              <div className="flex items-center gap-1">
-                <span className="text-[10px] text-text-3">输出格式</span>
-                <span className="text-[11px] text-text-2">{typedParams.outputFormat}</span>
-              </div>
+            {isTypedHttp && (
+              <>
+                <div className="flex items-center gap-1">
+                  <span className="text-[10px] text-text-3">请求</span>
+                  <span className="text-[11px] text-text-2 font-mono">{typedHttpParams!.method}</span>
+                </div>
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-[10px] text-text-3">URL</span>
+                  <span className="line-clamp-2 text-[11px] text-text-2 break-all">{typedHttpParams!.url}</span>
+                </div>
+                {typedHttpParams!.outputFormat && (
+                  <div className="flex items-center gap-1">
+                    <span className="text-[10px] text-text-3">输出格式</span>
+                    <span className="text-[11px] text-text-2">{typedHttpParams!.outputFormat}</span>
+                  </div>
+                )}
+              </>
             )}
             <button
               type="button"
