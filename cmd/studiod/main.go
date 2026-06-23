@@ -287,6 +287,14 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		AllowedContentTypes: []string{"video/", "audio/", "application/octet-stream"},
 	})
 
+	// SSRF-safe outbound for http custom nodes (spec B1/B2): 10s timeout, reuse the
+	// existing fetch byte cap, and NO content-type allowlist (http kind permits any
+	// type — the body policy + opaque errors guard secret leakage, not content type).
+	httpFetcher := fetch.New(fetch.Config{
+		Timeout:  10 * time.Second,
+		MaxBytes: cfg.VideoFetchMaxBytes,
+	})
+
 	// Worker pool — bounded concurrency (agents call LLMs; slow).
 	workerCtx, stopWorkers := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
@@ -297,6 +305,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 			Asset: assetAgent, Review: reviewAgent, Narration: narrationSafety, Storage: storageRouter, Assets: assetStore, Cost: costStore,
 			Models: modelStore, Registry: registry, Router: router,
 			Secrets:                  orgSecretStore,
+			HTTPFetcher:              httpFetcher,
 			WorkerID:                 fmt.Sprintf("studiod-%d", i),
 			GenQuota:                 cfg.OrgDailyGenQuota,
 			MaxConcurrentGen:         cfg.MaxConcurrentGen,
