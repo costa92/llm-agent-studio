@@ -25,7 +25,7 @@ var ErrNotFound = errors.New("customnodetype: type not found")
 var ErrInUse = errors.New("customnodetype: type in use by workflow nodes")
 
 // validKinds 是支持的 kind 集合 (后续 C 扩展 script/python)。
-var validKinds = map[string]bool{"llm": true, "http": true}
+var validKinds = map[string]bool{"llm": true, "http": true, "script": true}
 
 // secretRefRe 探测 {{secret:...}} 引用 (与 worker 同语义)；httpMethods 是允许的方法集。
 var secretRefRe = regexp.MustCompile(`\{\{\s*secret:`)
@@ -82,13 +82,16 @@ func validate(in UpsertInput) error {
 		return fmt.Errorf("customnodetype: label required")
 	}
 	if !validKinds[in.Kind] {
-		return fmt.Errorf("customnodetype: invalid kind %q (want llm|http)", in.Kind)
+		return fmt.Errorf("customnodetype: invalid kind %q (want llm|http|script)", in.Kind)
 	}
 	if len(in.Params) == 0 || !json.Valid(in.Params) {
 		return fmt.Errorf("customnodetype: params must be valid JSON")
 	}
 	if in.Kind == "http" {
 		return validateHTTPParams(in.Params)
+	}
+	if in.Kind == "script" {
+		return validateScriptParams(in.Params)
 	}
 	return nil
 }
@@ -124,6 +127,29 @@ func validateHTTPParams(raw json.RawMessage) error {
 	}
 	if p.OutputFormat != "" && p.OutputFormat != "text" && p.OutputFormat != "json" {
 		return fmt.Errorf("customnodetype: http outputFormat %q invalid (text|json)", p.OutputFormat)
+	}
+	return nil
+}
+
+// validateScriptParams enforces the script kind's save-time rules: code
+// required; outputFormat ∈ text|json; {{secret:}} forbidden (D1 — Starlark has
+// no network, an injected secret is a pure exfil oracle).
+func validateScriptParams(raw json.RawMessage) error {
+	var p struct {
+		Code         string `json:"code"`
+		OutputFormat string `json:"outputFormat"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return fmt.Errorf("customnodetype: script params: %w", err)
+	}
+	if strings.TrimSpace(p.Code) == "" {
+		return fmt.Errorf("customnodetype: script code required")
+	}
+	if secretRefRe.MatchString(p.Code) {
+		return fmt.Errorf("customnodetype: {{secret:...}} not allowed in script code")
+	}
+	if p.OutputFormat != "" && p.OutputFormat != "text" && p.OutputFormat != "json" {
+		return fmt.Errorf("customnodetype: script outputFormat %q invalid (text|json)", p.OutputFormat)
 	}
 	return nil
 }
