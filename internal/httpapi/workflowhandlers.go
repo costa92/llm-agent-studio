@@ -183,7 +183,7 @@ func runWorkflowHandler(ps ProjectStore, ws WorkflowStore, pl PlannerPort, ev Ev
 			Brief: p.Description, ContentType: p.ContentType,
 			TargetPlatform: p.TargetPlatform, Style: p.Style,
 		}
-		res, err := pl.PlanCustom(r.Context(), id, wfID, brief, nodes)
+		res, err := pl.PlanCustom(r.Context(), id, wfID, brief, nodes, nil) // TODO(Task 7): resolve typed custom-node registry entries (org-scoped) and pass them here
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

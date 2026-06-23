@@ -72,7 +72,7 @@ type ProjectStore interface {
 type PlannerPort interface {
 	Plan(ctx context.Context, projectID string, b planner.Brief) (planner.Result, error)
 	PlanWith(ctx context.Context, projectID string, model llm.ChatModel, b planner.Brief) (planner.Result, error)
-	PlanCustom(ctx context.Context, projectID, workflowID string, b planner.Brief, nodes []planner.WorkflowNode) (planner.Result, error)
+	PlanCustom(ctx context.Context, projectID, workflowID string, b planner.Brief, nodes []planner.WorkflowNode, resolved map[string]planner.ResolvedType) (planner.Result, error)
 }
 
 // ChatRouter resolves an org's BYOK chat model (satisfied by *modelrouter.Router).
@@ -426,7 +426,7 @@ func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore,
 		if p.CustomWorkflowEnabled {
 			// customNodes already validated and populated above; use them directly.
 			// Legacy project-level custom run: no first-class workflow → NULL workflow_id.
-			res, err = pl.PlanCustom(r.Context(), id, "", brief, customNodes)
+			res, err = pl.PlanCustom(r.Context(), id, "", brief, customNodes, nil) // TODO(Task 7): resolve typed custom-node registry entries (org-scoped) and pass them here
 		} else {
 			// M5.1: per-project 规划模型 override 优先于 org 默认。如果 project 上
 			// 配了 planner_provider+planner_model，runHandler 拿这个去 modelrouter
