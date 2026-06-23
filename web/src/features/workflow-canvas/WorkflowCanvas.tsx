@@ -928,13 +928,17 @@ function CanvasInner({
             items={menuItems}
             onClose={() => setMenu(null)}
           />
-          <CustomTypeDialog
-            open={!!typeDialog}
-            mode={typeDialog?.mode ?? "create"}
-            initial={typeDialog?.mode === "edit" ? typeDialog.initial : undefined}
-            onSubmit={typeDialog?.mode === "edit" ? onEditCustomTypeSubmit : onCreateCustomType}
-            onCancel={() => setTypeDialog(null)}
-          />
+          {/* 条件渲染：每次打开都重新挂载，使 CustomTypeDialog 的 useState 从最新
+              initial 重新初始化（避免复用上一次的 label/color 残留）。 */}
+          {typeDialog && (
+            <CustomTypeDialog
+              open
+              mode={typeDialog.mode}
+              initial={typeDialog.mode === "edit" ? typeDialog.initial : undefined}
+              onSubmit={typeDialog.mode === "edit" ? onEditCustomTypeSubmit : onCreateCustomType}
+              onCancel={() => setTypeDialog(null)}
+            />
+          )}
         </div>
         <PropertiesPanel
           node={selected}
