@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+
+	"github.com/costa92/llm-agent-studio/internal/builtinnode"
 )
 
 var (
 	typesMu          sync.RWMutex
-	whitelistedTypes = map[string]bool{"script": true, "storyboard": true, "asset": true}
+	whitelistedTypes = builtinnode.Types()
 )
 
 // RegisterType registers a custom task type with the planner's whitelist.

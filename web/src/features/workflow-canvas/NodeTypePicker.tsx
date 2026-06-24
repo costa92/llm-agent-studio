@@ -1,6 +1,5 @@
-import { NODE_COLOR, TYPE_LABEL } from "./nodeColor"
-
-const PICKER_TYPES = ["script", "storyboard", "asset"] as const
+import { NODE_COLOR } from "./nodeColor"
+import { useBuiltinNodeTypes } from "@/features/builtin-node-types/api"
 
 export interface PickerCustomType {
   type: string
@@ -24,6 +23,7 @@ export interface NodeTypePickerProps {
 export function NodeTypePicker({
   open, screenX, screenY, customTypes = [], onPick, onClose,
 }: NodeTypePickerProps) {
+  const { data: builtins = [] } = useBuiltinNodeTypes()
   if (!open) return null
   return (
     <>
@@ -34,16 +34,16 @@ export function NodeTypePicker({
         className="fixed z-50 rounded-md border border-line bg-bg-raised p-1 shadow-lg"
         style={{ left: screenX, top: screenY }}
       >
-        {PICKER_TYPES.map((t) => (
+        {builtins.map((b) => (
           <button
-            key={t}
+            key={b.type}
             type="button"
             role="menuitem"
-            onClick={() => onPick(t)}
+            onClick={() => onPick(b.type)}
             className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-[12px] text-text-1 hover:bg-bg-surface"
           >
-            <span aria-hidden className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: NODE_COLOR[t] }} />
-            {TYPE_LABEL[t]}
+            <span aria-hidden className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: NODE_COLOR[b.type] }} />
+            {b.label}
           </button>
         ))}
         {customTypes.length > 0 && <div className="my-1 border-t border-line" />}

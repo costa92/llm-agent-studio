@@ -256,6 +256,14 @@ export interface BuildPromptResponse {
   prompt: string
 }
 
+// 内置工作流节点类型（GET /api/node-types/builtin → {items}）。系统定义、全局只读，
+// 不可增删改。color 仅前端（见 workflow-canvas/nodeColor.ts 的 NODE_COLOR），后端不返回。
+export interface BuiltinNodeType {
+  type: string
+  label: string
+  description: string
+}
+
 // custom_node_types/store.go CustomNodeType。组织级 typed 自定义节点注册表条目。
 // kind 判别 params 形状：'llm' → LlmParams；'http' → HttpParams；'script' → ScriptParams。
 export interface CustomNodeType {

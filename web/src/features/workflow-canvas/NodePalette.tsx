@@ -1,8 +1,9 @@
-import { NODE_COLOR, TYPE_LABEL } from "./nodeColor"
+import { NODE_COLOR } from "./nodeColor"
+import { useBuiltinNodeTypes } from "@/features/builtin-node-types/api"
 
 // 节点面板（Phase 2）：列出可拖入的节点类型 chips。dragstart 写入节点类型，
 // 画布的 onDrop 读取后在落点创建节点。Phase 3：标准管线一键填充。
-const PALETTE_TYPES = ["script", "storyboard", "asset"] as const
+// 内置类型由后端目录 hook 数据驱动（staleTime Infinity，加载期为空可接受）。
 
 // 与画布 onDrop 约定的 dataTransfer key。
 export const PALETTE_DND_TYPE = "application/studio-node-type"
@@ -29,19 +30,20 @@ export interface NodePaletteProps {
 }
 
 export function NodePalette({ onStandardPipeline, onAutoTidy, customTypes, onAddCustomType, onEditCustomType }: NodePaletteProps) {
+  const { data: builtins = [] } = useBuiltinNodeTypes()
   return (
     <aside className="flex w-44 shrink-0 flex-col gap-3 border-r border-line bg-bg-surface p-3">
       <h4 className="text-[11px] font-semibold uppercase tracking-wider text-text-3">
         节点
       </h4>
       <div className="flex flex-col gap-2">
-        {PALETTE_TYPES.map((t) => (
+        {builtins.map((b) => (
           <div
-            key={t}
+            key={b.type}
             data-slot="palette-chip"
             draggable
             onDragStart={(e) => {
-              e.dataTransfer.setData(PALETTE_DND_TYPE, t)
+              e.dataTransfer.setData(PALETTE_DND_TYPE, b.type)
               e.dataTransfer.effectAllowed = "move"
             }}
             className="flex cursor-grab items-center gap-2 rounded-md border border-line bg-bg-base px-2.5 py-1.5 hover:border-text-3 active:cursor-grabbing"
@@ -50,9 +52,9 @@ export function NodePalette({ onStandardPipeline, onAutoTidy, customTypes, onAdd
             <span
               aria-hidden
               className="h-2.5 w-2.5 rounded-full"
-              style={{ backgroundColor: NODE_COLOR[t] }}
+              style={{ backgroundColor: NODE_COLOR[b.type] }}
             />
-            <span className="text-[12px] text-text-1">{TYPE_LABEL[t]}</span>
+            <span className="text-[12px] text-text-1">{b.label}</span>
           </div>
         ))}
         {(customTypes ?? []).map((c) => (
