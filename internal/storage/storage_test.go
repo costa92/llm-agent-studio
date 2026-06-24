@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"os"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 )
 
 func randHex(n int) string {
@@ -310,5 +312,85 @@ func TestM15BackfillStorageConfigID(t *testing.T) {
 	}
 	if got != "builtin" {
 		t.Fatalf("builtin-org asset should get 'builtin' sentinel, got %q", got)
+	}
+}
+
+func TestMigrateCreatesSchemaMigrationsTable(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, Config{PGURL: testDSN(t)})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate 1: %v", err)
+	}
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate 2 (idempotent): %v", err)
+	}
+	var exists bool
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='schema_migrations')`).Scan(&exists); err != nil {
+		t.Fatalf("check table: %v", err)
+	}
+	if !exists {
+		t.Fatal("schema_migrations table not created")
+	}
+}
+
+func TestMigrateLegacyDDLStillApplied(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, Config{PGURL: testDSN(t)})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	for _, tbl := range []string{"node_outputs", "custom_node_types", "org_secrets", "workflows"} {
+		var exists bool
+		if err := st.Pool().QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name=$1)`, tbl).Scan(&exists); err != nil {
+			t.Fatalf("check %s: %v", tbl, err)
+		}
+		if !exists {
+			t.Fatalf("legacy table %s missing after runner rewrite", tbl)
+		}
+	}
+}
+
+func TestGoStepRunsOnceAndIsRecorded(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, Config{PGURL: testDSN(t)})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	var calls int
+	st.testGoSteps = []migrationStep{{
+		version: "test_counter_step",
+		run: func(ctx context.Context, tx pgx.Tx) error {
+			calls++
+			_, err := tx.Exec(ctx, `CREATE TABLE IF NOT EXISTS _p2a_probe (n INT)`)
+			return err
+		},
+	}}
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate 1: %v", err)
+	}
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate 2: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("Go step ran %d times, want exactly 1", calls)
+	}
+	var recorded bool
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version='test_counter_step')`).Scan(&recorded); err != nil {
+		t.Fatalf("check recorded: %v", err)
+	}
+	if !recorded {
+		t.Fatal("Go step not recorded in schema_migrations")
 	}
 }
