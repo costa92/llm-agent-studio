@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { PropertiesPanel, extractTemplateVars } from "./PropertiesPanel"
+import type { NodeTypeDescription } from "./nodeDescTypes"
 import type { LlmParams, WorkflowNode } from "@/lib/types"
 
 // useCreatePrompt 仅在「＋ 新建提示词」分支调用——这里不测该分支，mock 即可。
@@ -281,6 +282,29 @@ describe("PropertiesPanel typed node (Task 13)", () => {
     expect(emptyOptions).toHaveLength(0)
     // Confirm the panel did render (sanity: heading present).
     expect(screen.getByText("变量绑定")).toBeInTheDocument()
+  })
+
+  it("renders typed-param summary via PropertiesForm when description is provided, without ever patching parameters/typeVersion", () => {
+    const description: NodeTypeDescription = {
+      type: "custom:translate",
+      version: 1,
+      label: "翻译",
+      description: "",
+      group: "transform",
+      inputs: [],
+      outputs: [],
+      properties: [{ name: "userPrompt", label: "用户提示词", type: "textarea" }],
+    }
+    const { onPatch } = renderTypedPanel(typedNode(), defaultTypedParams, undefined, {
+      description,
+    })
+    // (a) PropertiesForm field renders.
+    expect(screen.getByLabelText("用户提示词")).toBeInTheDocument()
+    // (b) read-only guarantee: no onPatch call carries parameters/typeVersion.
+    for (const call of onPatch.mock.calls) {
+      expect(call[0]).not.toHaveProperty("parameters")
+      expect(call[0]).not.toHaveProperty("typeVersion")
+    }
   })
 
   it("annotation custom node (no typeId) does not show typed UI, shows 编辑类型 button", () => {
