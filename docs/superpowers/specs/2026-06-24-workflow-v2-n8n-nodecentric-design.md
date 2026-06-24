@@ -238,3 +238,75 @@ func Resolve(template string, ctx Context) (string, error)
 5. 安全约束词汇 + 独立安全评审门禁落在引入 schema 驱动校验的阶段（I4）；secret/表达式分隔符规则可测化（I3）。
 
 **结论**：spec 方向成立，但**修订前不可直接转 P1 实现计划**——P1（nodedesc + `GET /api/node-types` + `PropertiesForm`）仍是最可先发的薄片（纯 UI 渲染、产出同样的 promptId/promptText/typed 值），但其 schema 须先编码现有安全约束（I4）才能驱动真正的参数保存（"产出同样值"仅对只读渲染成立）。"删 legacy"步骤按上述铁律重排。
+
+## 11. 第二轮评审修订（4-agent 多镜头对抗式评审，逐条核对真实代码）
+
+四个并行评审镜头（迁移安全 / 安全 / 数据模型 / API+前端）各自对 HEAD 真实代码核实。**一致结论：四镜头全判"按当前 spec 不可直接实现"**。§10 抓对了大方向，但把三处载重问题留成"待决"而非"已决"，且 §5 phasing 未与自己的铁律对齐。新增阻断按主题归并（标注哪个镜头发现）：
+
+### 11.1 迁移机制（多镜头汇聚的最高风险）
+
+- **M-1（迁移 runner 无版本表/无事务/每次启动重跑）[阻断｜迁移+数据双镜头独立命中]**：`storage.Migrate` 把所有 `mN` 摊成单个 `[]string` 经 `pool.Exec` 逐条跑，**无包裹事务、无 `schema_migrations` 版本表**，每次 studiod 启动全量重跑（`main.go` 启动期无锁调用）。现有幂等全靠各 DDL 的 `IF NOT EXISTS`。Go 编码的 m20（改写每行 `workflows.nodes` JSONB）**没有这种天然幂等**：第二次启动会重跑——若 `{{name}}`→`$node[...]` token 改写非纯函数，会把已改写文本再改写成乱码，或把 parameters 重盖到用户两次启动间的编辑上。**修订**：m20 落地前先给 runner 加 (a) `schema_migrations(version TEXT PK, applied_at)` 表 + 每个 Go 步插入成功标记/已存在则跳过；(b) 每步包裹显式事务；(c) 启动期 advisory lock 防多副本并发同一 in-place UPDATE；(d) m20 用每节点 `version` 哨兵幂等（已迁过的节点跳过）。"加一个 Go 迁移步"远不够。
+
+- **M-2（m21 对 `format='json'` 行回填有损，且决策仍开放）[阻断｜迁移+数据双镜头命中]**：m21 统一把 `node_outputs` 回填成 `{json:{text:content, format:format}}`。但 `runCustomLLM` 的 `format='json'` 行 `content` 本就是序列化 JSON 值；包成 `{text:"<json字符串>"}` 后，下游 `{{ $json.field }}`（items 模型存在的全部理由）只看到字符串、取不到字段。`format='http-status'` 同病。**这恰恰对要服务的那批结构化行失效**。§10 I1 标了却以"决定是否…"收尾。**修订**：m21 按 format 分支——`format='json'`→`json = content::jsonb`（解析失败回退 `{text:content, _parseError:true}`，绝不让迁移半路失败）；`format='text'/'http-status'`→`{text:content}`。此分支即 m20/m21 必须走 Go 编码步的另一理由（SQL `jsonb_build_object` 装不下"解析可能失败"）。
+
+- **M-3（§5 phasing 与 §10 B4 铁律自相矛盾）[阻断｜迁移镜头]**：§10 铁律 #2 明令 planner 降级须先于停读项目配置，但 §5 仍把"删 `pictureBookConfig`/项目-style"放 P3、"Plan 降为生成起始图"放 P4——正是 §10 禁止的倒序。spec 正文从未与自己的评审响应对账。**修订**：重写 §5，使 planner 降级 + LLM 图落成可被 m20 回填的 `workflows` 行**先于或同阶段于**移除 `pictureBookConfig`；在 LLM-planner 项目产出 `workflows` 行前，`runScript`/`runStoryboard` 必须保留 `pictureBookConfig` 兜底。
+
+- **M-4（跨部署边界的在途运行无人处理）[阻断｜迁移镜头]**：部署瞬间处于 `running`/`ready` 的 todo：其 `script` 可能在旧代码下完成（写了 `scripts`、返 `script:<id>`、**无 `node_outputs.items`**），随后 `storyboard` 被新 worker 接管、`loadInputs` 期望上游 `node_outputs.items` → 拿到空 → storyboard 无输入跑或报错。§10 B2 的"接受老运行不入 items"punt 实际等于**每个跨部署的运行下游全破**。**修订**：要么 (a) 部署 worker 变更前排空/静默 todo 队列（运维 runbook，当前缺）；要么 (b) `loadInputs` 在上游 `node_outputs.items` 空时回退到 `scripts`/`shots`/`output_ref` 投影——这意味着 legacy 读路径在队列完全循环前不可删，收紧 P4 退役门禁。
+
+- **M-5（无回滚路径；m20 in-place 改写是单向门）[阻断｜迁移镜头]**：`Migrate` 纯前向（无 down、无版本）。m20 一旦原地改写 `workflows.nodes` + m21 改 `node_outputs` 形状，坏部署无法回滚：旧二进制期望 `pictureBookConfig` 读 + 干净 `WorkflowNode`（无 `parameters` 字段），但数据已带新形状。§10 P2 的"双写窗口"只覆盖自定义路径的 content/format，**不覆盖 m20 的 in-place 节点改写**。**修订**：m20 改为**只增不改**——写进**新键**（如 `node.parametersV2`），旧字段原样保留，旧二进制照常工作、回滚=部署旧二进制；新二进制验证通过后再收敛到 canonical `parameters`。
+
+- **M-6（m20 须从 project↔workflow join 合成内置节点 params，非 1:1）[次要｜迁移镜头]**：内置 `WorkflowNode` 今天零配置，brief/style 来自 project 行 + plan 期 `Brief` 参数。m20 须从每个 `workflows` 行 reach 到 `projects` 行把 brief/style/picturebook_config 烘焙到 script/storyboard 节点。但 m12 起是 1:N（一项目多 workflow）。**修订**：显式规定 m20 的 join 语义 + 对无 script/storyboard 节点的 workflow（草稿/部分图）定义行为（跳过不报错）。
+
+### 11.2 安全（安全镜头，载重——§3.7 把危险参数移上节点摧毁了现有不变量）
+
+> 现状安全模型（已核实）：编辑者**从不**控制危险字段。worker 绑定的参数来自 **org-scoped `custom_node_types` 注册表**（保存期 `validate*` 校验一次），节点只供 `TypeId`(引用) + `VarBindings`(且 `sourceNodeId` 必在 `dependsOn`)。worker 运行期**从不**重跑校验器。secret 在 **worker 运行期**对**注册表作者模板串**解析、`orgID` 来自可信 run 上下文、**从不落库**。输出读取（`resolveOutputText`/`resolveVariables`）全是 **bare-id `WHERE id=$1`、零 org/project scope**——今天安全纯因 id 只来自同项目 plan 图的 `idMap`，从不由攻击者选。
+
+- **S-1（危险参数移上编辑者可控节点，无运行期重校验）[阻断]**：§3.7 把 `url`/`headers`(含 secret)/`code` 移进 `workflows.nodes[].parameters`（编辑者可控 JSON），validated-registry 不变量消失。I4 说"校验器前置"=**仅保存期**；spec 从未要求 worker 运行期对**节点参数**重跑 `validateHTTPParams`/`validateScriptParams`。**攻击**：org 编辑者（能改 workflow 的最低权限）把 http 节点 `url` 设 `http://attacker/collect`、header `Authorization: {{secret:STRIPE_KEY}}`、`allowResponseBody:true`，或直接 `PUT` workflows.nodes JSON 绕过画布——worker 执行即外泄密钥。**修订**：spec 须明确威胁模型行——"编辑者可直接写 workflows.nodes JSON，每条危险约束须在保存**与**运行两处对不可信输入成立"；决定危险字段是 registry-only（节点只给 typeId 引用 + 安全 override）还是上节点（则 worker 运行期必重校验 + 保存端校验 per-node override 而非 base description）。
+
+- **S-2（`$node["id"]` + `NodeByID` 是无 scope 的跨租户/跨项目读原语）[阻断]**：§3.4 引入 `$node["NodeId"].json.y`、`NodeByID func(id) ([]Item,error)`，表达式串编辑者自由文本，spec 对 scope **只字未提**。若 `NodeByID` 像现 `resolveOutputText` 那样 bare-`WHERE id=$1`，则 org A 编辑者写 `{{ $node["<org-B-id>"].json.text }}` 读到 org B 输出（含 S-3 落库的 secret）。id 虽 128-bit 随机但经时间线/SSE `/state`/错误信息泄漏；即便同 org，`$node["X"]` X 不在 `dependsOn` 也读到不该见的兄弟分支。**本仓有跨租户写历史**（见 memory bug-backlog）。**修订**：硬不变量写进 expr 引擎契约——`NodeByID` (a) 只解析当前 run plan 图内、按 `project_id`(传递 `org_id`) scope 的 id；(b) 拒绝任何不在执行节点传递 `dependsOn` 集的 id（复用 planner 的 depSet 检查）。加跨租户 parity 测试进安全门禁。
+
+- **S-3（I3"secret 作者期解析一次"措辞要么与代码矛盾、要么把明文密钥落库）[阻断]**：现实是 secret **运行期在 worker** 解析、对**注册表作者模板**、orgID 来自可信上下文、**从不落库**。I3 若字面理解为"保存期解析"→解析后明文 secret 写进 `workflows.nodes`/`node_outputs`，**静止明文存在 PG + 备份 + 每帧 `/state` SSE + 时间线**——比现状严重得多。**修订**：spec 须逐字声明——secret **只在运行期、worker 内、对注册表作者模板串、按可信 run-context orgID 解析；解析后明文绝不落 `node_outputs.items`/`workflows.nodes`/时间线/`/state`**；不变量="已解析 secret 只在 worker 进程内存活一次出站请求时长"。items 模型若让 header/body 流经 `node_outputs.items`，存的须是**替换前**含 `{{secret:}}` 的模板、非替换后的值。
+
+- **S-4（即便 I3 完好，secret 仍可经 items 下游外流——`{status}`-only 守卫不随 items 重构存活）[阻断]**：现守卫 `secretBearing && !allowResponseBody` → http 节点只存 `{"status":N}`，防 secret 经响应体落库/下游读。§3.2/§3.5 让 `node_outputs.items` 成 canonical 通道、执行器统一 `(inputItems,params)→outputItems`，spec **未把该 body-restriction 政策带进 items 模型**。**攻击**：header `X-Probe:{{secret:KEY}}` 指向 `https://attacker-requestbin.com`(公网 IP 过 SSRF 过滤)、`allowResponseBody:true`、下游 script 节点把 `$json` 拷进输出——secret (a) 发攻击者 (b) 落 items (c) 渲染运行面板。**修订**：`secretBearing`/`allowResponseBody` body 限制须显式带进统一执行器契约（secret-bearing 且 `!allowResponseBody` 的节点 items 只含 `{status}`），`secretBearing` 追踪是强制项非 per-kind 细节。
+
+- **S-5（SSRF：I4 说 url 须静态字面量，但 §5 P5 引入 resourceLocator/表达式 url，无运行期静态校验）[主要]**：现 url 运行期防御仅 `strings.Contains(in.URL,"{{")` 字符串检查 + fetch 传输层禁非公网 IP（**但无 host 允许名单，任何公网 host 可达**）。P5 让 url 可 resourceLocator/模板，若 expr 引擎在该检查**前**解析 `{{ }}`，动态 URL 直达 fetch + S-4 secret-header → 任意公网 host SSRF + 外泄。**修订**：secret-bearing 节点 url 永远静态字面量，运行期解析后再断言无模板残留 + host 非表达式派生；resourceLocator 仅解析到固定允许集；考虑 per-org 出站 host 允许名单。
+
+- **S-6（Starlark"逃生舱"沙箱配置只断言未规定，而 §6.1"非 JS VM"安全论证全押在它）[主要]**：现 `scriptengine` 锁死（禁 `{{secret:}}`、5s wall-timeout、无网无文件、错误不漏源码行）。§7"复用+抬升"Starlark 为通用重变换路径，若"抬升"放宽其可触达面（`$node[...]` 任意输出 / binary refs / 更大输入更长预算），现有保证须**作硬性要求重新声明**，否则未沙箱化逃生舱击穿整个"为安全避开 goja"论证。**修订**：§3.4/§6.1 加显式 Starlark 沙箱契约（无文件/无网/无 secret 注入/保留 wall-timeout/堆+输出大小有界/错误不透明），声明"抬升"不放宽任何一条；script 节点纳入 I4 独立安全评审门禁。
+
+- **S-7（m20 改写每行 workflows.nodes 无校验 pass，迁移产出的节点绕过全部 save-time 校验器）[主要]**：m20 把 parameters（含 url/style/picturebook，S-1 未修则含 secret-bearing 字段）直写 `workflows.nodes`，绕过每个校验器。buggy m20 误编码或 token 改写失手 → worker 执行从未被任何校验器审过的参数。**修订**：m20 须对每个改写后节点跑它正在回填进的同一组参数校验器（失败则 fail 该行、不静默写非法参数）；这也逼校验器可对 node-parameter 形状调用（S-1 本就需要）。
+
+### 11.3 数据模型（数据镜头）
+
+- **D-1（typeVersion 声明在 description 上、却从不持久化到 node；schema 变更静默损坏老图）[阻断]**：spec 给 `NodeTypeDescription` 加 `Version int`、m20"每节点加 version:1"，但持久化的 `planner.WorkflowNode` **无 version 字段**。n8n 按 `type+typeVersion` 解释参数正是为了 type v1→v2 后老节点仍按 v1 语义读。spec 把 `Version` 带在 type 目录、却没给 node 实例钉版本字段——`studio.script` v1→v2 改一个 property 含义，每个老图按 v2 语义读 → 静默参数损坏。round-trip 是非严格 unmarshal（无 `DisallowUnknownFields`），故加的 `typeVersion` 键能存活——但无写者无读者。**修订**：`WorkflowNode` 加 `TypeVersion int`；`PropertiesForm` 保存须写它；执行器按 `(type,typeVersion)` 选 description。否则"version:1"是无人读的死元数据。
+
+- **D-2（PropertiesForm 保存路径不 round-trip parameters/typeVersion，值搁浅 JSONB 跨版本无人消费）[主要]**：见 §11.5 B-A1（前端 whitelist 丢弃）+ 后端 `PlanCustom` 读 `VarBindings`/registry params 而非节点 `parameters`。**修订**：把 schema 字段（`Parameters json.RawMessage`、`TypeVersion int`）落到 `WorkflowNode` + PlanCustom 读路径，**先于**前端写它们，否则值跨发布搁浅。把新 `WorkflowNode` JSON schema 钉成显式交付物。
+
+- **D-3（pairedItem 是 cargo-cult，无消费者，每行死重）[主要]**：§3.2 给每行加 `pairedItem:{item:int}`"记录血缘"。n8n 里它只因引擎用它做 `$items()` 回溯 + fan-in 配对才有意义；本 spec 无 merge 节点、无走 pairedItem 的 `$items()` 消费者、storyboard 扇出是唯一 fan 节点。每行持久化 pairedItem = 纯存储膨胀 + 误导后人的"维护中"假象。**修订**：按本仓 CLAUDE.md §2"不加未被要求的功能"——**先删 pairedItem**，有消费者再加（additive JSONB 键零迁移成本）；或显式规定哪个读者走它 + storyboard 扇出语义。
+
+- **D-4（BinaryRef 指向 `pending_acceptance`、非 accepted 的资产；下游解引用未接受/已拒绝字节）[主要]**：asset todo 到 `done` 时 asset 行在 `pending_acceptance`，HITL 接受**更晚且可能拒绝**；asset 生命周期**无 accepted 终态之外的"done"**（见 memory asset-status）。若 asset-item 在 todo-done 发射，`BinaryRef{assetId}` 流向下游指向用户随后可能拒的字节。**修订**：BinaryRef 物化时带 asset `status`，或下游消费 gate 在 `status='accepted'`，或（P1-P4 最简）后置下游二进制 item 消费——则 item 里 BinaryRef 是 write-only 元数据须声明，读者勿信。钉死 `$binary.image` 在资产 pending/rejected 时解析成什么。
+
+- **D-5（items 列 NULL/空纪律未对齐本仓 GORM 硬规则）[主要]**：本仓规则——NULL 列须 `[]byte`/`pq.StringArray` 中转、写用 `INSERT...RETURNING`。spec DDL `items JSONB NOT NULL DEFAULT '[]'` 方向对，但未规定 scan 路径；现有 JSONB scan 都走 `[]byte`→`json.RawMessage`。P2 双写窗口三处 INSERT（worker.go 旧 6 列 INSERT）须**新增 items 列**而非依赖 DEFAULT（DEFAULT 只为 m21 回填的历史行）。**修订**：显式规定 items 读经 `[]byte`→`RawMessage`、NULL/空当 `[]`；三处 INSERT 同语句写 items；加 CHECK/应用层守 items 恒为 JSON 数组。
+
+- **D-6（characterSheet 在 items 模型里的落点未钉，撞 M-2）[次要]**：§10 B5 对，但 `$node["script"].json.characterSheet` 要求 script 执行器发的 item `json` 是完整 ScriptOutput 对象、非 `{text:<序列化json>}`——这与 M-2 的统一 text 回填冲突。**修订**：script 执行器新 items 发射须 `json = <ScriptOutput 对象>`（类型化契约 `studio.script` 发 `[{json: ScriptOutput}]`），即内置 item 发射从第一天起**类型感知**而非 text-wrap。
+
+### 11.4 API + 前端渲染契约（前端镜头）
+
+- **B-A1（`toStudioNodes` 字段 whitelist，每次保存静默丢 `parameters` + 任何未识别 Property）[阻断]**：`canvasModel.ts` 的 `toStudioNodes` 逐字段重建节点、只拷固定 whitelist（`id/type/promptId/dependsOn/position`+条件 `promptText/label/color/typeId/varBindings`），**无 `parameters`、无 preserve-unknown**。每次画布编辑→保存会剥掉新 params；老 web 客户端不识别的新 Property 也在保存时丢失=数据损坏。代码注释已记录他们被同款 bug 咬过（typeId/varBindings 曾丢失直到显式拷贝）。**修订**：spec 须强制 (a) round-trip 完整节点对象（`{...n, id, type, dependsOn, position}`）而非字段 whitelist；(b) parity 测试断言未知 Property 经 load→save→reload 存活。
+
+- **B-A2（`displayOptions`+静态 `Default` 表达不了 picturebook age-band 级联默认）[阻断]**：`pbconfig.go` 里 `ageBand="0-3"` 派生 pageCount=8/maxWords=10/narration=repetition/bookType=concept 等；`displayOptions.show/hide` 只切可见性、**不能由一字段取值设另一字段值**。手搭 picturebook 节点无法复现级联。**修订**：要么给 schema 加派生默认机制（`Property.DefaultFrom`/按另一字段取值的 option-scoped 默认映射），要么把 `ParsePictureBookConfig` 级联留作后端解析步、表单不复刻并把 picturebook 记为非通用节点。
+
+- **B-A3（Property 类型枚举漏掉现表单实际渲染的 widget）[阻断]**：现三表单含枚举无成员的载重 widget——① **prompt 选择器**（`__default__`/`__custom__`/`__create__` 哨兵 + 按 node kind 过滤库 prompt + basics vs org library 合并 + 内联"新建 prompt"调 `useCreatePrompt` 副作用 mutation）；② **HTTP headers key-value 编辑器**（动态增删行 + 每行"插入 secret"下拉源自 `useOrgSecrets`）；③ **`secretBearing` 条件 checkbox**（`allowResponseBody` 仅当任一 header 值匹配 `/\{\{secret:/` 才显——是对兄弟字段内容的计算谓词，`displayOptions.show` 表达不了）；④ **model 字段**（今 free-text，§3.6 暗示 catalog 选择器，`useModelCatalog` 存在但枚举无 `resourceLocator`）。**修订**：实现前逐 widget→Property-type 映射；定义 `prompt` 类型数据源+create-mutation 契约；加 `keyValue`/header 类型或规定 secret-insert 子 widget；把 `secretBearing` 正则谓词 reveal 换成显式 schema 规则或挪后端；钉 `model` 在 P1 是 string 还是 catalog resourceLocator。
+
+- **B-A4（picturebook `characterSheet` 无表单表达，整流程 P1 无法手搭）[阻断｜与 D-6/B5 汇聚]**：手搭 picturebook 须 (1) script 节点设 pictureBook+ageBand/themes（B-A2 级联阻断）；(2) storyboard 节点经 `{{ $node["script"].json.characterSheet }}` 引用——依赖 B2（内置发 items），**不在 P1**；(3) maxWords/illustrationStyle 默认来自 age-band 级联。P1 只读表单全表达不了。**修订**：任何移除 picturebook-config-read 须 gate 在 B2 + 具体 characterSheet 表达式路径双满足；给出复现 3-6 age-band picturebook 的确切节点图+字段值范例；在此路径示范前 P1 不降级 picturebook 配置。
+
+- **B-A5（`GET /api/node-types` 合并契约无冲突规则；自定义节点可遮蔽内置 type id）[主要]**：endpoint 合并内置静态 description + per-org `custom_node_types`，但未钉 `type`-名冲突谁胜。自定义类型 org 可写、只校验 kind/params 形状，无"不撞内置 `studio.*`"检查；前端现按 `type` 去重"typed 胜 annotation"，朴素套用合并则**自定义可胜内置** → 劫持画布渲染/执行。响应形状也未钉（无 version 信封/etag/缓存/排序/命名空间）。**修订**：`studio.*` 是保留命名空间；自定义强制 `custom:` 前缀且冲突时**内置永远胜**（create 期拒绝遮蔽）；钉响应 `{version, nodeTypes:[...]}` + 缓存头 + 稳定排序 + 前端 query-key/失效。
+
+- **B-A6（表达式自动补全无 schema 驱动源；输出今天无类型）[主要]**：§3.4/P5 要 `{{ $node["id"].json.y }}` 自动补全，但前端无从知上游节点发什么字段——`NodeTypeDescription` 描述**输入** Properties 非**输出** JSON 形状。现唯一"上游"UI 是 varBindings Select（给 node id+label、零字段名）。无输出 schema → 表达式退化成盲打。**修订**：`NodeTypeDescription` 加输出 schema（per-output 声明 json 字段，如 `studio.script` 输出 `{title,logline,characterSheet,scenes}`），`PropertiesForm` 表达式编辑器从 `dependsOn` 上游 description 的输出 schema 取补全源；否则把表达式移出 P1-P4、保留 varBindings。
+
+- **B-A7（命令式跨字段安全校验器无 schema 词汇；须 round-trip 到 run-gate）[主要｜与 S-1/I4 汇聚]**：见 S-1。前端镜头补充：前端镜像（`HttpParamForm` urlInvalid/secretBearing 内联错误）须可从 schema 复现否则丢失内联错误 UX。**修订**：`Property`/`TypeOptions` 定义约束词汇（`noTemplate`/`noSecret`/`secretAllowedIn:[headers]`），命令式校验器留服务端作执行层（schema 仅 UX 提示），schema 驱动保存阶段 gate 在 `customnodetype` 须的独立安全评审。
+
+- **B-A8（`studio.asset` 节点今天无表单；P1"产出同样值"对它是空集）[次要]**：asset 节点今 `showPrompt=false`、非 typed、prompt/style/voice/duration 由 storyboard 扇出+项目填非表单。P1"产出同样值"对 asset 空洞——无现值可保 + 把这些暴露成可编辑字段是改变 asset 取参方式的净新增行为（撞 I2 扇出非静态可寻址）。**修订**：spec 标 `studio.asset` 为行为变更（非 like-for-like 迁移），澄清手配 asset 节点如何与 storyboard 动态扇出 asset todo 共存。
+
+### 11.5 第二轮总结论
+
+四镜头独立判"**当前 spec 不可直接转实现**"，方向仍成立。**P1 唯一安全可起的薄片 = nodedesc + `GET /api/node-types` + `PropertiesForm` 纯只读渲染**（不拥有保存路径）。转 P1 实现计划前，spec 须补：① 迁移 runner 加 `schema_migrations` + 事务 + 启动 advisory lock，m20 改"只增新键"+ 每节点 version 哨兵幂等（M-1/M-5）；② m21 按 format 分支回填 + 内置 item 发射类型感知（M-2/D-6）；③ 重排 §5 使 planner 降级先于停读项目配置（M-3），定义 `loadInputs` 回退 + 队列排空 runbook（M-4）；④ 加显式威胁模型节：危险约束在保存**与**运行双处对编辑者可控 JSON 成立、`NodeByID`/expr 读 project+org scope + dependsOn-gate、secret 仅运行期解析永不落库、`{status}` 守卫随 items 存活、Starlark 沙箱重声明（S-1~S-6）；⑤ `WorkflowNode` 加 `TypeVersion`+`Parameters` 并钉 on-disk 节点信封（D-1/D-2）；⑥ 前端 `toStudioNodes` round-trip 完整节点 + preserve-unknown + parity 测试（B-A1）；⑦ 逐 widget 补 Property 类型枚举（B-A3），picturebook 级联/characterSheet 留特例（B-A2/B-A4）；⑧ 删 pairedItem（D-3）。`studio.*` 命名空间保留 + 内置胜冲突（B-A5）。
