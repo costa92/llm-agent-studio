@@ -167,6 +167,9 @@ func New(cfg Config) *Worker {
 		"asset": func(ctx context.Context, t ClaimedTodo) (string, error) {
 			return w.runAsset(ctx, claimed{todoID: t.TodoID, projectID: t.ProjectID, typ: t.Type, attempts: t.Attempts, input: t.Input})
 		},
+		"prescreen": func(ctx context.Context, t ClaimedTodo) (string, error) {
+			return w.runPrescreen(ctx, claimed{todoID: t.TodoID, projectID: t.ProjectID, typ: t.Type, attempts: t.Attempts, input: t.Input})
+		},
 	}
 	for k, v := range cfg.CustomExecutors {
 		w.executors[k] = v
@@ -993,6 +996,58 @@ func (w *Worker) prescreen(ctx context.Context, c claimed, assetID, style string
 	}
 	_, _ = w.cfg.Events.Append(ctx, c.projectID, "asset_prescreened", c.todoID,
 		map[string]any{"assetId": assetID, "score": res.Score, "flags": res.Flags})
+}
+
+// runPrescreen executes the "prescreen" built-in node: resolve the newest
+// upstream text node (through this todo's depends_on edges, like runStoryboard),
+// score it through the ReviewAgent, and land the verdict as a JSON node_output
+// that downstream nodes read as "custom:<id>". Built-in nodes consume upstream
+// via plan-structure depends_on, NOT the custom-node varBindings mechanism.
+func (w *Worker) runPrescreen(ctx context.Context, c claimed) (string, error) {
+	if w.cfg.Review == nil {
+		return "", fmt.Errorf("worker: prescreen disabled (no ReviewAgent configured)")
+	}
+	// Newest upstream node whose output_ref is a resolvable text source
+	// (script:/custom:). asset:/shots: refs are binary/fan-out and excluded.
+	var parentRef string
+	if err := w.cfg.DB.WithContext(ctx).Raw(`
+		SELECT t.output_ref FROM todos t
+		JOIN todos p ON t.id = ANY(p.depends_on)
+		WHERE p.id=$1 AND (t.output_ref LIKE 'script:%' OR t.output_ref LIKE 'custom:%')
+		ORDER BY t.updated_at DESC LIMIT 1`, c.todoID).Row().Scan(&parentRef); err != nil {
+		return "", fmt.Errorf("worker: prescreen found no upstream text node: %w", err)
+	}
+	text, err := w.resolveOutputText(ctx, parentRef)
+	if err != nil {
+		return "", err
+	}
+	var projectStyle string
+	if err := w.cfg.DB.WithContext(ctx).Raw(
+		`SELECT style FROM projects WHERE id=$1`, c.projectID).Row().Scan(&projectStyle); err != nil {
+		return "", fmt.Errorf("worker: load project style: %w", err)
+	}
+	reviewIn := studioagents.ReviewInput{Prompt: text, Style: projectStyle}
+	var res studioagents.ReviewOutput
+	if m, ok := w.routedChatModel(ctx, c.projectID); ok {
+		res, err = w.cfg.Review.RunWith(ctx, m, reviewIn)
+	} else {
+		res, err = w.cfg.Review.Run(ctx, reviewIn)
+	}
+	if err != nil {
+		return "", fmt.Errorf("worker: prescreen review: %w", err)
+	}
+	payload, err := json.Marshal(res)
+	if err != nil {
+		return "", fmt.Errorf("worker: marshal prescreen verdict: %w", err)
+	}
+	outID := newID()
+	if err := w.cfg.DB.WithContext(ctx).Exec(
+		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format)
+		 VALUES ($1,$2,$3,$4,$5,$6)`,
+		outID, c.projectID, c.todoID, c.typ, string(payload), "json").Error; err != nil {
+		return "", fmt.Errorf("worker: insert node_output: %w", err)
+	}
+	return "custom:" + outID, nil
 }
 
 // discardCanceledAsset terminal-states the asset produced by a discarded
