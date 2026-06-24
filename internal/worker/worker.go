@@ -24,6 +24,7 @@ import (
 
 	coreagents "github.com/costa92/llm-agent"
 	"github.com/costa92/llm-agent-contract/llm"
+	"github.com/lib/pq"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -2030,5 +2031,90 @@ func (w *Worker) resolveOutputText(ctx context.Context, outputRef string) (strin
 		return "", fmt.Errorf("worker: output_ref %q is binary/fan-out, not a text source", outputRef)
 	default:
 		return "", fmt.Errorf("worker: unknown output_ref %q", outputRef)
+	}
+}
+
+// loadInputs gathers the items emitted by each of todoID's dependency todos (the
+// canonical inter-node channel going forward). For a dependency whose
+// node_outputs.items is empty — a straddling-deploy run that completed under old
+// code (★M-4) — it falls back to projecting that dep's scripts/shots/output_ref
+// into equivalent items so in-flight runs are not stranded.
+//
+// P2a NOTE: loadInputs is ADDITIVE — execution is NOT yet routed through it. The
+// legacy depends_on/output_ref/resolveVariables resolution stays live. This exists
+// for parity tests + the P2b/P3 cut-over.
+func (w *Worker) loadInputs(ctx context.Context, todoID string) ([]Item, error) {
+	var depIDs pq.StringArray
+	if err := w.cfg.DB.WithContext(ctx).Raw(
+		`SELECT depends_on FROM todos WHERE id=$1`, todoID).Row().Scan(&depIDs); err != nil {
+		return nil, fmt.Errorf("worker: load %s depends_on: %w", todoID, err)
+	}
+	var out []Item
+	for _, dep := range depIDs {
+		depItems, err := w.itemsForDep(ctx, dep)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, depItems...)
+	}
+	return out, nil
+}
+
+func (w *Worker) itemsForDep(ctx context.Context, depID string) ([]Item, error) {
+	var raw []byte
+	err := w.cfg.DB.WithContext(ctx).Raw(
+		`SELECT items FROM node_outputs WHERE todo_id=$1 ORDER BY created_at DESC LIMIT 1`, depID).Row().Scan(&raw)
+	if err == nil && len(raw) > 0 {
+		var items []Item
+		if uErr := json.Unmarshal(raw, &items); uErr != nil {
+			return nil, fmt.Errorf("worker: decode dep %s items: %w", depID, uErr)
+		}
+		if len(items) > 0 {
+			return items, nil
+		}
+	}
+	// Fallback: project the dep's output_ref into items.
+	var ref string
+	if err := w.cfg.DB.WithContext(ctx).Raw(
+		`SELECT output_ref FROM todos WHERE id=$1`, depID).Row().Scan(&ref); err != nil {
+		return nil, fmt.Errorf("worker: load dep %s output_ref: %w", depID, err)
+	}
+	switch {
+	case strings.HasPrefix(ref, "script:"):
+		var contentJSON []byte
+		if err := w.cfg.DB.WithContext(ctx).Raw(
+			`SELECT content_json FROM scripts WHERE id=$1`, strings.TrimPrefix(ref, "script:")).Row().Scan(&contentJSON); err != nil {
+			return nil, fmt.Errorf("worker: fallback script %s: %w", ref, err)
+		}
+		return []Item{jsonItem(contentJSON)}, nil
+	case strings.HasPrefix(ref, "shots:"):
+		rows, err := w.cfg.DB.WithContext(ctx).Raw(
+			`SELECT shot_no, camera, scene, action, prompt, duration FROM shots WHERE script_id=$1 ORDER BY ordering`,
+			strings.TrimPrefix(ref, "shots:")).Rows()
+		if err != nil {
+			return nil, fmt.Errorf("worker: fallback shots %s: %w", ref, err)
+		}
+		defer rows.Close()
+		var items []Item
+		for rows.Next() {
+			var sh studioagents.Shot
+			if err := rows.Scan(&sh.ShotNo, &sh.Camera, &sh.Scene, &sh.Action, &sh.Prompt, &sh.Duration); err != nil {
+				return nil, fmt.Errorf("worker: scan fallback shot: %w", err)
+			}
+			b, _ := json.Marshal(sh)
+			items = append(items, jsonItem(b))
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("worker: fallback shots %s rows: %w", ref, err)
+		}
+		return items, nil
+	case strings.HasPrefix(ref, "custom:"):
+		text, err := w.resolveOutputText(ctx, ref)
+		if err != nil {
+			return nil, fmt.Errorf("worker: fallback custom %s: %w", ref, err)
+		}
+		return []Item{textItem(text)}, nil
+	default:
+		return nil, nil // asset:/empty/unknown → binary consumption is post-P2a (★D-4)
 	}
 }

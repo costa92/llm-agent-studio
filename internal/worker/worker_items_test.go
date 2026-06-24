@@ -202,6 +202,113 @@ func TestRunStoryboardEmitsItemPerShot(t *testing.T) {
 	}
 }
 
+// TestLoadInputsReadsItems verifies loadInputs reads a dependency's newest
+// node_outputs.items as the canonical inter-node channel (the happy path: the
+// dep ran under P2a code and emitted items).
+func TestLoadInputsReadsItems(t *testing.T) {
+	if os.Getenv("LLM_AGENT_STUDIO_PG_URL") == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker items tests")
+	}
+	ctx := context.Background()
+	w := customTestWorker(t, llm.NewScriptedLLM(llm.WithResponses(llm.Response{Text: `{}`})))
+	db := w.cfg.DB
+	projID := seedItemsProject(t, db)
+
+	// Dep todo that emitted a node_outputs.items row under P2a code.
+	depTodo := newID()
+	if err := db.WithContext(ctx).Exec(
+		`INSERT INTO todos (id, project_id, plan_id, type, status, output_ref, input_json)
+		 VALUES ($1,$2,'plan-x','custom:llm','done',$3,'{}')`,
+		depTodo, projID, "custom:o1").Error; err != nil {
+		t.Fatalf("seed dep todo: %v", err)
+	}
+	if err := db.WithContext(ctx).Exec(
+		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format, items)
+		 VALUES ($1,$2,$3,'custom:llm','upstream','text',$4)`,
+		newID(), projID, depTodo, []byte(`[{"json":{"text":"upstream"}}]`)).Error; err != nil {
+		t.Fatalf("seed dep node_output: %v", err)
+	}
+
+	// Consumer todo depending on depTodo.
+	consumer := newID()
+	if err := db.WithContext(ctx).Exec(
+		`INSERT INTO todos (id, project_id, plan_id, type, status, depends_on, input_json)
+		 VALUES ($1,$2,'plan-x','custom:next','running',ARRAY[$3]::text[],'{}')`,
+		consumer, projID, depTodo).Error; err != nil {
+		t.Fatalf("seed consumer todo: %v", err)
+	}
+
+	items, err := w.loadInputs(ctx, consumer)
+	if err != nil {
+		t.Fatalf("loadInputs: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("want 1 item, got %d", len(items))
+	}
+	var wrap struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(items[0].JSON, &wrap); err != nil {
+		t.Fatalf("item[0].json not a {text} wrapper: %q (%v)", items[0].JSON, err)
+	}
+	if wrap.Text != "upstream" {
+		t.Fatalf("want items[0].json.text=upstream, got %q", wrap.Text)
+	}
+}
+
+// TestLoadInputsFallsBackToScriptProjection covers the straddling-deploy case
+// (★M-4): a dep todo that completed under old code has NO node_outputs.items, so
+// loadInputs falls back to projecting its scripts row (output_ref 'script:<id>')
+// into an equivalent item — in-flight runs are not stranded.
+func TestLoadInputsFallsBackToScriptProjection(t *testing.T) {
+	if os.Getenv("LLM_AGENT_STUDIO_PG_URL") == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker items tests")
+	}
+	ctx := context.Background()
+	w := customTestWorker(t, llm.NewScriptedLLM(llm.WithResponses(llm.Response{Text: `{}`})))
+	db := w.cfg.DB
+	projID := seedItemsProject(t, db)
+
+	// scripts row with a characterSheet; NO node_outputs row for this dep.
+	scriptID := newID()
+	const scriptContent = `{"title":"T","logline":"L","characterSheet":"a teal fox in a red scarf","scenes":[{"heading":"H1","description":"D1","dialogue":"hi"}]}`
+	if err := db.WithContext(ctx).Exec(
+		`INSERT INTO scripts (id, project_id, todo_id, content_json, version) VALUES ($1,$2,$3,$4,1)`,
+		scriptID, projID, newID(), scriptContent).Error; err != nil {
+		t.Fatalf("seed scripts row: %v", err)
+	}
+	depTodo := newID()
+	if err := db.WithContext(ctx).Exec(
+		`INSERT INTO todos (id, project_id, plan_id, type, status, output_ref, input_json)
+		 VALUES ($1,$2,'plan-x','script','done',$3,'{}')`,
+		depTodo, projID, "script:"+scriptID).Error; err != nil {
+		t.Fatalf("seed dep script todo: %v", err)
+	}
+
+	consumer := newID()
+	if err := db.WithContext(ctx).Exec(
+		`INSERT INTO todos (id, project_id, plan_id, type, status, depends_on, input_json)
+		 VALUES ($1,$2,'plan-x','storyboard','running',ARRAY[$3]::text[],'{}')`,
+		consumer, projID, depTodo).Error; err != nil {
+		t.Fatalf("seed consumer todo: %v", err)
+	}
+
+	items, err := w.loadInputs(ctx, consumer)
+	if err != nil {
+		t.Fatalf("loadInputs: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("want 1 fallback item, got %d", len(items))
+	}
+	var out studioagents.ScriptOutput
+	if err := json.Unmarshal(items[0].JSON, &out); err != nil {
+		t.Fatalf("item[0].json is not a ScriptOutput: %q (%v)", items[0].JSON, err)
+	}
+	if out.CharacterSheet != "a teal fox in a red scarf" {
+		t.Fatalf("want characterSheet round-tripped via fallback, got %q", out.CharacterSheet)
+	}
+}
+
 // TestRunPrescreenDualWritesItems verifies runPrescreen writes the typed
 // ReviewOutput verdict to node_outputs.items in the SAME INSERT that lands the
 // legacy content/format='json' row (★B2/D-6 dual-write).
