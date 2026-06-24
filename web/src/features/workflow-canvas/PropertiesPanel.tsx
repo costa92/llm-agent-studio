@@ -13,6 +13,8 @@ import { useCreatePrompt } from "@/features/prompt/api"
 import type { BasicPrompt, HttpParams, LlmParams, Prompt, ScriptParams, WorkflowNode } from "@/lib/types"
 import { defaultPromptIdFor } from "./canvasModel"
 import { isCustomType, nodeDisplay } from "./nodeColor"
+import { PropertiesForm } from "./PropertiesForm"
+import type { NodeTypeDescription } from "./nodeDescTypes"
 
 // 属性面板（Phase 2）：选中单个节点时编辑其字段。行为逐字移植自
 // features/projects/WorkflowNodesEditor.tsx——提示词选择哨兵
@@ -107,6 +109,11 @@ export interface PropertiesPanelProps {
   typedScriptParams?: ScriptParams
   // 当前节点 dependsOn 的上游节点列表（id + display label）。typed 节点变量绑定的候选 Select 来源。
   upstreamNodes?: { id: string; label: string }[]
+  // typed 节点的注册表 NodeTypeDescription（由画布层按 node.type 解析注入）。
+  // 提供时，类型参数（只读）摘要改由通用 <PropertiesForm> 渲染（只读，onChange 为 no-op，
+  // 永不接 onPatch——其 onChange 形状是 parameters-keyed，与 onPatch 扁平键不兼容）。
+  // 缺省时回退到手写的逐 kind 摘要 JSX（保持现有测试路径字节一致）。
+  description?: NodeTypeDescription
 }
 
 export function PropertiesPanel({
@@ -123,6 +130,7 @@ export function PropertiesPanel({
   typedHttpParams,
   typedScriptParams,
   upstreamNodes = [],
+  description,
 }: PropertiesPanelProps) {
   const createPrompt = useCreatePrompt(org)
   const [creating, setCreating] = useState(false)
@@ -263,6 +271,22 @@ export function PropertiesPanel({
             <Label className="text-[10px] font-semibold uppercase tracking-wider text-text-3">
               类型参数（只读）
             </Label>
+            {description ? (
+              <PropertiesForm
+                description={description}
+                value={
+                  (isTypedLlm
+                    ? typedParams
+                    : isTypedHttp
+                      ? typedHttpParams
+                      : typedScriptParams) as Record<string, unknown>
+                }
+                onChange={() => {}}
+                secretNames={[]}
+                modelOptions={[]}
+              />
+            ) : (
+              <>
             {isTypedLlm && (
               <>
                 {typedParams!.systemPrompt && (
@@ -313,6 +337,8 @@ export function PropertiesPanel({
                     <span className="text-[11px] text-text-2">{typedScriptParams!.outputFormat}</span>
                   </div>
                 )}
+              </>
+            )}
               </>
             )}
             <button

@@ -57,6 +57,14 @@ describe("workflow canvas route", () => {
     installFetchRoutes({
       "/model-configs": () => jsonResponse({ items: [] }),
       "/api/projects/p1/workflows": () => jsonResponse({ items: [workflow] }),
+      // The legacy builtin endpoint (#107) returns an {items} shape — keep it
+      // matching FIRST (first include() wins) so the org node-types route below
+      // doesn't hijack /api/node-types/builtin.
+      "/node-types/builtin": () => jsonResponse({ items: [] }),
+      // P1: WorkflowCanvas resolves node descriptions via useNodeTypes →
+      // GET /api/orgs/{org}/node-types, whose envelope is {version, nodeTypes}
+      // (not {items}). Must precede the "/api/" catch-all.
+      "/node-types": () => jsonResponse({ version: 1, nodeTypes: [] }),
       "/api/": () => jsonResponse({ items: [] }),
     })
 

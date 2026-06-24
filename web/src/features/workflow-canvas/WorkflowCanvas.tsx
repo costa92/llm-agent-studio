@@ -59,6 +59,7 @@ import { CanvasActionsProvider } from "./CanvasActionsContext"
 import { HelperLines } from "./HelperLines"
 import { NodePalette, PALETTE_DND_TYPE, PALETTE_DND_TYPEID } from "./NodePalette"
 import { PropertiesPanel } from "./PropertiesPanel"
+import { useNodeTypes } from "./api"
 import { NODE_COLOR, isCustomType, slugify } from "./nodeColor"
 import { RunCanvas } from "./RunCanvas"
 import { ModeToggle } from "./ModeToggle"
@@ -218,6 +219,16 @@ function CanvasInner({
   )
   const selected =
     (rfNodes as RFNode[]).find((n) => n.id === selectedId)?.data.node ?? null
+
+  // 选中节点对应的 NodeTypeDescription（org 注册表）。供 PropertiesPanel 以只读
+  // <PropertiesForm> 渲染类型参数摘要；缺省（无匹配）时面板回退到手写摘要。
+  // 注意：勿用 `nodeTypes` 命名——会遮蔽模块级 `nodeTypes`（ReactFlow 的
+  // 节点类型→组件映射，line ~101 + <ReactFlow nodeTypes={…}>），导致画布回退到
+  // 默认节点、自定义 WorkflowNode 不挂载。
+  const { data: nodeTypeDescs = [] } = useNodeTypes(org)
+  const nodeDesc = selected
+    ? nodeTypeDescs.find((d) => d.type === selected.type)
+    : undefined
 
   // ── 拖入添加 ──────────────────────────────────────────────
   const onDragOver = useCallback((e: React.DragEvent) => {
@@ -1009,6 +1020,7 @@ function CanvasInner({
                   .map((n) => ({ id: n.id, label: n.data.node.label ?? n.id }))
               : []
           }
+          description={nodeDesc}
           onEditType={
             selected && isCustomType(selected.type)
               ? () => {
