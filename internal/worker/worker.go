@@ -401,6 +401,27 @@ func (w *Worker) process(ctx context.Context, c claimed) {
 	}
 }
 
+// emitItems writes one node_outputs row carrying the given items (P2a dual-write,
+// ★B2/D-6). content/format are '' / 'items' for items-only rows. itemsJSON
+// guarantees a JSON array (★D-5).
+func (w *Worker) emitItems(ctx context.Context, c claimed, items []Item) error {
+	return w.emitItemsTx(ctx, w.cfg.DB.WithContext(ctx), c, items)
+}
+
+func (w *Worker) emitItemsTx(ctx context.Context, db *gorm.DB, c claimed, items []Item) error {
+	payload, err := itemsJSON(items)
+	if err != nil {
+		return fmt.Errorf("worker: marshal items: %w", err)
+	}
+	if err := db.Exec(
+		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format, items)
+		 VALUES ($1,$2,$3,$4,'','items',$5)`,
+		newID(), c.projectID, c.todoID, c.typ, payload).Error; err != nil {
+		return fmt.Errorf("worker: insert node_output items: %w", err)
+	}
+	return nil
+}
+
 // runScript runs the ScriptAgent and persists a scripts row. outputRef = "script:<id>".
 func (w *Worker) runScript(ctx context.Context, c claimed) (string, error) {
 	var in struct {
@@ -444,6 +465,9 @@ func (w *Worker) runScript(ctx context.Context, c claimed) (string, error) {
 		`INSERT INTO scripts (id, project_id, todo_id, content_json, version) VALUES ($1,$2,$3,$4,1)`,
 		scriptID, c.projectID, c.todoID, contentJSON).Error; err != nil {
 		return "", fmt.Errorf("worker: insert script: %w", err)
+	}
+	if err := w.emitItems(ctx, c, []Item{jsonItem(contentJSON)}); err != nil {
+		return "", err
 	}
 	return "script:" + scriptID, nil
 }
@@ -626,6 +650,20 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 			return err
 		}
 		newTodoIDs = ids
+		// P2a dual-write (★B2/D-6): one typed item per shot, emitted INSIDE the tx so
+		// it commits atomically with the shots rows. The earlyExisting re-run path
+		// returned above, so it naturally skips this.
+		shotItems := make([]Item, 0, len(out.Shots))
+		for _, sh := range out.Shots {
+			b, mErr := json.Marshal(sh)
+			if mErr != nil {
+				return fmt.Errorf("worker: marshal shot item: %w", mErr)
+			}
+			shotItems = append(shotItems, jsonItem(b))
+		}
+		if err := w.emitItemsTx(ctx, tx, c, shotItems); err != nil {
+			return err
+		}
 		return nil
 	})
 	if err != nil {
