@@ -158,6 +158,18 @@ func TestWorkerFailsTodoOnAgentError(t *testing.T) {
 		{LocalID: "s", Type: "script", DependsOn: nil, InputJSON: []byte(`{"brief":"x"}`)},
 		{LocalID: "b", Type: "storyboard", DependsOn: []string{"s"}, InputJSON: []byte(`{}`)},
 	})
+	// Neutralize leftover claimable todos from earlier tests in this shared
+	// package DB (评审修复 M7): the global-claim drain below would otherwise
+	// reclaim a foreign stuck asset todo (e.g. a 'running' row whose short lease
+	// has since expired) and panic this Assets-store-less worker on the asset
+	// path. Push everything outside this test's project out of the claim window;
+	// our script/storyboard rows keep next_run_at = now() and are the only ones
+	// claimed. Without this, the test passes or panics purely on timing margin.
+	_, _ = pool.Exec(ctx, `
+		UPDATE todos
+		SET next_run_at = now() + interval '1 hour',
+		    locked_until = CASE WHEN status='running' THEN now() + interval '1 hour' ELSE locked_until END
+		WHERE project_id <> $1 AND status IN ('ready','running')`, projID)
 	// Script model returns valid JSON; storyboard model returns garbage every
 	// attempt → agent error → terminal failure after attempts exhausted.
 	scriptModel := llm.NewScriptedLLM(llm.WithResponses(llm.Response{

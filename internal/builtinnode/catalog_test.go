@@ -2,12 +2,12 @@ package builtinnode
 
 import "testing"
 
-func TestCatalogHasThreeBuiltinTypes(t *testing.T) {
+func TestCatalogHasFourBuiltinTypes(t *testing.T) {
 	c := Catalog()
-	if len(c) != 3 {
-		t.Fatalf("Catalog() len=%d, want 3", len(c))
+	if len(c) != 4 {
+		t.Fatalf("Catalog() len=%d, want 4", len(c))
 	}
-	want := []string{"script", "storyboard", "asset"}
+	want := []string{"script", "storyboard", "asset", "prescreen"}
 	for i, w := range want {
 		if c[i].Type != w {
 			t.Errorf("Catalog()[%d].Type=%q, want %q", i, c[i].Type, w)

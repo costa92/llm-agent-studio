@@ -8,6 +8,7 @@ const NODE_COLOR: Record<string, string> = {
   script: "var(--script)",
   storyboard: "var(--board)",
   asset: "var(--asset)",
+  prescreen: "var(--review)",
   review: "var(--review)",
 }
 

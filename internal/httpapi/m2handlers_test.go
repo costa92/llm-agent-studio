@@ -48,9 +48,10 @@ func TestBuiltinNodeTypesHandler(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(body.Items) != 3 {
-		t.Fatalf("items len=%d, want 3", len(body.Items))
+	if len(body.Items) != 4 {
+		t.Fatalf("items len=%d, want 4", len(body.Items))
 	}
+	seen := map[string]bool{}
 	for i, it := range body.Items {
 		for _, field := range []string{"type", "label", "description"} {
 			if s, _ := it[field].(string); s == "" {
@@ -59,6 +60,14 @@ func TestBuiltinNodeTypesHandler(t *testing.T) {
 		}
 		if _, ok := it["color"]; ok {
 			t.Errorf("items[%d] unexpectedly has color field", i)
+		}
+		if typ, _ := it["type"].(string); typ != "" {
+			seen[typ] = true
+		}
+	}
+	for _, want := range []string{"script", "storyboard", "asset", "prescreen"} {
+		if !seen[want] {
+			t.Errorf("builtin catalog missing type %q", want)
 		}
 	}
 }
