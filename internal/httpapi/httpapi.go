@@ -188,6 +188,7 @@ func NewMux(d Deps) *http.ServeMux {
 		return scoped(min, assetScope(d.AssetLibrary), h)
 	}
 	// Prompt builder (viewer+, org-agnostic preview — auth only).
+	mux.Handle("GET /api/node-types/builtin", authOnly(builtinNodeTypesHandler()))
 	mux.Handle("GET /api/prompt-styles", authOnly(promptStylesHandler()))
 	mux.Handle("GET /api/prompt-presets", authOnly(promptPresetsHandler()))
 	mux.Handle("POST /api/prompt/build", authOnly(promptBuildHandler(d.PromptBuilder)))

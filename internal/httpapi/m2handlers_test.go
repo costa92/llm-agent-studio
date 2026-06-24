@@ -35,6 +35,34 @@ func TestPromptStylesHandler(t *testing.T) {
 	}
 }
 
+func TestBuiltinNodeTypesHandler(t *testing.T) {
+	h := builtinNodeTypesHandler()
+	rec := httptest.NewRecorder()
+	h(rec, httptest.NewRequest("GET", "/api/node-types/builtin", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Items) != 3 {
+		t.Fatalf("items len=%d, want 3", len(body.Items))
+	}
+	for i, it := range body.Items {
+		for _, field := range []string{"type", "label", "description"} {
+			if s, _ := it[field].(string); s == "" {
+				t.Errorf("items[%d] field %q empty", i, field)
+			}
+		}
+		if _, ok := it["color"]; ok {
+			t.Errorf("items[%d] unexpectedly has color field", i)
+		}
+	}
+}
+
 func TestPromptBuildHandler(t *testing.T) {
 	h := promptBuildHandler(prompt.NewBuilder())
 	rec := httptest.NewRecorder()

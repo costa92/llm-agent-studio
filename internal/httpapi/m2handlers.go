@@ -12,6 +12,7 @@ import (
 
 	"github.com/costa92/llm-agent-studio/internal/assets"
 	"github.com/costa92/llm-agent-studio/internal/blob"
+	"github.com/costa92/llm-agent-studio/internal/builtinnode"
 	"github.com/costa92/llm-agent-studio/internal/cost"
 	"github.com/costa92/llm-agent-studio/internal/generate"
 	"github.com/costa92/llm-agent-studio/internal/modellist"
@@ -103,6 +104,14 @@ const signedURLTTL = 10 * time.Minute
 func promptStylesHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"styles": prompt.Styles()})
+	}
+}
+
+// builtinNodeTypesHandler (GET /api/node-types/builtin): authenticated, global.
+// Returns the static built-in workflow node catalog (single source: builtinnode).
+func builtinNodeTypesHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"items": builtinnode.Catalog()})
 	}
 }
 
