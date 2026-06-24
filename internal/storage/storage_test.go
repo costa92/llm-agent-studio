@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -392,5 +394,85 @@ func TestGoStepRunsOnceAndIsRecorded(t *testing.T) {
 	}
 	if !recorded {
 		t.Fatal("Go step not recorded in schema_migrations")
+	}
+}
+
+func TestM21AddsItemsColumnAndBackfillsFormatAware(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, Config{PGURL: testDSN(t)})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	// Simulate a pre-P2a DB: legacy DDL only, NO Go steps → node_outputs has no items column.
+	st.testGoSteps = []migrationStep{}
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("pre-migrate: %v", err)
+	}
+	var pid string
+	if err := st.Pool().QueryRow(ctx,
+		`INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),'org','p','u') RETURNING id`).Scan(&pid); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	rows := []struct{ id, content, format string }{
+		{"no_json_ok", `{"score":80,"flags":[]}`, "json"},
+		{"no_json_bad", `{not valid json`, "json"},
+		{"no_text", `hello world`, "text"},
+	}
+	for _, r := range rows {
+		if _, err := st.Pool().Exec(ctx,
+			`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format) VALUES ($1,$2,'t','custom:x',$3,$4)`,
+			r.id, pid, r.content, r.format); err != nil {
+			t.Fatalf("seed %s: %v", r.id, err)
+		}
+	}
+
+	// Enable the real m21 (production goSteps) and re-migrate. In the shared-DB
+	// suite an earlier test may already have applied m21; clear its record so the
+	// step re-runs against THESE freshly-seeded legacy rows (re-run is safe — m21
+	// only touches rows still at the '[]' default).
+	if _, err := st.Pool().Exec(ctx, `DELETE FROM schema_migrations WHERE version='m21'`); err != nil {
+		t.Fatalf("reset m21 record: %v", err)
+	}
+	st.testGoSteps = nil
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate with m21: %v", err)
+	}
+
+	get := func(id string) string {
+		var items string
+		if err := st.Pool().QueryRow(ctx, `SELECT items::text FROM node_outputs WHERE id=$1`, id).Scan(&items); err != nil {
+			t.Fatalf("read %s: %v", id, err)
+		}
+		return items
+	}
+	var ok []struct {
+		JSON struct {
+			Score int `json:"score"`
+		} `json:"json"`
+	}
+	if err := json.Unmarshal([]byte(get("no_json_ok")), &ok); err != nil {
+		t.Fatalf("decode no_json_ok items: %v", err)
+	}
+	if len(ok) != 1 || ok[0].JSON.Score != 80 {
+		t.Fatalf("json backfill lost $json.score: %v", ok)
+	}
+	if !strings.Contains(get("no_json_bad"), "_parseError") {
+		t.Errorf("invalid json row missing _parseError fallback: %s", get("no_json_bad"))
+	}
+	var tx []struct {
+		JSON struct {
+			Text string `json:"text"`
+		} `json:"json"`
+	}
+	if err := json.Unmarshal([]byte(get("no_text")), &tx); err != nil {
+		t.Fatalf("decode no_text items: %v", err)
+	}
+	if len(tx) != 1 || tx[0].JSON.Text != "hello world" {
+		t.Fatalf("text backfill wrong: %v", tx)
+	}
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate 3 (idempotent): %v", err)
 	}
 }

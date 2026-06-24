@@ -5,6 +5,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -526,8 +527,59 @@ func (s *Storage) goSteps() []migrationStep {
 		return s.testGoSteps
 	}
 	return []migrationStep{
-		// m21 appended in a later P2a task.
+		{version: "m21", run: m21AddItemsColumn},
 	}
+}
+
+// m21AddItemsColumn adds node_outputs.items (JSONB NOT NULL DEFAULT '[]') and
+// backfills historical rows FORMAT-AWARE (★M-2): json valid → [{json: content}],
+// invalid → [{json:{text:content,_parseError:true}}] (so the migration never
+// half-fails); text/http-status → [{json:{text:content}}]. Only rows still at the
+// default are backfilled (re-run safe).
+func m21AddItemsColumn(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx,
+		`ALTER TABLE node_outputs ADD COLUMN IF NOT EXISTS items JSONB NOT NULL DEFAULT '[]'`); err != nil {
+		return fmt.Errorf("add items column: %w", err)
+	}
+	rows, err := tx.Query(ctx, `SELECT id, content, format FROM node_outputs WHERE items = '[]'::jsonb`)
+	if err != nil {
+		return fmt.Errorf("scan legacy rows: %w", err)
+	}
+	type row struct{ id, content, format string }
+	var batch []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.content, &r.format); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan row: %w", err)
+		}
+		batch = append(batch, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate rows: %w", err)
+	}
+	for _, r := range batch {
+		var inner json.RawMessage
+		switch r.format {
+		case "json":
+			if json.Valid([]byte(r.content)) {
+				inner = json.RawMessage(r.content)
+			} else {
+				inner, _ = json.Marshal(map[string]any{"text": r.content, "_parseError": true})
+			}
+		default:
+			inner, _ = json.Marshal(map[string]string{"text": r.content})
+		}
+		items, err := json.Marshal([]map[string]json.RawMessage{{"json": inner}})
+		if err != nil {
+			return fmt.Errorf("marshal items for %s: %w", r.id, err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE node_outputs SET items=$1 WHERE id=$2`, items, r.id); err != nil {
+			return fmt.Errorf("backfill %s: %w", r.id, err)
+		}
+	}
+	return nil
 }
 
 // Migrate applies the legacy idempotent DDL (M1 … M19) followed by the
