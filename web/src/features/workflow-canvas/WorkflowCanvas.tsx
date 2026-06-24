@@ -222,9 +222,12 @@ function CanvasInner({
 
   // 选中节点对应的 NodeTypeDescription（org 注册表）。供 PropertiesPanel 以只读
   // <PropertiesForm> 渲染类型参数摘要；缺省（无匹配）时面板回退到手写摘要。
-  const { data: nodeTypes = [] } = useNodeTypes(org)
+  // 注意：勿用 `nodeTypes` 命名——会遮蔽模块级 `nodeTypes`（ReactFlow 的
+  // 节点类型→组件映射，line ~101 + <ReactFlow nodeTypes={…}>），导致画布回退到
+  // 默认节点、自定义 WorkflowNode 不挂载。
+  const { data: nodeTypeDescs = [] } = useNodeTypes(org)
   const nodeDesc = selected
-    ? nodeTypes.find((d) => d.type === selected.type)
+    ? nodeTypeDescs.find((d) => d.type === selected.type)
     : undefined
 
   // ── 拖入添加 ──────────────────────────────────────────────
