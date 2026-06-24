@@ -1,6 +1,8 @@
 # 工作流 v2：n8n 式「节点中心」重设 设计
 
-> 状态：设计稿，待评审。多 agent 设计收敛产物（n8n 参考 + 高复用/全保真两份独立提案）。用户选型：**全保真方案 F**（items 数组 + 表达式引擎 + 二进制 items）、**原地迁移**（不留两套引擎，接受改变现有绘本/自动规划行为）。
+> 状态：设计稿，第一轮 Plan agent 评审已纳（见 §10）。多 agent 设计收敛产物（n8n 参考 + 高复用/全保真两份独立提案）。用户选型：**全保真方案 F**（items 数组 + 表达式引擎 + 二进制 items）、**原地迁移**（不留两套引擎，接受改变现有绘本/自动规划行为）。
+
+> **依赖前提**：本 spec 以 **PR #107（`internal/builtinnode` 目录 + `GET /api/node-types/builtin`）+ #108（`prescreen` 内置节点 + `runPrescreen`）合入 main 后**的状态为基线。实现分支须 rebase 到含 #107/#108 的 main。§3.1/§7 中"取代 builtinnode.Catalog/builtin 端点"指的是这个合并后状态——若评审时在不含 #107/#108 的分支看，这些工件尚不存在（属正常）。
 
 ## 1. 概述与目标
 
@@ -203,3 +205,36 @@ func Resolve(template string, ctx Context) (string, error)
 - 原地迁移：§4，零并行引擎，m20/m21 幂等追加。✓
 - 风险载重决策显式（§6），安全规则不丢（决策 6）。✓
 - 复用边界清楚（§7），异步 asset 机器不动。✓
+
+## 10. 第一轮评审修订（Plan agent 对抗式评审纳入）
+
+评审验证了 §3-§9 对真实代码的假设，确认 **§3.2/§3.5 把 `node_outputs` 当"现有节点间通道"是错的**（内置节点输出在 `scripts`/`shots`、经 `output_ref` 解析，从不写 `node_outputs`），以及多处"删 legacy"步骤排序过早。逐条修订（B=阻断、I=重要）：
+
+- **B2（修正核心认知）**：`node_outputs` **不是**内置节点的节点间通道。`runScript` 只写 `scripts` 行返 `script:<id>`、`runStoryboard` 写 `shots`、二进制走 `assets`；`resolveOutputText` 从 `scripts.content_json`(script:) / `node_outputs.content`(custom:) 取。**修订**：让内置节点产 `node_outputs.items` 是**净新增的发射逻辑**（不是 P2 描述的"双写"——双写只对自定义路径）。P2 范围扩大：给 script/storyboard/asset 执行器加 `node_outputs.items` 发射；`m21` **无法**回填历史内置输出（它们从不在 node_outputs）——接受老运行的内置输出不入 items，或额外从 `scripts`/`shots` 回填。
+
+- **B3（output_ref 不可删，只退役 custom:-text 分支）**：`output_ref` 是 `todos` 列，每个执行器经 `MarkDone` 写，被多处用：storyboard 父 script 解析（`WHERE t.output_ref LIKE 'script:%'`）、`discardCanceledAsset` 解析 `asset:<id>`、`todo_finished` 时间线事件载荷、自定义变量解析 seam。**修订**：`output_ref` **保留**作 todo/asset 结果指针；只在所有消费者迁到 items 后退役 `resolveOutputText` 的 **custom:-text 分支**。删除前须枚举并先迁移：storyboard 父解析 + `discardCanceledAsset`。
+
+- **B4（自动规划-only 绘本项目排序陷阱）**：`CustomWorkflowEnabled=false` 项目**没有 `workflows.nodes` 行**（图由 `Plan`/`DefaultPipeline` 运行期 LLM 生成）；`m20` 只改 `workflows` 行 → 对它们回填不了；而 worker 一旦停读 `picturebook_config` → 绘本生成静默破。**修订**：`Plan`→"生成可编辑带 parameters 图"的降级**必须先于**worker 停读项目配置落地；过渡期对 NULL-parameter 节点保留 `pictureBookConfig` 兜底。把"删项目配置读"从 P3/P4 推后到 planner 降级之后。
+
+- **B5（characterSheet 是运行期跨节点流，非项目配置）**：characterSheet 由 ScriptAgent 运行期生成、序列化进 `scripts.content_json`、`runStoryboard` 从上游 script 内容再解析——**不在** `picturebook_config`、运行前不存在。**修订**：m20 无从烘焙它；它须留作 **script→storyboard 的 inter-node item 数据**（storyboard 消费 `$node["script"].json.characterSheet`），这**依赖 B2（内置节点发 items）先完成**。删去"移到节点参数"对 characterSheet 的暗示。
+
+- **I1（/state 运行视图直读 node_outputs.content/format）**：`project/store.go` 的 state 查询 select `no.content, no.format` → `projectstate.GraphNode.Output/OutputFormat` → SSE `/state` 契约 → 前端运行面板渲染。**修订**：P4 删 content/format 列前，先把该查询迁成从 `items` JSONB 抽文本并调整投影。补全读者枚举：写者=runCustomLLM/HTTP/Script；读者=state 查询 + resolveOutputText custom 分支。注意 `format='json'` 行回填成 `{json:{text,format}}` 会丢 `$json.field` 访问——决定是否把 JSON-format 内容解析进 `json` 对象。
+
+- **I2（storyboard 扇出是运行期动态 todo + 资产就绪缺口）**：扇出经 `AddDynamic` 运行期建 N 个 asset todo（`status='ready'`, `depends_on=[storyboardTodoID]`）；asset 行/字节要等异步机器（generating→…→pending_acceptance→HITL），**todo 在 submit 即 done、非 accept**。下游消费 BinaryRef 会拿到无已接受字节的资产。**修订**：定义 asset-item 发射时机（accept 时？submit 时？）；明确扇出 asset 节点**非静态可寻址**（不能 `$node["assetNodeId"]`）；下游消费二进制 items 是否在 P1-P4 范围**先搁置/后置**。
+
+- **I3（`{{ }}` 与 `{{secret:}}` 分隔符冲突，须可测规则）**：表达式引擎与 secret 通道都用 `{{ }}`。**修订**：① secret pass **只在作者模板**上跑、且**只跑一次**；② 表达式引擎把 `secret:` 当**非表达式字面量**跳过（或两通道用不同分隔符）；③ 经 `$node` 解析进来的值含字面 `{{secret:}}` 不得触发第二次 secret pass。把 B2 课（可信通道先于不可信）重述为可测不变量。
+
+- **I4（安全校验从命令式→schema 约束须设计，非断言）**：`validateHTTPParams`/`validateScriptParams` 是命令式跨字段检查（url 必静态字面量、`{{secret:}}` 仅 header、script 禁 secret、method/outputFormat 枚举），简单 `Property` schema 表达不了。**修订**：定义约束词汇（`noTemplate`/`noSecret`/`secretAllowed`），**命令式校验器留作 schema 背后的执行层、不删只前置**；落这步的阶段须**独立安全评审**门禁；http/script 保存校验器不删。
+
+- **I5（迁移机制是 DDL-only 字符串列表，装不下 m20 数据迁移）**：`Migrate` 跑 `[]string` DDL 经 `pool.Exec`；m20（逐 `workflows.nodes` JSONB 解析 + 解析 TEXT 编码 picturebook_config + `{{name}}`→`$node[...]` token 改写 + 加 version）不是单条幂等 SQL。**修订**：m20 须是 **Go 编码的迁移步骤**（现链无此框架）——决定是给 Migrate 加"Go 迁移步"扩展，还是单独迁移命令；这是 spec 自承"最高操作风险"项，且迁移 runner 本身需扩展。
+
+- **N2/勘误**：`prescreen` 作独立内置节点 + `runPrescreen` 在 #108 引入（基线前提已声明）；line 引用须实现期对含 #107/#108 的代码重新核对（评审指出多处行号是对不含两 PR 的快照所写）。`HasUnboundCustomNode`：内置已返 false，§6.7 的 run-gate 担忧**已自然满足、无需改动**。
+
+**修订后排序铁律（覆盖 §5 phasing）**：
+1. 任何"删 legacy"前，先让内置节点发 `node_outputs.items`（B2）+ 迁移每个 `output_ref`/`content/format` 消费者（B3/I1）。
+2. `Plan` 降级为"生成带 parameters 图"**先于** worker 停读项目配置（B4）；过渡期保 `pictureBookConfig` 兜底。
+3. characterSheet 作 inter-node item，依赖 B2（B5）。
+4. m20 走 Go 编码迁移步，先扩展 Migrate runner（I5）。
+5. 安全约束词汇 + 独立安全评审门禁落在引入 schema 驱动校验的阶段（I4）；secret/表达式分隔符规则可测化（I3）。
+
+**结论**：spec 方向成立，但**修订前不可直接转 P1 实现计划**——P1（nodedesc + `GET /api/node-types` + `PropertiesForm`）仍是最可先发的薄片（纯 UI 渲染、产出同样的 promptId/promptText/typed 值），但其 schema 须先编码现有安全约束（I4）才能驱动真正的参数保存（"产出同样值"仅对只读渲染成立）。"删 legacy"步骤按上述铁律重排。
