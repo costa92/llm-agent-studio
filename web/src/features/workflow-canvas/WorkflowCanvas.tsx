@@ -65,7 +65,7 @@ import { ModeToggle } from "./ModeToggle"
 import { CanvasContextMenu, type ContextMenuItem } from "./CanvasContextMenu"
 import { CustomTypeDialog, type CustomTypePayload } from "./CustomTypeDialog"
 import { useCustomNodeTypes } from "@/features/custom-node-types/api"
-import type { LlmParams } from "@/lib/types"
+import type { CustomNodeType, HttpParams, LlmParams } from "@/lib/types"
 
 export type CanvasMode = "edit" | "run"
 
@@ -172,11 +172,12 @@ function CanvasInner({
     return [...annotation, ...mergedTyped]
   }, [rfNodes, orgTypedTypes])
 
-  // typeId → LlmParams 的快速查找表（PropertiesPanel 用于解析 {{name}} 模板）。
-  const typedParamsById = useMemo(() => {
-    const m = new Map<string, LlmParams>()
+  // typeId → 注册表条目的快速查找表（PropertiesPanel 用于解析 {{name}} 模板 + 摘要）。
+  // 携带完整条目（含 kind），调用方据 kind 取 LlmParams 或 HttpParams。
+  const typedTypeById = useMemo(() => {
+    const m = new Map<string, CustomNodeType>()
     for (const ct of orgTypedTypes) {
-      m.set(ct.id, ct.params)
+      m.set(ct.id, ct)
     }
     return m
   }, [orgTypedTypes])
@@ -989,7 +990,14 @@ function CanvasInner({
           onPatch={patchSelected}
           onRename={renameSelected}
           onDelete={deleteSelected}
-          typedParams={selected?.typeId ? typedParamsById.get(selected.typeId) : undefined}
+          typedParams={(() => {
+            const ct = selected?.typeId ? typedTypeById.get(selected.typeId) : undefined
+            return ct?.kind === "llm" ? (ct.params as LlmParams) : undefined
+          })()}
+          typedHttpParams={(() => {
+            const ct = selected?.typeId ? typedTypeById.get(selected.typeId) : undefined
+            return ct?.kind === "http" ? (ct.params as HttpParams) : undefined
+          })()}
           upstreamNodes={
             selected
               ? (rfNodes as RFNode[])

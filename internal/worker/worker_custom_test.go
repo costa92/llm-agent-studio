@@ -3,17 +3,20 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/costa92/llm-agent-contract/llm"
+	"gorm.io/gorm"
 
 	studioagents "github.com/costa92/llm-agent-studio/internal/agents"
 	"github.com/costa92/llm-agent-studio/internal/assets"
 	"github.com/costa92/llm-agent-studio/internal/cost"
 	"github.com/costa92/llm-agent-studio/internal/events"
+	"github.com/costa92/llm-agent-studio/internal/fetch"
 	"github.com/costa92/llm-agent-studio/internal/generate"
 	"github.com/costa92/llm-agent-studio/internal/modelrouter"
 	"github.com/costa92/llm-agent-studio/internal/models"
@@ -357,4 +360,344 @@ func TestRunCustomLLM_TextAndJSON(t *testing.T) {
 			t.Fatalf("want outputRef to start with 'custom:', got %q", outputRef)
 		}
 	})
+}
+
+// ---- B2.3: http custom node tests ----
+
+// fakeDoer is a scripted HTTPDoer. callCount lets tests assert "no request made";
+// gotReq captures the last request so tests can assert what was sent on the wire.
+type fakeDoer struct {
+	resp      fetch.Response
+	err       error
+	callCount int
+	gotReq    fetch.Request
+}
+
+func (f *fakeDoer) Do(ctx context.Context, in fetch.Request) (fetch.Response, error) {
+	f.callCount++
+	f.gotReq = in
+	return f.resp, f.err
+}
+
+// fakeSecrets always resolves to a fixed value, recording the orgID it was asked
+// for (used by TestRunCustomHTTP_OrgScopedSecret).
+type fakeSecrets struct {
+	value      string
+	calledOrg  string
+	calledName string
+}
+
+func (f *fakeSecrets) Resolve(ctx context.Context, orgID, name string) (string, error) {
+	f.calledOrg = orgID
+	f.calledName = name
+	return f.value, nil
+}
+
+// httpTestWorker builds a Worker wired for the http path: real DB + Projects store,
+// injected Secrets + HTTPFetcher. No Router needed (http doesn't call models).
+func httpTestWorker(t *testing.T, db *gorm.DB, secrets SecretResolver, doer HTTPDoer) *Worker {
+	t.Helper()
+	return New(Config{
+		DB:       db,
+		Todos:    todos.New(db),
+		Projects: project.New(db),
+		Events:   events.New(db),
+		Secrets:  secrets,
+		HTTPFetcher: doer,
+		WorkerID: "http-test", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
+	})
+}
+
+// seedHTTPProjectTodo inserts a project (under orgID) + a typed http todo, returning
+// projID + the claimed for that todo.
+func seedHTTPProjectTodo(t *testing.T, db *gorm.DB, orgID string) (string, claimed) {
+	t.Helper()
+	ctx := context.Background()
+	var projID string
+	if err := db.WithContext(ctx).Raw(
+		`INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),$1,'p','u') RETURNING id`,
+		orgID,
+	).Row().Scan(&projID); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	todoID := newID()
+	if err := db.WithContext(ctx).Exec(
+		`INSERT INTO todos (id, project_id, plan_id, type, status, input_json)
+		 VALUES ($1,$2,'plan-x','custom:http','running','{}')`,
+		todoID, projID).Error; err != nil {
+		t.Fatalf("seed http todo: %v", err)
+	}
+	return projID, claimed{todoID: todoID, projectID: projID, typ: "custom:http", attempts: 1}
+}
+
+// TestRunCustomHTTP_SecretNeverLeaks is the keystone security test: under every
+// forced failure the resolved secret must NOT appear in the returned error or any
+// node_outputs row, and the error must be one of the opaque httpError enum values.
+func TestRunCustomHTTP_SecretNeverLeaks(t *testing.T) {
+	if os.Getenv("LLM_AGENT_STUDIO_PG_URL") == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker custom tests")
+	}
+	const sentinel = "SUPER-SECRET-SENTINEL-9z8y7x"
+	ctx := context.Background()
+	db := assetTestGorm(t)
+	orgID := "org_http_" + randHex3()
+	_, c := seedHTTPProjectTodo(t, db, orgID)
+
+	secretHeaders := map[string]string{"Authorization": "Bearer {{secret:K}}"}
+
+	failures := []struct {
+		name   string
+		doer   *fakeDoer
+		params httpParams
+	}{
+		{"non-2xx", &fakeDoer{resp: fetch.Response{Status: 500, Body: []byte("err")}}, httpParams{Method: "GET", URL: "https://api.example.com", Headers: secretHeaders}},
+		{"dial-error", &fakeDoer{err: fmt.Errorf("fetch: do: dial https://api.example.com: connection refused")}, httpParams{Method: "GET", URL: "https://api.example.com", Headers: secretHeaders}},
+		{"timeout", &fakeDoer{err: context.DeadlineExceeded}, httpParams{Method: "GET", URL: "https://api.example.com", Headers: secretHeaders}},
+		{"body-cap", &fakeDoer{err: fmt.Errorf("fetch: body exceeds 1048576 byte cap")}, httpParams{Method: "GET", URL: "https://api.example.com", Headers: secretHeaders}},
+		{"json-parse", &fakeDoer{resp: fetch.Response{Status: 200, Body: []byte("not json")}}, httpParams{Method: "GET", URL: "https://api.example.com", OutputFormat: "json", AllowResponseBody: true, Headers: secretHeaders}},
+	}
+	for _, f := range failures {
+		t.Run(f.name, func(t *testing.T) {
+			w := httpTestWorker(t, db, &fakeSecrets{value: sentinel}, f.doer)
+			ref, err := w.runCustomHTTP(ctx, c, f.params)
+			if err == nil {
+				t.Fatalf("expected failure for %s (ref=%q)", f.name, ref)
+			}
+			if strings.Contains(err.Error(), sentinel) {
+				t.Fatalf("secret leaked into error: %q", err.Error())
+			}
+			// Returned error must be one of the opaque enum values.
+			switch err.Error() {
+			case "request_failed", "host_not_allowed", "timeout", "body_too_large", "blocked_destination":
+			default:
+				t.Fatalf("non-opaque error: %q", err.Error())
+			}
+			// No node_outputs row should carry the sentinel.
+			var leaked int
+			if err := db.WithContext(ctx).Raw(
+				`SELECT count(*) FROM node_outputs WHERE content LIKE '%' || $1 || '%'`, sentinel).Row().Scan(&leaked); err != nil {
+				t.Fatalf("count leaked: %v", err)
+			}
+			if leaked != 0 {
+				t.Fatalf("secret leaked into node_outputs (%d rows)", leaked)
+			}
+		})
+	}
+}
+
+// TestRunCustomHTTP_BodyPolicy verifies the secret-bearing body-suppression policy.
+func TestRunCustomHTTP_BodyPolicy(t *testing.T) {
+	if os.Getenv("LLM_AGENT_STUDIO_PG_URL") == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker custom tests")
+	}
+	ctx := context.Background()
+	db := assetTestGorm(t)
+	orgID := "org_http_" + randHex3()
+
+	readOutput := func(ref string) (string, string) {
+		outID := strings.TrimPrefix(ref, "custom:")
+		var format, content string
+		if err := db.WithContext(ctx).Raw(
+			`SELECT format, content FROM node_outputs WHERE id=$1`, outID).Row().Scan(&format, &content); err != nil {
+			t.Fatalf("load node_output: %v", err)
+		}
+		return format, content
+	}
+
+	const body = `{"data":"value"}`
+
+	// 1. secret-bearing + allowResponseBody:false → only {status}.
+	t.Run("secret-bearing suppressed", func(t *testing.T) {
+		_, c := seedHTTPProjectTodo(t, db, orgID)
+		w := httpTestWorker(t, db, &fakeSecrets{value: "tok"}, &fakeDoer{resp: fetch.Response{Status: 200, Body: []byte(body)}})
+		ref, err := w.runCustomHTTP(ctx, c, httpParams{
+			Method: "GET", URL: "https://api.example.com",
+			Headers: map[string]string{"Authorization": "Bearer {{secret:K}}"},
+		})
+		if err != nil {
+			t.Fatalf("runCustomHTTP: %v", err)
+		}
+		format, content := readOutput(ref)
+		if format != "http-status" {
+			t.Fatalf("want format=http-status, got %q", format)
+		}
+		if content != `{"status":200}` {
+			t.Fatalf("want suppressed body, got %q", content)
+		}
+	})
+
+	// 2. secret-bearing + allowResponseBody:true → body lands.
+	t.Run("secret-bearing attested allows body", func(t *testing.T) {
+		_, c := seedHTTPProjectTodo(t, db, orgID)
+		w := httpTestWorker(t, db, &fakeSecrets{value: "tok"}, &fakeDoer{resp: fetch.Response{Status: 200, Body: []byte(body)}})
+		ref, err := w.runCustomHTTP(ctx, c, httpParams{
+			Method: "GET", URL: "https://api.example.com", OutputFormat: "json", AllowResponseBody: true,
+			Headers: map[string]string{"Authorization": "Bearer {{secret:K}}"},
+		})
+		if err != nil {
+			t.Fatalf("runCustomHTTP: %v", err)
+		}
+		format, content := readOutput(ref)
+		if format != "json" {
+			t.Fatalf("want format=json, got %q", format)
+		}
+		if content != body {
+			t.Fatalf("want body %q, got %q", body, content)
+		}
+	})
+
+	// 3. non-secret request → body always lands.
+	t.Run("non-secret body lands", func(t *testing.T) {
+		_, c := seedHTTPProjectTodo(t, db, orgID)
+		w := httpTestWorker(t, db, &fakeSecrets{value: "tok"}, &fakeDoer{resp: fetch.Response{Status: 200, Body: []byte("plain text")}})
+		ref, err := w.runCustomHTTP(ctx, c, httpParams{
+			Method: "GET", URL: "https://api.example.com",
+			Headers: map[string]string{"Accept": "text/plain"},
+		})
+		if err != nil {
+			t.Fatalf("runCustomHTTP: %v", err)
+		}
+		format, content := readOutput(ref)
+		if format != "text" {
+			t.Fatalf("want format=text, got %q", format)
+		}
+		if content != "plain text" {
+			t.Fatalf("want body, got %q", content)
+		}
+	})
+}
+
+// TestRunCustomHTTP_SecretForbiddenInBody verifies {{secret:NAME}} in the body
+// template is rejected opaquely BEFORE any request is made.
+func TestRunCustomHTTP_SecretForbiddenInBody(t *testing.T) {
+	if os.Getenv("LLM_AGENT_STUDIO_PG_URL") == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker custom tests")
+	}
+	ctx := context.Background()
+	db := assetTestGorm(t)
+	orgID := "org_http_" + randHex3()
+	_, c := seedHTTPProjectTodo(t, db, orgID)
+
+	doer := &fakeDoer{resp: fetch.Response{Status: 200, Body: []byte("ok")}}
+	w := httpTestWorker(t, db, &fakeSecrets{value: "tok"}, doer)
+	_, err := w.runCustomHTTP(ctx, c, httpParams{
+		Method: "POST", URL: "https://api.example.com",
+		BodyTemplate: `{"key":"{{secret:K}}"}`,
+	})
+	if err == nil {
+		t.Fatalf("expected opaque error for secret-in-body")
+	}
+	if err.Error() != "request_failed" {
+		t.Fatalf("want request_failed, got %q", err.Error())
+	}
+	if doer.callCount != 0 {
+		t.Fatalf("expected NO request made, got callCount=%d", doer.callCount)
+	}
+}
+
+// TestRunCustomHTTP_OrgScopedSecret proves secret resolution uses the project's
+// trusted org (from OrgIDForProject), not anything from input_json.
+func TestRunCustomHTTP_OrgScopedSecret(t *testing.T) {
+	if os.Getenv("LLM_AGENT_STUDIO_PG_URL") == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker custom tests")
+	}
+	ctx := context.Background()
+	db := assetTestGorm(t)
+	orgID := "org_http_" + randHex3()
+	_, c := seedHTTPProjectTodo(t, db, orgID)
+
+	secrets := &fakeSecrets{value: "tok"}
+	w := httpTestWorker(t, db, secrets, &fakeDoer{resp: fetch.Response{Status: 200, Body: []byte("ok")}})
+	if _, err := w.runCustomHTTP(ctx, c, httpParams{
+		Method: "GET", URL: "https://api.example.com",
+		Headers: map[string]string{"Authorization": "Bearer {{secret:K}}"},
+	}); err != nil {
+		t.Fatalf("runCustomHTTP: %v", err)
+	}
+	if secrets.calledOrg != orgID {
+		t.Fatalf("secret resolved with org %q, want project's org %q", secrets.calledOrg, orgID)
+	}
+	if secrets.calledName != "K" {
+		t.Fatalf("secret resolved with name %q, want K", secrets.calledName)
+	}
+}
+
+// TestRunCustomHTTP_NameChannelCannotSmuggleSecret is the F1 regression test:
+// an upstream node whose output text is the LITERAL string "{{secret:LEAKME}}"
+// is bound to a header via the {{name}} channel (X-Test: {{up}}). Because the
+// secret channel resolves on the author template FIRST, the {{name}} value is
+// substituted AFTER the secret pass and its embedded {{secret:...}} stays literal.
+// The org secret value must NEVER appear on the wire; the header must carry the
+// literal "{{secret:LEAKME}}". This proves the editor-influenced {{name}} channel
+// cannot smuggle an admin-only secret (defeating the editor→admin admin-gate).
+//
+// WITHOUT the reorder (name-channel-first), substituteVars would expand {{up}} to
+// "{{secret:LEAKME}}" and the secret pass would then resolve it to the secret value
+// and send it on the wire — this test would fail.
+func TestRunCustomHTTP_NameChannelCannotSmuggleSecret(t *testing.T) {
+	if os.Getenv("LLM_AGENT_STUDIO_PG_URL") == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker custom tests")
+	}
+	const secretValue = "supersecretvalue"
+	const smuggle = "{{secret:LEAKME}}"
+	ctx := context.Background()
+	db := assetTestGorm(t)
+	orgID := "org_http_" + randHex3()
+	projID, c := seedHTTPProjectTodo(t, db, orgID)
+
+	// Seed an upstream custom node whose text output is the literal {{secret:LEAKME}}.
+	upOutID := newID()
+	if err := db.WithContext(ctx).Exec(
+		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format)
+		 VALUES ($1,$2,'t-up','custom:up',$3,'text')`,
+		upOutID, projID, smuggle).Error; err != nil {
+		t.Fatalf("seed upstream node_output: %v", err)
+	}
+	upTodoID := newID()
+	if err := db.WithContext(ctx).Exec(
+		`INSERT INTO todos (id, project_id, plan_id, type, status, output_ref, input_json)
+		 VALUES ($1,$2,'plan-x','custom:up','done',$3,'{}')`,
+		upTodoID, projID, "custom:"+upOutID).Error; err != nil {
+		t.Fatalf("seed upstream todo: %v", err)
+	}
+
+	// Org secret LEAKME resolves to the sentinel value. fakeSecrets records the
+	// name it was asked for, so we can assert it was NEVER asked for LEAKME.
+	secrets := &fakeSecrets{value: secretValue}
+	doer := &fakeDoer{resp: fetch.Response{Status: 200, Body: []byte("ok")}}
+	w := httpTestWorker(t, db, secrets, doer)
+
+	// Header binds {{up}} (a {{name}} binding, NOT an authored {{secret:}}).
+	_, err := w.runCustomHTTP(ctx, c, httpParams{
+		Method:  "GET",
+		URL:     "https://api.example.com",
+		Headers: map[string]string{"X-Test": "{{up}}"},
+		Variables: []customVariable{
+			{Name: "up", SourceTodoId: upTodoID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("runCustomHTTP: %v", err)
+	}
+
+	// The received X-Test header must be the LITERAL {{secret:LEAKME}}, not resolved.
+	got := doer.gotReq.Headers["X-Test"]
+	if got != smuggle {
+		t.Fatalf("X-Test header = %q, want literal %q (name channel must not smuggle a secret)", got, smuggle)
+	}
+
+	// The secret value must NOT appear anywhere in the outgoing request.
+	for hk, hv := range doer.gotReq.Headers {
+		if strings.Contains(hv, secretValue) {
+			t.Fatalf("secret value leaked into header %q: %q", hk, hv)
+		}
+	}
+	if strings.Contains(string(doer.gotReq.Body), secretValue) {
+		t.Fatalf("secret value leaked into request body")
+	}
+
+	// The secret resolver must never have been asked for the smuggled name.
+	if secrets.calledName == "LEAKME" {
+		t.Fatalf("secret resolver was asked for LEAKME via the name channel — smuggle succeeded")
+	}
 }

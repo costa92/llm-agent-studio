@@ -721,6 +721,25 @@ describe("createNode", () => {
     const res = createNode(nodes as RFNode[], edges as RFEdge[], "script", { x: 0, y: 0 })
     expect(nodes.map((n) => n.id)).not.toContain(res.newId)
   })
+
+  // B4.4：http 注册表类型走与 llm 完全相同的 typed-node 路径——
+  // 传 display.typeId（= 注册表条目 id）即产出带 typeId 的可运行 typed 节点。
+  it("an http registry type (display.typeId set) produces a typed node with its typeId", () => {
+    const { nodes, edges } = toReactFlow(chain)
+    const res = createNode(
+      nodes as RFNode[],
+      edges as RFEdge[],
+      "custom:weather",
+      { x: 5, y: 5 },
+      undefined,
+      undefined,
+      { label: "天气查询", color: "#22b8a6", typeId: "reg-http-1" },
+    )
+    const added = res.nodes.find((n) => n.id === res.newId)
+    expect(added?.data.node.typeId).toBe("reg-http-1")
+    expect(added?.data.node.type).toBe("custom:weather")
+    expect(added?.data.node.label).toBe("天气查询")
+  })
 })
 
 describe("custom-type registry + cascade", () => {

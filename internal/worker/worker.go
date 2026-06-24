@@ -35,6 +35,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/blob"
 	"github.com/costa92/llm-agent-studio/internal/cost"
 	"github.com/costa92/llm-agent-studio/internal/events"
+	"github.com/costa92/llm-agent-studio/internal/fetch"
 	"github.com/costa92/llm-agent-studio/internal/generate"
 	"github.com/costa92/llm-agent-studio/internal/modelrouter"
 	"github.com/costa92/llm-agent-studio/internal/models"
@@ -72,6 +73,8 @@ type Config struct {
 	Models           *models.Store           // resolve org default provider+model; nil → registry default
 	Registry         *generate.Registry      // nil → use Asset's bound generator directly
 	Router           *modelrouter.Router     // BYOK per-org 模型路由 (chat + media); nil → legacy Models/Registry path
+	Secrets          SecretResolver          // org-scoped named-secret resolver for http custom nodes; nil → secret-bearing http nodes fail opaquely
+	HTTPFetcher      HTTPDoer                // SSRF-safe outbound for http custom nodes; nil → http nodes fail opaquely
 	CustomExecutors  map[string]TaskExecutor // custom executors registered for task types
 	WorkerID         string
 	GenQuota         int // rolling-24h per-org generation quota; 0 = unlimited (backstop for fan-out)
@@ -1017,6 +1020,13 @@ type Puller interface {
 	Get(ctx context.Context, url string) ([]byte, string, error)
 }
 
+// SecretResolver resolves an org's named secret plaintext (satisfied by
+// *orgsecret.Store). The ONLY path that exposes plaintext; worker injects it into
+// http request headers and never logs it. nil/ErrEncUnavailable → opaque failure.
+type SecretResolver interface {
+	Resolve(ctx context.Context, orgID, name string) (string, error)
+}
+
 // renewLease extends the lease on a todo this worker still holds (heartbeat).
 // Double-guarded (locked_by + status='running') so it never resurrects a
 // rescheduled/canceled/reclaimed row (spec §5.2b I4): after a self-reschedule
@@ -1475,38 +1485,91 @@ func mimeToExt(mimeType string) string {
 	}
 }
 
-// customInput is the shape PlanCustom writes into a typed custom todo's input_json:
-// {kind, params} where params = registry LlmParams PLUS the merged variables list
-// (injected from the node's varBindings at plan time, rewritten local→sourceTodoId).
-// The executor only ever reads params.variables[].sourceTodoId — it never sees the
-// registry/node split.
-type customInput struct {
-	Kind   string `json:"kind"`
-	Params struct {
-		SystemPrompt string  `json:"systemPrompt"`
-		UserPrompt   string  `json:"userPrompt"`
-		Model        string  `json:"model"`
-		Temperature  float64 `json:"temperature"`
-		OutputFormat string  `json:"outputFormat"` // "text" | "json"
-		Variables    []struct {
-			Name         string `json:"name"`
-			SourceTodoId string `json:"sourceTodoId"`
-		} `json:"variables"`
-	} `json:"params"`
+// customEnvelope is the kind-agnostic outer shape PlanCustom writes into a typed
+// custom todo's input_json: {kind, params}. runCustom reads kind, then each case
+// re-unmarshals params into its own typed struct. This is the B/C extension seam.
+type customEnvelope struct {
+	Kind   string          `json:"kind"`
+	Params json.RawMessage `json:"params"`
 }
 
-// runCustom dispatches a typed custom todo by its input_json.kind. A only
-// implements "llm"; the switch is the B/C extension point (http/script/python).
+// customVariable is the post-rewrite variable binding (sourceNodeId already mapped
+// to sourceTodoId by PlanCustom's pass 2). Shared by every kind that reads upstream
+// text outputs ({{name}}).
+type customVariable struct {
+	Name         string `json:"name"`
+	SourceTodoId string `json:"sourceTodoId"`
+}
+
+// llmParams is the "llm" kind's params (unchanged from the 2A inline struct).
+type llmParams struct {
+	SystemPrompt string           `json:"systemPrompt"`
+	UserPrompt   string           `json:"userPrompt"`
+	Model        string           `json:"model"`
+	Temperature  float64          `json:"temperature"`
+	OutputFormat string           `json:"outputFormat"` // "text" | "json"
+	Variables    []customVariable `json:"variables"`
+}
+
+// HTTPDoer performs an SSRF-safe outbound request (satisfied by *fetch.Fetcher).
+// The seam lets tests inject a loopback fetcher.
+type HTTPDoer interface {
+	Do(ctx context.Context, in fetch.Request) (fetch.Response, error)
+}
+
+// httpParams is the "http" kind's params (org-level type behavior). url is a static
+// literal (no {{...}}); header values may carry {{name}} + {{secret:NAME}}; body may
+// carry {{name}} only.
+type httpParams struct {
+	Method            string            `json:"method"`
+	URL               string            `json:"url"`
+	Headers           map[string]string `json:"headers"`
+	BodyTemplate      string            `json:"bodyTemplate"`
+	OutputFormat      string            `json:"outputFormat"`      // "text" | "json"
+	AllowResponseBody bool              `json:"allowResponseBody"` // admin attestation: this endpoint does not echo secrets
+	Variables         []customVariable  `json:"variables"`
+}
+
+// httpError is the opaque error enum surfaced to the frontend. NEVER wrap a secret,
+// url, header, or body into the error chain — fail() ships cause.Error() to the
+// browser via todo_failed SSE + ProblemError.Message.
+type httpError string
+
+func (e httpError) Error() string { return string(e) }
+
+const (
+	errRequestFailed httpError = "request_failed"
+	errTimeout       httpError = "timeout"
+	errBodyTooLarge  httpError = "body_too_large"
+	errBlockedDest   httpError = "blocked_destination"
+)
+
+// secretRefRe matches {{secret:NAME}} (whitespace-tolerant). NAME is the org secret
+// name; the substitution channel is SEPARATE from {{name}} upstream variables.
+var secretRefRe = regexp.MustCompile(`\{\{\s*secret:([A-Za-z0-9_\-]+)\s*\}\}`)
+
+// runCustom dispatches a typed custom todo by its input_json.kind. Each case
+// re-unmarshals params into its own typed struct. A shipped "llm"; B adds "http".
 func (w *Worker) runCustom(ctx context.Context, c claimed) (string, error) {
-	var in customInput
-	if err := json.Unmarshal(c.input, &in); err != nil {
+	var env customEnvelope
+	if err := json.Unmarshal(c.input, &env); err != nil {
 		return "", fmt.Errorf("worker: custom input unmarshal: %w", err)
 	}
-	switch in.Kind {
+	switch env.Kind {
 	case "llm":
-		return w.runCustomLLM(ctx, c, in)
+		var p llmParams
+		if err := json.Unmarshal(env.Params, &p); err != nil {
+			return "", fmt.Errorf("worker: custom llm params unmarshal: %w", err)
+		}
+		return w.runCustomLLM(ctx, c, p)
+	case "http":
+		var p httpParams
+		if err := json.Unmarshal(env.Params, &p); err != nil {
+			return "", fmt.Errorf("worker: custom http params unmarshal: %w", err)
+		}
+		return w.runCustomHTTP(ctx, c, p)
 	default:
-		return "", fmt.Errorf("worker: unsupported custom kind %q", in.Kind)
+		return "", fmt.Errorf("worker: unsupported custom kind %q", env.Kind)
 	}
 }
 
@@ -1515,10 +1578,10 @@ func (w *Worker) runCustom(ctx context.Context, c claimed) (string, error) {
 // (same routing as runScript), optionally instruct+validate JSON, write a
 // node_outputs row, return "custom:<id>".
 // This path requires a Router: routedChatModel returns (nil,false) when cfg.Router==nil.
-func (w *Worker) runCustomLLM(ctx context.Context, c claimed, in customInput) (string, error) {
+func (w *Worker) runCustomLLM(ctx context.Context, c claimed, in llmParams) (string, error) {
 	// 1. Resolve variables: sourceTodoId → that todo's output_ref → resolveOutputText.
 	replacer := map[string]string{}
-	for _, v := range in.Params.Variables {
+	for _, v := range in.Variables {
 		if v.SourceTodoId == "" {
 			continue
 		}
@@ -1534,9 +1597,9 @@ func (w *Worker) runCustomLLM(ctx context.Context, c claimed, in customInput) (s
 		replacer[v.Name] = text
 	}
 
-	system := substituteVars(in.Params.SystemPrompt, replacer)
-	user := substituteVars(in.Params.UserPrompt, replacer)
-	if in.Params.OutputFormat == "json" {
+	system := substituteVars(in.SystemPrompt, replacer)
+	user := substituteVars(in.UserPrompt, replacer)
+	if in.OutputFormat == "json" {
 		system = strings.TrimSpace(system + "\nRespond with a single valid JSON value and nothing else.")
 	}
 
@@ -1555,7 +1618,7 @@ func (w *Worker) runCustomLLM(ctx context.Context, c claimed, in customInput) (s
 	}
 	content := res.Answer
 	format := "text"
-	if in.Params.OutputFormat == "json" {
+	if in.OutputFormat == "json" {
 		var probe any
 		if err := json.Unmarshal([]byte(strings.TrimSpace(content)), &probe); err != nil {
 			// JSON parse failure ⇒ execution failure (retried by the worker).
@@ -1574,6 +1637,155 @@ func (w *Worker) runCustomLLM(ctx context.Context, c claimed, in customInput) (s
 		return "", fmt.Errorf("worker: insert node_output: %w", err)
 	}
 	return "custom:" + outID, nil
+}
+
+// runCustomHTTP executes the "http" kind: resolve {{name}} upstream variables and
+// {{secret:NAME}} org secrets, substitute into headers/body (url is a static
+// literal), re-validate post-substitution (no {{ residue; secret not in url/body),
+// make an SSRF-safe request via the fetch transport, and land node_outputs per the
+// body policy. ALL errors are opaque (httpError enum) — never embed secret/url/body.
+func (w *Worker) runCustomHTTP(ctx context.Context, c claimed, in httpParams) (string, error) {
+	if w.cfg.HTTPFetcher == nil {
+		return "", errRequestFailed
+	}
+	// 1. Resolve {{name}} upstream variables (same channel as llm).
+	nameVals := map[string]string{}
+	for _, v := range in.Variables {
+		if v.SourceTodoId == "" {
+			continue
+		}
+		var outputRef string
+		if err := w.cfg.DB.WithContext(ctx).Raw(
+			`SELECT COALESCE(output_ref,'') FROM todos WHERE id=$1`, v.SourceTodoId).Row().Scan(&outputRef); err != nil {
+			return "", errRequestFailed // opaque: never leak the variable/source
+		}
+		text, err := w.resolveOutputText(ctx, outputRef)
+		if err != nil {
+			return "", errRequestFailed
+		}
+		nameVals[v.Name] = text
+	}
+
+	// 2. Resolve org from the TRUSTED run context (never from input_json/node).
+	orgID, err := w.cfg.Projects.OrgIDForProject(ctx, c.projectID)
+	if err != nil {
+		return "", errRequestFailed
+	}
+
+	// 3. Substitute headers. The {{secret:NAME}} channel resolves on the ORIGINAL
+	// author template FIRST, THEN the {{name}} upstream-variable channel runs on the
+	// result. Ordering is security-critical: {{name}} values come from upstream node
+	// output (editor/attacker-influenceable), so resolving secrets first guarantees
+	// {{secret:NAME}} only ever matches text the node author wrote. A {{secret:...}}
+	// that arrives via a {{name}} value is therefore NOT resolved — it is emitted as
+	// harmless literal text — which preserves the editor→admin admin-gate.
+	// secretBearing tracks whether ANY secret was injected (reliable; not a post-hoc
+	// header scan).
+	secretBearing := false
+	resolvedHeaders := make(map[string]string, len(in.Headers))
+	for k, val := range in.Headers {
+		// {{secret:NAME}} first, on the raw author template.
+		var secErr error
+		val = secretRefRe.ReplaceAllStringFunc(val, func(m string) string {
+			name := secretRefRe.FindStringSubmatch(m)[1]
+			if w.cfg.Secrets == nil {
+				secErr = errRequestFailed
+				return ""
+			}
+			plain, e := w.cfg.Secrets.Resolve(ctx, orgID, name)
+			if e != nil {
+				secErr = errRequestFailed // opaque: missing secret / box disabled → no name leaked
+				return ""
+			}
+			secretBearing = true
+			return plain
+		})
+		if secErr != nil {
+			return "", secErr
+		}
+		// {{name}} upstream variables next. A {{secret:...}} smuggled in via a
+		// {{name}} value has already passed the secret pass untouched and stays literal.
+		val = substituteVars(val, nameVals)
+		resolvedHeaders[k] = val
+	}
+
+	// 4. Substitute body ({{name}} only — {{secret}} forbidden in body, enforced at
+	// save-time validate(); re-check here post-substitution).
+	body := substituteVars(in.BodyTemplate, nameVals)
+	if secretRefRe.MatchString(body) || strings.Contains(body, "{{secret:") {
+		return "", errRequestFailed
+	}
+	// url is a static literal; re-confirm no template residue anywhere.
+	if strings.Contains(in.URL, "{{") {
+		return "", errRequestFailed
+	}
+
+	// 5. Make the request. Map every fetch error to an opaque enum (fetch errors
+	// embed the URL — must NOT reach the frontend).
+	resp, ferr := w.cfg.HTTPFetcher.Do(ctx, fetch.Request{
+		Method:  in.Method,
+		URL:     in.URL,
+		Headers: resolvedHeaders,
+		Body:    []byte(body),
+	})
+	if ferr != nil {
+		return "", classifyFetchError(ferr)
+	}
+	if resp.Status < 200 || resp.Status >= 300 {
+		// Non-2xx is an execution failure (worker retries); body NOT fed downstream.
+		return "", errRequestFailed
+	}
+
+	// 6. Body policy: secret-bearing && !allowResponseBody → store only {status}.
+	var content, format string
+	if secretBearing && !in.AllowResponseBody {
+		content = fmt.Sprintf(`{"status":%d}`, resp.Status)
+		format = "http-status"
+	} else {
+		content = string(resp.Body)
+		format = "text"
+		if in.OutputFormat == "json" {
+			var probe any
+			if err := json.Unmarshal([]byte(strings.TrimSpace(content)), &probe); err != nil {
+				return "", errRequestFailed
+			}
+			content = strings.TrimSpace(content)
+			format = "json"
+		}
+	}
+
+	// 7. Land node_outputs (INSERT, pure $N).
+	outID := newID()
+	if err := w.cfg.DB.WithContext(ctx).Exec(
+		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format)
+		 VALUES ($1,$2,$3,$4,$5,$6)`,
+		outID, c.projectID, c.todoID, c.typ, content, format).Error; err != nil {
+		return "", errRequestFailed
+	}
+	return "custom:" + outID, nil
+}
+
+// classifyFetchError maps a fetch transport error to an opaque enum WITHOUT
+// inspecting its message for secrets/urls. Uses coarse signals (ctx deadline →
+// timeout; "blocked"/"all resolved IPs" → blocked_destination; "cap" → body too
+// large) and defaults to request_failed. NEVER returns the original error.
+func classifyFetchError(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return errTimeout
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "blocked IP"), strings.Contains(msg, "are blocked"):
+		return errBlockedDest
+	case strings.Contains(msg, "byte cap"):
+		return errBodyTooLarge
+	case strings.Contains(msg, "not allowed"):
+		// fetch's "not allowed" covers content-type/scheme rejections (there is
+		// no host allowlist), so this is a blocked destination, not a host-allow miss.
+		return errBlockedDest
+	default:
+		return errRequestFailed
+	}
 }
 
 // substituteVars replaces every {{name}} (or {{ name }}) occurrence with its

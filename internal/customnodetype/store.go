@@ -24,8 +24,12 @@ var ErrNotFound = errors.New("customnodetype: type not found")
 // ErrInUse 表示该类型被某 workflow 节点 (typeId) 引用，不可删除 (best-effort: 见 Delete)。
 var ErrInUse = errors.New("customnodetype: type in use by workflow nodes")
 
-// validKinds 是 A 支持的 kind 集合 (后续 B/C 扩展 http/script/python)。
-var validKinds = map[string]bool{"llm": true}
+// validKinds 是支持的 kind 集合 (后续 C 扩展 script/python)。
+var validKinds = map[string]bool{"llm": true, "http": true}
+
+// secretRefRe 探测 {{secret:...}} 引用 (与 worker 同语义)；httpMethods 是允许的方法集。
+var secretRefRe = regexp.MustCompile(`\{\{\s*secret:`)
+var httpMethods = map[string]bool{"GET": true, "POST": true, "PUT": true, "PATCH": true, "DELETE": true}
 
 var slugStrip = regexp.MustCompile(`[^a-z0-9\-_\x{4e00}-\x{9fa5}]`)
 
@@ -78,10 +82,48 @@ func validate(in UpsertInput) error {
 		return fmt.Errorf("customnodetype: label required")
 	}
 	if !validKinds[in.Kind] {
-		return fmt.Errorf("customnodetype: invalid kind %q (want llm)", in.Kind)
+		return fmt.Errorf("customnodetype: invalid kind %q (want llm|http)", in.Kind)
 	}
 	if len(in.Params) == 0 || !json.Valid(in.Params) {
 		return fmt.Errorf("customnodetype: params must be valid JSON")
+	}
+	if in.Kind == "http" {
+		return validateHTTPParams(in.Params)
+	}
+	return nil
+}
+
+// validateHTTPParams enforces the http kind's save-time rules (spec 必做项 #5):
+// method enum; url required + static literal (no {{...}}); {{secret:}} only in
+// header values (never url/body); outputFormat ∈ text|json.
+func validateHTTPParams(raw json.RawMessage) error {
+	var p struct {
+		Method       string            `json:"method"`
+		URL          string            `json:"url"`
+		Headers      map[string]string `json:"headers"`
+		BodyTemplate string            `json:"bodyTemplate"`
+		OutputFormat string            `json:"outputFormat"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return fmt.Errorf("customnodetype: http params: %w", err)
+	}
+	if !httpMethods[p.Method] {
+		return fmt.Errorf("customnodetype: http method %q invalid (GET|POST|PUT|PATCH|DELETE)", p.Method)
+	}
+	if strings.TrimSpace(p.URL) == "" {
+		return fmt.Errorf("customnodetype: http url required")
+	}
+	if strings.Contains(p.URL, "{{") {
+		return fmt.Errorf("customnodetype: http url must be a static literal (no {{...}} templates)")
+	}
+	if secretRefRe.MatchString(p.BodyTemplate) {
+		return fmt.Errorf("customnodetype: {{secret:...}} not allowed in bodyTemplate (headers only)")
+	}
+	for _, v := range p.Headers {
+		_ = v // {{secret:}} IS allowed in header values; no per-value rejection here.
+	}
+	if p.OutputFormat != "" && p.OutputFormat != "text" && p.OutputFormat != "json" {
+		return fmt.Errorf("customnodetype: http outputFormat %q invalid (text|json)", p.OutputFormat)
 	}
 	return nil
 }

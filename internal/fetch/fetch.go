@@ -8,6 +8,7 @@
 package fetch
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -70,10 +71,28 @@ func New(cfg Config) *Fetcher {
 		// Re-validate every redirect hop's scheme BEFORE following it; IP
 		// validation happens again in DialContext on the new connection.
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
+			if len(via) >= 3 {
 				return fmt.Errorf("fetch: too many redirects")
 			}
-			return validateScheme(req.URL)
+			if err := validateScheme(req.URL); err != nil {
+				return err
+			}
+			// Per-hop host re-validation: any host change drops Authorization (and
+			// every {{secret}}-bearing header) so a 3xx to an attacker host cannot
+			// exfiltrate the injected credential. IP re-validation still happens in
+			// DialContext on the new connection.
+			if len(via) > 0 && req.URL.Host != via[len(via)-1].URL.Host {
+				req.Header.Del("Authorization")
+				for k := range req.Header {
+					// Drop ALL caller-supplied headers on host change (we re-add none).
+					// Keep only Host/User-Agent which net/http manages.
+					if k == "User-Agent" {
+						continue
+					}
+					req.Header.Del(k)
+				}
+			}
+			return nil
 		},
 	}
 	return f
@@ -121,6 +140,73 @@ func (f *Fetcher) Get(ctx context.Context, rawURL string) ([]byte, string, error
 		return nil, "", fmt.Errorf("fetch: body exceeds %d byte cap", f.cfg.MaxBytes)
 	}
 	return body, ct, nil
+}
+
+// Request is a general SSRF-safe outbound request for the http custom-node kind.
+type Request struct {
+	Method  string
+	URL     string
+	Headers map[string]string
+	Body    []byte
+}
+
+// Response is the result of Do. Status is the raw HTTP status (non-2xx is NOT an
+// error — the caller decides). Body is the capped response body.
+type Response struct {
+	Status      int
+	Body        []byte
+	ContentType string
+}
+
+// Do performs a general SSRF-safe request reusing the same validated-IP transport
+// as Get. Unlike Get it: honors Method/Headers/Body, returns the status (non-2xx
+// is not an error), and applies the same body cap + per-hop redirect re-validation
+// + Authorization-strip-on-host-change. err is ONLY a transport / SSRF / cap
+// failure. Callers that inject secrets MUST map err to an opaque enum (NEVER %w
+// the raw error, which embeds the URL) before surfacing it.
+func (f *Fetcher) Do(ctx context.Context, in Request) (Response, error) {
+	u, err := url.Parse(in.URL)
+	if err != nil {
+		return Response{}, fmt.Errorf("fetch: parse url")
+	}
+	if err := validateScheme(u); err != nil {
+		return Response{}, err
+	}
+	method := in.Method
+	if method == "" {
+		method = http.MethodGet
+	}
+	var bodyReader io.Reader
+	if len(in.Body) > 0 {
+		bodyReader = bytes.NewReader(in.Body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, in.URL, bodyReader)
+	if err != nil {
+		return Response{}, fmt.Errorf("fetch: build request")
+	}
+	req.Header.Set("User-Agent", "llm-agent-studio/custom-http")
+	for k, v := range in.Headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := f.client.Do(req)
+	if err != nil {
+		// NOTE: this error embeds the URL — callers injecting secrets must map it to
+		// an opaque enum before surfacing (the worker does, B2).
+		return Response{}, fmt.Errorf("fetch: do: %w", err)
+	}
+	defer resp.Body.Close()
+	ct := resp.Header.Get("Content-Type")
+	if !f.contentTypeAllowed(ct) {
+		return Response{}, fmt.Errorf("fetch: content-type %q not allowed", ct)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, f.cfg.MaxBytes+1))
+	if err != nil {
+		return Response{}, fmt.Errorf("fetch: read body")
+	}
+	if int64(len(body)) > f.cfg.MaxBytes {
+		return Response{}, fmt.Errorf("fetch: body exceeds %d byte cap", f.cfg.MaxBytes)
+	}
+	return Response{Status: resp.StatusCode, Body: body, ContentType: ct}, nil
 }
 
 func (f *Fetcher) contentTypeAllowed(ct string) bool {
@@ -176,17 +262,36 @@ func validateScheme(u *url.URL) error {
 // cgnat is the RFC 6598 carrier-grade NAT range (100.64.0.0/10).
 var cgnat = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
 
+// nat64 is the well-known NAT64 prefix (RFC 6052, 64:ff9b::/96). An attacker can
+// smuggle an IPv4 metadata target (e.g. 64:ff9b::169.254.169.254) past an
+// IPv4-only check, so embedded IPv4 must be extracted and re-checked.
+var nat64 = &net.IPNet{IP: net.ParseIP("64:ff9b::"), Mask: net.CIDRMask(96, 128)}
+
 // isBlockedIP returns true for any IP that is NOT a routable public address:
 // loopback, private, link-local (incl. 169.254.169.254 metadata), multicast,
-// unspecified, interface-local, and RFC 6598 CGNAT.
+// unspecified, interface-local, RFC 6598 CGNAT. IPv4-mapped IPv6 and NAT64
+// (64:ff9b::/96) embeddings are normalized to their embedded IPv4 and re-checked
+// (else 64:ff9b::169.254.169.254 / ::ffff:169.254.169.254 would slip past an
+// IPv4-only test).
 func isBlockedIP(ip net.IP) bool {
 	if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
 		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
 		ip.IsMulticast() || ip.IsInterfaceLocalMulticast() {
 		return true
 	}
-	if v4 := ip.To4(); v4 != nil && cgnat.Contains(v4) {
-		return true
+	// IPv4-mapped IPv6 (::ffff:a.b.c.d): To4() returns the embedded v4; check it
+	// against CGNAT (the std predicates above already see through ::ffff:).
+	if v4 := ip.To4(); v4 != nil {
+		if cgnat.Contains(v4) {
+			return true
+		}
+		return false
+	}
+	// NAT64 (64:ff9b::a.b.c.d): the last 4 bytes are an embedded IPv4 — extract and
+	// recurse so all v4 rules (loopback/private/link-local/CGNAT) apply.
+	if nat64.Contains(ip) {
+		embedded := net.IPv4(ip[12], ip[13], ip[14], ip[15])
+		return isBlockedIP(embedded)
 	}
 	return false
 }

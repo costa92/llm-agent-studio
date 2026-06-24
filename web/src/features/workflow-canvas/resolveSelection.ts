@@ -5,7 +5,7 @@ export type RunSelection =
   | { kind: "script"; todoId?: string }
   | { kind: "storyboard"; todoId?: string }
   | { kind: "asset"; assetId: string }
-  | { kind: "custom"; output: string; outputFormat?: "text" | "json" }
+  | { kind: "custom"; output: string; outputFormat?: "text" | "json" | "http-status" }
   | null
 
 // 纯函数：节点类型 + overlay map 命中项 → 选中态。

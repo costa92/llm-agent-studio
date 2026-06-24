@@ -15,8 +15,9 @@ export interface RunNodeStatus {
   assetId?: string
   todoId?: string
   // custom 节点 node_outputs 产物（T3 — minimal output panel）。
+  // "http-status" = http 节点响应体被安全策略抑制，content 仅含 {"status":N}。
   output?: string
-  outputFormat?: "text" | "json"
+  outputFormat?: "text" | "json" | "http-status"
 }
 
 // 画布工作流节点 → 该类型在拓扑序中的序号（script:0,1…; storyboard:0,1…; asset:0,1…）。

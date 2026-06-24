@@ -13,14 +13,22 @@ import { Button as UiButton } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
 import { ApiError } from "@/lib/apiClient"
-import type { CustomNodeType, LlmParams, UpsertCustomNodeTypeInput } from "@/lib/types"
+import type {
+  CustomNodeType,
+  HttpParams,
+  LlmParams,
+  UpsertCustomNodeTypeInput,
+} from "@/lib/types"
 import {
   useCustomNodeTypes,
   useCreateCustomNodeType,
   useUpdateCustomNodeType,
   useDeleteCustomNodeType,
 } from "./api"
+import { useOrgSecrets } from "@/features/org-secrets/api"
+import { useRole } from "@/app/rbac"
 import { LlmParamForm } from "./LlmParamForm"
+import { HttpParamForm } from "./HttpParamForm"
 import { CUSTOM_PALETTE } from "@/features/workflow-canvas/nodeColor"
 import {
   useCrudResource,
@@ -30,22 +38,45 @@ import {
 } from "../common/crud"
 
 // 默认 LLM 参数：userPrompt 为必填（其他可选）。
-const DEFAULT_PARAMS: LlmParams = { userPrompt: "" }
+const DEFAULT_LLM_PARAMS: LlmParams = { userPrompt: "" }
 
-// 空表单状态（新建时使用）。
+// 默认 http 参数：method/url/headers 必填（其余可选）。
+const DEFAULT_HTTP_PARAMS: HttpParams = { method: "GET", url: "", headers: {}, outputFormat: "text" }
+
+// 空表单状态（新建时使用）；默认 kind=llm。
 function emptyDraft(): FormDraft {
-  return { label: "", color: CUSTOM_PALETTE[0], params: DEFAULT_PARAMS }
+  return { label: "", color: CUSTOM_PALETTE[0], kind: "llm", params: DEFAULT_LLM_PARAMS }
 }
 
-// 从已有类型预填草稿（编辑时使用）。
+// 从已有类型预填草稿（编辑时使用）。kind/params 形状由后端条目决定。
 function draftFrom(ct: CustomNodeType): FormDraft {
-  return { label: ct.label, color: ct.color, params: ct.params }
+  return { label: ct.label, color: ct.color, kind: ct.kind, params: ct.params }
 }
 
 interface FormDraft {
   label: string
   color: string
-  params: LlmParams
+  kind: "llm" | "http"
+  params: LlmParams | HttpParams
+}
+
+// http header 值引用了密钥则为 secret-bearing（与 HttpParamForm 判定一致）。
+const SECRET_REF_RE = /\{\{\s*secret:/
+function isSecretBearing(draft: FormDraft): boolean {
+  if (draft.kind !== "http") return false
+  const p = draft.params as HttpParams
+  return Object.values(p.headers ?? {}).some((v) => SECRET_REF_RE.test(v))
+}
+
+// 草稿是否满足提交所需必填字段（按 kind 区分）。
+function draftValid(draft: FormDraft): boolean {
+  if (draft.label.trim() === "") return false
+  if (draft.kind === "llm") {
+    return (draft.params as LlmParams).userPrompt.trim() !== ""
+  }
+  const p = draft.params as HttpParams
+  // url 必填且不得含 {{...}} 模板。
+  return p.url.trim() !== "" && !/\{\{/.test(p.url)
 }
 
 // ─── 类型编辑对话框 ────────────────────────────────────────────────────────────
@@ -62,6 +93,10 @@ interface TypeDialogProps {
   initial: FormDraft
   submitting: boolean
   submitError: string | null
+  // 组织密钥名（供 http 表单的「插入密钥」下拉 + secret-bearing 判定）。
+  secretNames: string[]
+  // 当前用户是否 admin（http secret-bearing 类型仅 admin 可创建/保存；后端强制，前端镜像）。
+  isAdmin: boolean
   onSubmit: (draft: FormDraft) => void
   onOpenChange: (open: boolean) => void
 }
@@ -72,6 +107,8 @@ function TypeDialog({
   initial,
   submitting,
   submitError,
+  secretNames,
+  isAdmin,
   onSubmit,
   onOpenChange,
 }: TypeDialogProps) {
@@ -81,9 +118,23 @@ function TypeDialog({
     setDraft((d) => ({ ...d, ...partial }))
   }
 
+  // 切换 kind 时重置 params 为该 kind 的默认形状（仅新建态可切 kind）。
+  function setKind(kind: "llm" | "http") {
+    setDraft((d) => ({
+      ...d,
+      kind,
+      params: kind === "llm" ? DEFAULT_LLM_PARAMS : DEFAULT_HTTP_PARAMS,
+    }))
+  }
+
+  const secretBearing = isSecretBearing(draft)
+  // 非 admin 且 secret-bearing → 禁止提交（后端会 403，前端镜像并给出提示）。
+  const adminBlocked = secretBearing && !isAdmin
+  const canSubmit = draftValid(draft) && !adminBlocked
+
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (draft.label.trim() === "" || draft.params.userPrompt.trim() === "") return
+    if (!canSubmit) return
     onSubmit(draft)
   }
 
@@ -94,8 +145,8 @@ function TypeDialog({
           <DialogTitle>{mode === "create" ? "新建自定义节点类型" : "编辑自定义节点类型"}</DialogTitle>
           <DialogDescription>
             {mode === "create"
-              ? "定义一个可复用的 LLM 节点类型（组织级）。"
-              : "修改 LLM 节点类型的标签、颜色或参数（同名节点自动继承）。"}
+              ? "定义一个可复用的自定义节点类型（组织级，LLM 或 HTTP）。"
+              : "修改节点类型的标签、颜色或参数（同名节点自动继承）；类型 kind 不可变。"}
           </DialogDescription>
         </DialogHeader>
 
@@ -134,22 +185,55 @@ function TypeDialog({
             </div>
           </div>
 
-          {/* kind 固定为 llm（Phase 2A 只支持 llm）*/}
+          {/* kind 选择：仅新建态可切（kind 不可变）；编辑态只读展示。 */}
           <div className="flex flex-col gap-1.5">
-            <Label className="text-[13px] font-medium text-text-1">类型</Label>
-            <Input
-              value="llm"
-              disabled
-              aria-label="kind"
-              className="text-[13px] opacity-60 cursor-not-allowed"
-            />
+            <Label htmlFor="cnt-kind" className="text-[13px] font-medium text-text-1">类型</Label>
+            {mode === "create" ? (
+              <select
+                id="cnt-kind"
+                aria-label="kind"
+                value={draft.kind}
+                onChange={(e) => setKind(e.target.value as "llm" | "http")}
+                className="h-8 rounded-md border border-input bg-background px-2 text-[13px] text-text-1 focus:ring-1 focus:ring-ring"
+              >
+                <option value="llm">LLM</option>
+                <option value="http">HTTP</option>
+              </select>
+            ) : (
+              <Input
+                value={draft.kind}
+                disabled
+                aria-label="kind"
+                className="text-[13px] opacity-60 cursor-not-allowed"
+              />
+            )}
           </div>
 
-          {/* LLM 参数表单 */}
+          {/* 参数表单：按 kind 渲染 LLM 或 HTTP。 */}
           <div className="border-t border-line pt-3">
-            <p className="text-[12px] text-text-2 mb-3">LLM 参数</p>
-            <LlmParamForm value={draft.params} onChange={(params) => patch({ params })} />
+            <p className="text-[12px] text-text-2 mb-3">
+              {draft.kind === "llm" ? "LLM 参数" : "HTTP 参数"}
+            </p>
+            {draft.kind === "llm" ? (
+              <LlmParamForm
+                value={draft.params as LlmParams}
+                onChange={(params) => patch({ params })}
+              />
+            ) : (
+              <HttpParamForm
+                value={draft.params as HttpParams}
+                onChange={(params) => patch({ params })}
+                secretNames={secretNames}
+              />
+            )}
           </div>
+
+          {/* 非 admin 创建 secret-bearing 类型的前置提示（后端是权威，前端镜像）。 */}
+          {adminBlocked && (
+            <p role="alert" className="text-[12px] text-danger">
+              引用了密钥的 HTTP 类型需要管理员权限，当前账号无法创建或保存。
+            </p>
+          )}
 
           {submitError != null && submitError !== "" && (
             <p role="alert" className="text-[12px] text-danger">
@@ -161,11 +245,7 @@ function TypeDialog({
             <UiButton type="button" variant="outline" onClick={() => onOpenChange(false)}>
               取消
             </UiButton>
-            <Button
-              type="submit"
-              variant="amber"
-              disabled={submitting || draft.label.trim() === "" || draft.params.userPrompt.trim() === ""}
-            >
+            <Button type="submit" variant="amber" disabled={submitting || !canSubmit}>
               {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
               {mode === "create" ? "创建" : "保存"}
             </Button>
@@ -189,6 +269,11 @@ export function CustomNodeTypeManager({ org }: CustomNodeTypeManagerProps) {
   const createMutation = useCreateCustomNodeType(org)
   const updateMutation = useUpdateCustomNodeType(org)
   const deleteMutation = useDeleteCustomNodeType(org)
+  // 组织密钥名（http 表单「插入密钥」+ secret-bearing 判定）；非 admin 列表会 403 返空。
+  const secretsQuery = useOrgSecrets(org)
+  const secretNames = (secretsQuery.data ?? []).map((s) => s.name)
+  // 当前用户角色：secret-bearing http 类型仅 admin 可创建/保存（后端权威，前端镜像）。
+  const { isAdmin } = useRole(org)
 
   const crud = useCrudResource<CustomNodeType>({
     getId: (ct) => ct.id,
@@ -198,6 +283,9 @@ export function CustomNodeTypeManager({ org }: CustomNodeTypeManagerProps) {
     remove: (id) => deleteMutation.mutateAsync(id),
     labels: { created: "自定义节点类型已创建", updated: "自定义节点类型已更新", deleted: "自定义节点类型已删除" },
     errorMessage: (action, err) => {
+      if (action !== "delete" && err instanceof ApiError && err.status === 403) {
+        return "引用了密钥的 HTTP 类型需要管理员权限"
+      }
       if (action !== "delete" && err instanceof ApiError && err.status === 409) {
         return "名称或 slug 已被占用，请使用其他名称"
       }
@@ -215,7 +303,7 @@ export function CustomNodeTypeManager({ org }: CustomNodeTypeManagerProps) {
     const input: UpsertCustomNodeTypeInput = {
       label: draft.label.trim(),
       color: draft.color,
-      kind: "llm",
+      kind: draft.kind,
       params: draft.params,
     }
     void crud.submit(input)
@@ -271,6 +359,8 @@ export function CustomNodeTypeManager({ org }: CustomNodeTypeManagerProps) {
           initial={dialogInitial}
           submitting={crud.submitting}
           submitError={crud.submitError}
+          secretNames={secretNames}
+          isAdmin={isAdmin}
           onSubmit={handleDialogSubmit}
           onOpenChange={(open) => { if (!open) crud.closeDialog() }}
         />

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { render, screen } from "@testing-library/react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { RunCanvas } from "./RunCanvas"
+import { RunCanvas, SuppressedBodyPanel, parseHttpStatus } from "./RunCanvas"
 import type { WorkflowNode } from "@/lib/types"
 import type { ProjectState } from "@/lib/projectState"
 
@@ -100,5 +100,31 @@ describe("RunCanvas read-only hardening", () => {
     ).map((el) => el.getAttribute("data-status"))
     expect(statuses).toContain("done")
     expect(statuses).toContain("running")
+  })
+})
+
+// B4.4：http 节点响应体被安全策略抑制时的运行视图产物面板。
+describe("SuppressedBodyPanel (http-status output)", () => {
+  it("parseHttpStatus extracts the status code from {\"status\":N}", () => {
+    expect(parseHttpStatus('{"status":200}')).toBe(200)
+    expect(parseHttpStatus('{"status":403}')).toBe(403)
+  })
+
+  it("parseHttpStatus returns null for malformed content", () => {
+    expect(parseHttpStatus("not json")).toBeNull()
+    expect(parseHttpStatus('{"foo":1}')).toBeNull()
+  })
+
+  it("renders the suppressed-body label + status code, never the body", () => {
+    render(<SuppressedBodyPanel content='{"status":200}' />)
+    expect(screen.getByText(/响应体已按安全策略隐藏/)).toBeInTheDocument()
+    expect(screen.getByText("200")).toBeInTheDocument()
+  })
+
+  it("renders the suppressed label even when status is unparseable", () => {
+    render(<SuppressedBodyPanel content="opaque" />)
+    expect(screen.getByText(/响应体已按安全策略隐藏/)).toBeInTheDocument()
+    // 无可解析状态码时不渲染「状态码：」行。
+    expect(screen.queryByText(/状态码/)).toBeNull()
   })
 })

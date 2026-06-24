@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 
+	authzhttp "github.com/costa92/llm-agent-authz/httpapi"
+	authzrole "github.com/costa92/llm-agent-authz/role"
 	"github.com/costa92/llm-agent-studio/internal/customnodetype"
 )
 
@@ -29,6 +32,54 @@ func (b customNodeTypeBody) toInput() customnodetype.UpsertInput {
 	return customnodetype.UpsertInput{Label: b.Label, Color: b.Color, Kind: b.Kind, Params: b.Params}
 }
 
+var httpSecretRefRe = regexp.MustCompile(`\{\{\s*secret:`)
+
+// bodyBearsSecret reports whether a custom-node-type body is an http type whose
+// headers reference {{secret:...}} (so create/update needs roleAdmin, spec 裁决 #2).
+func bodyBearsSecret(b customNodeTypeBody) bool {
+	if b.Kind != "http" || len(b.Params) == 0 {
+		return false
+	}
+	var p struct {
+		Headers map[string]string `json:"headers"`
+	}
+	if err := json.Unmarshal(b.Params, &p); err != nil {
+		return false
+	}
+	for _, v := range p.Headers {
+		if httpSecretRefRe.MatchString(v) {
+			return true
+		}
+	}
+	return false
+}
+
+// requireAdminForSecret enforces caller AtLeast(roleAdmin) when the body bears a
+// secret. The middleware verifies editor; the role itself is NOT in ctx, so we
+// resolve it here (mirrors RequireScopeRole). Returns false + writes 403 on
+// insufficient role; true to proceed.
+func requireAdminForSecret(w http.ResponseWriter, r *http.Request, rr authzhttp.RoleResolver, b customNodeTypeBody) bool {
+	if !bodyBearsSecret(b) {
+		return true
+	}
+	if rr == nil {
+		http.Error(w, "secret-bearing types require admin (role resolver unavailable)", http.StatusForbidden)
+		return false
+	}
+	org := r.PathValue("org")
+	uid := authzhttp.UserID(r.Context())
+	eff, err := rr.ResolveRole(r.Context(), uid, org, "org", "")
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return false
+	}
+	if !eff.AtLeast(authzrole.RoleAdmin) {
+		http.Error(w, "含密钥引用的 HTTP 类型需要管理员权限", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
 func listCustomNodeTypesHandler(s CustomNodeTypeStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		items, err := s.List(r.Context(), r.PathValue("org"))
@@ -43,11 +94,14 @@ func listCustomNodeTypesHandler(s CustomNodeTypeStore) http.HandlerFunc {
 	}
 }
 
-func createCustomNodeTypeHandler(s CustomNodeTypeStore) http.HandlerFunc {
+func createCustomNodeTypeHandler(s CustomNodeTypeStore, rr authzhttp.RoleResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var b customNodeTypeBody
 		if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if !requireAdminForSecret(w, r, rr, b) {
 			return
 		}
 		ct, err := s.Create(r.Context(), r.PathValue("org"), b.toInput())
@@ -59,11 +113,14 @@ func createCustomNodeTypeHandler(s CustomNodeTypeStore) http.HandlerFunc {
 	}
 }
 
-func updateCustomNodeTypeHandler(s CustomNodeTypeStore) http.HandlerFunc {
+func updateCustomNodeTypeHandler(s CustomNodeTypeStore, rr authzhttp.RoleResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var b customNodeTypeBody
 		if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if !requireAdminForSecret(w, r, rr, b) {
 			return
 		}
 		ct, err := s.Update(r.Context(), r.PathValue("id"), r.PathValue("org"), b.toInput())
