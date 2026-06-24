@@ -1215,21 +1215,27 @@ func TestEndToEndCustomWorkflow(t *testing.T) {
 		`{"name":"Promo","brief":"a coffee ad","contentType":"ad","targetPlatform":"web","style":"realistic"}`)
 	projID, _ := projb["id"].(string)
 
-	// 5. Update project to enable custom workflow and define workflowNodes.
-	workflowNodes := `[
+	// 5. Create a workflow on the project with the builtin script→storyboard graph.
+	// (The legacy PUT /api/projects/{id} with customWorkflowEnabled/workflowNodes
+	// no longer persists those fields — custom workflows moved to the workflows-API.)
+	wfNodes := `[
 		{"id": "node-script", "type": "script", "promptId": "` + promptID + `", "dependsOn": []},
 		{"id": "node-storyboard", "type": "storyboard", "dependsOn": ["node-script"]}
 	]`
-	upBody := `{"plannerProvider":"","plannerModel":"","imageProvider":"","imageModel":"","storageMode":"","customWorkflowEnabled":true,"workflowNodes":` + workflowNodes + `}`
-	upCode, upb := do("PUT", "/api/projects/"+projID, token, upBody)
-	if upCode != http.StatusOK {
-		t.Fatalf("update project code=%d body=%v", upCode, upb)
+	wfCode, wfb := do("POST", "/api/projects/"+projID+"/workflows", token,
+		`{"name":"custom-flow","nodes":`+wfNodes+`}`)
+	if wfCode != http.StatusOK {
+		t.Fatalf("create workflow code=%d body=%v", wfCode, wfb)
+	}
+	wfID, _ := wfb["id"].(string)
+	if wfID == "" {
+		t.Fatalf("no workflow id in response: %v", wfb)
 	}
 
-	// 6. Run the project (kicks off PlanCustom and enqueues custom todos).
-	runCode, runb := do("POST", "/api/projects/"+projID+"/run", token, "")
+	// 6. Run the workflow (PlanCustom tagged with workflow_id; enqueues custom todos).
+	runCode, runb := do("POST", "/api/projects/"+projID+"/workflows/"+wfID+"/run", token, "")
 	if runCode != http.StatusAccepted {
-		t.Fatalf("run project code=%d body=%v", runCode, runb)
+		t.Fatalf("run workflow code=%d body=%v", runCode, runb)
 	}
 
 	// 7. Verify the plans row was created and fallback_used is false, valid is true.
