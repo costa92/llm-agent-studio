@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { useCreatePrompt } from "@/features/prompt/api"
-import type { BasicPrompt, HttpParams, LlmParams, Prompt, WorkflowNode } from "@/lib/types"
+import type { BasicPrompt, HttpParams, LlmParams, Prompt, ScriptParams, WorkflowNode } from "@/lib/types"
 import { defaultPromptIdFor } from "./canvasModel"
 import { isCustomType, nodeDisplay } from "./nodeColor"
 
@@ -65,6 +65,22 @@ export function extractHttpTemplateVars(params: HttpParams): string[] {
   return result
 }
 
+// script 类型的 {{name}} 令牌：从 code 模板提取去重（与 llm/http 一致）。
+export function extractScriptTemplateVars(params: ScriptParams): string[] {
+  const re = /\{\{([^{}]+?)\}\}/g
+  const seen = new Set<string>()
+  const result: string[] = []
+  let m: RegExpExecArray | null
+  while ((m = re.exec(params.code ?? "")) !== null) {
+    const name = m[1].trim()
+    if (!seen.has(name)) {
+      seen.add(name)
+      result.push(name)
+    }
+  }
+  return result
+}
+
 export interface PropertiesPanelProps {
   // 选中节点的 studio 字段（null = 未选中）。
   node: WorkflowNode | null
@@ -86,6 +102,9 @@ export interface PropertiesPanelProps {
   // typed http 节点（node.typeId 非空 + kind=http）时：对应的 HttpParams（由画布层注入）。
   // 与 typedParams 互斥——按 kind 取其一。
   typedHttpParams?: HttpParams
+  // typed script 节点（node.typeId 非空 + kind=script）时：对应的 ScriptParams（由画布层注入）。
+  // 与 typedParams/typedHttpParams 互斥——按 kind 取其一。
+  typedScriptParams?: ScriptParams
   // 当前节点 dependsOn 的上游节点列表（id + display label）。typed 节点变量绑定的候选 Select 来源。
   upstreamNodes?: { id: string; label: string }[]
 }
@@ -102,6 +121,7 @@ export function PropertiesPanel({
   onEditType,
   typedParams,
   typedHttpParams,
+  typedScriptParams,
   upstreamNodes = [],
 }: PropertiesPanelProps) {
   const createPrompt = useCreatePrompt(org)
@@ -137,17 +157,20 @@ export function PropertiesPanel({
 
   const showPrompt = node.type === "script" || node.type === "storyboard"
 
-  // typed 节点（node.typeId 非空 + 注入了 llm 或 http 参数）：展示参数摘要 + 变量绑定行。
+  // typed 节点（node.typeId 非空 + 注入了 llm/http/script 参数）：展示参数摘要 + 变量绑定行。
   const isTypedLlm = !!(node.typeId && typedParams)
   const isTypedHttp = !!(node.typeId && typedHttpParams)
-  const isTyped = isTypedLlm || isTypedHttp
+  const isTypedScript = !!(node.typeId && typedScriptParams)
+  const isTyped = isTypedLlm || isTypedHttp || isTypedScript
 
-  // typed 节点：从模板里提取唯一 {{name}} 令牌（llm 取 prompt；http 取 url+headers+body，排除 {{secret:...}}）。
+  // typed 节点：从模板里提取唯一 {{name}} 令牌（llm 取 prompt；http 取 url+headers+body，排除 {{secret:...}}；script 取 code）。
   const templateVars = isTypedLlm
     ? extractTemplateVars(typedParams!.systemPrompt, typedParams!.userPrompt)
     : isTypedHttp
       ? extractHttpTemplateVars(typedHttpParams!)
-      : []
+      : isTypedScript
+        ? extractScriptTemplateVars(typedScriptParams!)
+        : []
 
   // varBindings 合并更新：按 name 替换/追加绑定，不清除其它已存在的绑定。
   // node 在此处一定非 null（早返回已在上方处理），断言为 WorkflowNode 避免 TS18047。
@@ -274,6 +297,20 @@ export function PropertiesPanel({
                   <div className="flex items-center gap-1">
                     <span className="text-[10px] text-text-3">输出格式</span>
                     <span className="text-[11px] text-text-2">{typedHttpParams!.outputFormat}</span>
+                  </div>
+                )}
+              </>
+            )}
+            {isTypedScript && (
+              <>
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-[10px] text-text-3">脚本代码（Starlark）</span>
+                  <span className="line-clamp-2 text-[11px] text-text-2 font-mono break-all">{typedScriptParams!.code}</span>
+                </div>
+                {typedScriptParams!.outputFormat && (
+                  <div className="flex items-center gap-1">
+                    <span className="text-[10px] text-text-3">输出格式</span>
+                    <span className="text-[11px] text-text-2">{typedScriptParams!.outputFormat}</span>
                   </div>
                 )}
               </>

@@ -154,3 +154,36 @@ func TestValidate_HTTP(t *testing.T) {
 		}
 	}
 }
+
+// TestCreate_Script exercises script kind save-time validation through Create
+// (which calls validate): code required; outputFormat ∈ text|json (empty ok);
+// {{secret:}} forbidden in code.
+func TestCreate_Script(t *testing.T) {
+	db := testGorm(t)
+	mk := func(label, params string) UpsertInput {
+		return UpsertInput{Label: label, Color: "#7c93ff", Kind: "script", Params: json.RawMessage(params)}
+	}
+
+	// valid script: code + text outputFormat → succeeds.
+	if _, err := New(db).Create(context.Background(), randID(t),
+		mk("脚本", `{"code":"output = up.upper()","outputFormat":"text"}`)); err != nil {
+		t.Fatalf("valid script rejected: %v", err)
+	}
+
+	// outputFormat omitted (empty) with valid code → succeeds.
+	if _, err := New(db).Create(context.Background(), randID(t),
+		mk("脚本2", `{"code":"output = 1"}`)); err != nil {
+		t.Fatalf("script with empty outputFormat rejected: %v", err)
+	}
+
+	bad := map[string]string{
+		"empty code":       `{"code":"  ","outputFormat":"text"}`,
+		"secret in code":   `{"code":"output = {{secret:KEY}}","outputFormat":"text"}`,
+		"bad outputFormat": `{"code":"output=1","outputFormat":"xml"}`,
+	}
+	for name, p := range bad {
+		if _, err := New(db).Create(context.Background(), randID(t), mk("脚本-"+name, p)); err == nil {
+			t.Errorf("%s should be rejected", name)
+		}
+	}
+}

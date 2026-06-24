@@ -257,15 +257,15 @@ export interface BuildPromptResponse {
 }
 
 // custom_node_types/store.go CustomNodeType。组织级 typed 自定义节点注册表条目。
-// kind 判别 params 形状：'llm' → LlmParams；'http' → HttpParams。
+// kind 判别 params 形状：'llm' → LlmParams；'http' → HttpParams；'script' → ScriptParams。
 export interface CustomNodeType {
   id: string
   orgId: string
   slug: string
   label: string
   color: string
-  kind: "llm" | "http"
-  params: LlmParams | HttpParams
+  kind: "llm" | "http" | "script"
+  params: LlmParams | HttpParams | ScriptParams
 }
 
 // llm kind 参数 (组织级)。NO variables — 变量名隐含于 {{name}} 模板，
@@ -298,13 +298,22 @@ export interface HttpParams {
   allowResponseBody?: boolean
 }
 
+// script kind 参数（组织级类型行为，v1 仅 Starlark）。code 是脚本源，可含 {{name}}
+// 引用上游输出；无密钥（D1：脚本禁 {{secret:}}），无 admin 门、无响应体抑制。
+// 变量名隐含于 code 的 {{name}} 模板，绑定 (name→sourceNodeId) 存在节点实例的
+// varBindings 上（per-node, workflow-local），与 llm/http 一致。
+export interface ScriptParams {
+  code: string
+  outputFormat?: "text" | "json"
+}
+
 // POST/PUT 入参：/api/orgs/{org}/custom-node-types[/{id}]。
 // kind 判别 params 形状（与 CustomNodeType 一致）。
 export interface UpsertCustomNodeTypeInput {
   label: string
   color: string
-  kind: "llm" | "http"
-  params: LlmParams | HttpParams
+  kind: "llm" | "http" | "script"
+  params: LlmParams | HttpParams | ScriptParams
 }
 
 // models/store.go CatalogEntry。GET /api/model-catalog → {catalog: CatalogEntry[]}。

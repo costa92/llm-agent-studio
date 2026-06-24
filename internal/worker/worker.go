@@ -40,6 +40,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/modelrouter"
 	"github.com/costa92/llm-agent-studio/internal/models"
 	"github.com/costa92/llm-agent-studio/internal/project"
+	"github.com/costa92/llm-agent-studio/internal/scriptengine"
 	"github.com/costa92/llm-agent-studio/internal/storagerouter"
 	"github.com/costa92/llm-agent-studio/internal/todos"
 )
@@ -1544,6 +1545,48 @@ const (
 	errBlockedDest   httpError = "blocked_destination"
 )
 
+// scriptParams is the "script" kind's params. No Language (v1 Starlark only),
+// no secret field (D1: scripts forbid {{secret:}} — Starlark has no network so
+// a secret would be a pure exfil oracle).
+type scriptParams struct {
+	Code         string           `json:"code"`
+	OutputFormat string           `json:"outputFormat"` // "text" | "json"
+	Variables    []customVariable `json:"variables"`
+}
+
+// scriptError is the opaque enum surfaced to the frontend — mirrors httpError.
+// .Error() returns the BARE enum (never %w-wrap a scriptengine error onto the
+// surfaced path: the raw Starlark error embeds source lines + variable values).
+type scriptError string
+
+func (e scriptError) Error() string { return string(e) }
+
+const (
+	errScriptFailed     scriptError = "script_failed"
+	errScriptTimeout    scriptError = "script_timeout"
+	errScriptOutputMiss scriptError = "script_output_missing"
+	errScriptTooLarge   scriptError = "script_output_too_large"
+)
+
+// scriptWallTimeout caps Starlark execution. The step budget does not bound
+// heap, so this short deadline is the primary OOM-window mitigation (spec D4);
+// a pure in-memory transform of node outputs completes in milliseconds.
+const scriptWallTimeout = 5 * time.Second
+
+// classifyScriptError maps a scriptengine sentinel to a bare opaque enum.
+func classifyScriptError(err error) error {
+	switch {
+	case errors.Is(err, scriptengine.ErrTimeout):
+		return errScriptTimeout
+	case errors.Is(err, scriptengine.ErrOutputMissing):
+		return errScriptOutputMiss
+	case errors.Is(err, scriptengine.ErrOutputTooLarge):
+		return errScriptTooLarge
+	default:
+		return errScriptFailed
+	}
+}
+
 // secretRefRe matches {{secret:NAME}} (whitespace-tolerant). NAME is the org secret
 // name; the substitution channel is SEPARATE from {{name}} upstream variables.
 var secretRefRe = regexp.MustCompile(`\{\{\s*secret:([A-Za-z0-9_\-]+)\s*\}\}`)
@@ -1568,9 +1611,37 @@ func (w *Worker) runCustom(ctx context.Context, c claimed) (string, error) {
 			return "", fmt.Errorf("worker: custom http params unmarshal: %w", err)
 		}
 		return w.runCustomHTTP(ctx, c, p)
+	case "script":
+		var p scriptParams
+		if err := json.Unmarshal(env.Params, &p); err != nil {
+			return "", fmt.Errorf("worker: custom script params unmarshal: %w", err)
+		}
+		return w.runCustomScript(ctx, c, p)
 	default:
 		return "", fmt.Errorf("worker: unsupported custom kind %q", env.Kind)
 	}
+}
+
+// resolveVariables resolves each post-rewrite varBinding to its upstream node's
+// text output. Shared by every custom kind (llm/http/script).
+func (w *Worker) resolveVariables(ctx context.Context, vars []customVariable) (map[string]string, error) {
+	out := map[string]string{}
+	for _, v := range vars {
+		if v.SourceTodoId == "" {
+			continue
+		}
+		var outputRef string
+		if err := w.cfg.DB.WithContext(ctx).Raw(
+			`SELECT COALESCE(output_ref,'') FROM todos WHERE id=$1`, v.SourceTodoId).Row().Scan(&outputRef); err != nil {
+			return nil, fmt.Errorf("worker: load variable %q source todo: %w", v.Name, err)
+		}
+		text, err := w.resolveOutputText(ctx, outputRef)
+		if err != nil {
+			return nil, fmt.Errorf("worker: resolve variable %q: %w", v.Name, err)
+		}
+		out[v.Name] = text
+	}
+	return out, nil
 }
 
 // runCustomLLM executes the "llm" kind: resolve each variable's upstream text
@@ -1580,21 +1651,9 @@ func (w *Worker) runCustom(ctx context.Context, c claimed) (string, error) {
 // This path requires a Router: routedChatModel returns (nil,false) when cfg.Router==nil.
 func (w *Worker) runCustomLLM(ctx context.Context, c claimed, in llmParams) (string, error) {
 	// 1. Resolve variables: sourceTodoId → that todo's output_ref → resolveOutputText.
-	replacer := map[string]string{}
-	for _, v := range in.Variables {
-		if v.SourceTodoId == "" {
-			continue
-		}
-		var outputRef string
-		if err := w.cfg.DB.WithContext(ctx).Raw(
-			`SELECT COALESCE(output_ref,'') FROM todos WHERE id=$1`, v.SourceTodoId).Row().Scan(&outputRef); err != nil {
-			return "", fmt.Errorf("worker: load variable %q source todo: %w", v.Name, err)
-		}
-		text, err := w.resolveOutputText(ctx, outputRef)
-		if err != nil {
-			return "", fmt.Errorf("worker: resolve variable %q: %w", v.Name, err)
-		}
-		replacer[v.Name] = text
+	replacer, err := w.resolveVariables(ctx, in.Variables)
+	if err != nil {
+		return "", err
 	}
 
 	system := substituteVars(in.SystemPrompt, replacer)
@@ -1648,22 +1707,12 @@ func (w *Worker) runCustomHTTP(ctx context.Context, c claimed, in httpParams) (s
 	if w.cfg.HTTPFetcher == nil {
 		return "", errRequestFailed
 	}
-	// 1. Resolve {{name}} upstream variables (same channel as llm).
-	nameVals := map[string]string{}
-	for _, v := range in.Variables {
-		if v.SourceTodoId == "" {
-			continue
-		}
-		var outputRef string
-		if err := w.cfg.DB.WithContext(ctx).Raw(
-			`SELECT COALESCE(output_ref,'') FROM todos WHERE id=$1`, v.SourceTodoId).Row().Scan(&outputRef); err != nil {
-			return "", errRequestFailed // opaque: never leak the variable/source
-		}
-		text, err := w.resolveOutputText(ctx, outputRef)
-		if err != nil {
-			return "", errRequestFailed
-		}
-		nameVals[v.Name] = text
+	// 1. Resolve {{name}} upstream variables (same channel as llm). Preserve the
+	// opaque-error behavior: any resolve failure surfaces as errRequestFailed
+	// (never leak the variable/source).
+	nameVals, err := w.resolveVariables(ctx, in.Variables)
+	if err != nil {
+		return "", errRequestFailed
 	}
 
 	// 2. Resolve org from the TRUSTED run context (never from input_json/node).
@@ -1761,6 +1810,48 @@ func (w *Worker) runCustomHTTP(ctx context.Context, c claimed, in httpParams) (s
 		 VALUES ($1,$2,$3,$4,$5,$6)`,
 		outID, c.projectID, c.todoID, c.typ, content, format).Error; err != nil {
 		return "", errRequestFailed
+	}
+	return "custom:" + outID, nil
+}
+
+// runCustomScript executes the "script" kind: resolve {{name}} upstream
+// variables, inject them as Starlark data-globals, run the sandboxed engine
+// (no I/O, no secrets), and land node_outputs. ALL errors are opaque
+// (scriptError enum) — never surface the raw Starlark error.
+func (w *Worker) runCustomScript(ctx context.Context, c claimed, in scriptParams) (string, error) {
+	if secretRefRe.MatchString(in.Code) || strings.Contains(in.Code, "{{secret:") {
+		return "", errScriptFailed // D1 runtime defense-in-depth
+	}
+	inputs, err := w.resolveVariables(ctx, in.Variables)
+	if err != nil {
+		return "", errScriptFailed // opaque: never leak the variable/source
+	}
+	// Dedicated short wall-time for Starlark execution: the step budget does NOT
+	// bound heap (a comprehension can OOM the shared binary in few steps), so a
+	// tight deadline is the primary OOM-window mitigation (spec D4). This is
+	// independent of the much larger WORKER_CALL_TIMEOUT (sized for LLM calls);
+	// a pure in-memory transform completes in milliseconds, so 5s is generous.
+	runCtx, cancel := context.WithTimeout(ctx, scriptWallTimeout)
+	defer cancel()
+	out, err := scriptengine.Run(runCtx, in.Code, inputs, scriptengine.Options{})
+	if err != nil {
+		return "", classifyScriptError(err)
+	}
+	format := "text"
+	if in.OutputFormat == "json" {
+		var probe any
+		if jerr := json.Unmarshal([]byte(strings.TrimSpace(out)), &probe); jerr != nil {
+			return "", errScriptFailed
+		}
+		out = strings.TrimSpace(out)
+		format = "json"
+	}
+	outID := newID()
+	if err := w.cfg.DB.WithContext(ctx).Exec(
+		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format)
+		 VALUES ($1,$2,$3,$4,$5,$6)`,
+		outID, c.projectID, c.todoID, c.typ, out, format).Error; err != nil {
+		return "", fmt.Errorf("worker: insert node_output: %w", err)
 	}
 	return "custom:" + outID, nil
 }
