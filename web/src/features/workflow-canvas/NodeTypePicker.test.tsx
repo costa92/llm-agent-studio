@@ -2,6 +2,17 @@ import { describe, expect, it, vi } from "vitest"
 import { fireEvent, render, screen } from "@testing-library/react"
 import { NodeTypePicker } from "./NodeTypePicker"
 
+// 内置类型现由 useBuiltinNodeTypes() 数据驱动；mock 返回后端目录的 3 个内置项。
+vi.mock("@/features/builtin-node-types/api", () => ({
+  useBuiltinNodeTypes: vi.fn(() => ({
+    data: [
+      { type: "script", label: "剧本", description: "" },
+      { type: "storyboard", label: "分镜", description: "" },
+      { type: "asset", label: "资产", description: "" },
+    ],
+  })),
+}))
+
 describe("NodeTypePicker", () => {
   it("renders 3 rows when open", () => {
     render(
