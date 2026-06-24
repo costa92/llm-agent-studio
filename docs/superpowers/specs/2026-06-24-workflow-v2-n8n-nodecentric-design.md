@@ -90,7 +90,7 @@ type DisplayOptions struct {
 
 **注册表 + 命名空间（★B-A5）**：合并两类描述——① 编译进 `nodedesc` 的静态内置描述（`studio.script`/`studio.storyboard`/`studio.asset`/`studio.prescreen` + 泛化的 `llm`/`http`/`script` kind），**取代 `builtinnode.Catalog()`**；② `custom_node_types` 的 org 注册行，每行 `kind` 映射到一个**基描述**、行的 `params` 成为放置节点时的**默认值**。**`studio.*` 及 `llm`/`http`/`script` 是保留命名空间**；自定义类型**强制 `custom:<slug>` 前缀**，`POST /api/orgs/{org}/custom-node-types` 创建期拒绝任何落入保留命名空间的 slug。合并时**内置永远胜**冲突（忽略/拒绝遮蔽的自定义行），前端去重不得让 custom 盖内置。
 
-**端点** `GET /api/node-types` 返回 `{version:int, nodeTypes:[]NodeTypeDescription}`（**信封带 version**，稳定排序，org-scoped；响应可缓存，前端 query-key=`["node-types", org]` + 自定义类型变更时失效）——**取代** `GET /api/node-types/builtin` 与 custom-node-types 列表。前端一个通用 `<PropertiesForm description value onChange>` 走 `properties`、遵守 `displayOptions` 渲染，**取代** `showPrompt`/`isTypedLlm/Http/Script` 分支与三个表单。
+**端点** `GET /api/orgs/{org}/node-types`（org-scoped 路由——合并 org 自定义行必须带 `{org}` 路径变量；正文余处的 `GET /api/node-types` 是简写）返回 `{version:int, nodeTypes:[]NodeTypeDescription}`（**信封带 version**，稳定排序；响应可缓存，前端 query-key=`["node-types", org]` + 自定义类型变更时失效）——**取代** `GET /api/node-types/builtin` 与 custom-node-types 列表。前端一个通用 `<PropertiesForm description value onChange>` 走 `properties`、遵守 `displayOptions` 渲染，**取代** `showPrompt`/`isTypedLlm/Http/Script` 分支与三个表单。
 
 **节点实例信封 + typeVersion（★D-1）**：持久化的 `planner.WorkflowNode` 加两字段：`TypeVersion int json:"typeVersion"`（放置/保存时写入当时 description 的 `Version`）+ `Parameters json.RawMessage json:"parameters"`（schema 化参数值）。执行器按 **`(type, typeVersion)`** 选 description 解释参数——type v1→v2 改字段含义时，老图按 v1 语义读，不静默损坏。on-disk 节点信封 schema 是**显式交付物**（含 parity 测试），非涌现副产物。
 
