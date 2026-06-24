@@ -1,6 +1,6 @@
 # 工作流 v2：n8n 式「节点中心」重设 设计
 
-> 状态：设计稿，第一轮 Plan agent 评审已纳（见 §10）。多 agent 设计收敛产物（n8n 参考 + 高复用/全保真两份独立提案）。用户选型：**全保真方案 F**（items 数组 + 表达式引擎 + 二进制 items）、**原地迁移**（不留两套引擎，接受改变现有绘本/自动规划行为）。
+> 状态：设计稿，**两轮评审已纳并修订进正文**（§10 第一轮单 Plan agent、§11 第二轮 4-agent 多镜头，各自核对真实代码）。§3-§5 已按 §11.5 八项 must-fix 修订（标 ★ 的条目）。多 agent 设计收敛产物（n8n 参考 + 高复用/全保真两份独立提案）。用户选型：**全保真方案 F**（items 数组 + 表达式引擎 + 二进制 items）、**原地迁移**（不留两套引擎，接受改变现有绘本/自动规划行为）。下一步：出 **P1 实现计划**（nodedesc + `GET /api/node-types` + `<PropertiesForm>` 纯只读）。
 
 > **依赖前提**：本 spec 以 **PR #107（`internal/builtinnode` 目录 + `GET /api/node-types/builtin`）+ #108（`prescreen` 内置节点 + `runPrescreen`）合入 main 后**的状态为基线。实现分支须 rebase 到含 #107/#108 的 main。§3.1/§7 中"取代 builtinnode.Catalog/builtin 端点"指的是这个合并后状态——若评审时在不含 #107/#108 的分支看，这些工件尚不存在（属正常）。
 
@@ -34,26 +34,49 @@
 
 ```go
 type NodeTypeDescription struct {
-    Type        string     `json:"type"`        // "studio.script"/"studio.storyboard"/"studio.asset"/"studio.prescreen"/"llm"/"http"/"script" + custom slug
-    Version     int        `json:"version"`     // 节点类型版本（n8n typeVersion，老 workflow 前向兼容）
-    Label       string     `json:"label"`
-    Description string     `json:"description"`
-    Group       string     `json:"group"`       // "generation"|"transform"|"io"|"trigger"
-    Inputs      []PortSpec `json:"inputs"`      // 连接端口（main；未来命名端口）
-    Outputs     []PortSpec `json:"outputs"`
-    Properties  []Property `json:"properties"`  // 参数 schema —— 核心
+    Type        string       `json:"type"`        // 见下「命名空间」：内置 "studio.*"/"llm"/"http"/"script"，自定义强制 "custom:<slug>"
+    Version     int          `json:"version"`     // 节点类型版本（n8n typeVersion，老 workflow 前向兼容）
+    Label       string       `json:"label"`
+    Description string       `json:"description"`
+    Group       string       `json:"group"`       // "generation"|"transform"|"io"|"trigger"
+    Inputs      []PortSpec   `json:"inputs"`      // 连接端口（main；未来命名端口）
+    Outputs     []PortSpec   `json:"outputs"`
+    OutputSchema []OutputField `json:"outputSchema,omitempty"` // ★B-A6：声明本节点产出 item.json 的字段，供表达式自动补全
+    Properties  []Property   `json:"properties"`  // 参数 schema —— 核心
+}
+
+// ★B-A6：输出字段声明（per-output json shape），让前端表达式编辑器从 dependsOn 上游描述取补全源
+type OutputField struct {
+    Name string `json:"name"` // 如 studio.script: title/logline/characterSheet/scenes
+    Type string `json:"type"` // string|number|object|array|binary
+    Desc string `json:"desc,omitempty"`
 }
 
 type Property struct {
     Name           string          `json:"name"`
     Label          string          `json:"label"`
-    Type           PropertyType    `json:"type"` // string|textarea|number|boolean|options|collection|fixedCollection|json|prompt|template|code
+    Type           PropertyType    `json:"type"` // 见下「PropertyType 全集」
     Default        json.RawMessage `json:"default,omitempty"`
+    DefaultFrom    *DerivedDefault `json:"defaultFrom,omitempty"`    // ★B-A2：按另一字段取值派生默认（picturebook age-band 级联）
     Required       bool            `json:"required,omitempty"`
     Options        []OptionItem    `json:"options,omitempty"`        // type=options
     DisplayOptions *DisplayOptions `json:"displayOptions,omitempty"` // 条件显隐
-    TypeOptions    *TypeOptions    `json:"typeOptions,omitempty"`    // rows/editor=starlark/password/templatable…
+    TypeOptions    *TypeOptions    `json:"typeOptions,omitempty"`    // rows/editor=starlark/password/templatable/dataSource…
+    Constraints    *Constraints    `json:"constraints,omitempty"`    // ★S-1/B-A7：安全约束词汇（UX 提示，服务端校验器仍是边界）
     Placeholder    string          `json:"placeholder,omitempty"`
+}
+
+// ★B-A2：派生默认——选 ageBand="0-3" 时把 pageCount/maxWordsPerSpread/narrationStyle/bookType 设为对应值
+type DerivedDefault struct {
+    Field string                          `json:"field"` // 触发字段 name（如 ageBand）
+    Map   map[string]map[string]json.RawMessage `json:"map"` // 触发值 → {目标字段:默认值}
+}
+
+// ★S-1/B-A7：约束是声明式 UX 提示；服务端命令式校验器（customnodetype/store.go）仍是安全边界，保存与运行两处都跑
+type Constraints struct {
+    NoTemplate      bool     `json:"noTemplate,omitempty"`      // 禁 {{ }}（http url 须静态字面量）
+    NoSecret        bool     `json:"noSecret,omitempty"`        // 禁 {{secret:}}（script code / http body）
+    SecretAllowedIn []string `json:"secretAllowedIn,omitempty"` // 仅这些子字段允许 {{secret:}}（http headers）
 }
 
 // 条件显隐：键=同节点其它参数 name，值=允许值数组（数组内 OR、跨键 AND），show/hide 可组合
@@ -63,9 +86,13 @@ type DisplayOptions struct {
 }
 ```
 
-**注册表**合并两类描述：① 编译进 `nodedesc` 的静态内置描述（script/storyboard/asset/prescreen + 泛化的 llm/http/script kind），**取代 `builtinnode.Catalog()`**；② `custom_node_types` 的 org 注册行——每行 `kind` 映射到一个**基描述**（其 properties 为该 kind 的 schema），行的 `params` 成为放置节点时的**默认值**。
+**PropertyType 全集（★B-A3，须覆盖现三表单实渲染的每个 widget）**：`string`｜`textarea`｜`number`｜`boolean`｜`options`｜`collection`｜`fixedCollection`｜`json`｜`code`｜`prompt`（prompt 选择器：数据源 = prompt-presets + org 库按 node `kind` 过滤；含 `__default__`/`__custom__`/`__create__` 哨兵 + 内联 create-mutation；选 custom 清 `promptId` 落 `promptText`）｜`keyValue`（http headers 动态增删行 + 每行 secret-insert 下拉源自 `useOrgSecrets`）｜`resourceLocator`（catalog 选择器，`typeOptions.dataSource` ∈ `model`/`secret`/`storage`/`prompt`；model 走 `useModelCatalog`）。**`secretBearing` 揭示**（http `allowResponseBody` 仅当任一 header 值含 `{{secret:}}` 才显）是对兄弟字段内容的**计算谓词**，`displayOptions.show` 表达不了——P1 把该抑制逻辑**留服务端**（保存校验器 + worker 守卫，§3.8 S-4），前端仅作镜像提示。
 
-**端点** `GET /api/node-types` 返回合并后的 `[]NodeTypeDescription`（静态内置 + org 自定义），**取代** `GET /api/node-types/builtin` 与 custom-node-types 列表。前端一个通用 `<PropertiesForm description value onChange>` 走 `properties`、遵守 `displayOptions` 渲染，**取代** `showPrompt`/`isTypedLlm/Http/Script` 分支与三个表单。
+**注册表 + 命名空间（★B-A5）**：合并两类描述——① 编译进 `nodedesc` 的静态内置描述（`studio.script`/`studio.storyboard`/`studio.asset`/`studio.prescreen` + 泛化的 `llm`/`http`/`script` kind），**取代 `builtinnode.Catalog()`**；② `custom_node_types` 的 org 注册行，每行 `kind` 映射到一个**基描述**、行的 `params` 成为放置节点时的**默认值**。**`studio.*` 及 `llm`/`http`/`script` 是保留命名空间**；自定义类型**强制 `custom:<slug>` 前缀**，`POST /api/orgs/{org}/custom-node-types` 创建期拒绝任何落入保留命名空间的 slug。合并时**内置永远胜**冲突（忽略/拒绝遮蔽的自定义行），前端去重不得让 custom 盖内置。
+
+**端点** `GET /api/node-types` 返回 `{version:int, nodeTypes:[]NodeTypeDescription}`（**信封带 version**，稳定排序，org-scoped；响应可缓存，前端 query-key=`["node-types", org]` + 自定义类型变更时失效）——**取代** `GET /api/node-types/builtin` 与 custom-node-types 列表。前端一个通用 `<PropertiesForm description value onChange>` 走 `properties`、遵守 `displayOptions` 渲染，**取代** `showPrompt`/`isTypedLlm/Http/Script` 分支与三个表单。
+
+**节点实例信封 + typeVersion（★D-1）**：持久化的 `planner.WorkflowNode` 加两字段：`TypeVersion int json:"typeVersion"`（放置/保存时写入当时 description 的 `Version`）+ `Parameters json.RawMessage json:"parameters"`（schema 化参数值）。执行器按 **`(type, typeVersion)`** 选 description 解释参数——type v1→v2 改字段含义时，老图按 v1 语义读，不静默损坏。on-disk 节点信封 schema 是**显式交付物**（含 parity 测试），非涌现副产物。
 
 ### 3.2 数据-item 模型（node_outputs → items 数组）
 
@@ -74,11 +101,15 @@ type DisplayOptions struct {
 ```
 node_outputs（重写）:
   id, project_id, todo_id, type,
-  items JSONB NOT NULL DEFAULT '[]',   -- [{json:{...}, binary:{<port>:BinaryRef}, pairedItem?:{item:int}}]
+  items JSONB NOT NULL DEFAULT '[]',   -- [{json:{...}, binary:{<port>:BinaryRef}}]
   created_at
 ```
 
-每 item = `{ "json": <object>, "binary": { <portName>: <BinaryRef> }, "pairedItem": {item:int} }`。`pairedItem` 记录血缘（哪个上游 item 派生而来，n8n 跨分支链路）。
+每 item = `{ "json": <object>, "binary": { <portName>: <BinaryRef> } }`。
+
+- **★D-3 不带 `pairedItem`**：n8n 的 pairedItem 只因引擎有 `$items()` 回溯 + fan-in 配对机器才有意义；本设计无 merge 节点、无走它的消费者（storyboard 扇出是唯一 fan 节点）。按仓 CLAUDE.md §2「不加未被要求的功能」**先不持久化 pairedItem**；将来真有 merge/`$items()` 消费者再加（additive JSONB 键，零迁移成本）。
+- **★M-2/D-6 item 发射类型感知，非 text-wrap**：内置执行器从第一天起按类型产 `json`——`studio.script` 发 `[{json: ScriptOutput}]`（`$json.characterSheet` 可达，喂 storyboard）、`studio.storyboard` 每镜 `[{json: Shot}]`、自定义 `format='json'` 发 `{json: <解析后对象>}`、`format='text'` 发 `{json:{text}}`。**绝不**把结构化输出包成 `{text:"<json字符串>"}`（那会让下游 `$json.field` 取不到——见 §4.1 m21 format 分支回填）。
+- **★D-5 NULL/空纪律**（对齐仓 GORM 硬规则）：列 `JSONB NOT NULL DEFAULT '[]'`；读经 `[]byte`→`json.RawMessage` 中转、NULL/空当 `[]`；双写窗口（P2）三处 INSERT 须**同语句写 items**（DEFAULT 仅为 m21 回填的历史行，新行不靠 DEFAULT）；应用层守 items 恒为 JSON 数组。
 
 ### 3.3 二进制 items —— 引用 `assets` 表，绝不内联字节（载重决策）
 
@@ -92,6 +123,8 @@ type BinaryRef struct {
 
 `assets` 全生命周期（blob 路由 / 异步提交轮询 / 成本账 / HITL 验收 / `storage_config_id` 解析）**原样不动**。二进制 item 是指向该机器的**薄指针**——图像/音频/视频以 item 流动而**无需重写 850 行异步生成**。这与 n8n 生产模式的二进制外置一致。
 
+**★D-4 验收状态语义**：asset todo 到 `done` 时 asset 行在 `pending_acceptance`，HITL 接受**更晚且可能拒绝**（生命周期无 accepted 之外的「done」）。故 `BinaryRef` 物化 item 时须**带 asset 当前 `status`**（解析 `assets.status`），下游消费二进制 item **gate 在 `status='accepted'`**。在 P1-P4 范围内**下游二进制消费先后置**（§3.5/I2：扇出 asset 是运行期动态 todo、非静态可寻址）——此期间 item 里的 BinaryRef 是 write-only 元数据，读者勿信其字节已就绪。钉死：`$binary.image` 在资产 pending/rejected 时解析为错误（非空指针）。
+
 ### 3.4 表达式引擎（替换窄 `{{name}}`+varBindings）
 
 新叶子包 `internal/expr`，n8n 式 per-item 解析 `{{ $json.x }}`、`{{ $node["NodeId"].json.y }}`、`{{ $items(...) }}`、`{{ $binary.image }}`：
@@ -99,20 +132,26 @@ type BinaryRef struct {
 ```go
 type Context struct {
     Self     []Item                          // 当前节点输入 items
-    NodeByID func(id string) ([]Item, error) // 按节点 id 惰性取上游输出
+    NodeByID func(id string) ([]Item, error) // 按节点 id 惰性取上游输出（实现须按下「作用域不变量」约束）
     ItemIdx  int                             // per-item
 }
 func Resolve(template string, ctx Context) (string, error)
 ```
 
-**作用域决策（载重）**：**不嵌 JS VM**。实现**受限文法**：成员访问（`$json.a.b`）、数组下标、`$node["X"]`、`$binary`、字符串拼接、小白名单 helper（`$now`、`.toLowerCase()`、`JSON.stringify`）。覆盖 n8n 90% 用法、确定性、沙箱安全（无 `eval`）、与既有 Starlark `scriptengine` 组合处理重变换。`{{secret:NAME}}` 仍是**独立通道、表达式之前先解析**（保住 `runCustomHTTP` 的 editor→admin admin-gate，worker.go:1779-1814）。
+**作用域决策（载重）**：**不嵌 JS VM**。实现**受限文法**：成员访问（`$json.a.b`）、数组下标、`$node["X"]`、`$binary`、字符串拼接、小白名单 helper（`$now`、`.toLowerCase()`、`JSON.stringify`）。覆盖 n8n 90% 用法、确定性、沙箱安全（无 `eval`）、与既有 Starlark `scriptengine` 组合处理重变换。
+
+**★S-2 `NodeByID` 作用域不变量（硬约束，写进引擎契约）**：现状的 `resolveOutputText`/`resolveVariables` 是 bare-id `WHERE id=$1`、零 scope，今天安全纯因 id 只来自同项目 plan 图的 `idMap`、从不由攻击者选。表达式串是编辑者自由文本，故 `NodeByID` 的实现**必须**：① 只解析**当前 run plan 图内**、按 `project_id`（传递 `org_id`）scope 的 id；② **拒绝**任何不在执行节点传递 `dependsOn` 祖先集的 `NodeId`（复用 `PlanCustom` 的 `depSet` 检查 planner.go:295）。否则 org A 写 `{{ $node["<org-B-id>"].json.text }}` 即跨租户读（本仓有跨租户写历史）。安全门禁须含跨租户 parity 测试。
+
+**★S-3 secret 解析不变量（逐字，防误读）**：secret **只在运行期、worker 内、对注册表作者模板串、按可信 run-context `orgID`（`OrgIDForProject`）解析；解析后明文绝不落 `node_outputs.items`/`workflows.nodes`/时间线/`/state`**。不变量 = 「已解析 secret 只在 worker 进程内存活一次出站请求时长」。`{{secret:NAME}}` 是**独立通道、表达式引擎之前先解析一次**；表达式引擎把 `secret:` 当**非匹配字面 token 原样输出**（grammar 显式排除 `secret:` 前缀）；经 `$node` 流入的值含字面 `{{secret:}}` **不得**触发第二次 secret pass（顺序保证：raw 模板先 secret pass、再 expr）。items 模型若让 header/body 流经 items，存的须是**替换前**模板、非替换后值。保住 `runCustomHTTP` 的 editor→admin gate（worker.go:1779-1814）。
+
+**★S-6 Starlark 逃生舱沙箱契约（「非 JS VM」安全论证全押在此，须声明非假设）**：`script`（Starlark）节点是文档化逃生舱。其沙箱属性是**硬性要求**：无文件系统、无网络、无 secret 注入（保 `{{secret:}}` 禁令）、保留 wall-timeout（现 5s）、堆 + 输出大小有界、错误不透明（不漏源码行）。§7 的「复用 + 抬升」**不放宽任何一条**。script 节点纳入 §3.8 独立安全评审门禁。
 
 ### 3.5 连接驱动执行 + 统一执行器契约
 
 结构上已成立：`depends_on[]` 是边集，worker 认领 deps 已 `done` 的 `ready` todo。改的是**边上流什么**：每个节点执行器收到统一**输入捆**=各上游节点发出的 items（按节点 id 寻址）。
 
-- 新 `loadInputs(ctx, todoID)`：读每个 dep 的 `node_outputs.items`。
-- 执行器签名统一：`(inputItems []Item, params ResolvedParams) → (outputItems []Item, err)`。`runCustom` 的 kind-switch 泛化，内置类型同自定义 kind 一样注册。
+- 新 `loadInputs(ctx, todoID)`：读每个 dep 的 `node_outputs.items`。**★M-4 回退**：当某 dep 的 `node_outputs.items` 为空（部署边界上游 todo 在旧码下完成、从未发 items），`loadInputs` **回退**到 `scripts`/`shots`/`output_ref` 投影构造等价 item——故 legacy 读路径**在 todo 队列完全循环（所有跨部署在途 run 结束）前不可删**，收紧 P4 退役门禁。配套**运维 runbook**：部署 worker 变更前排空/静默 todo 队列（见 §4）。
+- 执行器签名统一：`(inputItems []Item, params ResolvedParams) → (outputItems []Item, err)`。`runCustom` 的 kind-switch 泛化，内置类型同自定义 kind 一样注册；执行器**按 `(type, typeVersion)` 选 description**（★D-1）解释 `params`。
 - `runStoryboard` 扇出保留（合法的 n8n「一 item 进多 item 出」+ 动态生成节点），但 `style` 从**节点参数**读，不读项目。
 - `output_ref` 字符串前缀逻辑 + `resolveOutputText` **删除**；`resolveVariables`/`substituteVars` **替换**为 `expr` 引擎 over `loadInputs`。
 - `scripts`/`shots` 表**留作投影**（内置执行器仍写，供素材库/运行视图），但**节点间正典通道是 `node_outputs.items`**。
@@ -131,22 +170,48 @@ func Resolve(template string, ctx Context) (string, error)
 
 `projects` 行保留 storage/model/org 配置（org/项目基建，正确地 project-scoped）。但 `brief`/`style`/`contentType`/`targetPlatform`/`picturebook_config`/`kind` 的**工作流执行含义移到节点**。迁移（§4）读项目当前配置，**烘焙进该项目工作流的 script/storyboard 节点参数**。新项目：放置节点时描述的 `default` 可用表达式默认引用项目字段（`{{ $project.style }}`），但一旦放置，值**在节点上**，执行期不再读项目。`runStoryboard` 的 B1 项目-style 读 + `pictureBookConfig` 删除。
 
+**★B-A2 picturebook age-band 级联**：`ParsePictureBookConfig`（pbconfig.go）里 `ageBand` 派生 `pageCount`/`maxWordsPerSpread`/`narrationStyle`/`bookType`——`displayOptions.show/hide` 只切可见性、表达不了「由一字段取值设另一字段值」。用 §3.1 的 **`Property.DefaultFrom`** 表达级联（选 ageBand 时把目标字段默认设为对应值，用户仍可覆盖）；后端 `ParsePictureBookConfig` 的级联解析**留作兜底**（NULL 参数节点），不强求表单复刻全部。
+
+**★B-A4 characterSheet 不是配置、是运行期跨节点流**：characterSheet 由 ScriptAgent 运行期生成、序列化进 `scripts.content_json`，storyboard 经 `{{ $node["script"].json.characterSheet }}` 消费——**无表单字段可填**。故任何移除 picturebook-config-read 须 **gate 在「内置节点发类型化 items（§3.2，让 `$node["script"].json.characterSheet` 可达）」+ 具体表达式路径双满足之后**；在此路径示范前**不降级 picturebook 配置**，过渡期 `pictureBookConfig` 兜底保留（见 §4 排序铁律）。转 P3 前须给出复现一个 3-6 age-band picturebook 的确切节点图 + 字段值范例。`studio.asset` 今天无表单（`showPrompt=false`、参数由 storyboard 扇出 + 项目填）——暴露 `kind/prompt/style/voice/duration` 为可编辑字段是**行为变更**（非 like-for-like 迁移），须澄清手配 asset 节点如何与 storyboard 动态扇出 asset todo 共存（撞 I2）。
+
+### 3.8 威胁模型（★S-1/S-4/S-5/B-A7，载重——§3.7 把危险参数移上节点摧毁了现有安全不变量）
+
+**现状安全纯靠两不变量**：① 危险字段（http `url`/含 secret 的 `headers`/script `code`）**只在 org-scoped `custom_node_types` 注册表**、保存期 `validateHTTPParams`/`validateScriptParams` 校验一次；编辑者节点只给 `TypeId` 引用 + `VarBindings`（`sourceNodeId` 须在 `dependsOn`）。② worker 运行期**从不**重跑校验器。§3.7 把参数移上**编辑者可控的 `workflows.nodes` JSON**，两不变量皆破。故本设计的核心安全契约：
+
+- **★S-1 危险约束在保存与运行两处、对编辑者可控 JSON 成立**。威胁模型行：「org 编辑者可经画布或**直接 `PUT workflows.nodes` JSON** 写任意节点参数」。每条 §3.1 `Constraints`（`noTemplate`/`noSecret`/`secretAllowedIn`）背后的**命令式校验器**（`customnodetype/store.go` 现有规则）须在**保存端**（对 per-node parameter override，非 base description）**与运行期**（worker 执行前对解析后节点参数）**两处都跑**。schema `Constraints` 仅 UX 提示，**不是**安全边界。
+- **★S-4 `{status}`-only secret-body 守卫随 items 重构存活**。现 `secretBearing && !allowResponseBody` → http 节点只存 `{"status":N}`，防 secret 经响应体落库/下游读。统一执行器契约**强制** `secretBearing` 追踪（非 per-kind 细节）：secret-bearing 且 `!allowResponseBody` 的节点产的 items **只含 `{status}`、绝不含响应体**，下游无从恢复 secret。
+- **★S-5 SSRF：secret-bearing 节点 url 永远静态字面量**，运行期解析后**再断言**无模板残留 + host 非表达式派生（现仅 `strings.Contains(url,"{{")` 字符串检查 + fetch 层禁非公网 IP、**但无 host 允许名单**）。P5 若让 url 用 `resourceLocator`，仅解析到固定允许集、绝不接受上游 item 派生串；考虑 per-org 出站 host 允许名单。
+- **★S-7 m20 改写每行节点须跑校验 pass**：m20 写 parameters 直入 `workflows.nodes`、绕过 save-time 校验器——故 m20 对每个改写后节点**跑同一组参数校验器**（失败 fail 该行、不静默写非法参数）。这逼校验器可对 node-parameter 形状调用（S-1 本就需要）。
+- **门禁**：引入 schema 驱动校验/参数保存的阶段（P3）须**独立安全评审**（`customnodetype` 仓规），含跨租户 parity 测试（S-2）。
+
 ## 4. 原地迁移策略（无并行引擎）
 
 ### 4.1 什么破、怎么转
 
 **绘本流程会破**（runScript/runStoryboard 不再读项目 picturebook/style）。靠**回填节点参数**迁移：
 
-- **`m20`**：遍历每个 `workflows` 行，改写 `nodes` JSONB——每节点加 `parameters` 对象；script 节点拷所属项目 `brief`(description)/`contentType`/`targetPlatform`/`style`，若 `kind='picturebook'` 拷解析后的 `picturebook_config` 字段；storyboard 节点拷项目 `style` + 绘本跨页/插画参数；`varBindings` `{name,sourceNodeId}` → 表达式 `{{ $node["<sourceNodeId>"].json.text }}`（机械改写 `{{name}}` token）；每节点加 `version:1`。
-- **`m21`**：`ALTER TABLE node_outputs ADD COLUMN items JSONB NOT NULL DEFAULT '[]'`；回填 `items = jsonb_build_array(jsonb_build_object('json', jsonb_build_object('text', content, 'format', format)))`。`content`/`format` 留一版（双写）后续迁移再删——追加优先，合仓 `IF NOT EXISTS` 姿态。
+**★M-1 迁移 runner 须先扩展（前置工作，否则 m20 每次启动重跑会损坏）**。现 `storage.Migrate` 把所有 `mN` 摊成单个 `[]string` 经 `pool.Exec` 逐条跑、**无版本表/无事务/每次启动全量重跑**、`main.go` 启动期无锁。纯 DDL 靠 `IF NOT EXISTS` 幂等，但 Go 编码的 m20（改写每行 JSONB）无此天然幂等。落 m20 前给 runner 加：① `schema_migrations(version TEXT PRIMARY KEY, applied_at timestamptz)` 表，每个**Go 编码迁移步**成功后插标记、已存在则跳过；② 每步包裹**显式事务**；③ 启动期 **advisory lock**（`pg_advisory_lock`）防多副本并发同一 in-place UPDATE。
 
-两者纯前向、幂等，追加进 `m1…m19` 链。**无并行 v2 schema**。
+- **`m20`（Go 编码步，幂等 + 只增不改）**：遍历每个 `workflows` 行改写 `nodes` JSONB——
+  - **★M-5 只写新键、旧字段留存**：parameters 写进节点 `parameters` 对象 + `typeVersion`，**不动**现有 `promptId/promptText/varBindings/typeId`（旧二进制照常工作、回滚 = 部署旧二进制）。
+  - **★M-1 幂等哨兵**：跳过任何已有 `typeVersion` 的节点（防第二次启动重跑把 `{{name}}`→`$node[...]` 已改写文本再改写、或重盖用户两次启动间的编辑）。
+  - script 节点拷所属项目 `brief`(description)/`contentType`/`targetPlatform`/`style`，`kind='picturebook'` 拷解析后 `picturebook_config` 字段；storyboard 节点拷项目 `style` + 绘本跨页/插画参数；`varBindings {name,sourceNodeId}` → `{{ $node["<sourceNodeId>"].json.text }}`。
+  - **★M-6 join 语义**：m20 从每个 `workflows` 行 reach 其 `projects` 行（1 项目 N workflow，同项目配置烘焙到每个 workflow 的 script 节点，正确）；对**无 script/storyboard 节点**的 workflow（草稿/部分图）**跳过不报错**。
+  - **★S-7 校验 pass**：对每个改写后节点跑参数校验器，失败 fail 该行、不写非法参数。
+- **`m21`（items 列 + 类型感知回填）**：`ALTER TABLE node_outputs ADD COLUMN items JSONB NOT NULL DEFAULT '[]'`；回填**按 `format` 分支**（★M-2，统一 `{json:{text}}` 对 json 行有损）：
+  - `format='json'` → `jsonb_build_array(jsonb_build_object('json', content::jsonb))`；`content` 非法 JSON 时回退 `{json:{text:content, _parseError:true}}`（迁移不半路失败）——故 m21 回填也走 Go 编码步（SQL `jsonb_build_object` 装不下「解析可能失败」）。
+  - `format='text'`/`'http-status'` → `jsonb_build_array(jsonb_build_object('json', jsonb_build_object('text', content)))`。
+  - 内置节点历史输出**从不在 `node_outputs`**（在 `scripts`/`shots`，§11 B2）——m21 回填不到它们，接受老运行内置输出不入 items（新 run 由类型化发射覆盖）。
+  - `content`/`format` 留一版（双写窗口 P2）后续迁移再删。
+
+两者纯前向、Go 编码、事务 + 版本表幂等。**无并行 v2 schema**。
 
 ### 4.2 planner/worker 改造
 
 - **`PlanCustom` 泛化**：不再特判 script/storyboard 注入 brief（已在节点 parameters），不再 varBindings 两遍——统一把每节点 `parameters`（含引用 local 节点 id 的 `$node[...]` 表达式）写进 `todos.input_json`；local→todo id 改写仍做，但统一扫所有表达式 `$node["localId"]` token（复用既有 idMap）。
 - **`Plan`（LLM planner）降级不删**（用户许可改变自动规划行为）：正典创作路径 = 画布显式节点图；LLM planner 变成**「生成起始图」动作**，产出 `workflows.nodes`（带 parameters）供用户编辑——即 planner 成为**喂同一节点模型的图生成器**，而非独立执行路径。删 `DefaultPipeline` 兜底执行路径。
-- **worker 执行器统一**：签名改为 `(inputItems, params)→outputItems`；新 `loadInputs` 读上游 items；built-in 同 custom kind 注册；storyboard 扇出保留但 `style` 从节点参数读。**异步 asset 机器（提交/轮询/成本/HITL）原样不动**——二进制 item 引用 asset id，asset 执行器仍驱动状态机（刻意的复用边界）。
+- **worker 执行器统一**：签名改为 `(inputItems, params)→outputItems`；新 `loadInputs` 读上游 items（M-4 回退）；built-in 同 custom kind 注册；storyboard 扇出保留但 `style` 从节点参数读。**异步 asset 机器（提交/轮询/成本/HITL）原样不动**——二进制 item 引用 asset id，asset 执行器仍驱动状态机（刻意的复用边界）。
+- **★B-A1 前端 canvas round-trip（保存路径必修，否则每次保存丢 parameters）**：`web/src/features/workflow-canvas/canvasModel.ts` 的 `toStudioNodes` 现按字段 whitelist 重建节点（已被同款 bug 咬过：typeId/varBindings 曾丢失直到显式拷贝）。须改为 **round-trip 完整节点对象 + preserve-unknown**（`{...n, id, type, dependsOn, position, parameters, typeVersion}`），并加 **parity 测试**断言一个未知 Property 经 load→save→reload 存活——防老客户端在新字段上静默丢数据。
 
 ### 4.3 用户可感知的行为变化
 
@@ -154,18 +219,20 @@ func Resolve(template string, ctx Context) (string, error)
 
 ## 5. 分阶段路线（leaf-first，每阶段独立可发布可测，branch→PR，fresh DB `-p 1`）
 
-- **P1 — 去风险：节点类型描述框架，只读（不改执行）**。建 `nodedesc` 包 + 全 7 类静态描述；`GET /api/node-types` 返回合并描述；前端建通用 `<PropertiesForm>` 驱动渲染并切 `PropertiesPanel` 到它（初期产出同样的 promptId/promptText/typed-param 值）。无 DB/无 worker 改动。纯追加、可测；回归只触及 UI 渲染。*验证：既有 canvas/run 测试绿 + 新 schema 渲染测试。*
-- **P2 — items 模型（双写）**。`m21`（加 items、回填）。worker 同时写 legacy `content/format` 与 `items`。加 `loadInputs`。`internal/expr` 引擎（受限文法），作为**备选解析器**behind flag，用既有 `substituteVars` 测试语料（worker_custom_test.go）做 parity。*验证：`{{name}}`↔`{{ $node[...].json }}` parity；items 往返。*
-- **P3 — 节点参数 + 项目配置迁移**。`m20`（回填节点 parameters + varBindings→表达式）。`PlanCustom` 持久化 parameters；worker 执行器经 expr over `loadInputs` 读参数，删 `pictureBookConfig`/B1 项目-style/varBindings 两遍。二进制 item：asset 执行器产 `{binary:{out:BinaryRef}}`，storyboard 扇出与 prescreen 消费 items。*验证：迁移后绘本项目产同样 script/shots/assets；DB-backed worker 测试 fresh DB `-p 1`。*
-- **P4 — 退役 legacy 路径 + planner 降级**。删 `output_ref` 前缀解析 / `resolveOutputText` / `substituteVars` / `builtinnode.Catalog`（被 `nodedesc` 取代）；删 `node_outputs.content/format`（迁移）。`Plan` 降为「生成起始图」端点产 `workflows.nodes`；删 `DefaultPipeline` 兜底。*验证：画布端到端 run；LLM 生成图可编辑可跑。*
-- **P5 — n8n 创作打磨**。运行画布 per-item 检视器、`displayOptions` 条件 UI 全接、表达式自动补全引用上游输出、`resourceLocator` 选 prompt/secret/storage。纯追加 UX。
+**★M-3 排序铁律（覆盖旧 phasing，与 §11.5 一致）**：planner 降级（LLM 图落成可被 m20 回填的 `workflows.nodes`）**必须先于**任何 worker 停读项目配置；内置节点发类型化 items + 迁移每个 `output_ref`/`content/format` 消费者**必须先于**删 legacy；schema 驱动参数保存上线**必须先于/同步于** S-1 双处校验落地。据此重排：
+
+- **P1 — 去风险：节点类型描述框架，纯只读渲染（不拥有保存路径）**。建 `nodedesc` 包 + 全 7 类静态描述（含 `OutputSchema`、`Constraints`、`DefaultFrom`、保留命名空间）；`GET /api/node-types` 返回 `{version, nodeTypes}` 合并描述（内置胜冲突）；前端建通用 `<PropertiesForm>` 驱动渲染并切 `PropertiesPanel` 到它，**渲染只读、保存仍走旧 whitelist 路径**（promptId/promptText/typed 值不变）。无 DB/无 worker 改动。纯追加；回归只触及 UI 渲染。*验证：既有 canvas/run 测试绿 + 新 schema 渲染测试 + `displayOptions`/`DefaultFrom` 前后端 parity 测试 + 命名空间冲突拒绝测试。*
+- **P2 — items 模型（双写）+ 内置节点类型化发射 + expr 引擎 parity**。runner 扩展（`schema_migrations` + 事务 + advisory lock，★M-1）；`m21`（加 items、按 format 分支回填，★M-2）。**内置执行器（script/storyboard/asset/prescreen）加类型化 `node_outputs.items` 发射**（★净新增，非双写——B2）同时仍写 legacy `content/format` + `scripts`/`shots`。加 `loadInputs`（含 ★M-4 回退）。`internal/expr` 引擎（受限文法 + ★S-2 scope 不变量 + ★S-3 secret 通道），作**备选解析器** behind flag，用 `substituteVars` 语料（worker_custom_test.go）做 parity。*验证：`{{name}}`↔`{{ $node[...].json }}` parity；items 往返；跨租户 `$node` 拒绝测试；`$json.characterSheet` 可达。*
+- **P3 — planner 降级 + 节点参数 + 项目配置迁移（独立安全评审门禁）**。**先**：`Plan` 降为「生成起始图」产 `workflows.nodes`（带 parameters），使 LLM-planner 绘本项目materialize 成 m20 可回填的行。**再**：`m20`（Go 编码步，回填 parameters + typeVersion + varBindings→表达式，★M-5 只增新键 + ★M-1 哨兵 + ★M-6 join + ★S-7 校验 pass）；`PlanCustom` 持久化 + 读 parameters；`<PropertiesForm>` 接管保存（★B-A1 round-trip + ★S-1 双处校验）；worker 执行器经 expr over `loadInputs` 读参数，删 `pictureBookConfig`/B1 项目-style/varBindings 两遍——**过渡期对 NULL-参数节点保留 `pictureBookConfig` 兜底**直至复现范例验证。二进制 item：asset 执行器产 `{binary:{out:BinaryRef}}`（★D-4 带 status），storyboard 扇出/prescreen 消费 items。**此阶段须独立安全评审**（★S-1/S-2/S-4/S-5/S-6）。*验证：迁移后绘本项目产同样 script/shots/assets + 复现 3-6 age-band 范例；DB-backed worker 测试 fresh DB `-p 1`；m20 二次启动幂等测试。*
+- **P4 — 退役 legacy 路径**。删 `output_ref` 前缀解析 / `resolveOutputText` custom 分支 / `substituteVars` / `builtinnode.Catalog`；迁 `/state` 查询从 items 抽文本后删 `node_outputs.content/format`；删 `DefaultPipeline` 兜底。**前置门禁**：todo 队列完全循环（无跨部署在途 run，M-4 回退不再触发）+ 所有 `output_ref`/`content/format` 消费者已迁。`output_ref` todo 列**保留**（storyboard 父解析 / discardCanceledAsset / 时间线，★B3）。*验证：画布端到端 run；LLM 生成图可编辑可跑。*
+- **P5 — n8n 创作打磨**。运行画布 per-item 检视器、`displayOptions` 条件 UI 全接、表达式自动补全（源自 `OutputSchema`，★B-A6）、`resourceLocator` 选 prompt/secret/storage（url 仍 ★S-5 静态约束）。纯追加 UX。
 
 ## 6. 关键风险 + 载重决策
 
 1. **表达式引擎作用域 — 决策：受限文法，非 JS VM**。全 JS（goja）最保真但加重依赖 + 沙箱逃逸面 + 非确定性。受限文法（`$json`/`$node`/`$binary`/成员访问/白名单 helper）覆盖主流用法、近 stdlib、与 Starlark `scriptengine` 组合处理重变换、`{{secret:}}` admin-gate 作独立前置 pass 保留。**欠作用域风险**：用户期望任意 JS。缓解：`script`（Starlark）节点是文档化逃生舱。**最重要的作用域抉择。**
 2. **二进制 item — 决策：引用 `assets` 表、绝不内联**。重写 n8n 二进制存储会复制 ~850 行异步/成本/HITL/blob 机器。薄 `BinaryRef`→asset 指针保住全部。**风险**：item 非自包含（二进制 item 仅在有 DB 时有意义）。可接受——n8n 生产模式二进制也外置。
 3. **删 LLM planner — 决策：降级不删**。最干净单执行路径且不丢 brief→图 能力。**风险**：留比删多写码。低改造、高产品价值。
-4. **数据迁移风险（最高操作风险）**。`m20` 改写每个 `workflows.nodes`，`m21` 回填 `node_outputs`。bug 会搁浅既有绘本项目。缓解：迁移幂等追加（新列/键，老的留一版）；双写窗口（P2）先验 items-parity 再退役 legacy；用真项目行快照在 fresh DB 测。
+4. **数据迁移风险（最高操作风险）**。`m20` 改写每个 `workflows.nodes`，`m21` 回填 `node_outputs`。bug 会搁浅既有绘本项目。**缓解（★M-1/M-2/M-5 修订后）**：runner 先加 `schema_migrations` 版本表 + 每步事务 + 启动 advisory lock（否则 Go 编码 m20 每次启动重跑会损坏）；m20 **只增新键**（parameters/typeVersion，旧字段留存→可回滚 = 部署旧二进制）+ 每节点 `typeVersion` 哨兵幂等 + 改写后校验 pass；m21 **按 format 分支**回填（json 行 `content::jsonb`，非统一 text-wrap）；双写窗口（P2）先验 items-parity 再退役 legacy；用真项目行快照在 fresh DB 测 + m20 二次启动幂等测试。
 5. **`displayOptions` 前后端语义 parity**。schema 在 Go、须 TS 渲染一致（同 `nodeColor.parity.test.ts` 模式）。缓解：parity 测试断言 `/api/node-types` 载荷驱动所有可见配置。
 6. **安全规则不可丢**：schema 驱动校验须保住 `customnodetype/store.go` 现有规则（http url 必静态字面量、`{{secret:}}` 仅 header、script 禁 secret）——作 schema 字段约束移植，不删。`customnodetype` 按仓规须**独立安全评审**。`{{secret:}}` 通道 + admin attestation 原样作表达式前置 pass。
 7. **`HasUnboundCustomNode`（注解 vs 可运行）须续работа**：内置节点恒「已绑」。schema 框架须把内置视为恒可运行，使 `runWorkflowHandler`（166）run-gate 不受影响。
