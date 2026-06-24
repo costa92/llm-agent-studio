@@ -201,3 +201,233 @@ func TestRunStoryboardEmitsItemPerShot(t *testing.T) {
 		t.Fatalf("want item[0] ShotNo 1, got %d", sh.ShotNo)
 	}
 }
+
+// TestRunPrescreenDualWritesItems verifies runPrescreen writes the typed
+// ReviewOutput verdict to node_outputs.items in the SAME INSERT that lands the
+// legacy content/format='json' row (★B2/D-6 dual-write).
+func TestRunPrescreenDualWritesItems(t *testing.T) {
+	if os.Getenv("LLM_AGENT_STUDIO_PG_URL") == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker items tests")
+	}
+	ctx := context.Background()
+	reviewModel := llm.NewScriptedLLM(llm.WithResponses(
+		llm.Response{Text: `{"score":72,"flags":["x"],"note":"ok"}`},
+	))
+	w := newPrescreenWorker(t, studioagents.NewReviewAgent(reviewModel))
+	db := w.cfg.DB
+
+	projID := seedItemsProject(t, db)
+
+	// Upstream text custom node: a node_outputs(custom:llm) text row + a 'custom'
+	// todo (status=done) whose output_ref points at it via "custom:<id>". The
+	// prescreen todo depends_on that upstream todo.
+	upstreamOutID := newID()
+	if err := db.WithContext(ctx).Exec(
+		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format)
+		 VALUES ($1,$2,$3,'custom:llm','some draft text','text')`,
+		upstreamOutID, projID, newID()).Error; err != nil {
+		t.Fatalf("seed upstream node_output: %v", err)
+	}
+	upstreamTodo := newID()
+	if err := db.WithContext(ctx).Exec(
+		`INSERT INTO todos (id,project_id,plan_id,type,status,output_ref,input_json)
+		 VALUES ($1,$2,'plan','custom:llm','done',$3,'{}')`,
+		upstreamTodo, projID, "custom:"+upstreamOutID).Error; err != nil {
+		t.Fatalf("seed upstream todo: %v", err)
+	}
+	prescreenTodo := newID()
+	if err := db.WithContext(ctx).Exec(
+		`INSERT INTO todos (id,project_id,plan_id,type,status,depends_on,input_json)
+		 VALUES ($1,$2,'plan','prescreen','running',ARRAY[$3]::text[],'{}')`,
+		prescreenTodo, projID, upstreamTodo).Error; err != nil {
+		t.Fatalf("seed prescreen todo: %v", err)
+	}
+
+	if _, err := w.runPrescreen(ctx, claimed{
+		todoID: prescreenTodo, projectID: projID, typ: "prescreen", attempts: 1, input: []byte("{}"),
+	}); err != nil {
+		t.Fatalf("runPrescreen: %v", err)
+	}
+
+	// (a) legacy format='json' row still present (content/format unchanged).
+	var legacy int
+	if err := db.WithContext(ctx).Raw(
+		`SELECT count(*) FROM node_outputs WHERE todo_id=$1 AND format='json'`, prescreenTodo).Row().Scan(&legacy); err != nil {
+		t.Fatalf("count legacy json row: %v", err)
+	}
+	if legacy != 1 {
+		t.Fatalf("want 1 legacy format='json' row, got %d", legacy)
+	}
+
+	// (b) one items row; items[0].json → ReviewOutput with Score==72.
+	count, items := loadNodeOutputItems(t, db, prescreenTodo)
+	if count != 1 {
+		t.Fatalf("want 1 node_outputs row, got %d", count)
+	}
+	if len(items) != 1 {
+		t.Fatalf("want 1 item, got %d", len(items))
+	}
+	var verdict studioagents.ReviewOutput
+	if err := json.Unmarshal(items[0].JSON, &verdict); err != nil {
+		t.Fatalf("item[0].json is not a ReviewOutput: %q (%v)", items[0].JSON, err)
+	}
+	if verdict.Score != 72 {
+		t.Fatalf("want items[0].json ReviewOutput Score 72, got %d", verdict.Score)
+	}
+}
+
+// TestRunCustomLLMDualWritesItems verifies runCustomLLM dual-writes typed items:
+// a text response wraps as [{json:{text:<answer>}}] and a json response stores
+// the parsed object as [{json:<object>}] — while legacy content/format stay
+// unchanged (★B2/D-6).
+func TestRunCustomLLMDualWritesItems(t *testing.T) {
+	if os.Getenv("LLM_AGENT_STUDIO_PG_URL") == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker items tests")
+	}
+	ctx := context.Background()
+
+	const textAnswer = "Here is the answer."
+	const jsonAnswer = `{"verdict":"pass","score":91}`
+
+	// Reuse the typed-custom todo seed pattern from TestRunCustomLLM_TextAndJSON:
+	// a done script todo + scripts row provide the {{draft}} variable source.
+	buildInput := func(outputFormat, scriptTodoID string) []byte {
+		in := map[string]any{
+			"kind": "llm",
+			"params": map[string]any{
+				"systemPrompt": "You are a translator.",
+				"userPrompt":   "Translate: {{draft}}",
+				"outputFormat": outputFormat,
+				"variables": []map[string]any{
+					{"name": "draft", "sourceTodoId": scriptTodoID},
+				},
+			},
+		}
+		b, _ := json.Marshal(in)
+		return b
+	}
+
+	seedScript := func(t *testing.T, db *gorm.DB, projID string) string {
+		t.Helper()
+		scriptID := newID()
+		if err := db.WithContext(ctx).Exec(
+			`INSERT INTO scripts (id, project_id, todo_id, content_json, version) VALUES ($1,$2,'t-dummy-s',$3,1)`,
+			scriptID, projID, []byte(`{"title":"Draft Title"}`)).Error; err != nil {
+			t.Fatalf("seed script: %v", err)
+		}
+		scriptTodoID := newID()
+		if err := db.WithContext(ctx).Exec(
+			`INSERT INTO todos (id, project_id, plan_id, type, status, output_ref, input_json)
+			 VALUES ($1,$2,'plan-x','script','done',$3,'{}')`,
+			scriptTodoID, projID, "script:"+scriptID).Error; err != nil {
+			t.Fatalf("seed script todo: %v", err)
+		}
+		return scriptTodoID
+	}
+
+	seedProject := func(t *testing.T, db *gorm.DB, orgID string) string {
+		t.Helper()
+		var projID string
+		if err := db.WithContext(ctx).Raw(
+			`INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),$1,'p','u') RETURNING id`,
+			orgID).Row().Scan(&projID); err != nil {
+			t.Fatalf("seed project: %v", err)
+		}
+		return projID
+	}
+
+	t.Run("text response wraps as {text:<answer>}", func(t *testing.T) {
+		model := llm.NewScriptedLLM(llm.WithResponses(llm.Response{Text: textAnswer}))
+		w := customTestWorker(t, model)
+		db := w.cfg.DB
+		projID := seedProject(t, db, os.Getenv("_CUSTOM_TEST_ORG_ID"))
+		scriptTodoID := seedScript(t, db, projID)
+
+		customTodoID := newID()
+		if err := db.WithContext(ctx).Exec(
+			`INSERT INTO todos (id, project_id, plan_id, type, status, input_json)
+			 VALUES ($1,$2,'plan-x','custom:translate','running',$3)`,
+			customTodoID, projID, buildInput("text", scriptTodoID)).Error; err != nil {
+			t.Fatalf("seed custom todo: %v", err)
+		}
+		if _, err := w.runCustom(ctx, claimed{
+			todoID: customTodoID, projectID: projID, typ: "custom:translate",
+			attempts: 1, input: buildInput("text", scriptTodoID),
+		}); err != nil {
+			t.Fatalf("runCustom text: %v", err)
+		}
+
+		// legacy content/format unchanged.
+		var format, content string
+		if err := db.WithContext(ctx).Raw(
+			`SELECT format, content FROM node_outputs WHERE todo_id=$1`, customTodoID).Row().Scan(&format, &content); err != nil {
+			t.Fatalf("load node_output: %v", err)
+		}
+		if format != "text" || content != textAnswer {
+			t.Fatalf("legacy row = (%q,%q), want (text,%q)", format, content, textAnswer)
+		}
+
+		// items = [{json:{text:<answer>}}].
+		count, items := loadNodeOutputItems(t, db, customTodoID)
+		if count != 1 || len(items) != 1 {
+			t.Fatalf("want 1 row / 1 item, got count=%d items=%d", count, len(items))
+		}
+		var wrap struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(items[0].JSON, &wrap); err != nil {
+			t.Fatalf("item[0].json not a {text} wrapper: %q (%v)", items[0].JSON, err)
+		}
+		if wrap.Text != textAnswer {
+			t.Fatalf("want items[0].json.text=%q, got %q", textAnswer, wrap.Text)
+		}
+	})
+
+	t.Run("json response stores parsed object", func(t *testing.T) {
+		model := llm.NewScriptedLLM(llm.WithResponses(llm.Response{Text: jsonAnswer}))
+		w := customTestWorker(t, model)
+		db := w.cfg.DB
+		projID := seedProject(t, db, os.Getenv("_CUSTOM_TEST_ORG_ID"))
+		scriptTodoID := seedScript(t, db, projID)
+
+		customTodoID := newID()
+		if err := db.WithContext(ctx).Exec(
+			`INSERT INTO todos (id, project_id, plan_id, type, status, input_json)
+			 VALUES ($1,$2,'plan-x','custom:translate','running',$3)`,
+			customTodoID, projID, buildInput("json", scriptTodoID)).Error; err != nil {
+			t.Fatalf("seed custom todo: %v", err)
+		}
+		if _, err := w.runCustom(ctx, claimed{
+			todoID: customTodoID, projectID: projID, typ: "custom:translate",
+			attempts: 1, input: buildInput("json", scriptTodoID),
+		}); err != nil {
+			t.Fatalf("runCustom json: %v", err)
+		}
+
+		// legacy content/format unchanged (format=json, content is the JSON string).
+		var format, content string
+		if err := db.WithContext(ctx).Raw(
+			`SELECT format, content FROM node_outputs WHERE todo_id=$1`, customTodoID).Row().Scan(&format, &content); err != nil {
+			t.Fatalf("load node_output: %v", err)
+		}
+		if format != "json" || content != jsonAnswer {
+			t.Fatalf("legacy row = (%q,%q), want (json,%q)", format, content, jsonAnswer)
+		}
+
+		// items = [{json:<parsed object>}]; the object itself (NOT a {text} wrapper).
+		count, items := loadNodeOutputItems(t, db, customTodoID)
+		if count != 1 || len(items) != 1 {
+			t.Fatalf("want 1 row / 1 item, got count=%d items=%d", count, len(items))
+		}
+		var obj struct {
+			Verdict string `json:"verdict"`
+			Score   int    `json:"score"`
+		}
+		if err := json.Unmarshal(items[0].JSON, &obj); err != nil {
+			t.Fatalf("item[0].json not the parsed object: %q (%v)", items[0].JSON, err)
+		}
+		if obj.Verdict != "pass" || obj.Score != 91 {
+			t.Fatalf("want items[0].json = {verdict:pass,score:91}, got %+v", obj)
+		}
+	})
+}

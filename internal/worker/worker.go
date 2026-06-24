@@ -422,6 +422,16 @@ func (w *Worker) emitItemsTx(ctx context.Context, db *gorm.DB, c claimed, items 
 	return nil
 }
 
+// itemsForContent builds the P2a items array from a custom executor's content +
+// format, matching m21's format-aware backfill exactly (json valid → structured
+// json; else text-wrap). Keeps live rows shape-identical to migrated history.
+func itemsForContent(content, format string) []Item {
+	if format == "json" && json.Valid([]byte(content)) {
+		return []Item{jsonItem(json.RawMessage(content))}
+	}
+	return []Item{textItem(content)}
+}
+
 // runScript runs the ScriptAgent and persists a scripts row. outputRef = "script:<id>".
 func (w *Worker) runScript(ctx context.Context, c claimed) (string, error) {
 	var in struct {
@@ -1078,11 +1088,12 @@ func (w *Worker) runPrescreen(ctx context.Context, c claimed) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("worker: marshal prescreen verdict: %w", err)
 	}
+	items, _ := itemsJSON([]Item{jsonItem(payload)})
 	outID := newID()
 	if err := w.cfg.DB.WithContext(ctx).Exec(
-		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format)
-		 VALUES ($1,$2,$3,$4,$5,$6)`,
-		outID, c.projectID, c.todoID, c.typ, string(payload), "json").Error; err != nil {
+		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format, items)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		outID, c.projectID, c.todoID, c.typ, string(payload), "json", items).Error; err != nil {
 		return "", fmt.Errorf("worker: insert node_output: %w", err)
 	}
 	return "custom:" + outID, nil
@@ -1780,12 +1791,14 @@ func (w *Worker) runCustomLLM(ctx context.Context, c claimed, in llmParams) (str
 		format = "json"
 	}
 
-	// 3. Land the output in node_outputs (INSERT, pure $N).
+	// 3. Land the output in node_outputs (INSERT, pure $N). ★B2/D-6: dual-write
+	// the typed items array alongside legacy content/format.
+	items, _ := itemsJSON(itemsForContent(content, format))
 	outID := newID()
 	if err := w.cfg.DB.WithContext(ctx).Exec(
-		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format)
-		 VALUES ($1,$2,$3,$4,$5,$6)`,
-		outID, c.projectID, c.todoID, c.typ, content, format).Error; err != nil {
+		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format, items)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		outID, c.projectID, c.todoID, c.typ, content, format, items).Error; err != nil {
 		return "", fmt.Errorf("worker: insert node_output: %w", err)
 	}
 	return "custom:" + outID, nil
@@ -1896,12 +1909,15 @@ func (w *Worker) runCustomHTTP(ctx context.Context, c claimed, in httpParams) (s
 		}
 	}
 
-	// 7. Land node_outputs (INSERT, pure $N).
+	// 7. Land node_outputs (INSERT, pure $N). ★B2/D-6: dual-write the typed items
+	// array. ★A4: itemsForContent wraps whatever `content` already is, so the
+	// secret-bearing {status}-only restriction flows through automatically.
+	items, _ := itemsJSON(itemsForContent(content, format))
 	outID := newID()
 	if err := w.cfg.DB.WithContext(ctx).Exec(
-		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format)
-		 VALUES ($1,$2,$3,$4,$5,$6)`,
-		outID, c.projectID, c.todoID, c.typ, content, format).Error; err != nil {
+		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format, items)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		outID, c.projectID, c.todoID, c.typ, content, format, items).Error; err != nil {
 		return "", errRequestFailed
 	}
 	return "custom:" + outID, nil
@@ -1939,11 +1955,13 @@ func (w *Worker) runCustomScript(ctx context.Context, c claimed, in scriptParams
 		out = strings.TrimSpace(out)
 		format = "json"
 	}
+	// ★B2/D-6: dual-write the typed items array alongside legacy content/format.
+	items, _ := itemsJSON(itemsForContent(out, format))
 	outID := newID()
 	if err := w.cfg.DB.WithContext(ctx).Exec(
-		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format)
-		 VALUES ($1,$2,$3,$4,$5,$6)`,
-		outID, c.projectID, c.todoID, c.typ, out, format).Error; err != nil {
+		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format, items)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		outID, c.projectID, c.todoID, c.typ, out, format, items).Error; err != nil {
 		return "", fmt.Errorf("worker: insert node_output: %w", err)
 	}
 	return "custom:" + outID, nil
