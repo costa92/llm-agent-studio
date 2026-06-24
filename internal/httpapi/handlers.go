@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	authzsvc "github.com/costa92/llm-agent-authz/service"
 	"github.com/costa92/llm-agent-contract/llm"
 
+	"github.com/costa92/llm-agent-studio/internal/customnodetype"
 	"github.com/costa92/llm-agent-studio/internal/planner"
 	"github.com/costa92/llm-agent-studio/internal/project"
 	"github.com/costa92/llm-agent-studio/internal/projectstate"
@@ -72,7 +74,7 @@ type ProjectStore interface {
 type PlannerPort interface {
 	Plan(ctx context.Context, projectID string, b planner.Brief) (planner.Result, error)
 	PlanWith(ctx context.Context, projectID string, model llm.ChatModel, b planner.Brief) (planner.Result, error)
-	PlanCustom(ctx context.Context, projectID, workflowID string, b planner.Brief, nodes []planner.WorkflowNode) (planner.Result, error)
+	PlanCustom(ctx context.Context, projectID, workflowID string, b planner.Brief, nodes []planner.WorkflowNode, resolved map[string]planner.ResolvedType) (planner.Result, error)
 }
 
 // ChatRouter resolves an org's BYOK chat model (satisfied by *modelrouter.Router).
@@ -82,6 +84,35 @@ type ChatRouter interface {
 	// M5.1: per-project 规划模型 override 解析；caller 在 ChatModelForNamed
 	// 返 nil 时退回 ChatModelFor。
 	ChatModelForNamed(ctx context.Context, orgID, provider, modelName string) llm.ChatModel
+}
+
+// CustomNodeTypeResolver resolves a typed custom node's registry entry, org-scoped
+// (satisfied by *customnodetype.Store via a thin adapter). nil → typed nodes are
+// rejected at run time (treated as unresolvable).
+type CustomNodeTypeResolver interface {
+	Get(ctx context.Context, id, orgID string) (customnodetype.CustomNodeType, error)
+}
+
+// resolveCustomTypes reads each typed node's (typeId) registry entry org-scoped and
+// returns kind+params so PlanCustom can build input_json. Variable bindings are NOT
+// resolved here — they live on the node's VarBindings and PlanCustom merges them.
+// The handler holds org context (T2); the planner never reads the registry.
+func resolveCustomTypes(ctx context.Context, res CustomNodeTypeResolver, orgID string, nodes []planner.WorkflowNode) (map[string]planner.ResolvedType, error) {
+	resolved := map[string]planner.ResolvedType{}
+	for _, n := range nodes {
+		if n.TypeId == "" {
+			continue
+		}
+		if res == nil {
+			return nil, fmt.Errorf("custom node %q references a type but registry is unavailable", n.ID)
+		}
+		ct, err := res.Get(ctx, n.TypeId, orgID)
+		if err != nil {
+			return nil, fmt.Errorf("custom node %q: resolve type %q: %w", n.ID, n.TypeId, err)
+		}
+		resolved[n.ID] = planner.ResolvedType{Kind: ct.Kind, Params: ct.Params}
+	}
+	return resolved, nil
 }
 
 // ArtifactReader reads todos/script/shots for the artifact endpoints.
@@ -374,7 +405,7 @@ func quotaExceeded(ctx context.Context, cs CostStore, quota int, orgID string) (
 
 // runHandler (POST /api/projects/{id}/run): editor+. Sets status=planning, runs
 // the planner (synchronously enqueues todos), emits planner_started.
-func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore, quota int, cr ChatRouter) http.HandlerFunc {
+func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore, quota int, cr ChatRouter, customTypeResolver CustomNodeTypeResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		p, err := ps.Get(r.Context(), id)
@@ -402,8 +433,8 @@ func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore,
 				}
 			}
 		}
-		if planner.HasCustomNode(customNodes) {
-			http.Error(w, "当前 Workflow 包含自定义节点，暂不支持运行", http.StatusBadRequest)
+		if planner.HasUnboundCustomNode(customNodes) {
+			http.Error(w, "当前 Workflow 包含未绑定类型的自定义节点，请先在注册表中为其指定类型后再运行", http.StatusBadRequest)
 			return
 		}
 		if over, err := quotaExceeded(r.Context(), cs, quota, p.OrgID); err != nil {
@@ -426,7 +457,12 @@ func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore,
 		if p.CustomWorkflowEnabled {
 			// customNodes already validated and populated above; use them directly.
 			// Legacy project-level custom run: no first-class workflow → NULL workflow_id.
-			res, err = pl.PlanCustom(r.Context(), id, "", brief, customNodes)
+			resolved, rerr := resolveCustomTypes(r.Context(), customTypeResolver, p.OrgID, customNodes)
+			if rerr != nil {
+				http.Error(w, rerr.Error(), http.StatusBadRequest)
+				return
+			}
+			res, err = pl.PlanCustom(r.Context(), id, "", brief, customNodes, resolved)
 		} else {
 			// M5.1: per-project 规划模型 override 优先于 org 默认。如果 project 上
 			// 配了 planner_provider+planner_model，runHandler 拿这个去 modelrouter

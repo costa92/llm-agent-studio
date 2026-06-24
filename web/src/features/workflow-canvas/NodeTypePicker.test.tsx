@@ -61,4 +61,68 @@ describe("NodeTypePicker", () => {
     )
     expect(container.firstChild).toBeNull()
   })
+
+  it("lists typed custom types alongside annotation types (Task 13)", () => {
+    render(
+      <NodeTypePicker
+        open
+        screenX={0}
+        screenY={0}
+        customTypes={[
+          { type: "custom:note", label: "注释", color: "#999" },
+          { type: "custom:translate", label: "翻译", color: "#7c93ff", typeId: "reg-1" },
+        ]}
+        onPick={() => {}}
+        onClose={() => {}}
+      />,
+    )
+    expect(screen.getByText("注释")).toBeInTheDocument()
+    expect(screen.getByText("翻译")).toBeInTheDocument()
+    // typed 条目应有 badge
+    const badge = screen.getByLabelText("typed")
+    expect(badge).toBeInTheDocument()
+  })
+
+  it("picking a typed type passes typeId in display (Task 13)", () => {
+    const onPick = vi.fn()
+    render(
+      <NodeTypePicker
+        open
+        screenX={0}
+        screenY={0}
+        customTypes={[
+          { type: "custom:translate", label: "翻译", color: "#7c93ff", typeId: "reg-1" },
+        ]}
+        onPick={onPick}
+        onClose={() => {}}
+      />,
+    )
+    fireEvent.click(screen.getByText("翻译"))
+    expect(onPick).toHaveBeenCalledWith(
+      "custom:translate",
+      expect.objectContaining({ typeId: "reg-1" }),
+    )
+  })
+
+  it("picking an annotation custom type passes no typeId (Task 13)", () => {
+    const onPick = vi.fn()
+    render(
+      <NodeTypePicker
+        open
+        screenX={0}
+        screenY={0}
+        customTypes={[
+          { type: "custom:note", label: "注释", color: "#999" },
+        ]}
+        onPick={onPick}
+        onClose={() => {}}
+      />,
+    )
+    fireEvent.click(screen.getByText("注释"))
+    // annotation types: no typeId key
+    expect(onPick).toHaveBeenCalledWith(
+      "custom:note",
+      expect.not.objectContaining({ typeId: expect.anything() }),
+    )
+  })
 })

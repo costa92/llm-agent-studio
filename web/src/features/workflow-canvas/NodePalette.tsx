@@ -7,12 +7,23 @@ const PALETTE_TYPES = ["script", "storyboard", "asset"] as const
 // 与画布 onDrop 约定的 dataTransfer key。
 export const PALETTE_DND_TYPE = "application/studio-node-type"
 
+// typed 节点拖拽时额外携带 typeId（存到 dataTransfer 里，onDrop 读取并写入 display.typeId）。
+export const PALETTE_DND_TYPEID = "application/studio-node-typeid"
+
+export interface PaletteCustomType {
+  type: string
+  label: string
+  color: string
+  // typeId 非空 = org 注册表 typed 节点（可运行）；无 = annotation（Phase 1 草图）。
+  typeId?: string
+}
+
 export interface NodePaletteProps {
   // 点「标准管线」一键把画布填充为 脚本→分镜（由画布层实现，含确认替换）。
   onStandardPipeline: () => void
   // 点「自动整理」按分层种子坐标重排现有节点（由画布层实现，可撤销 + fitView）。
   onAutoTidy?: () => void
-  customTypes?: { type: string; label: string; color: string }[]
+  customTypes?: PaletteCustomType[]
   onAddCustomType?: () => void
   onEditCustomType?: (type: string) => void
 }
@@ -46,11 +57,15 @@ export function NodePalette({ onStandardPipeline, onAutoTidy, customTypes, onAdd
         ))}
         {(customTypes ?? []).map((c) => (
           <div
-            key={c.type}
+            key={c.typeId ?? c.type}
             data-slot="palette-chip-custom"
+            data-typeid={c.typeId}
             draggable
             onDragStart={(e) => {
               e.dataTransfer.setData(PALETTE_DND_TYPE, c.type)
+              if (c.typeId) {
+                e.dataTransfer.setData(PALETTE_DND_TYPEID, c.typeId)
+              }
               e.dataTransfer.effectAllowed = "move"
             }}
             className="group flex cursor-grab items-center gap-2 rounded-md border border-line bg-bg-base px-2.5 py-1.5 hover:border-text-3 active:cursor-grabbing"
@@ -58,7 +73,15 @@ export function NodePalette({ onStandardPipeline, onAutoTidy, customTypes, onAdd
           >
             <span aria-hidden className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: c.color }} />
             <span className="flex-1 text-[12px] text-text-1">{c.label}</span>
-            {onEditCustomType && (
+            {c.typeId && (
+              <span
+                aria-label="typed"
+                className="rounded bg-amber/20 px-1 text-[10px] font-medium text-amber"
+              >
+                T
+              </span>
+            )}
+            {!c.typeId && onEditCustomType && (
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); onEditCustomType(c.type) }}

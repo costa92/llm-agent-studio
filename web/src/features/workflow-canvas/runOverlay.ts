@@ -14,6 +14,9 @@ export interface RunNodeStatus {
   status: GraphNode["status"]
   assetId?: string
   todoId?: string
+  // custom 节点 node_outputs 产物（T3 — minimal output panel）。
+  output?: string
+  outputFormat?: "text" | "json"
 }
 
 // 画布工作流节点 → 该类型在拓扑序中的序号（script:0,1…; storyboard:0,1…; asset:0,1…）。
@@ -59,6 +62,8 @@ function runByTypeOrdinal(state: ProjectState): Map<string, RunNodeStatus> {
       status: rn.status,
       assetId: rn.assetId,
       todoId: rn.id,
+      output: rn.output,
+      outputFormat: rn.outputFormat,
     })
   }
   return out

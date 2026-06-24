@@ -144,7 +144,7 @@ func (stubPlanner) Plan(_ context.Context, _ string, _ planner.Brief) (planner.R
 func (stubPlanner) PlanWith(_ context.Context, _ string, _ llm.ChatModel, _ planner.Brief) (planner.Result, error) {
 	return planner.Result{PlanID: "pl", Valid: true}, nil
 }
-func (stubPlanner) PlanCustom(_ context.Context, _, _ string, _ planner.Brief, _ []planner.WorkflowNode) (planner.Result, error) {
+func (stubPlanner) PlanCustom(_ context.Context, _, _ string, _ planner.Brief, _ []planner.WorkflowNode, _ map[string]planner.ResolvedType) (planner.Result, error) {
 	return planner.Result{PlanID: "pl", Valid: true}, nil
 }
 
@@ -154,7 +154,7 @@ func (stubAppender) Append(_ context.Context, _, _, _ string, _ any) (int64, err
 
 func TestRunHandler429WhenQuotaExhausted(t *testing.T) {
 	cs := &stubCost{count: 5} // org already used 5 generations in the window
-	h := runHandler(stubProjects{orgID: "o1"}, stubPlanner{}, stubAppender{}, cs, 5, nil)
+	h := runHandler(stubProjects{orgID: "o1"}, stubPlanner{}, stubAppender{}, cs, 5, nil, nil)
 	req := httptest.NewRequest("POST", "/api/projects/p1/run", nil)
 	req.SetPathValue("id", "p1")
 	rr := httptest.NewRecorder()
@@ -166,7 +166,7 @@ func TestRunHandler429WhenQuotaExhausted(t *testing.T) {
 
 func TestRunHandlerPassesUnderQuota(t *testing.T) {
 	cs := &stubCost{count: 4}
-	h := runHandler(stubProjects{orgID: "o1"}, stubPlanner{}, stubAppender{}, cs, 5, nil)
+	h := runHandler(stubProjects{orgID: "o1"}, stubPlanner{}, stubAppender{}, cs, 5, nil, nil)
 	req := httptest.NewRequest("POST", "/api/projects/p1/run", nil)
 	req.SetPathValue("id", "p1")
 	rr := httptest.NewRecorder()
@@ -178,7 +178,7 @@ func TestRunHandlerPassesUnderQuota(t *testing.T) {
 
 func TestRunHandlerQuotaZeroDisabled(t *testing.T) {
 	cs := &stubCost{count: 1000}
-	h := runHandler(stubProjects{orgID: "o1"}, stubPlanner{}, stubAppender{}, cs, 0, nil)
+	h := runHandler(stubProjects{orgID: "o1"}, stubPlanner{}, stubAppender{}, cs, 0, nil, nil)
 	req := httptest.NewRequest("POST", "/api/projects/p1/run", nil)
 	req.SetPathValue("id", "p1")
 	rr := httptest.NewRecorder()
@@ -235,7 +235,7 @@ func TestRunHandlerRefusesCustomNodes(t *testing.T) {
 		CustomWorkflowEnabled: true,
 		WorkflowNodes:         json.RawMessage(nodes),
 	}}
-	h := runHandler(ps, stubPlanner{}, stubAppender{}, &stubCost{count: 0}, 100, nil)
+	h := runHandler(ps, stubPlanner{}, stubAppender{}, &stubCost{count: 0}, 100, nil, nil)
 	req := httptest.NewRequest("POST", "/api/projects/p1/run", nil)
 	req.SetPathValue("id", "p1")
 	rr := httptest.NewRecorder()
@@ -243,8 +243,8 @@ func TestRunHandlerRefusesCustomNodes(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("custom-node project run should 400, got %d: %s", rr.Code, rr.Body.String())
 	}
-	if !strings.Contains(rr.Body.String(), "暂不支持运行") {
-		t.Fatalf("body should contain \"暂不支持运行\", got: %s", rr.Body.String())
+	if !strings.Contains(rr.Body.String(), "未绑定类型") {
+		t.Fatalf("body should contain \"未绑定类型\", got: %s", rr.Body.String())
 	}
 }
 

@@ -128,7 +128,7 @@ func deleteWorkflowHandler(ws WorkflowStore) http.HandlerFunc {
 // row, loads the workflow's DAG, and calls PlanCustom with the workflow id so
 // the resulting plan (run) is tagged with workflow_id. Mirrors runHandler's
 // quota gate + status/event emission.
-func runWorkflowHandler(ps ProjectStore, ws WorkflowStore, pl PlannerPort, ev EventAppender, cs CostStore, quota int) http.HandlerFunc {
+func runWorkflowHandler(ps ProjectStore, ws WorkflowStore, pl PlannerPort, ev EventAppender, cs CostStore, quota int, customTypeResolver CustomNodeTypeResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		wfID := r.PathValue("wfId")
@@ -163,8 +163,8 @@ func runWorkflowHandler(ps ProjectStore, ws WorkflowStore, pl PlannerPort, ev Ev
 			http.Error(w, "invalid workflow: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		if planner.HasCustomNode(nodes) {
-			http.Error(w, "当前 Workflow 包含自定义节点，暂不支持运行", http.StatusBadRequest)
+		if planner.HasUnboundCustomNode(nodes) {
+			http.Error(w, "当前 Workflow 包含未绑定类型的自定义节点，请先在注册表中为其指定类型后再运行", http.StatusBadRequest)
 			return
 		}
 		if over, err := quotaExceeded(r.Context(), cs, quota, p.OrgID); err != nil {
@@ -183,17 +183,22 @@ func runWorkflowHandler(ps ProjectStore, ws WorkflowStore, pl PlannerPort, ev Ev
 			Brief: p.Description, ContentType: p.ContentType,
 			TargetPlatform: p.TargetPlatform, Style: p.Style,
 		}
-		res, err := pl.PlanCustom(r.Context(), id, wfID, brief, nodes)
+		resolved, rerr := resolveCustomTypes(r.Context(), customTypeResolver, p.OrgID, nodes)
+		if rerr != nil {
+			http.Error(w, rerr.Error(), http.StatusBadRequest)
+			return
+		}
+		result, err := pl.PlanCustom(r.Context(), id, wfID, brief, nodes, resolved)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		for _, rt := range res.ReadyTodos {
+		for _, rt := range result.ReadyTodos {
 			_, _ = ev.Append(r.Context(), id, "todo_ready", rt.ID, map[string]any{"type": rt.Type})
 		}
 		_ = ps.SetStatus(r.Context(), id, "running")
 		writeJSON(w, http.StatusAccepted, map[string]any{
-			"planId": res.PlanID, "valid": res.Valid, "fallbackUsed": res.FallbackUsed, "workflowId": wfID,
+			"planId": result.PlanID, "valid": result.Valid, "fallbackUsed": result.FallbackUsed, "workflowId": wfID,
 		})
 	}
 }

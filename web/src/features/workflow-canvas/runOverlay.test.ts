@@ -85,4 +85,39 @@ describe("overlayRunStatus", () => {
     const map = overlayRunStatus(canvas, stateWith([]))
     expect(map.size).toBe(0)
   })
+
+  it("(e) threads output + outputFormat from state node into overlay entry", () => {
+    const canvas: WorkflowNode[] = [
+      { id: "custom-1", type: "custom:translate", promptId: "", dependsOn: [] },
+    ]
+    const state = stateWith([
+      {
+        id: "uuidC",
+        label: "翻译",
+        type: "custom:translate",
+        status: "done",
+        output: "Hello, world!",
+        outputFormat: "text",
+      },
+    ])
+    const map = overlayRunStatus(canvas, state)
+    expect(map.get("custom-1")).toEqual({
+      status: "done",
+      todoId: "uuidC",
+      assetId: undefined,
+      output: "Hello, world!",
+      outputFormat: "text",
+    })
+  })
+
+  it("(f) output is absent when state node has no output (standard node)", () => {
+    const canvas: WorkflowNode[] = [
+      { id: "script-1", type: "script", promptId: "", dependsOn: [] },
+    ]
+    const state = stateWith([
+      { id: "uuidA", label: "脚本", type: "script", status: "done" },
+    ])
+    const map = overlayRunStatus(canvas, state)
+    expect(map.get("script-1")?.output).toBeUndefined()
+  })
 })

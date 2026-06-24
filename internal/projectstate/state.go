@@ -41,6 +41,10 @@ type GraphNode struct {
 	Type    string `json:"type"`              // script|storyboard|asset|...
 	Status  string `json:"status"`            // blocked|pending(ready)|running|done|failed
 	AssetID string `json:"assetId,omitempty"` // asset 节点的产物 id,供右栏预览
+	// Output 是 custom 节点 (node_outputs) 的文本/JSON 产物,供运行视图选中面板渲染 (T3)。
+	Output string `json:"output,omitempty"`
+	// OutputFormat ∈ "text"|"json" (Output 非空时有意义)。
+	OutputFormat string `json:"outputFormat,omitempty"`
 }
 
 // GraphEdge 是一条依赖边:From 依赖 To(To 先于 From 执行)。
@@ -106,6 +110,13 @@ type Asset struct {
 	Status string // e.g. pending_acceptance
 }
 
+// NodeOutput is one custom node's produced text/JSON output (joined by todo id).
+type NodeOutput struct {
+	TodoID  string
+	Content string
+	Format  string
+}
+
 // Input is everything Compute needs, loaded by project.Store.LoadState.
 type Input struct {
 	ProjectID             string
@@ -117,6 +128,7 @@ type Input struct {
 	Assets                []Asset
 	WorkflowID            string
 	CustomWorkflowEnabled bool
+	Outputs               []NodeOutput
 }
 
 const (
@@ -186,7 +198,11 @@ func Compute(in Input) ProjectState {
 	for _, a := range in.Assets {
 		assetByTodo[a.TodoID] = a // last write wins = latest (caller orders asc)
 	}
-	st.Nodes, st.Edges = buildGraph(in.Todos, assetByTodo)
+	outputByTodo := map[string]NodeOutput{}
+	for _, o := range in.Outputs {
+		outputByTodo[o.TodoID] = o
+	}
+	st.Nodes, st.Edges = buildGraph(in.Todos, assetByTodo, outputByTodo)
 	scriptStatus, storyboardStatus := "blocked", "blocked"
 	var scriptTodo, storyboardTodo string
 	assetTodoCount := 0
@@ -380,7 +396,7 @@ func graphLabel(typ string, n int) string {
 // ——不能用 LoadState 主查询的 updated_at 序,因为 worker 在 run 过程中持续改 todo
 // 的 updated_at 会让节点位置与 #N 序号在两次快照间漂移。悬挂边(指向不存在 todo)
 // 被丢弃。返回非 nil 空切片(对齐 Pips: []Pip{},JSON 出 [] 而非 null)。
-func buildGraph(todos []Todo, assetByTodo map[string]Asset) ([]GraphNode, []GraphEdge) {
+func buildGraph(todos []Todo, assetByTodo map[string]Asset, outputByTodo map[string]NodeOutput) ([]GraphNode, []GraphEdge) {
 	nodes := make([]GraphNode, 0, len(todos))
 	edges := make([]GraphEdge, 0)
 
@@ -409,6 +425,10 @@ func buildGraph(todos []Todo, assetByTodo map[string]Asset) ([]GraphNode, []Grap
 		}
 		if a, ok := assetByTodo[t.ID]; ok {
 			n.AssetID = a.ID
+		}
+		if o, ok := outputByTodo[t.ID]; ok {
+			n.Output = o.Content
+			n.OutputFormat = o.Format
 		}
 		nodes = append(nodes, n)
 	}

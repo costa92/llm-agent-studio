@@ -2,6 +2,7 @@ package planner
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -236,7 +237,7 @@ func TestPlanCustom(t *testing.T) {
 		t.Fatalf("seed workflow: %v", err)
 	}
 
-	res, err := p.PlanCustom(ctx, projID, wfID, Brief{Brief: "custom brief", Style: "custom style"}, nodes)
+	res, err := p.PlanCustom(ctx, projID, wfID, Brief{Brief: "custom brief", Style: "custom style"}, nodes, nil)
 	if err != nil {
 		t.Fatalf("PlanCustom: %v", err)
 	}
@@ -274,7 +275,7 @@ func TestPlanCustom(t *testing.T) {
 	}
 
 	// An empty workflowID stores NULL (legacy project-level custom run).
-	res2, err := p.PlanCustom(ctx, projID, "", Brief{Brief: "legacy"}, nodes)
+	res2, err := p.PlanCustom(ctx, projID, "", Brief{Brief: "legacy"}, nodes, nil)
 	if err != nil {
 		t.Fatalf("PlanCustom legacy: %v", err)
 	}
@@ -294,7 +295,7 @@ func TestPlanCustomBuiltinPrompt(t *testing.T) {
 	ctx := context.Background()
 
 	nodes := []WorkflowNode{{ID: "node-script", Type: "script", PromptID: "builtin:script-basic"}}
-	res, err := p.PlanCustom(ctx, projID, "", Brief{Brief: "b"}, nodes)
+	res, err := p.PlanCustom(ctx, projID, "", Brief{Brief: "b"}, nodes, nil)
 	if err != nil {
 		t.Fatalf("PlanCustom: %v", err)
 	}
@@ -308,15 +309,14 @@ func TestPlanCustomBuiltinPrompt(t *testing.T) {
 	}
 }
 
-func TestHasCustomNode(t *testing.T) {
-	if HasCustomNode([]WorkflowNode{{ID: "a", Type: "script"}}) {
-		t.Fatal("builtin-only graph should not report custom node")
+func TestHasUnboundCustomNode(t *testing.T) {
+	annotated := []WorkflowNode{{ID: "a", Type: "custom:note"}}
+	if !HasUnboundCustomNode(annotated) {
+		t.Fatal("annotation custom node must be unbound")
 	}
-	if !HasCustomNode([]WorkflowNode{
-		{ID: "a", Type: "script"},
-		{ID: "b", Type: "custom:translate", DependsOn: []string{"a"}},
-	}) {
-		t.Fatal("graph with custom: node should report custom node")
+	typed := []WorkflowNode{{ID: "a", Type: "custom:llm", TypeId: "reg-1"}}
+	if HasUnboundCustomNode(typed) {
+		t.Fatal("typed custom node must NOT be unbound")
 	}
 }
 
@@ -333,7 +333,7 @@ func TestPlanCustomInlinePromptText(t *testing.T) {
 		PromptID:   "nonexistent-id",
 		PromptText: "临时手写的系统提示词内容",
 	}}
-	res, err := p.PlanCustom(ctx, projID, "", Brief{Brief: "b"}, nodes)
+	res, err := p.PlanCustom(ctx, projID, "", Brief{Brief: "b"}, nodes, nil)
 	if err != nil {
 		t.Fatalf("PlanCustom: %v", err)
 	}
@@ -344,5 +344,122 @@ func TestPlanCustomInlinePromptText(t *testing.T) {
 	}
 	if !strings.Contains(inputJSON, "临时手写的系统提示词内容") {
 		t.Fatalf("inline PromptText not used as systemPrompt: %q", inputJSON)
+	}
+}
+
+// TestPlanCustom_TypedVariableRewrite: a typed custom node gets its variable
+// bindings rewritten from local node ids to todo ids (two-pass) and the final
+// input_json has sourceTodoId with NO sourceNodeId key.
+func TestPlanCustom_TypedVariableRewrite(t *testing.T) {
+	p, st, projID := newPlanner(t, nil)
+	ctx := context.Background()
+
+	// Seed a workflow.
+	wfID := "wf_" + randHex2()
+	if _, err := st.Pool().Exec(ctx,
+		`INSERT INTO workflows (id, project_id, name, nodes) VALUES ($1,$2,'wf','[]')`, wfID, projID); err != nil {
+		t.Fatalf("seed workflow: %v", err)
+	}
+
+	// script-1 → c1 (typed custom node referencing registry entry "reg-1").
+	// VarBindings on the node bind {{draft}} to script-1 (workflow-local id).
+	// Registry params do NOT carry variables (that would be wrong — they're org-level).
+	regParams, _ := json.Marshal(map[string]interface{}{
+		"systemPrompt": "s", "userPrompt": "{{draft}}", "outputFormat": "text",
+	})
+	nodes := []WorkflowNode{
+		{ID: "script-1", Type: "script"},
+		{
+			ID: "c1", Type: "custom:llm", TypeId: "reg-1",
+			DependsOn:   []string{"script-1"},
+			VarBindings: []CustomVariable{{Name: "draft", SourceNodeId: "script-1"}},
+		},
+	}
+	resolved := map[string]ResolvedType{
+		"c1": {Kind: "llm", Params: regParams},
+	}
+
+	res, err := p.PlanCustom(ctx, projID, wfID, Brief{Brief: "b"}, nodes, resolved)
+	if err != nil {
+		t.Fatalf("PlanCustom: %v", err)
+	}
+
+	// Determine the script-1 todo id from the idMap by querying the DB.
+	var scriptTodoID string
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT id FROM todos WHERE plan_id=$1 AND type='script'`, res.PlanID).Scan(&scriptTodoID); err != nil {
+		t.Fatalf("query script todo id: %v", err)
+	}
+
+	// Read c1's input_json after pass 2.
+	var rawInput string
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT input_json FROM todos WHERE plan_id=$1 AND type='custom:llm'`, res.PlanID).Scan(&rawInput); err != nil {
+		t.Fatalf("query c1 input_json: %v", err)
+	}
+
+	var got map[string]interface{}
+	if err := json.Unmarshal([]byte(rawInput), &got); err != nil {
+		t.Fatalf("unmarshal input_json: %v", err)
+	}
+
+	if got["kind"] != "llm" {
+		t.Fatalf("expected kind==\"llm\", got %v", got["kind"])
+	}
+
+	params, ok := got["params"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("params not a map: %T", got["params"])
+	}
+
+	vars, ok := params["variables"].([]interface{})
+	if !ok || len(vars) != 1 {
+		t.Fatalf("expected 1 variable, got %v", params["variables"])
+	}
+
+	v, ok := vars[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("variable not a map: %T", vars[0])
+	}
+
+	// Must have sourceTodoId == the script todo's id.
+	if v["sourceTodoId"] != scriptTodoID {
+		t.Fatalf("sourceTodoId=%q want %q", v["sourceTodoId"], scriptTodoID)
+	}
+	// Must NOT have sourceNodeId key (pass 2 drops the local key).
+	if _, has := v["sourceNodeId"]; has {
+		t.Fatalf("sourceNodeId should not be present after pass 2 rewrite, got input_json=%s", rawInput)
+	}
+}
+
+// TestPlanCustom_VariableNotInDependsOn: a typed node whose VarBindings reference
+// a node NOT in DependsOn must be rejected with an error containing "must be in dependsOn".
+func TestPlanCustom_VariableNotInDependsOn(t *testing.T) {
+	p, _, projID := newPlanner(t, nil)
+	ctx := context.Background()
+
+	regParams, _ := json.Marshal(map[string]interface{}{
+		"systemPrompt": "s", "userPrompt": "{{draft}}", "outputFormat": "text",
+	})
+	// c1 depends only on script-1 but binds to "script-2" (not in DependsOn).
+	nodes := []WorkflowNode{
+		{ID: "script-1", Type: "script"},
+		{ID: "script-2", Type: "script"},
+		{
+			ID: "c1", Type: "custom:llm", TypeId: "reg-1",
+			DependsOn:   []string{"script-1"},
+			VarBindings: []CustomVariable{{Name: "draft", SourceNodeId: "script-2"}},
+		},
+	}
+	resolved := map[string]ResolvedType{
+		"c1": {Kind: "llm", Params: regParams},
+	}
+
+	_, err := p.PlanCustom(ctx, projID, "", Brief{Brief: "b"}, nodes, resolved)
+	if err == nil {
+		t.Fatal("expected error for binding outside DependsOn, got nil")
+	}
+	if !strings.Contains(err.Error(), "must be in dependsOn") {
+		t.Fatalf("error should contain \"must be in dependsOn\", got: %v", err)
 	}
 }

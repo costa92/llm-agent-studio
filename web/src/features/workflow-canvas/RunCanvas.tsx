@@ -334,12 +334,21 @@ function RunCanvasInner({
         )}
       </div>
 
-      {/* 右：选中工件预览（资产）。无选中则回落最近 done 资产。 */}
+      {/* 右：选中工件预览（资产 或 自定义节点文本产物）。无选中则回落最近 done 资产。 */}
       <aside className="flex w-[260px] shrink-0 flex-col overflow-y-auto border-l border-line bg-bg-surface p-4">
         <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
           选中工件
         </h4>
-        {previewAssetId ? (
+        {selection?.kind === "custom" ? (
+          <div className="flex flex-col gap-1.5">
+            <p className="text-[11px] text-text-3">
+              {selection.outputFormat === "json" ? "JSON 产物" : "文本产物"}
+            </p>
+            <pre className="overflow-auto rounded-md border border-line bg-bg-base p-2 text-[11px] leading-relaxed text-text-1 whitespace-pre-wrap break-words">
+              {selection.output}
+            </pre>
+          </div>
+        ) : previewAssetId ? (
           <SelectedAssetPanel
             org={org}
             assetId={previewAssetId}

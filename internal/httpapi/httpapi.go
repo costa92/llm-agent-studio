@@ -56,6 +56,7 @@ type Deps struct {
 	PromptBuilder *prompt.Builder
 	PromptStore   *prompt.Store
 	GenQuota      int // rolling-24h per-org generation quota; 0 = unlimited
+	CustomNodeType CustomNodeTypeStore // org-scoped typed custom node registry; nil in focused unit tests
 
 	// ModelAvailable reports whether a catalog (provider, kind) entry is actually
 	// usable — i.e. its provider API key is configured so the adapter is/will be
@@ -151,7 +152,7 @@ func NewMux(d Deps) *http.ServeMux {
 	// Project-scoped routes ({id}).
 	mux.Handle("GET /api/projects/{id}", proj(roleViewer, getProjectHandler(d.Projects)))
 	mux.Handle("PUT /api/projects/{id}", proj(roleEditor, updateProjectHandler(d.Projects)))
-	mux.Handle("POST /api/projects/{id}/run", proj(roleEditor, runHandler(d.Projects, d.Planner, d.Events, d.Cost, d.GenQuota, d.ChatRouter)))
+	mux.Handle("POST /api/projects/{id}/run", proj(roleEditor, runHandler(d.Projects, d.Planner, d.Events, d.Cost, d.GenQuota, d.ChatRouter, d.CustomNodeType)))
 	mux.Handle("POST /api/projects/{id}/cancel", proj(roleEditor, cancelHandler(d.Projects)))
 	mux.Handle("GET /api/projects/{id}/plans", proj(roleViewer, listPlansHandler(d.Projects)))
 	mux.Handle("GET /api/projects/{id}/state", proj(roleViewer, stateHandler(d.Projects)))
@@ -169,7 +170,7 @@ func NewMux(d Deps) *http.ServeMux {
 		mux.Handle("POST /api/projects/{id}/workflows", proj(roleEditor, createWorkflowHandler(d.Workflows)))
 		mux.Handle("PUT /api/projects/{id}/workflows/{wfId}", proj(roleEditor, updateWorkflowHandler(d.Workflows)))
 		mux.Handle("DELETE /api/projects/{id}/workflows/{wfId}", proj(roleEditor, deleteWorkflowHandler(d.Workflows)))
-		mux.Handle("POST /api/projects/{id}/workflows/{wfId}/run", proj(roleEditor, runWorkflowHandler(d.Projects, d.Workflows, d.Planner, d.Events, d.Cost, d.GenQuota)))
+		mux.Handle("POST /api/projects/{id}/workflows/{wfId}/run", proj(roleEditor, runWorkflowHandler(d.Projects, d.Workflows, d.Planner, d.Events, d.Cost, d.GenQuota, d.CustomNodeType)))
 	}
 
 	// Project cover image (3 sources: AI-generate / upload / pick existing).
@@ -230,6 +231,12 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("PUT /api/orgs/{org}/storage-configs/{id}", scoped(roleAdmin, orgScope, updateOrgStorageConfigHandler(d.StorageConfig)))
 	mux.Handle("DELETE /api/orgs/{org}/storage-configs/{id}", scoped(roleAdmin, orgScope, deleteOrgStorageConfigHandler(d.StorageConfig)))
 	mux.Handle("POST /api/orgs/{org}/storage-configs/{id}/default", scoped(roleAdmin, orgScope, setDefaultStorageConfigHandler(d.StorageConfig)))
+	if d.CustomNodeType != nil {
+		mux.Handle("GET /api/orgs/{org}/custom-node-types", scoped(roleViewer, orgScope, listCustomNodeTypesHandler(d.CustomNodeType)))
+		mux.Handle("POST /api/orgs/{org}/custom-node-types", scoped(roleEditor, orgScope, createCustomNodeTypeHandler(d.CustomNodeType)))
+		mux.Handle("PUT /api/orgs/{org}/custom-node-types/{id}", scoped(roleEditor, orgScope, updateCustomNodeTypeHandler(d.CustomNodeType)))
+		mux.Handle("DELETE /api/orgs/{org}/custom-node-types/{id}", scoped(roleEditor, orgScope, deleteCustomNodeTypeHandler(d.CustomNodeType)))
+	}
 	// Org 成员管理 (org-scoped). 列出对任意 org 成员开放 (viewer)；增删改角色限 org_admin (admin).
 	mux.Handle("GET /api/orgs/{org}/members", scoped(roleViewer, orgScope, listMembersHandler(d.Members)))
 	mux.Handle("POST /api/orgs/{org}/members", scoped(roleAdmin, orgScope, addMemberHandler(d.Members)))

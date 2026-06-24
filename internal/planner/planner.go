@@ -154,6 +154,35 @@ type WorkflowNode struct {
 	// (not saved to the library). Takes precedence over PromptID when non-empty.
 	PromptText string   `json:"promptText"`
 	DependsOn  []string `json:"dependsOn"`
+	// TypeId references a custom_node_types.id (org registry). Non-empty ⇒ a
+	// runnable "typed" custom node; empty on a custom:* node ⇒ Phase 1 annotation
+	// (non-runnable). Discriminator for HasUnboundCustomNode + run resolution.
+	TypeId string `json:"typeId"`
+	// VarBindings binds the template's {{name}} tokens to upstream workflow-LOCAL
+	// node ids. Lives on the node instance (NOT registry params) because sourceNodeId
+	// is workflow-local. PlanCustom reads THIS to inject params.variables + two-pass
+	// rewrite local→todo. Empty for annotation nodes.
+	VarBindings []CustomVariable `json:"varBindings"`
+}
+
+// CustomVariable binds a template var name to an upstream node's text output.
+// SourceNodeId is a workflow-LOCAL node id at plan time (lives on the node's
+// VarBindings); PlanCustom rewrites it to the produced todo id (SourceTodoId)
+// after CreateGraph (two-pass) and injects it into params.variables.
+type CustomVariable struct {
+	Name         string `json:"name"`
+	SourceNodeId string `json:"sourceNodeId,omitempty"`
+	SourceTodoId string `json:"sourceTodoId,omitempty"`
+}
+
+// ResolvedType is the run handler's per-node registry resolution (org-scoped):
+// the entry's Kind + raw Params (LlmParams: systemPrompt/userPrompt/model/
+// temperature/outputFormat — NO variables; variable bindings come from the node's
+// VarBindings). The handler builds map[nodeID]ResolvedType and passes it into
+// PlanCustom; the planner never reads the registry (store-thin).
+type ResolvedType struct {
+	Kind   string
+	Params json.RawMessage
 }
 
 // ValidateCustomGraph enforces the custom-workflow DAG rules (non-empty, unique
@@ -220,12 +249,12 @@ func ValidateCustomGraph(nodes []WorkflowNode) error {
 	return nil
 }
 
-// HasCustomNode reports whether any node is a user-defined custom type
-// (custom:* prefix). Run handlers use this to refuse running workflows whose
-// custom nodes have no executor yet (Phase 1). Save handlers do NOT call this.
-func HasCustomNode(nodes []WorkflowNode) bool {
+// HasUnboundCustomNode reports whether any node is a custom:* node WITHOUT a
+// typeId (= a Phase 1 annotation, non-runnable). Run handlers refuse such
+// workflows (typed-only workflows are runnable). Discriminator = explicit typeId.
+func HasUnboundCustomNode(nodes []WorkflowNode) bool {
 	for _, n := range nodes {
-		if isCustomType(n.Type) {
+		if isCustomType(n.Type) && n.TypeId == "" {
 			return true
 		}
 	}
@@ -236,9 +265,37 @@ func HasCustomNode(nodes []WorkflowNode) bool {
 // planner. workflowID ties the run (plans row) to its first-class workflow so a
 // workflow's runs/assets/timeline can be isolated; pass "" for the legacy
 // project-level custom run (stored as NULL workflow_id).
-func (p *Planner) PlanCustom(ctx context.Context, projectID, workflowID string, b Brief, nodes []WorkflowNode) (Result, error) {
+// resolved is the handler-built org-scoped registry map (nodeID→ResolvedType);
+// nil/empty means no typed custom nodes in this workflow.
+func (p *Planner) PlanCustom(ctx context.Context, projectID, workflowID string, b Brief, nodes []WorkflowNode, resolved map[string]ResolvedType) (Result, error) {
 	if err := ValidateCustomGraph(nodes); err != nil {
 		return Result{}, fmt.Errorf("planner: validate custom graph: %w", err)
+	}
+
+	// Validate typed-node variable bindings: every binding's SourceNodeId MUST be an
+	// upstream dependency (in DependsOn) so the data is actually produced before this
+	// node runs. Reject otherwise (would read a non-existent / unordered output).
+	// Bindings live on the NODE (n.VarBindings), not registry params.
+	depSet := make(map[string]map[string]bool, len(nodes))
+	for _, n := range nodes {
+		ds := make(map[string]bool, len(n.DependsOn))
+		for _, d := range n.DependsOn {
+			ds[d] = true
+		}
+		depSet[n.ID] = ds
+	}
+	for _, n := range nodes {
+		if _, ok := resolved[n.ID]; !ok {
+			continue // not a typed node
+		}
+		for _, v := range n.VarBindings {
+			if v.SourceNodeId == "" {
+				continue
+			}
+			if !depSet[n.ID][v.SourceNodeId] {
+				return Result{}, fmt.Errorf("planner: custom node %q variable %q sourceNodeId %q must be in dependsOn", n.ID, v.Name, v.SourceNodeId)
+			}
+		}
 	}
 
 	planID := newID()
@@ -256,29 +313,48 @@ func (p *Planner) PlanCustom(ctx context.Context, projectID, workflowID string, 
 	specs := make([]todos.NodeSpec, 0, len(nodes))
 	for _, n := range nodes {
 		inputMap := map[string]interface{}{}
-		if n.Type == "script" {
-			inputMap["brief"] = b.Brief
-			inputMap["contentType"] = b.ContentType
-			inputMap["targetPlatform"] = b.TargetPlatform
-			inputMap["style"] = b.Style
-		}
+		if rt, ok := resolved[n.ID]; ok {
+			// Typed custom node: write {kind, params} into input_json. params = the
+			// registry params (NO variables) PLUS an injected variables list built from
+			// the NODE's VarBindings, with LOCAL sourceNodeId here; pass 2 (after
+			// CreateGraph) rewrites each to its todo id.
+			var params map[string]interface{}
+			if err := json.Unmarshal(rt.Params, &params); err != nil {
+				return Result{}, fmt.Errorf("planner: unmarshal resolved params for %q: %w", n.ID, err)
+			}
+			vars := make([]map[string]interface{}, 0, len(n.VarBindings))
+			for _, v := range n.VarBindings {
+				vars = append(vars, map[string]interface{}{"name": v.Name, "sourceNodeId": v.SourceNodeId})
+			}
+			params["variables"] = vars
+			inputMap["kind"] = rt.Kind
+			inputMap["params"] = params
+		} else {
+			// Built-in node (script/storyboard/asset): existing prompt-precedence logic.
+			if n.Type == "script" {
+				inputMap["brief"] = b.Brief
+				inputMap["contentType"] = b.ContentType
+				inputMap["targetPlatform"] = b.TargetPlatform
+				inputMap["style"] = b.Style
+			}
 
-		// Prompt precedence: inline custom text > PromptID (builtin/library) >
-		// the agent's built-in default (no systemPrompt set).
-		if n.PromptText != "" {
-			inputMap["systemPrompt"] = n.PromptText
-		} else if n.PromptID != "" {
-			// Built-in presets ("builtin:…") resolve from code (no DB row); any
-			// other id is an org prompt-library entry resolved from the table.
-			if content, ok := prompt.BasicPromptContent(n.PromptID); ok {
-				inputMap["systemPrompt"] = content
-			} else {
-				var promptContent string
-				err := p.db.WithContext(ctx).Raw("SELECT content FROM prompts WHERE id=$1", n.PromptID).Row().Scan(&promptContent)
-				if err != nil {
-					return Result{}, fmt.Errorf("planner: get prompt %q: %w", n.PromptID, err)
+			// Prompt precedence: inline custom text > PromptID (builtin/library) >
+			// the agent's built-in default (no systemPrompt set).
+			if n.PromptText != "" {
+				inputMap["systemPrompt"] = n.PromptText
+			} else if n.PromptID != "" {
+				// Built-in presets ("builtin:…") resolve from code (no DB row); any
+				// other id is an org prompt-library entry resolved from the table.
+				if content, ok := prompt.BasicPromptContent(n.PromptID); ok {
+					inputMap["systemPrompt"] = content
+				} else {
+					var promptContent string
+					err := p.db.WithContext(ctx).Raw("SELECT content FROM prompts WHERE id=$1", n.PromptID).Row().Scan(&promptContent)
+					if err != nil {
+						return Result{}, fmt.Errorf("planner: get prompt %q: %w", n.PromptID, err)
+					}
+					inputMap["systemPrompt"] = promptContent
 				}
-				inputMap["systemPrompt"] = promptContent
 			}
 		}
 
@@ -295,6 +371,44 @@ func (p *Planner) PlanCustom(ctx context.Context, projectID, workflowID string, 
 	idMap, err := p.todos.CreateGraph(ctx, projectID, planID, specs)
 	if err != nil {
 		return Result{}, fmt.Errorf("planner: create todo graph: %w", err)
+	}
+
+	// Pass 2: rewrite each typed-node binding's sourceNodeId (local) → sourceTodoId
+	// (todo id from idMap) and UPDATE input_json. The local→todo map only exists now.
+	// Source of truth is the NODE's VarBindings (registry params never held variables).
+	for _, n := range nodes {
+		rt, ok := resolved[n.ID]
+		if !ok {
+			continue
+		}
+		if len(n.VarBindings) == 0 {
+			continue
+		}
+		var params map[string]interface{}
+		if err := json.Unmarshal(rt.Params, &params); err != nil {
+			return Result{}, fmt.Errorf("planner: re-parse params for %q: %w", n.ID, err)
+		}
+		newVars := make([]map[string]interface{}, 0, len(n.VarBindings))
+		for _, v := range n.VarBindings {
+			out := map[string]interface{}{"name": v.Name}
+			if v.SourceNodeId != "" {
+				todoID, ok := idMap[v.SourceNodeId]
+				if !ok {
+					return Result{}, fmt.Errorf("planner: variable %q references unknown local node %q", v.Name, v.SourceNodeId)
+				}
+				out["sourceTodoId"] = todoID // drop the local sourceNodeId key
+			}
+			newVars = append(newVars, out)
+		}
+		params["variables"] = newVars
+		inputBytes, err := json.Marshal(map[string]interface{}{"kind": rt.Kind, "params": params})
+		if err != nil {
+			return Result{}, fmt.Errorf("planner: marshal rewritten input for %q: %w", n.ID, err)
+		}
+		if err := p.db.WithContext(ctx).Exec(
+			`UPDATE todos SET input_json=$1 WHERE id=$2`, inputBytes, idMap[n.ID]).Error; err != nil {
+			return Result{}, fmt.Errorf("planner: update typed node input for %q: %w", n.ID, err)
+		}
 	}
 
 	var ready []ReadyTodo

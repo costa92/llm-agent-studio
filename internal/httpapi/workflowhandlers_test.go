@@ -83,7 +83,7 @@ func TestCreateWorkflowHandlerHappy(t *testing.T) {
 
 func TestRunWorkflowHandlerNotFound(t *testing.T) {
 	ws := &stubWorkflows{getErr: workflows.ErrNotFound}
-	h := runWorkflowHandler(stubProjects{orgID: "o1"}, ws, &recordingPlanner{}, stubAppender{}, &stubCost{count: 0}, 100)
+	h := runWorkflowHandler(stubProjects{orgID: "o1"}, ws, &recordingPlanner{}, stubAppender{}, &stubCost{count: 0}, 100, nil)
 	req := httptest.NewRequest("POST", "/api/projects/p1/workflows/missing/run", nil)
 	req.SetPathValue("id", "p1")
 	req.SetPathValue("wfId", "missing")
@@ -100,7 +100,7 @@ func TestRunWorkflowHandlerPassesWorkflowID(t *testing.T) {
 		Nodes: json.RawMessage(`[{"id":"n1","type":"script","promptId":"","dependsOn":[]}]`),
 	}}
 	rp := &recordingPlanner{}
-	h := runWorkflowHandler(stubProjects{orgID: "o1"}, ws, rp, stubAppender{}, &stubCost{count: 0}, 100)
+	h := runWorkflowHandler(stubProjects{orgID: "o1"}, ws, rp, stubAppender{}, &stubCost{count: 0}, 100, nil)
 	req := httptest.NewRequest("POST", "/api/projects/p1/workflows/wfX/run", nil)
 	req.SetPathValue("id", "p1")
 	req.SetPathValue("wfId", "wfX")
@@ -116,7 +116,7 @@ func TestRunWorkflowHandlerPassesWorkflowID(t *testing.T) {
 
 func TestRunWorkflowHandlerEmptyNodes(t *testing.T) {
 	ws := &stubWorkflows{got: workflows.Workflow{Name: "wf", Nodes: json.RawMessage(`[]`)}}
-	h := runWorkflowHandler(stubProjects{orgID: "o1"}, ws, &recordingPlanner{}, stubAppender{}, &stubCost{count: 0}, 100)
+	h := runWorkflowHandler(stubProjects{orgID: "o1"}, ws, &recordingPlanner{}, stubAppender{}, &stubCost{count: 0}, 100, nil)
 	req := httptest.NewRequest("POST", "/api/projects/p1/workflows/wfX/run", nil)
 	req.SetPathValue("id", "p1")
 	req.SetPathValue("wfId", "wfX")
@@ -205,7 +205,7 @@ func TestRunWorkflow_CyclicReturns400(t *testing.T) {
 		Nodes: json.RawMessage(`[{"id":"A","type":"script","dependsOn":["B"]},{"id":"B","type":"storyboard","dependsOn":["A"]}]`),
 	}}
 	ev := &trackingAppender{}
-	h := runWorkflowHandler(stubProjects{orgID: "o1"}, ws, &recordingPlanner{}, ev, &stubCost{count: 0}, 100)
+	h := runWorkflowHandler(stubProjects{orgID: "o1"}, ws, &recordingPlanner{}, ev, &stubCost{count: 0}, 100, nil)
 	req := httptest.NewRequest("POST", "/api/projects/p1/workflows/wfCycle/run", nil)
 	req.SetPathValue("id", "p1")
 	req.SetPathValue("wfId", "wfCycle")
@@ -228,7 +228,7 @@ func TestRunWorkflowHandlerRefusesCustomNodes(t *testing.T) {
 		Name:  "wf-custom",
 		Nodes: json.RawMessage(nodes),
 	}}
-	h := runWorkflowHandler(stubProjects{orgID: "o1"}, ws, &recordingPlanner{}, stubAppender{}, &stubCost{count: 0}, 100)
+	h := runWorkflowHandler(stubProjects{orgID: "o1"}, ws, &recordingPlanner{}, stubAppender{}, &stubCost{count: 0}, 100, nil)
 	req := httptest.NewRequest("POST", "/api/projects/p1/workflows/wfC/run", nil)
 	req.SetPathValue("id", "p1")
 	req.SetPathValue("wfId", "wfC")
@@ -237,12 +237,12 @@ func TestRunWorkflowHandlerRefusesCustomNodes(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("custom-node run should 400, got %d: %s", rr.Code, rr.Body.String())
 	}
-	if !strings.Contains(rr.Body.String(), "暂不支持运行") {
-		t.Fatalf("body should contain \"暂不支持运行\", got: %s", rr.Body.String())
+	if !strings.Contains(rr.Body.String(), "未绑定类型") {
+		t.Fatalf("body should contain \"未绑定类型\", got: %s", rr.Body.String())
 	}
 }
 
-func (rp *recordingPlanner) PlanCustom(_ context.Context, _, workflowID string, _ planner.Brief, _ []planner.WorkflowNode) (planner.Result, error) {
+func (rp *recordingPlanner) PlanCustom(_ context.Context, _, workflowID string, _ planner.Brief, _ []planner.WorkflowNode, _ map[string]planner.ResolvedType) (planner.Result, error) {
 	rp.gotWorkflowID = workflowID
 	return planner.Result{PlanID: "pl", Valid: true, ReadyTodos: []planner.ReadyTodo{{ID: "t1", Type: "script"}}}, nil
 }

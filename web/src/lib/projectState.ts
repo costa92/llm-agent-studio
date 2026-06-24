@@ -29,6 +29,10 @@ export interface GraphNode {
   type: string
   status: GraphNodeStatus
   assetId?: string
+  // custom 节点 (node_outputs) 的文本/JSON 产物，供运行视图选中面板渲染 (T3)。
+  output?: string
+  // output 非空时有意义；∈ "text" | "json"。
+  outputFormat?: "text" | "json"
 }
 
 export interface GraphEdge {

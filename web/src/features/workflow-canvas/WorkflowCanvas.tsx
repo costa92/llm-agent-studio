@@ -46,7 +46,7 @@ import {
   createNode,
   collectCustomTypes,
   applyTypeDisplay,
-  hasCustomNode,
+  hasUnboundCustomNode,
   type StudioNodeData,
   type RFNode,
   type RFEdge,
@@ -57,13 +57,15 @@ import { StudioEdge } from "./StudioEdge"
 import { NodeTypePicker } from "./NodeTypePicker"
 import { CanvasActionsProvider } from "./CanvasActionsContext"
 import { HelperLines } from "./HelperLines"
-import { NodePalette, PALETTE_DND_TYPE } from "./NodePalette"
+import { NodePalette, PALETTE_DND_TYPE, PALETTE_DND_TYPEID } from "./NodePalette"
 import { PropertiesPanel } from "./PropertiesPanel"
 import { NODE_COLOR, isCustomType, slugify } from "./nodeColor"
 import { RunCanvas } from "./RunCanvas"
 import { ModeToggle } from "./ModeToggle"
 import { CanvasContextMenu, type ContextMenuItem } from "./CanvasContextMenu"
 import { CustomTypeDialog, type CustomTypePayload } from "./CustomTypeDialog"
+import { useCustomNodeTypes } from "@/features/custom-node-types/api"
+import type { LlmParams } from "@/lib/types"
 
 export type CanvasMode = "edit" | "run"
 
@@ -145,7 +147,39 @@ function CanvasInner({
     | { mode: "insert"; screenX: number; screenY: number; flow: { x: number; y: number }; edgeId: string }
     | null
   >(null)
-  const customTypes = useMemo(() => collectCustomTypes(rfNodes as RFNode[]), [rfNodes])
+  // org 级 typed 自定义节点类型（注册表）。
+  const { data: orgTypedTypes = [] } = useCustomNodeTypes(org)
+
+  // 合并画布 annotation 类型（来自 collectCustomTypes）+ org 注册表 typed 类型。
+  // typed 类型带 typeId（= org registry id），区分于 annotation（无 typeId）。
+  const customTypes = useMemo(() => {
+    // Only feed annotation nodes (no typeId) into collectCustomTypes — typed nodes
+    // (typeId set) are already represented by their org-registry entry and must NOT
+    // shadow it. If they were included, placing one typed node would replace the
+    // registry entry's typeId with undefined, so re-dragging the slug creates a
+    // non-runnable annotation node instead of a typed one (Important 3).
+    const annotationOnly = (rfNodes as RFNode[]).filter((n) => !n.data.node.typeId)
+    const annotation = collectCustomTypes(annotationOnly)
+    const typed = orgTypedTypes.map((ct) => ({
+      type: `custom:${ct.slug}`,
+      label: ct.label,
+      color: ct.color,
+      typeId: ct.id,
+    }))
+    // annotation 类型以 type 去重；typed 类型优先（registry entry 始终覆盖 annotation）。
+    const allAnnotationTypes = new Set(annotation.map((a) => a.type))
+    const mergedTyped = typed.filter((t) => !allAnnotationTypes.has(t.type))
+    return [...annotation, ...mergedTyped]
+  }, [rfNodes, orgTypedTypes])
+
+  // typeId → LlmParams 的快速查找表（PropertiesPanel 用于解析 {{name}} 模板）。
+  const typedParamsById = useMemo(() => {
+    const m = new Map<string, LlmParams>()
+    for (const ct of orgTypedTypes) {
+      m.set(ct.id, ct.params)
+    }
+    return m
+  }, [orgTypedTypes])
   const [typeDialog, setTypeDialog] = useState<
     | { mode: "create" }
     | { mode: "edit"; type: string; initial: CustomTypePayload }
@@ -197,8 +231,13 @@ function CanvasInner({
       if (!type) return
       takeSnapshot()
       const pos = screenToFlowPosition({ x: e.clientX, y: e.clientY })
-      const display = isCustomType(type)
+      // typed 节点从 dataTransfer 读 typeId（palette chip 写入 PALETTE_DND_TYPEID）。
+      const droppedTypeId = e.dataTransfer.getData(PALETTE_DND_TYPEID) || undefined
+      const displayBase = isCustomType(type)
         ? customTypes.find((c) => c.type === type)
+        : undefined
+      const display = displayBase
+        ? { ...displayBase, ...(droppedTypeId ? { typeId: droppedTypeId } : {}) }
         : undefined
       setRfNodes((nds) => addNodeAt(nds as RFNode[], type, pos, prompts, undefined, display))
     },
@@ -289,8 +328,9 @@ function CanvasInner({
   )
 
   // 选择器选中类型后落地：create 模式新建节点 + 连边；insert 模式在边上拆分。
+  // display.typeId 非空 = typed 节点（org 注册表条目），写入节点实例。
   const onPickType = useCallback(
-    (type: string, display?: { label: string; color: string }) => {
+    (type: string, display?: { label: string; color: string; typeId?: string }) => {
       if (!picker) return
       if (picker.mode === "create") {
         const built = createNode(
@@ -749,7 +789,7 @@ function CanvasInner({
     onCreated,
   ])
 
-  const runDisabled = useMemo(() => hasCustomNode(rfNodes as RFNode[]), [rfNodes])
+  const runDisabled = useMemo(() => hasUnboundCustomNode(rfNodes as RFNode[]), [rfNodes])
 
   const otherIds = (rfNodes as RFNode[])
     .filter((n) => n.id !== selectedId)
@@ -785,8 +825,8 @@ function CanvasInner({
           {/* 编辑 | 运行 模式切换（新建态隐藏：尚无可运行的 workflow）。 */}
           {!isCreate && onModeChange && (
             runDisabled ? (
-              <span className="text-[12px] text-text-3" title="当前 Workflow 包含自定义节点，暂不支持运行">
-                含自定义节点 · 暂不支持运行
+              <span className="text-[12px] text-text-3" title="含未绑定类型的自定义节点 · 暂不支持运行">
+                含未绑定类型的自定义节点 · 暂不支持运行
               </span>
             ) : (
               <ModeToggle mode="edit" onChange={onModeChange} />
@@ -949,6 +989,14 @@ function CanvasInner({
           onPatch={patchSelected}
           onRename={renameSelected}
           onDelete={deleteSelected}
+          typedParams={selected?.typeId ? typedParamsById.get(selected.typeId) : undefined}
+          upstreamNodes={
+            selected
+              ? (rfNodes as RFNode[])
+                  .filter((n) => selected.dependsOn.includes(n.id))
+                  .map((n) => ({ id: n.id, label: n.data.node.label ?? n.id }))
+              : []
+          }
           onEditType={
             selected && isCustomType(selected.type)
               ? () => {

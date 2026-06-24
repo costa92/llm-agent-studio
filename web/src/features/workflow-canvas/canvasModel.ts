@@ -105,6 +105,11 @@ export function toStudioNodes(
     if (n.promptText) out.promptText = n.promptText
     if (n.label) out.label = n.label
     if (n.color) out.color = n.color
+    // typeId 不是免费透传：toStudioNodes 逐字段重建 WorkflowNode，必须显式拷贝，
+    // 否则首次画布编辑保存即丢 typeId (T1)。
+    if (n.typeId) out.typeId = n.typeId
+    // varBindings 同理：每节点变量绑定也必须显式拷贝，否则编辑保存即丢绑定 (T1)。
+    if (n.varBindings && n.varBindings.length) out.varBindings = n.varBindings
     return out
   })
 }
@@ -156,14 +161,15 @@ export function nextNodeId(rfNodes: RFNode[]): string {
 // 在 pos 处追加一个新节点（纯 reducer，避免 DnD 事件测试抖动）。
 // 默认 id 由 nextNodeId 生成；调用方可传 id 覆盖（B2 拖到空白后需与新建的边对齐）。
 // promptId 取该 type 的 org 默认提示词，无则空串。
-// display 可选：自定义节点的 label/color 透传到 WorkflowNode。
+// display 可选：自定义节点的 label/color/typeId 透传到 WorkflowNode。
+// typeId 非空时写入节点（typed 可运行节点）；缺失则为 annotation（Phase 1 草图节点）。
 export function addNodeAt(
   rfNodes: RFNode[],
   type: string,
   pos: { x: number; y: number },
   prompts?: Prompt[],
   id?: string,
-  display?: { label?: string; color?: string },
+  display?: { label?: string; color?: string; typeId?: string },
 ): RFNode[] {
   const nodeId = id ?? nextNodeId(rfNodes)
   const node: WorkflowNode = {
@@ -175,6 +181,7 @@ export function addNodeAt(
     position: pos,
     ...(display?.label ? { label: display.label } : {}),
     ...(display?.color ? { color: display.color } : {}),
+    ...(display?.typeId ? { typeId: display.typeId } : {}),
   }
   return [
     ...rfNodes,
@@ -340,7 +347,7 @@ export function getHelperLines(
 // 在边 A->B 上插入一个新节点 N（纯函数）：移除 A->B，新增 A->N 与 N->B。
 // 新节点经 nextNodeId 分配 id，落在 midPos；promptId 取该 type org 默认。
 // 边带 type:"studio"（与所有连边构造点一致）。
-// display 可选：自定义节点的 label/color 透传到 WorkflowNode。
+// display 可选：自定义节点的 label/color/typeId 透传到 WorkflowNode。
 export function insertNodeOnEdge(
   rfNodes: RFNode[],
   rfEdges: RFEdge[],
@@ -348,7 +355,7 @@ export function insertNodeOnEdge(
   type: string,
   midPos: { x: number; y: number },
   prompts?: Prompt[],
-  display?: { label?: string; color?: string },
+  display?: { label?: string; color?: string; typeId?: string },
 ): { nodes: RFNode[]; edges: RFEdge[]; newId: string } {
   const edge = rfEdges.find((e) => e.id === edgeId)
   if (!edge) return { nodes: rfNodes, edges: rfEdges, newId: "" }
@@ -362,6 +369,7 @@ export function insertNodeOnEdge(
     position: midPos,
     ...(display?.label ? { label: display.label } : {}),
     ...(display?.color ? { color: display.color } : {}),
+    ...(display?.typeId ? { typeId: display.typeId } : {}),
   }
   const nodes: RFNode[] = [
     ...rfNodes,
@@ -387,7 +395,7 @@ export function insertNodeOnEdge(
 
 // 建节点（Phase D，泛化 onConnectEnd/边插入的「建点」语义）：
 // 有 source → 同时连 source→新节点；无 source → 仅建点。复用 addNodeAt + nextNodeId。
-// display 可选：自定义节点的 label/color 透传到 WorkflowNode。
+// display 可选：自定义节点的 label/color/typeId 透传到 WorkflowNode。
 export function createNode(
   rfNodes: RFNode[],
   rfEdges: RFEdge[],
@@ -395,7 +403,7 @@ export function createNode(
   pos: { x: number; y: number },
   prompts?: Prompt[],
   source?: string,
-  display?: { label?: string; color?: string },
+  display?: { label?: string; color?: string; typeId?: string },
 ): { nodes: RFNode[]; edges: RFEdge[]; newId: string } {
   const newId = nextNodeId(rfNodes)
   const nodes = addNodeAt(rfNodes, type, pos, prompts, newId, display)
@@ -437,9 +445,9 @@ export function applyTypeDisplay(
   )
 }
 
-// 画布是否含自定义节点（用于禁运行）。
-export function hasCustomNode(rfNodes: RFNode[]): boolean {
-  return rfNodes.some((n) => isCustomType(n.data.node.type))
+// 画布是否含未绑定 (annotation) 自定义节点（用于禁运行；typed 节点放行）。
+export function hasUnboundCustomNode(rfNodes: RFNode[]): boolean {
+  return rfNodes.some((n) => isCustomType(n.data.node.type) && !n.data.node.typeId)
 }
 
 // 连线重连（Phase D）：移除旧边、按新 source/target 追加重键后的边，其余边不动。

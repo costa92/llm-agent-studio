@@ -15,7 +15,7 @@ import {
   createNode,
   collectCustomTypes,
   applyTypeDisplay,
-  hasCustomNode,
+  hasUnboundCustomNode,
   type RFNode,
   type RFEdge,
 } from "./canvasModel"
@@ -744,9 +744,42 @@ describe("custom-type registry + cascade", () => {
     expect(next.find((n) => n.id === "s")!.data.node.label).toBeUndefined()
   })
 
-  it("hasCustomNode detects a custom node", () => {
-    expect(hasCustomNode([mk("s", "script")])).toBe(false)
-    expect(hasCustomNode([mk("s", "script"), mk("c", "custom:t")])).toBe(true)
+  describe("hasUnboundCustomNode (run-gate predicate)", () => {
+    // helper that sets typeId on the data node
+    const mkTyped = (id: string, type: string, typeId: string): RFNode => ({
+      id, type: "studio", position: { x: 0, y: 0 },
+      data: { node: { id, type, promptId: "", dependsOn: [], typeId } },
+    })
+
+    it("returns false for no custom nodes", () => {
+      expect(hasUnboundCustomNode([mk("s", "script")])).toBe(false)
+    })
+
+    it("returns false for a typed custom node (has typeId)", () => {
+      expect(hasUnboundCustomNode([mkTyped("c", "custom:translate", "reg-abc")])).toBe(false)
+    })
+
+    it("returns true for an annotation custom node (no typeId)", () => {
+      expect(hasUnboundCustomNode([mk("c", "custom:annot")])).toBe(true)
+    })
+
+    it("returns true for a mix of typed + annotation custom nodes", () => {
+      expect(
+        hasUnboundCustomNode([
+          mkTyped("c1", "custom:translate", "reg-abc"),
+          mk("c2", "custom:annot"),
+        ]),
+      ).toBe(true)
+    })
+
+    it("returns false for only typed custom nodes (workflow is runnable)", () => {
+      expect(
+        hasUnboundCustomNode([
+          mk("s", "script"),
+          mkTyped("c1", "custom:translate", "reg-abc"),
+        ]),
+      ).toBe(false)
+    })
   })
 
   it("createNode threads display onto the new node", () => {
@@ -754,6 +787,96 @@ describe("custom-type registry + cascade", () => {
     const n = res.nodes[0].data.node
     expect(n.label).toBe("翻译")
     expect(n.color).toBe("#333333")
+  })
+
+  it("createNode with display.typeId sets typeId on the created node (Task 13)", () => {
+    const res = createNode([], [], "custom:translate", { x: 0, y: 0 }, undefined, undefined, {
+      label: "翻译",
+      color: "#7c93ff",
+      typeId: "reg-abc",
+    })
+    const n = res.nodes[0].data.node
+    expect(n.typeId).toBe("reg-abc")
+    expect(n.label).toBe("翻译")
+    // toStudioNodes preserves typeId (already covered by T1 test, verify here end-to-end)
+    const { nodes: rfn, edges: rfe } = toReactFlow([n])
+    const out = toStudioNodes(rfn as RFNode[], rfe as RFEdge[])
+    expect(out[0].typeId).toBe("reg-abc")
+  })
+
+  it("addNodeAt with display.typeId sets typeId on the new node", () => {
+    const nodes = addNodeAt([], "custom:t", { x: 10, y: 20 }, undefined, undefined, {
+      label: "测试",
+      color: "#aabbcc",
+      typeId: "reg-xyz",
+    })
+    expect(nodes[0].data.node.typeId).toBe("reg-xyz")
+  })
+})
+
+describe("typeId + varBindings round-trip (T1)", () => {
+  it("preserves typeId + varBindings on a typed custom node round-trip (T1)", () => {
+    const typed: WorkflowNode[] = [
+      {
+        id: "n1",
+        type: "custom:translate",
+        typeId: "reg-123",
+        varBindings: [{ name: "draft", sourceNodeId: "script-1" }],
+        promptId: "",
+        dependsOn: ["script-1"],
+        label: "翻译",
+        color: "#7c93ff",
+      },
+    ]
+    const { nodes, edges } = toReactFlow(typed)
+    const out = toStudioNodes(nodes as RFNode[], edges as RFEdge[])
+    expect(out[0].typeId).toBe("reg-123")
+    expect(out[0].varBindings).toEqual([{ name: "draft", sourceNodeId: "script-1" }])
+    expect(out[0].label).toBe("翻译")
+  })
+})
+
+describe("typed node palette entry stability (Important 3)", () => {
+  // Once a typed node of slug 'translate' is on the canvas, the merged
+  // customTypes for that slug must still carry typeId (registry entry wins).
+  // Previously collectCustomTypes was fed ALL nodes including typed ones, which
+  // produced an annotation-shaped entry (no typeId) that then blocked the typed
+  // registry entry via allAnnotationTypes.has(t.type).
+  it("typed node on canvas does not shadow its registry entry (slug still carries typeId)", () => {
+    // Simulate one typed node already placed on the canvas.
+    const typedOnCanvas = mkNode("n1", { x: 0, y: 0 }, "custom:translate") as RFNode
+    typedOnCanvas.data.node.typeId = "reg-abc"
+    typedOnCanvas.data.node.label = "翻译"
+    typedOnCanvas.data.node.color = "#7c93ff"
+
+    // Only annotation nodes (no typeId) should feed collectCustomTypes.
+    const annotationOnly = [typedOnCanvas].filter((n) => !n.data.node.typeId)
+    const annotation = collectCustomTypes(annotationOnly)
+
+    // The typed registry entry.
+    const registryTyped = [{ type: "custom:translate", label: "翻译", color: "#7c93ff", typeId: "reg-abc" }]
+
+    const allAnnotationTypes = new Set(annotation.map((a) => a.type))
+    const mergedTyped = registryTyped.filter((t) => !allAnnotationTypes.has(t.type))
+    const merged = [...annotation, ...mergedTyped]
+
+    const entry = merged.find((e) => e.type === "custom:translate")
+    expect(entry).toBeDefined()
+    expect((entry as typeof registryTyped[0]).typeId).toBe("reg-abc")
+  })
+})
+
+describe("insertNodeOnEdge threads typeId (Nit 4)", () => {
+  it("inserting a typed node on an edge sets typeId on the new node", () => {
+    const ab: WorkflowNode[] = [
+      { id: "A", type: "script", promptId: "", dependsOn: [] },
+      { id: "B", type: "storyboard", promptId: "", dependsOn: ["A"] },
+    ]
+    const { nodes, edges } = toReactFlow(ab)
+    const display = { label: "翻译", color: "#7c93ff", typeId: "reg-xyz" }
+    const out = insertNodeOnEdge(nodes, edges, "A->B", "custom:translate", { x: 50, y: 70 }, undefined, display)
+    const inserted = out.nodes.find((n) => n.id === out.newId)!
+    expect(inserted.data.node.typeId).toBe("reg-xyz")
   })
 })
 

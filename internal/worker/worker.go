@@ -17,10 +17,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	coreagents "github.com/costa92/llm-agent"
 	"github.com/costa92/llm-agent-contract/llm"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -319,9 +321,8 @@ func (w *Worker) process(ctx context.Context, c claimed) {
 	var outputRef string
 	var perr error
 	executor, exists := w.executors[c.typ]
-	if !exists {
-		perr = fmt.Errorf("worker: unknown todo type %q", c.typ)
-	} else {
+	switch {
+	case exists:
 		todo := ClaimedTodo{
 			TodoID:    c.todoID,
 			ProjectID: c.projectID,
@@ -330,6 +331,13 @@ func (w *Worker) process(ctx context.Context, c claimed) {
 			Input:     c.input,
 		}
 		outputRef, perr = executor(dctx, todo)
+	case strings.HasPrefix(c.typ, "custom:"):
+		// Generic custom dispatch fallback (Phase 2A): no exact executor for a
+		// custom:* type → runCustom switches on input_json.kind. runCustom's switch
+		// is the B/C extension point (http/script/python).
+		outputRef, perr = w.runCustom(dctx, claimed{todoID: c.todoID, projectID: c.projectID, typ: c.typ, attempts: c.attempts, input: c.input})
+	default:
+		perr = fmt.Errorf("worker: unknown todo type %q", c.typ)
 	}
 
 	if errors.Is(perr, errRescheduled) {
@@ -1464,5 +1472,149 @@ func mimeToExt(mimeType string) string {
 		return ".aac"
 	default:
 		return ""
+	}
+}
+
+// customInput is the shape PlanCustom writes into a typed custom todo's input_json:
+// {kind, params} where params = registry LlmParams PLUS the merged variables list
+// (injected from the node's varBindings at plan time, rewritten local→sourceTodoId).
+// The executor only ever reads params.variables[].sourceTodoId — it never sees the
+// registry/node split.
+type customInput struct {
+	Kind   string `json:"kind"`
+	Params struct {
+		SystemPrompt string  `json:"systemPrompt"`
+		UserPrompt   string  `json:"userPrompt"`
+		Model        string  `json:"model"`
+		Temperature  float64 `json:"temperature"`
+		OutputFormat string  `json:"outputFormat"` // "text" | "json"
+		Variables    []struct {
+			Name         string `json:"name"`
+			SourceTodoId string `json:"sourceTodoId"`
+		} `json:"variables"`
+	} `json:"params"`
+}
+
+// runCustom dispatches a typed custom todo by its input_json.kind. A only
+// implements "llm"; the switch is the B/C extension point (http/script/python).
+func (w *Worker) runCustom(ctx context.Context, c claimed) (string, error) {
+	var in customInput
+	if err := json.Unmarshal(c.input, &in); err != nil {
+		return "", fmt.Errorf("worker: custom input unmarshal: %w", err)
+	}
+	switch in.Kind {
+	case "llm":
+		return w.runCustomLLM(ctx, c, in)
+	default:
+		return "", fmt.Errorf("worker: unsupported custom kind %q", in.Kind)
+	}
+}
+
+// runCustomLLM executes the "llm" kind: resolve each variable's upstream text
+// output, substitute {{name}} in system/user prompt, call the routed chat model
+// (same routing as runScript), optionally instruct+validate JSON, write a
+// node_outputs row, return "custom:<id>".
+// This path requires a Router: routedChatModel returns (nil,false) when cfg.Router==nil.
+func (w *Worker) runCustomLLM(ctx context.Context, c claimed, in customInput) (string, error) {
+	// 1. Resolve variables: sourceTodoId → that todo's output_ref → resolveOutputText.
+	replacer := map[string]string{}
+	for _, v := range in.Params.Variables {
+		if v.SourceTodoId == "" {
+			continue
+		}
+		var outputRef string
+		if err := w.cfg.DB.WithContext(ctx).Raw(
+			`SELECT COALESCE(output_ref,'') FROM todos WHERE id=$1`, v.SourceTodoId).Row().Scan(&outputRef); err != nil {
+			return "", fmt.Errorf("worker: load variable %q source todo: %w", v.Name, err)
+		}
+		text, err := w.resolveOutputText(ctx, outputRef)
+		if err != nil {
+			return "", fmt.Errorf("worker: resolve variable %q: %w", v.Name, err)
+		}
+		replacer[v.Name] = text
+	}
+
+	system := substituteVars(in.Params.SystemPrompt, replacer)
+	user := substituteVars(in.Params.UserPrompt, replacer)
+	if in.Params.OutputFormat == "json" {
+		system = strings.TrimSpace(system + "\nRespond with a single valid JSON value and nothing else.")
+	}
+
+	// 2. Call the routed chat model (BYOK per-org), falling back to the bound
+	// default — same routing as runScript. Build a one-shot SimpleAgent.
+	model, _ := w.routedChatModel(ctx, c.projectID)
+	if model == nil {
+		return "", fmt.Errorf("worker: custom llm: no chat model available")
+	}
+	agent := coreagents.NewSimpleAgent(model, coreagents.SimpleOptions{
+		Name: "custom-llm", SystemPrompt: system,
+	})
+	res, err := agent.Run(ctx, user)
+	if err != nil {
+		return "", fmt.Errorf("worker: custom llm run: %w", err)
+	}
+	content := res.Answer
+	format := "text"
+	if in.Params.OutputFormat == "json" {
+		var probe any
+		if err := json.Unmarshal([]byte(strings.TrimSpace(content)), &probe); err != nil {
+			// JSON parse failure ⇒ execution failure (retried by the worker).
+			return "", fmt.Errorf("worker: custom llm expected JSON output: %w", err)
+		}
+		content = strings.TrimSpace(content)
+		format = "json"
+	}
+
+	// 3. Land the output in node_outputs (INSERT, pure $N).
+	outID := newID()
+	if err := w.cfg.DB.WithContext(ctx).Exec(
+		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format)
+		 VALUES ($1,$2,$3,$4,$5,$6)`,
+		outID, c.projectID, c.todoID, c.typ, content, format).Error; err != nil {
+		return "", fmt.Errorf("worker: insert node_output: %w", err)
+	}
+	return "custom:" + outID, nil
+}
+
+// substituteVars replaces every {{name}} (or {{ name }}) occurrence with its
+// resolved value. Names in vars are expected to be already trimmed; the regexp
+// matches optional whitespace around the name inside the braces so that a
+// frontend-trimmed name like "draft" resolves both {{draft}} and {{ draft }}.
+// regexp.QuoteMeta prevents injection for names that contain regex metacharacters.
+func substituteVars(tpl string, vars map[string]string) string {
+	out := tpl
+	for name, val := range vars {
+		trimmed := strings.TrimSpace(name)
+		re := regexp.MustCompile(`\{\{\s*` + regexp.QuoteMeta(trimmed) + `\s*\}\}`)
+		out = re.ReplaceAllString(out, val)
+	}
+	return out
+}
+
+// resolveOutputText is the single ref→text seam: "script:<id>" → scripts.content_json
+// text; "custom:<id>" → node_outputs.content. asset:/shots: refs are binary/fan-out
+// and are a validation error here (A: custom nodes read only text outputs).
+func (w *Worker) resolveOutputText(ctx context.Context, outputRef string) (string, error) {
+	switch {
+	case strings.HasPrefix(outputRef, "script:"):
+		id := strings.TrimPrefix(outputRef, "script:")
+		var contentJSON []byte
+		if err := w.cfg.DB.WithContext(ctx).Raw(
+			`SELECT content_json FROM scripts WHERE id=$1`, id).Row().Scan(&contentJSON); err != nil {
+			return "", fmt.Errorf("worker: load script %s: %w", id, err)
+		}
+		return string(contentJSON), nil
+	case strings.HasPrefix(outputRef, "custom:"):
+		id := strings.TrimPrefix(outputRef, "custom:")
+		var content string
+		if err := w.cfg.DB.WithContext(ctx).Raw(
+			`SELECT content FROM node_outputs WHERE id=$1`, id).Row().Scan(&content); err != nil {
+			return "", fmt.Errorf("worker: load node_output %s: %w", id, err)
+		}
+		return content, nil
+	case strings.HasPrefix(outputRef, "asset:"), strings.HasPrefix(outputRef, "shots:"):
+		return "", fmt.Errorf("worker: output_ref %q is binary/fan-out, not a text source", outputRef)
+	default:
+		return "", fmt.Errorf("worker: unknown output_ref %q", outputRef)
 	}
 }
