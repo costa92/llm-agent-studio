@@ -6,6 +6,7 @@ export const NODE_COLOR: Record<string, string> = {
   script: "var(--script)",
   storyboard: "var(--board)",
   asset: "var(--asset)",
+  prescreen: "var(--review)",
 }
 
 // 节点类型 → 中文标签（编辑视图展示）。
@@ -13,6 +14,7 @@ export const TYPE_LABEL: Record<string, string> = {
   script: "剧本",
   storyboard: "分镜",
   asset: "资产",
+  prescreen: "预审",
 }
 
 export const CUSTOM_PREFIX = "custom:"
