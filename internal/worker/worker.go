@@ -24,6 +24,7 @@ import (
 
 	coreagents "github.com/costa92/llm-agent"
 	"github.com/costa92/llm-agent-contract/llm"
+	"github.com/lib/pq"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -401,6 +402,37 @@ func (w *Worker) process(ctx context.Context, c claimed) {
 	}
 }
 
+// emitItems writes one node_outputs row carrying the given items (P2a dual-write,
+// ★B2/D-6). content/format are '' / 'items' for items-only rows. itemsJSON
+// guarantees a JSON array (★D-5).
+func (w *Worker) emitItems(ctx context.Context, c claimed, items []Item) error {
+	return w.emitItemsTx(ctx, w.cfg.DB.WithContext(ctx), c, items)
+}
+
+func (w *Worker) emitItemsTx(ctx context.Context, db *gorm.DB, c claimed, items []Item) error {
+	payload, err := itemsJSON(items)
+	if err != nil {
+		return fmt.Errorf("worker: marshal items: %w", err)
+	}
+	if err := db.Exec(
+		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format, items)
+		 VALUES ($1,$2,$3,$4,'','items',$5)`,
+		newID(), c.projectID, c.todoID, c.typ, payload).Error; err != nil {
+		return fmt.Errorf("worker: insert node_output items: %w", err)
+	}
+	return nil
+}
+
+// itemsForContent builds the P2a items array from a custom executor's content +
+// format, matching m21's format-aware backfill exactly (json valid → structured
+// json; else text-wrap). Keeps live rows shape-identical to migrated history.
+func itemsForContent(content, format string) []Item {
+	if format == "json" && json.Valid([]byte(content)) {
+		return []Item{jsonItem(json.RawMessage(content))}
+	}
+	return []Item{textItem(content)}
+}
+
 // runScript runs the ScriptAgent and persists a scripts row. outputRef = "script:<id>".
 func (w *Worker) runScript(ctx context.Context, c claimed) (string, error) {
 	var in struct {
@@ -444,6 +476,9 @@ func (w *Worker) runScript(ctx context.Context, c claimed) (string, error) {
 		`INSERT INTO scripts (id, project_id, todo_id, content_json, version) VALUES ($1,$2,$3,$4,1)`,
 		scriptID, c.projectID, c.todoID, contentJSON).Error; err != nil {
 		return "", fmt.Errorf("worker: insert script: %w", err)
+	}
+	if err := w.emitItems(ctx, c, []Item{jsonItem(contentJSON)}); err != nil {
+		return "", err
 	}
 	return "script:" + scriptID, nil
 }
@@ -626,6 +661,20 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 			return err
 		}
 		newTodoIDs = ids
+		// P2a dual-write (★B2/D-6): one typed item per shot, emitted INSIDE the tx so
+		// it commits atomically with the shots rows. The earlyExisting re-run path
+		// returned above, so it naturally skips this.
+		shotItems := make([]Item, 0, len(out.Shots))
+		for _, sh := range out.Shots {
+			b, mErr := json.Marshal(sh)
+			if mErr != nil {
+				return fmt.Errorf("worker: marshal shot item: %w", mErr)
+			}
+			shotItems = append(shotItems, jsonItem(b))
+		}
+		if err := w.emitItemsTx(ctx, tx, c, shotItems); err != nil {
+			return err
+		}
 		return nil
 	})
 	if err != nil {
@@ -1040,11 +1089,12 @@ func (w *Worker) runPrescreen(ctx context.Context, c claimed) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("worker: marshal prescreen verdict: %w", err)
 	}
+	items, _ := itemsJSON([]Item{jsonItem(payload)})
 	outID := newID()
 	if err := w.cfg.DB.WithContext(ctx).Exec(
-		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format)
-		 VALUES ($1,$2,$3,$4,$5,$6)`,
-		outID, c.projectID, c.todoID, c.typ, string(payload), "json").Error; err != nil {
+		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format, items)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		outID, c.projectID, c.todoID, c.typ, string(payload), "json", items).Error; err != nil {
 		return "", fmt.Errorf("worker: insert node_output: %w", err)
 	}
 	return "custom:" + outID, nil
@@ -1742,12 +1792,14 @@ func (w *Worker) runCustomLLM(ctx context.Context, c claimed, in llmParams) (str
 		format = "json"
 	}
 
-	// 3. Land the output in node_outputs (INSERT, pure $N).
+	// 3. Land the output in node_outputs (INSERT, pure $N). ★B2/D-6: dual-write
+	// the typed items array alongside legacy content/format.
+	items, _ := itemsJSON(itemsForContent(content, format))
 	outID := newID()
 	if err := w.cfg.DB.WithContext(ctx).Exec(
-		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format)
-		 VALUES ($1,$2,$3,$4,$5,$6)`,
-		outID, c.projectID, c.todoID, c.typ, content, format).Error; err != nil {
+		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format, items)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		outID, c.projectID, c.todoID, c.typ, content, format, items).Error; err != nil {
 		return "", fmt.Errorf("worker: insert node_output: %w", err)
 	}
 	return "custom:" + outID, nil
@@ -1858,12 +1910,15 @@ func (w *Worker) runCustomHTTP(ctx context.Context, c claimed, in httpParams) (s
 		}
 	}
 
-	// 7. Land node_outputs (INSERT, pure $N).
+	// 7. Land node_outputs (INSERT, pure $N). ★B2/D-6: dual-write the typed items
+	// array. ★A4: itemsForContent wraps whatever `content` already is, so the
+	// secret-bearing {status}-only restriction flows through automatically.
+	items, _ := itemsJSON(itemsForContent(content, format))
 	outID := newID()
 	if err := w.cfg.DB.WithContext(ctx).Exec(
-		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format)
-		 VALUES ($1,$2,$3,$4,$5,$6)`,
-		outID, c.projectID, c.todoID, c.typ, content, format).Error; err != nil {
+		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format, items)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		outID, c.projectID, c.todoID, c.typ, content, format, items).Error; err != nil {
 		return "", errRequestFailed
 	}
 	return "custom:" + outID, nil
@@ -1901,11 +1956,13 @@ func (w *Worker) runCustomScript(ctx context.Context, c claimed, in scriptParams
 		out = strings.TrimSpace(out)
 		format = "json"
 	}
+	// ★B2/D-6: dual-write the typed items array alongside legacy content/format.
+	items, _ := itemsJSON(itemsForContent(out, format))
 	outID := newID()
 	if err := w.cfg.DB.WithContext(ctx).Exec(
-		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format)
-		 VALUES ($1,$2,$3,$4,$5,$6)`,
-		outID, c.projectID, c.todoID, c.typ, out, format).Error; err != nil {
+		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format, items)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		outID, c.projectID, c.todoID, c.typ, out, format, items).Error; err != nil {
 		return "", fmt.Errorf("worker: insert node_output: %w", err)
 	}
 	return "custom:" + outID, nil
@@ -1974,5 +2031,90 @@ func (w *Worker) resolveOutputText(ctx context.Context, outputRef string) (strin
 		return "", fmt.Errorf("worker: output_ref %q is binary/fan-out, not a text source", outputRef)
 	default:
 		return "", fmt.Errorf("worker: unknown output_ref %q", outputRef)
+	}
+}
+
+// loadInputs gathers the items emitted by each of todoID's dependency todos (the
+// canonical inter-node channel going forward). For a dependency whose
+// node_outputs.items is empty — a straddling-deploy run that completed under old
+// code (★M-4) — it falls back to projecting that dep's scripts/shots/output_ref
+// into equivalent items so in-flight runs are not stranded.
+//
+// P2a NOTE: loadInputs is ADDITIVE — execution is NOT yet routed through it. The
+// legacy depends_on/output_ref/resolveVariables resolution stays live. This exists
+// for parity tests + the P2b/P3 cut-over.
+func (w *Worker) loadInputs(ctx context.Context, todoID string) ([]Item, error) {
+	var depIDs pq.StringArray
+	if err := w.cfg.DB.WithContext(ctx).Raw(
+		`SELECT depends_on FROM todos WHERE id=$1`, todoID).Row().Scan(&depIDs); err != nil {
+		return nil, fmt.Errorf("worker: load %s depends_on: %w", todoID, err)
+	}
+	var out []Item
+	for _, dep := range depIDs {
+		depItems, err := w.itemsForDep(ctx, dep)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, depItems...)
+	}
+	return out, nil
+}
+
+func (w *Worker) itemsForDep(ctx context.Context, depID string) ([]Item, error) {
+	var raw []byte
+	err := w.cfg.DB.WithContext(ctx).Raw(
+		`SELECT items FROM node_outputs WHERE todo_id=$1 ORDER BY created_at DESC LIMIT 1`, depID).Row().Scan(&raw)
+	if err == nil && len(raw) > 0 {
+		var items []Item
+		if uErr := json.Unmarshal(raw, &items); uErr != nil {
+			return nil, fmt.Errorf("worker: decode dep %s items: %w", depID, uErr)
+		}
+		if len(items) > 0 {
+			return items, nil
+		}
+	}
+	// Fallback: project the dep's output_ref into items.
+	var ref string
+	if err := w.cfg.DB.WithContext(ctx).Raw(
+		`SELECT output_ref FROM todos WHERE id=$1`, depID).Row().Scan(&ref); err != nil {
+		return nil, fmt.Errorf("worker: load dep %s output_ref: %w", depID, err)
+	}
+	switch {
+	case strings.HasPrefix(ref, "script:"):
+		var contentJSON []byte
+		if err := w.cfg.DB.WithContext(ctx).Raw(
+			`SELECT content_json FROM scripts WHERE id=$1`, strings.TrimPrefix(ref, "script:")).Row().Scan(&contentJSON); err != nil {
+			return nil, fmt.Errorf("worker: fallback script %s: %w", ref, err)
+		}
+		return []Item{jsonItem(contentJSON)}, nil
+	case strings.HasPrefix(ref, "shots:"):
+		rows, err := w.cfg.DB.WithContext(ctx).Raw(
+			`SELECT shot_no, camera, scene, action, prompt, duration FROM shots WHERE script_id=$1 ORDER BY ordering`,
+			strings.TrimPrefix(ref, "shots:")).Rows()
+		if err != nil {
+			return nil, fmt.Errorf("worker: fallback shots %s: %w", ref, err)
+		}
+		defer rows.Close()
+		var items []Item
+		for rows.Next() {
+			var sh studioagents.Shot
+			if err := rows.Scan(&sh.ShotNo, &sh.Camera, &sh.Scene, &sh.Action, &sh.Prompt, &sh.Duration); err != nil {
+				return nil, fmt.Errorf("worker: scan fallback shot: %w", err)
+			}
+			b, _ := json.Marshal(sh)
+			items = append(items, jsonItem(b))
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("worker: fallback shots %s rows: %w", ref, err)
+		}
+		return items, nil
+	case strings.HasPrefix(ref, "custom:"):
+		text, err := w.resolveOutputText(ctx, ref)
+		if err != nil {
+			return nil, fmt.Errorf("worker: fallback custom %s: %w", ref, err)
+		}
+		return []Item{textItem(text)}, nil
+	default:
+		return nil, nil // asset:/empty/unknown → binary consumption is post-P2a (★D-4)
 	}
 }

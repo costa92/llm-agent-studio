@@ -5,9 +5,11 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -23,6 +25,11 @@ type Config struct {
 type Storage struct {
 	pool   *pgxpool.Pool
 	gormDB *gorm.DB
+
+	// testGoSteps, when non-nil, overrides the production Go-step registry
+	// (goSteps) so tests can exercise the version-tracked migration runner
+	// without depending on a real registered step.
+	testGoSteps []migrationStep
 }
 
 // Open builds the pool AND a coexisting *gorm.DB (pgx stdlib driver) to the same
@@ -493,13 +500,156 @@ var m19Migrations = []string{
 	`CREATE UNIQUE INDEX IF NOT EXISTS org_secrets_org_name_uniq ON org_secrets (org_id, name)`,
 }
 
-// Migrate applies the M1 + M2 + M3 + M4 + M5 + M6 + M7 + M8 + M9 + M10 + M11 + M12 + M13 + M14 + M15 + M16 + M17 + M18 + M19 migrations in order. Idempotent.
+// schemaMigrationsDDL creates the version-tracking table for Go-coded migration
+// steps. Runs FIRST (before legacy DDL) and is itself idempotent. Only the Go
+// steps (goSteps) are version-tracked here; the legacy m1…m19 DDL runs
+// unconditionally and self-skips via IF NOT EXISTS.
+var schemaMigrationsDDL = []string{
+	`CREATE TABLE IF NOT EXISTS schema_migrations (
+		version    TEXT PRIMARY KEY,
+		applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+	)`,
+}
+
+// migrationStep is a Go-coded, version-tracked migration. run executes inside a
+// per-step transaction; on success the version is recorded in schema_migrations
+// so the step never runs twice.
+type migrationStep struct {
+	version string
+	run     func(ctx context.Context, tx pgx.Tx) error
+}
+
+// goSteps returns the version-tracked Go migration steps. testGoSteps overrides
+// the production registry when set (tests). The production registry is empty
+// until m21 is appended in a later P2a task.
+func (s *Storage) goSteps() []migrationStep {
+	if s.testGoSteps != nil {
+		return s.testGoSteps
+	}
+	return []migrationStep{
+		{version: "m21", run: m21AddItemsColumn},
+	}
+}
+
+// m21AddItemsColumn adds node_outputs.items (JSONB NOT NULL DEFAULT '[]') and
+// backfills historical rows FORMAT-AWARE (★M-2): json valid → [{json: content}],
+// invalid → [{json:{text:content,_parseError:true}}] (so the migration never
+// half-fails); text/http-status → [{json:{text:content}}]. Only rows still at the
+// default are backfilled (re-run safe).
+func m21AddItemsColumn(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx,
+		`ALTER TABLE node_outputs ADD COLUMN IF NOT EXISTS items JSONB NOT NULL DEFAULT '[]'`); err != nil {
+		return fmt.Errorf("add items column: %w", err)
+	}
+	rows, err := tx.Query(ctx, `SELECT id, content, format FROM node_outputs WHERE items = '[]'::jsonb`)
+	if err != nil {
+		return fmt.Errorf("scan legacy rows: %w", err)
+	}
+	type row struct{ id, content, format string }
+	var batch []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.content, &r.format); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan row: %w", err)
+		}
+		batch = append(batch, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate rows: %w", err)
+	}
+	for _, r := range batch {
+		var inner json.RawMessage
+		switch r.format {
+		case "json":
+			if json.Valid([]byte(r.content)) {
+				inner = json.RawMessage(r.content)
+			} else {
+				inner, _ = json.Marshal(map[string]any{"text": r.content, "_parseError": true})
+			}
+		default:
+			inner, _ = json.Marshal(map[string]string{"text": r.content})
+		}
+		items, err := json.Marshal([]map[string]json.RawMessage{{"json": inner}})
+		if err != nil {
+			return fmt.Errorf("marshal items for %s: %w", r.id, err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE node_outputs SET items=$1 WHERE id=$2`, items, r.id); err != nil {
+			return fmt.Errorf("backfill %s: %w", r.id, err)
+		}
+	}
+	return nil
+}
+
+// Migrate applies the legacy idempotent DDL (M1 … M19) followed by the
+// version-tracked Go migration steps. Hardened with a boot-time advisory lock
+// (serializes concurrent migrators), per-step transactions, and a
+// schema_migrations version table. The legacy DDL still runs unconditionally
+// and byte-for-byte (it self-skips via IF NOT EXISTS); only Go steps are
+// version-tracked. Idempotent.
 func (s *Storage) Migrate(ctx context.Context) error {
-	all := append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append(append([]string{},
-		m1Migrations...), m2Migrations...), m3Migrations...), m4Migrations...), m5Migrations...), m6Migrations...), m7Migrations...), m8Migrations...), m9Migrations...), m10Migrations...), m11Migrations...), m12Migrations...), m13Migrations...), m14Migrations...), m15Migrations...), m16Migrations...), m17Migrations...), m18Migrations...), m19Migrations...)
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("storage: migrate acquire: %w", err)
+	}
+	defer conn.Release()
+	const lockKey = "studio_schema_migrate"
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(hashtext($1))`, lockKey); err != nil {
+		return fmt.Errorf("storage: migrate lock: %w", err)
+	}
+	defer func() { _, _ = conn.Exec(ctx, `SELECT pg_advisory_unlock(hashtext($1))`, lockKey) }()
+
+	all := append([]string{}, schemaMigrationsDDL...)
+	all = append(all, m1Migrations...)
+	all = append(all, m2Migrations...)
+	all = append(all, m3Migrations...)
+	all = append(all, m4Migrations...)
+	all = append(all, m5Migrations...)
+	all = append(all, m6Migrations...)
+	all = append(all, m7Migrations...)
+	all = append(all, m8Migrations...)
+	all = append(all, m9Migrations...)
+	all = append(all, m10Migrations...)
+	all = append(all, m11Migrations...)
+	all = append(all, m12Migrations...)
+	all = append(all, m13Migrations...)
+	all = append(all, m14Migrations...)
+	all = append(all, m15Migrations...)
+	all = append(all, m16Migrations...)
+	all = append(all, m17Migrations...)
+	all = append(all, m18Migrations...)
+	all = append(all, m19Migrations...)
 	for _, stmt := range all {
-		if _, err := s.pool.Exec(ctx, stmt); err != nil {
+		if _, err := conn.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("storage: migrate: %w", err)
+		}
+	}
+
+	for _, step := range s.goSteps() {
+		var applied bool
+		if err := conn.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version=$1)`, step.version).Scan(&applied); err != nil {
+			return fmt.Errorf("storage: migrate check %s: %w", step.version, err)
+		}
+		if applied {
+			continue
+		}
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("storage: migrate begin %s: %w", step.version, err)
+		}
+		if err := step.run(ctx, tx); err != nil {
+			_ = tx.Rollback(ctx)
+			return fmt.Errorf("storage: migrate step %s: %w", step.version, err)
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`, step.version); err != nil {
+			_ = tx.Rollback(ctx)
+			return fmt.Errorf("storage: migrate record %s: %w", step.version, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("storage: migrate commit %s: %w", step.version, err)
 		}
 	}
 	return nil
