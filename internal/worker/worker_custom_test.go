@@ -701,3 +701,28 @@ func TestRunCustomHTTP_NameChannelCannotSmuggleSecret(t *testing.T) {
 		t.Fatalf("secret resolver was asked for LEAKME via the name channel — smuggle succeeded")
 	}
 }
+
+func TestRevalidateCustomParamsRejectsDirty(t *testing.T) {
+	cases := []struct {
+		name string
+		env  customEnvelope
+	}{
+		{"http url template", customEnvelope{Kind: "http", Params: json.RawMessage(`{"method":"GET","url":"http://x/{{y}}"}`)}},
+		{"http body secret", customEnvelope{Kind: "http", Params: json.RawMessage(`{"method":"POST","url":"https://x","bodyTemplate":"{{secret:K}}"}`)}},
+		{"script code secret", customEnvelope{Kind: "script", Params: json.RawMessage(`{"code":"x={{secret:K}}"}`)}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := revalidateCustomParams(tc.env); err == nil {
+				t.Fatalf("dirty %s params must be rejected at run-time", tc.name)
+			}
+		})
+	}
+}
+
+func TestRevalidateCustomParamsAcceptsClean(t *testing.T) {
+	clean := customEnvelope{Kind: "http", Params: json.RawMessage(`{"method":"GET","url":"https://api.example.com","outputFormat":"text"}`)}
+	if err := revalidateCustomParams(clean); err != nil {
+		t.Fatalf("clean params rejected: %v", err)
+	}
+}
