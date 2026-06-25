@@ -284,7 +284,8 @@ describe("PropertiesPanel typed node (Task 13)", () => {
     expect(screen.getByText("变量绑定")).toBeInTheDocument()
   })
 
-  it("renders typed-param summary via PropertiesForm when description is provided, without ever patching parameters/typeVersion", () => {
+  it("renders typed-param summary via PropertiesForm when description is provided, and persists edits as parameters/typeVersion (P-write-4)", async () => {
+    const user = userEvent.setup()
     const description: NodeTypeDescription = {
       type: "custom:translate",
       version: 1,
@@ -299,12 +300,16 @@ describe("PropertiesPanel typed node (Task 13)", () => {
       description,
     })
     // (a) PropertiesForm field renders.
-    expect(screen.getByLabelText("用户提示词")).toBeInTheDocument()
-    // (b) read-only guarantee: no onPatch call carries parameters/typeVersion.
-    for (const call of onPatch.mock.calls) {
-      expect(call[0]).not.toHaveProperty("parameters")
-      expect(call[0]).not.toHaveProperty("typeVersion")
-    }
+    const field = screen.getByLabelText("用户提示词")
+    expect(field).toBeInTheDocument()
+    // (b) editing a field now persists via onPatch({ parameters, typeVersion }).
+    await user.type(field, "!")
+    expect(onPatch).toHaveBeenCalled()
+    const arg = onPatch.mock.calls.at(-1)![0]
+    expect(arg).toHaveProperty("parameters")
+    expect(arg.typeVersion).toBe(1)
+    // The edited field value is carried under parameters.
+    expect((arg.parameters as Record<string, unknown>).userPrompt).toContain("!")
   })
 
   it("annotation custom node (no typeId) does not show typed UI, shows 编辑类型 button", () => {
