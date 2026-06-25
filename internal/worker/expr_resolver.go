@@ -137,6 +137,35 @@ func (w *Worker) exprNodeProbe(ctx context.Context, c claimed, vars []customVari
 	}
 }
 
+// resolveVariablesExpr is the ExprChannel value resolver (P3d / R2). It resolves
+// each upstream variable's whole-output value through the expr engine's $node path
+// — project-scoped + direct-depends_on + fail-closed via exprNodeResolver — instead
+// of the legacy un-scoped resolveOutputText. The returned map feeds the SAME
+// substituteVars interpolation as the legacy path; only the value SOURCE changes.
+// A missing / empty-items / out-of-deps / cross-project dep returns an error
+// (fail-closed) — the run fails rather than silently resolving wrong/no data.
+func (w *Worker) resolveVariablesExpr(ctx context.Context, c claimed, vars []customVariable) (map[string]string, error) {
+	out := map[string]string{}
+	for _, v := range vars {
+		if v.SourceTodoId == "" {
+			continue
+		}
+		var outputRef string
+		if err := w.cfg.DB.WithContext(ctx).Raw(
+			`SELECT COALESCE(output_ref,'') FROM todos WHERE id=$1`, v.SourceTodoId).Row().Scan(&outputRef); err != nil {
+			return nil, fmt.Errorf("worker: load variable %q source todo: %w", v.Name, err)
+		}
+		accessor := w.exprNodeAccessor(ctx, v.SourceTodoId, c.projectID, outputRef)
+		tpl := `{{ $node["` + v.SourceTodoId + `"]` + accessor + ` }}`
+		val, err := expr.Resolve(tpl, w.exprNodeResolver(ctx, c, nil))
+		if err != nil {
+			return nil, fmt.Errorf("worker: resolve variable %q via expr: %w", v.Name, err)
+		}
+		out[v.Name] = val
+	}
+	return out, nil
+}
+
 // exprNodeAccessor picks the Q1=A' accessor for srcTodoID's dep value: ".json.text"
 // when the dep's stored output is text-shaped, ".json" otherwise. It reads the
 // newest node_outputs.format for the dep; when there is no row (a straddling dep
