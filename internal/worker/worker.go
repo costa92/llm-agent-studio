@@ -82,6 +82,8 @@ type Config struct {
 	GenQuota         int // rolling-24h per-org generation quota; 0 = unlimited (backstop for fan-out)
 	MaxConcurrentGen int // global concurrent asset-todo cap; 0 = unlimited
 
+	ExprParity bool // P2b parity probe: recompute {{name}} via the expr engine and compare to substituteVars; logs only metadata, never feeds downstream. default false.
+
 	// M4 async engine knobs (spec §5.6/§9.4).
 	MaxConcurrentVideo int // global video submit-admission + fetch cap; 0 = unlimited
 	MaxConcurrentAudio int // global audio submit-admission + fetch cap; 0 = unlimited
@@ -1763,6 +1765,10 @@ func (w *Worker) runCustomLLM(ctx context.Context, c claimed, in llmParams) (str
 
 	system := substituteVars(in.SystemPrompt, replacer)
 	user := substituteVars(in.UserPrompt, replacer)
+	if w.cfg.ExprParity {
+		w.exprParityCheck(ctx, c, "system", in.SystemPrompt, system, replacer)
+		w.exprParityCheck(ctx, c, "user", in.UserPrompt, user, replacer)
+	}
 	if in.OutputFormat == "json" {
 		system = strings.TrimSpace(system + "\nRespond with a single valid JSON value and nothing else.")
 	}
@@ -2045,13 +2051,14 @@ func (w *Worker) resolveOutputText(ctx context.Context, outputRef string) (strin
 // for parity tests + the P2b/P3 cut-over.
 func (w *Worker) loadInputs(ctx context.Context, todoID string) ([]Item, error) {
 	var depIDs pq.StringArray
+	var projectID string
 	if err := w.cfg.DB.WithContext(ctx).Raw(
-		`SELECT depends_on FROM todos WHERE id=$1`, todoID).Row().Scan(&depIDs); err != nil {
+		`SELECT depends_on, project_id FROM todos WHERE id=$1`, todoID).Row().Scan(&depIDs, &projectID); err != nil {
 		return nil, fmt.Errorf("worker: load %s depends_on: %w", todoID, err)
 	}
 	var out []Item
 	for _, dep := range depIDs {
-		depItems, err := w.itemsForDep(ctx, dep)
+		depItems, err := w.itemsForDep(ctx, dep, projectID)
 		if err != nil {
 			return nil, err
 		}
@@ -2060,10 +2067,15 @@ func (w *Worker) loadInputs(ctx context.Context, todoID string) ([]Item, error) 
 	return out, nil
 }
 
-func (w *Worker) itemsForDep(ctx context.Context, depID string) ([]Item, error) {
+// itemsForDep returns the items emitted by dependency depID, scoped to projectID
+// (F1: the project gate is on the SAME query that reads the data, so a forged
+// cross-project dep id reads zero rows and fails closed — no check-here/read-there
+// TOCTOU). Reads the newest node_outputs.items; falls back to projecting the dep's
+// output_ref (scripts/shots/custom node_outputs) into equivalent items (★M-4).
+func (w *Worker) itemsForDep(ctx context.Context, depID, projectID string) ([]Item, error) {
 	var raw []byte
 	err := w.cfg.DB.WithContext(ctx).Raw(
-		`SELECT items FROM node_outputs WHERE todo_id=$1 ORDER BY created_at DESC LIMIT 1`, depID).Row().Scan(&raw)
+		`SELECT items FROM node_outputs WHERE todo_id=$1 AND project_id=$2 ORDER BY created_at DESC LIMIT 1`, depID, projectID).Row().Scan(&raw)
 	if err == nil && len(raw) > 0 {
 		var items []Item
 		if uErr := json.Unmarshal(raw, &items); uErr != nil {
@@ -2073,24 +2085,24 @@ func (w *Worker) itemsForDep(ctx context.Context, depID string) ([]Item, error) 
 			return items, nil
 		}
 	}
-	// Fallback: project the dep's output_ref into items.
+	// Fallback: project the dep's output_ref into items (project-scoped — F1).
 	var ref string
 	if err := w.cfg.DB.WithContext(ctx).Raw(
-		`SELECT output_ref FROM todos WHERE id=$1`, depID).Row().Scan(&ref); err != nil {
+		`SELECT output_ref FROM todos WHERE id=$1 AND project_id=$2`, depID, projectID).Row().Scan(&ref); err != nil {
 		return nil, fmt.Errorf("worker: load dep %s output_ref: %w", depID, err)
 	}
 	switch {
 	case strings.HasPrefix(ref, "script:"):
 		var contentJSON []byte
 		if err := w.cfg.DB.WithContext(ctx).Raw(
-			`SELECT content_json FROM scripts WHERE id=$1`, strings.TrimPrefix(ref, "script:")).Row().Scan(&contentJSON); err != nil {
+			`SELECT content_json FROM scripts WHERE id=$1 AND project_id=$2`, strings.TrimPrefix(ref, "script:"), projectID).Row().Scan(&contentJSON); err != nil {
 			return nil, fmt.Errorf("worker: fallback script %s: %w", ref, err)
 		}
 		return []Item{jsonItem(contentJSON)}, nil
 	case strings.HasPrefix(ref, "shots:"):
 		rows, err := w.cfg.DB.WithContext(ctx).Raw(
-			`SELECT shot_no, camera, scene, action, prompt, duration FROM shots WHERE script_id=$1 ORDER BY ordering`,
-			strings.TrimPrefix(ref, "shots:")).Rows()
+			`SELECT shot_no, camera, scene, action, prompt, duration FROM shots WHERE script_id=$1 AND project_id=$2 ORDER BY ordering`,
+			strings.TrimPrefix(ref, "shots:"), projectID).Rows()
 		if err != nil {
 			return nil, fmt.Errorf("worker: fallback shots %s: %w", ref, err)
 		}
@@ -2109,11 +2121,14 @@ func (w *Worker) itemsForDep(ctx context.Context, depID string) ([]Item, error) 
 		}
 		return items, nil
 	case strings.HasPrefix(ref, "custom:"):
-		text, err := w.resolveOutputText(ctx, ref)
-		if err != nil {
+		// Project-scoped inline read (F1) — do NOT delegate to the unscoped legacy
+		// resolveOutputText (it reads node_outputs by bare id and is used elsewhere).
+		var content string
+		if err := w.cfg.DB.WithContext(ctx).Raw(
+			`SELECT content FROM node_outputs WHERE id=$1 AND project_id=$2`, strings.TrimPrefix(ref, "custom:"), projectID).Row().Scan(&content); err != nil {
 			return nil, fmt.Errorf("worker: fallback custom %s: %w", ref, err)
 		}
-		return []Item{textItem(text)}, nil
+		return []Item{textItem(content)}, nil
 	default:
 		return nil, nil // asset:/empty/unknown → binary consumption is post-P2a (★D-4)
 	}
