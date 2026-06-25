@@ -299,6 +299,9 @@ describe("PropertiesPanel typed node (Task 13)", () => {
     const { onPatch } = renderTypedPanel(typedNode(), defaultTypedParams, undefined, {
       description,
     })
+    // (label is honest: an editable PropertiesForm drops the “（只读）” suffix.)
+    expect(screen.getByText("类型参数")).toBeInTheDocument()
+    expect(screen.queryByText("类型参数（只读）")).not.toBeInTheDocument()
     // (a) PropertiesForm field renders.
     const field = screen.getByLabelText("用户提示词")
     expect(field).toBeInTheDocument()

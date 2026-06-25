@@ -264,13 +264,13 @@ export function PropertiesPanel({
         </div>
       )}
 
-      {/* typed 节点：只读参数摘要 + 变量绑定行。annotation/builtin 节点走下面的提示词选择块。 */}
+      {/* typed 节点：参数摘要（有描述则经 PropertiesForm 可编辑，否则只读手写摘要）+ 变量绑定行。annotation/builtin 节点走下面的提示词选择块。 */}
       {isTyped && (
         <>
-          {/* 只读参数摘要 */}
+          {/* 参数摘要：description 存在 → 可编辑表单；缺省 → 只读摘要回退 */}
           <div className="flex flex-col gap-1 rounded border border-line/60 bg-bg-base p-2">
             <Label className="text-[10px] font-semibold uppercase tracking-wider text-text-3">
-              类型参数（只读）
+              {description ? "类型参数" : "类型参数（只读）"}
             </Label>
             {description ? (
               <PropertiesForm
