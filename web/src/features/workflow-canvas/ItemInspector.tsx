@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
-import type { InspectorItem, InspectorBinaryRef } from "@/lib/projectState"
+import type { InspectorItem } from "@/lib/projectState"
+import { BinaryItemView } from "./BinaryItemView"
 
 // ItemInspector：运行视图右栏的 per-item inspector（workflow-v2 P5d）。
 // 逐条渲染某节点的 node_outputs.items：
@@ -85,28 +86,10 @@ function ItemBody({ item }: { item: InspectorItem }) {
         <div className="flex flex-col gap-1.5">
           <p className="text-[11px] text-text-3">二进制产物</p>
           {Object.entries(item.binary).map(([key, ref]) => (
-            <BinaryChip key={key} name={key} ref_={ref} />
+            <BinaryItemView key={key} name={key} ref_={ref} />
           ))}
         </div>
       )}
-    </div>
-  )
-}
-
-// 受控资产 chip：仅展示 BinaryRef 字段（assetId/kind/mimeType/status）。
-// 资产受访问控制 —— 不在此直拉字节；深度资产渲染（缩略图/预览）是后续项。
-function BinaryChip({ name, ref_ }: { name: string; ref_: InspectorBinaryRef }) {
-  return (
-    <div
-      data-testid="inspector-binary-chip"
-      className="flex flex-col gap-0.5 rounded-md border border-line bg-bg-base px-2 py-1.5 text-[11px] text-text-2"
-    >
-      <span className="font-medium text-text-1">{name}</span>
-      <span className="text-text-3">
-        {ref_.kind} · {ref_.mimeType}
-        {ref_.status ? ` · ${ref_.status}` : ""}
-      </span>
-      <span className="font-mono text-[10px] text-text-3 break-all">{ref_.assetId}</span>
     </div>
   )
 }
