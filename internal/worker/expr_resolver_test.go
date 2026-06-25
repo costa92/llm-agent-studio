@@ -168,6 +168,129 @@ func TestExprNodeResolver_Scope(t *testing.T) {
 		}
 	})
 
+	// ---- fallback-branch cross-project fail-closed (script: / shots: / custom:) ----
+	// Each forges a project-A executing todo with depends_on=[B-owned dep] whose
+	// output_ref routes through a DIFFERENT fallback branch. The B dep has NO
+	// node_outputs.items of its own, so resolution MUST take the fallback path; the
+	// project_id scope on every fallback read must still deny the cross-project read.
+
+	// seedTodoRef inserts a todo with an explicit output_ref and NO node_outputs.items.
+	seedTodoRef := func(t *testing.T, projID, outputRef string) string {
+		t.Helper()
+		id := newID()
+		if err := db.WithContext(ctx).Exec(
+			`INSERT INTO todos (id, project_id, plan_id, type, status, output_ref, input_json)
+			 VALUES ($1,$2,'plan-x','fallback','done',$3,'{}')`,
+			id, projID, outputRef).Error; err != nil {
+			t.Fatalf("seed todo with output_ref: %v", err)
+		}
+		return id
+	}
+
+	t.Run("forged cross-project script fallback", func(t *testing.T) {
+		sid := newID()
+		if err := db.WithContext(ctx).Exec(
+			`INSERT INTO scripts (id, project_id, todo_id, content_json, version) VALUES ($1,$2,$3,$4,1)`,
+			sid, projB, newID(), []byte(`{"marker":"PROJECT_B_SCRIPT"}`)).Error; err != nil {
+			t.Fatalf("script: seed B script: %v", err)
+		}
+		bdep := seedTodoRef(t, projB, "script:"+sid)
+		aexec := seedTodo(t, projA, bdep)
+
+		rc := w.exprNodeResolver(ctx, claimed{todoID: aexec, projectID: projA}, nil)
+		items, err := rc.NodeByID(bdep)
+		if err == nil {
+			t.Fatalf("script: want err!=nil (fail-closed), got nil with %d items", len(items))
+		}
+		if len(items) != 0 {
+			t.Fatalf("script: want 0 items, got %d", len(items))
+		}
+		for i, it := range items {
+			if strings.Contains(string(it.JSON), "PROJECT_B_SCRIPT") {
+				t.Fatalf("script: PROJECT_B_SCRIPT leaked in item[%d]: %s", i, it.JSON)
+			}
+		}
+	})
+
+	t.Run("forged cross-project shots fallback", func(t *testing.T) {
+		sid := newID()
+		if err := db.WithContext(ctx).Exec(
+			`INSERT INTO shots (id, project_id, script_id, todo_id, shot_no, camera, scene, action, prompt, duration, ordering)
+			 VALUES ($1,$2,$3,$4,1,'cam','scene','action','PROJECT_B_SHOT',3,1)`,
+			newID(), projB, sid, newID()).Error; err != nil {
+			t.Fatalf("shots: seed B shot: %v", err)
+		}
+		bdep := seedTodoRef(t, projB, "shots:"+sid)
+		aexec := seedTodo(t, projA, bdep)
+
+		rc := w.exprNodeResolver(ctx, claimed{todoID: aexec, projectID: projA}, nil)
+		items, err := rc.NodeByID(bdep)
+		if err == nil {
+			t.Fatalf("shots: want err!=nil (fail-closed), got nil with %d items", len(items))
+		}
+		if len(items) != 0 {
+			t.Fatalf("shots: want 0 items, got %d", len(items))
+		}
+		for i, it := range items {
+			if strings.Contains(string(it.JSON), "PROJECT_B_SHOT") {
+				t.Fatalf("shots: PROJECT_B_SHOT leaked in item[%d]: %s", i, it.JSON)
+			}
+		}
+	})
+
+	t.Run("forged cross-project custom fallback", func(t *testing.T) {
+		coid := newID()
+		if err := db.WithContext(ctx).Exec(
+			`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format)
+			 VALUES ($1,$2,$3,'custom:llm','PROJECT_B_CUSTOM','text')`,
+			coid, projB, newID()).Error; err != nil {
+			t.Fatalf("custom: seed B node_output: %v", err)
+		}
+		bdep := seedTodoRef(t, projB, "custom:"+coid)
+		aexec := seedTodo(t, projA, bdep)
+
+		rc := w.exprNodeResolver(ctx, claimed{todoID: aexec, projectID: projA}, nil)
+		items, err := rc.NodeByID(bdep)
+		if err == nil {
+			t.Fatalf("custom: want err!=nil (fail-closed), got nil with %d items", len(items))
+		}
+		if len(items) != 0 {
+			t.Fatalf("custom: want 0 items, got %d", len(items))
+		}
+		for i, it := range items {
+			if strings.Contains(string(it.JSON), "PROJECT_B_CUSTOM") {
+				t.Fatalf("custom: PROJECT_B_CUSTOM leaked in item[%d]: %s", i, it.JSON)
+			}
+		}
+	})
+
+	// Positive control: a same-project-A dep through the custom: fallback branch
+	// resolves successfully — proving the cross-project denial above is the project
+	// gate, not an unrelated failure. (custom: is the highest-risk branch.)
+	t.Run("same-project custom fallback resolves", func(t *testing.T) {
+		coid := newID()
+		if err := db.WithContext(ctx).Exec(
+			`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format)
+			 VALUES ($1,$2,$3,'custom:llm','PROJECT_A_CUSTOM','text')`,
+			coid, projA, newID()).Error; err != nil {
+			t.Fatalf("custom-pos: seed A node_output: %v", err)
+		}
+		adep := seedTodoRef(t, projA, "custom:"+coid)
+		aexec := seedTodo(t, projA, adep)
+
+		rc := w.exprNodeResolver(ctx, claimed{todoID: aexec, projectID: projA}, nil)
+		items, err := rc.NodeByID(adep)
+		if err != nil {
+			t.Fatalf("custom-pos: want err==nil, got %v", err)
+		}
+		if len(items) != 1 {
+			t.Fatalf("custom-pos: want 1 item, got %d", len(items))
+		}
+		if !strings.Contains(string(items[0].JSON), "PROJECT_A_CUSTOM") {
+			t.Fatalf("custom-pos: want PROJECT_A_CUSTOM in item, got %s", items[0].JSON)
+		}
+	})
+
 	t.Run("nonexistent", func(t *testing.T) {
 		// A dep id listed in a todo's depends_on but with no todo/data rows.
 		ghost := newID()

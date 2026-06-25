@@ -46,7 +46,14 @@ func (w *Worker) exprParityCheck(ctx context.Context, c claimed, label, tpl, leg
 		names = append(names, n)
 	}
 	exprTpl := toExprTemplate(tpl, names)
-	selfJSON, _ := json.Marshal(replacer) // {"name":"value", ...}
+	selfJSON, err := json.Marshal(replacer) // {"name":"value", ...}
+	if err != nil {
+		// F4: log metadata only — never the value strings. Treat a marshal
+		// failure as a diverged probe and return before calling expr.Resolve.
+		w.cfg.Logger.Info("worker: expr parity probe",
+			"todo_id", c.todoID, "label", label, "diverged", true, "marshal_err", true)
+		return
+	}
 	ec := w.exprNodeResolver(ctx, c, []Item{{JSON: selfJSON}})
 	got, err := expr.Resolve(exprTpl, ec)
 	diverged := err != nil || got != legacy
