@@ -82,6 +82,8 @@ type Config struct {
 	GenQuota         int // rolling-24h per-org generation quota; 0 = unlimited (backstop for fan-out)
 	MaxConcurrentGen int // global concurrent asset-todo cap; 0 = unlimited
 
+	ExprParity bool // P2b parity probe: recompute {{name}} via the expr engine and compare to substituteVars; logs only metadata, never feeds downstream. default false.
+
 	// M4 async engine knobs (spec §5.6/§9.4).
 	MaxConcurrentVideo int // global video submit-admission + fetch cap; 0 = unlimited
 	MaxConcurrentAudio int // global audio submit-admission + fetch cap; 0 = unlimited
@@ -1763,6 +1765,10 @@ func (w *Worker) runCustomLLM(ctx context.Context, c claimed, in llmParams) (str
 
 	system := substituteVars(in.SystemPrompt, replacer)
 	user := substituteVars(in.UserPrompt, replacer)
+	if w.cfg.ExprParity {
+		w.exprParityCheck(ctx, c, "system", in.SystemPrompt, system, replacer)
+		w.exprParityCheck(ctx, c, "user", in.UserPrompt, user, replacer)
+	}
 	if in.OutputFormat == "json" {
 		system = strings.TrimSpace(system + "\nRespond with a single valid JSON value and nothing else.")
 	}

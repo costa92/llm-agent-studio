@@ -2,12 +2,58 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/lib/pq"
 
 	"github.com/costa92/llm-agent-studio/internal/expr"
 )
+
+// toExprTemplate rewrites the {{name}} parity subset to {{ $json.<name> }} so the
+// expr engine resolves the same upstream-variable channel as substituteVars. It
+// rewrites ONLY the known variable names (mirroring substituteVars' match), leaving
+// {{secret:...}} and any other braces untouched.
+//
+// IMPORTANT: it uses ReplaceAllLiteralString, NOT ReplaceAllString — the replacement
+// contains "$json", and ReplaceAllString would interpret "$j"/"$json" as a
+// capture-group reference and silently drop it.
+func toExprTemplate(tpl string, varNames []string) string {
+	out := tpl
+	for _, name := range varNames {
+		trimmed := strings.TrimSpace(name)
+		re := regexp.MustCompile(`\{\{\s*` + regexp.QuoteMeta(trimmed) + `\s*\}\}`)
+		out = re.ReplaceAllLiteralString(out, "{{ $json."+trimmed+" }}")
+	}
+	return out
+}
+
+// exprParityCheck recomputes the {{name}} substitution for one template via the expr
+// engine and logs ONLY safe metadata — todo id, label, a diverged bool, and the two
+// lengths. It is a PARITY PROBE: it never feeds the result downstream and never calls
+// Secrets.Resolve.
+//
+// F4: the log line must NEVER contain the resolved value strings — they can carry
+// secret or cross-project content; only id/label/bool/lengths are emitted.
+// F3: runCustomLLM has NO secret pass at all; the secret-literal guarantee here comes
+// from the engine treating "secret:" as a literal, NOT from any "secret pass ran
+// first" ordering (that argument applies only to runCustomHTTP).
+func (w *Worker) exprParityCheck(ctx context.Context, c claimed, label, tpl, legacy string, replacer map[string]string) {
+	names := make([]string, 0, len(replacer))
+	for n := range replacer {
+		names = append(names, n)
+	}
+	exprTpl := toExprTemplate(tpl, names)
+	selfJSON, _ := json.Marshal(replacer) // {"name":"value", ...}
+	ec := w.exprNodeResolver(ctx, c, []Item{{JSON: selfJSON}})
+	got, err := expr.Resolve(exprTpl, ec)
+	diverged := err != nil || got != legacy
+	w.cfg.Logger.Info("worker: expr parity probe",
+		"todo_id", c.todoID, "label", label,
+		"diverged", diverged, "len_legacy", len(legacy), "len_expr", len(got))
+}
 
 // exprNodeResolver builds an expr.Context for evaluating {{ }} templates over the
 // executing todo c's items. It enforces the S-2 cross-tenant invariant: $node["id"]
