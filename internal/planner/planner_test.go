@@ -463,3 +463,33 @@ func TestPlanCustom_VariableNotInDependsOn(t *testing.T) {
 		t.Fatalf("error should contain \"must be in dependsOn\", got: %v", err)
 	}
 }
+
+func TestWorkflowNodeParametersRoundTrip(t *testing.T) {
+	in := WorkflowNode{
+		ID:          "node-3",
+		Type:        "custom:my-llm",
+		TypeId:      "a1b2c3",
+		DependsOn:   []string{"script-1"},
+		TypeVersion: 1,
+		Parameters:  json.RawMessage(`{"temperature":0.2,"outputFormat":"json"}`),
+	}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out WorkflowNode
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.TypeVersion != 1 {
+		t.Fatalf("typeVersion lost: %d", out.TypeVersion)
+	}
+	if string(out.Parameters) != `{"temperature":0.2,"outputFormat":"json"}` {
+		t.Fatalf("parameters lost: %s", out.Parameters)
+	}
+	// omitempty: a node without the new fields must NOT emit the keys.
+	bare, _ := json.Marshal(WorkflowNode{ID: "n", Type: "script", DependsOn: []string{}})
+	if strings.Contains(string(bare), "typeVersion") || strings.Contains(string(bare), "parameters") {
+		t.Fatalf("omitempty broken: %s", bare)
+	}
+}
