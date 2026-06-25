@@ -46,6 +46,14 @@ type Config struct {
 	MaxConcurrentGen  int           // global concurrent asset-todo cap; 0 = unlimited
 	ReviewPrescreen   bool          // run the ReviewAgent prescreen after generation
 
+	// workflow-v2 cut-over (P3). Both default OFF — production behavior is unchanged
+	// until explicitly enabled. ExprParity runs the $node shadow probe (logs
+	// metadata-only divergence for the prod soak). ExprChannel makes the expr engine
+	// the LIVE custom-node {{name}} value source (project-scoped, fail-closed) — a
+	// REVERSIBLE flip (set back to off to revert).
+	ExprParity  bool // STUDIO_EXPR_PARITY=1 → run the expr $node shadow probe (soak evidence)
+	ExprChannel bool // STUDIO_EXPR_CHANNEL=1 → expr engine is the live value channel (the cut-over flip)
+
 	// Per-provider image keys (M3 模型路由): a key registers that provider's
 	// catalog models as real generators in the registry. Empty = not registered
 	// (org defaults pointing there resolve to the env default generator).
@@ -135,6 +143,8 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		OrgDailyGenQuota:  intOf("ORG_DAILY_GEN_QUOTA", get("ORG_DAILY_GEN_QUOTA", "0"), &errs),
 		MaxConcurrentGen:  intOf("MAX_CONCURRENT_GENERATIONS", get("MAX_CONCURRENT_GENERATIONS", "0"), &errs),
 		ReviewPrescreen:   get("REVIEW_PRESCREEN", "true") == "true",
+		ExprParity:        get("STUDIO_EXPR_PARITY", "") == "1",
+		ExprChannel:       get("STUDIO_EXPR_CHANNEL", "") == "1",
 		OpenAIAPIKey:      get("OPENAI_API_KEY", ""),
 		GoogleAPIKey:      get("GOOGLE_API_KEY", ""),
 		MinimaxAPIKey:     get("MINIMAX_API_KEY", ""),

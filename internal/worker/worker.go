@@ -84,6 +84,8 @@ type Config struct {
 
 	ExprParity bool // P2b parity probe: recompute {{name}} via the expr engine and compare to substituteVars; logs only metadata, never feeds downstream. default false.
 
+	ExprChannel bool // P3d: when true, custom-node {{name}} values resolve via the expr engine ($node, project-scoped, fail-closed) instead of the un-scoped resolveVariables/resolveOutputText path. substituteVars interpolation + secret pre-pass + {status}/SSRF guards UNCHANGED. Default false. Reversible.
+
 	// M4 async engine knobs (spec §5.6/§9.4).
 	MaxConcurrentVideo int // global video submit-admission + fetch cap; 0 = unlimited
 	MaxConcurrentAudio int // global audio submit-admission + fetch cap; 0 = unlimited
@@ -1757,8 +1759,16 @@ func (w *Worker) resolveVariables(ctx context.Context, vars []customVariable) (m
 // node_outputs row, return "custom:<id>".
 // This path requires a Router: routedChatModel returns (nil,false) when cfg.Router==nil.
 func (w *Worker) runCustomLLM(ctx context.Context, c claimed, in llmParams) (string, error) {
-	// 1. Resolve variables: sourceTodoId → that todo's output_ref → resolveOutputText.
-	replacer, err := w.resolveVariables(ctx, in.Variables)
+	// 1. Resolve variables: sourceTodoId → that todo's output_ref → resolveOutputText
+	// (legacy), OR via the expr engine's $node path (ExprChannel: project-scoped,
+	// fail-closed). Only the value SOURCE swaps; substituteVars below is unchanged.
+	var replacer map[string]string
+	var err error
+	if w.cfg.ExprChannel {
+		replacer, err = w.resolveVariablesExpr(ctx, c, in.Variables)
+	} else {
+		replacer, err = w.resolveVariables(ctx, in.Variables)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -1768,6 +1778,7 @@ func (w *Worker) runCustomLLM(ctx context.Context, c claimed, in llmParams) (str
 	if w.cfg.ExprParity {
 		w.exprParityCheck(ctx, c, "system", in.SystemPrompt, system, replacer)
 		w.exprParityCheck(ctx, c, "user", in.UserPrompt, user, replacer)
+		w.exprNodeProbe(ctx, c, in.Variables)
 	}
 	if in.OutputFormat == "json" {
 		system = strings.TrimSpace(system + "\nRespond with a single valid JSON value and nothing else.")
@@ -1822,8 +1833,15 @@ func (w *Worker) runCustomHTTP(ctx context.Context, c claimed, in httpParams) (s
 	}
 	// 1. Resolve {{name}} upstream variables (same channel as llm). Preserve the
 	// opaque-error behavior: any resolve failure surfaces as errRequestFailed
-	// (never leak the variable/source).
-	nameVals, err := w.resolveVariables(ctx, in.Variables)
+	// (never leak the variable/source). ExprChannel swaps ONLY this value source
+	// (the SECOND pass); the {{secret:}} pre-pass below is untouched.
+	var nameVals map[string]string
+	var err error
+	if w.cfg.ExprChannel {
+		nameVals, err = w.resolveVariablesExpr(ctx, c, in.Variables)
+	} else {
+		nameVals, err = w.resolveVariables(ctx, in.Variables)
+	}
 	if err != nil {
 		return "", errRequestFailed
 	}
@@ -1838,6 +1856,7 @@ func (w *Worker) runCustomHTTP(ctx context.Context, c claimed, in httpParams) (s
 			w.exprParityCheck(ctx, c, "http.header."+hk, hv, substituteVars(hv, nameVals), nameVals)
 		}
 		w.exprParityCheck(ctx, c, "http.body", in.BodyTemplate, substituteVars(in.BodyTemplate, nameVals), nameVals)
+		w.exprNodeProbe(ctx, c, in.Variables)
 	}
 
 	// 2. Resolve org from the TRUSTED run context (never from input_json/node).
@@ -1950,9 +1969,18 @@ func (w *Worker) runCustomScript(ctx context.Context, c claimed, in scriptParams
 	if secretRefRe.MatchString(in.Code) || strings.Contains(in.Code, "{{secret:") {
 		return "", errScriptFailed // D1 runtime defense-in-depth
 	}
-	inputs, err := w.resolveVariables(ctx, in.Variables)
+	var inputs map[string]string
+	var err error
+	if w.cfg.ExprChannel {
+		inputs, err = w.resolveVariablesExpr(ctx, c, in.Variables)
+	} else {
+		inputs, err = w.resolveVariables(ctx, in.Variables)
+	}
 	if err != nil {
 		return "", errScriptFailed // opaque: never leak the variable/source
+	}
+	if w.cfg.ExprParity {
+		w.exprNodeProbe(ctx, c, in.Variables)
 	}
 	// Dedicated short wall-time for Starlark execution: the step budget does NOT
 	// bound heap (a comprehension can OOM the shared binary in few steps), so a

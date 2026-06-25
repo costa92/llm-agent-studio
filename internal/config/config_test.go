@@ -75,6 +75,47 @@ func TestLoadFakeGenMode(t *testing.T) {
 	}
 }
 
+func TestLoadExprFlags(t *testing.T) {
+	base := func(extra map[string]string) func(string) (string, bool) {
+		return func(k string) (string, bool) {
+			if v, ok := extra[k]; ok {
+				return v, true
+			}
+			switch k {
+			case "PG_URL":
+				return "postgres://x", true
+			case "JWT_SECRET":
+				return "s", true
+			}
+			return "", false
+		}
+	}
+	// Default: both workflow-v2 cut-over flags OFF (production unchanged).
+	cfg, err := LoadFromLookup(base(nil))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.ExprParity || cfg.ExprChannel {
+		t.Fatalf("ExprParity/ExprChannel must default off, got %v/%v", cfg.ExprParity, cfg.ExprChannel)
+	}
+	// STUDIO_EXPR_PARITY=1 enables the shadow probe only.
+	cfg, err = LoadFromLookup(base(map[string]string{"STUDIO_EXPR_PARITY": "1"}))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.ExprParity || cfg.ExprChannel {
+		t.Fatalf("STUDIO_EXPR_PARITY=1 should set only ExprParity, got %v/%v", cfg.ExprParity, cfg.ExprChannel)
+	}
+	// STUDIO_EXPR_CHANNEL=1 enables the live channel flip.
+	cfg, err = LoadFromLookup(base(map[string]string{"STUDIO_EXPR_CHANNEL": "1"}))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.ExprChannel {
+		t.Fatalf("STUDIO_EXPR_CHANNEL=1 should enable ExprChannel")
+	}
+}
+
 func TestLoadWebDir(t *testing.T) {
 	cfg, err := LoadFromLookup(func(k string) (string, bool) {
 		switch k {
