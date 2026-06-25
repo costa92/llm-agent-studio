@@ -104,12 +104,12 @@ var builtins = []NodeTypeDescription{
 		Properties: []Property{
 			{Name: "method", Label: "请求方法", Type: PropertyOptions, Default: raw(`"GET"`),
 				Options: []OptionItem{{Value: "GET", Label: "GET"}, {Value: "POST", Label: "POST"}, {Value: "PUT", Label: "PUT"}, {Value: "PATCH", Label: "PATCH"}, {Value: "DELETE", Label: "DELETE"}}},
-			{Name: "url", Label: "URL", Type: PropertyString, Required: true, Constraints: &Constraints{NoTemplate: true}},
-			{Name: "headers", Label: "请求头", Type: PropertyKeyValue, Constraints: &Constraints{SecretAllowedIn: []string{"headers"}}},
-			{Name: "bodyTemplate", Label: "请求体模板", Type: PropertyTextarea, Constraints: &Constraints{NoSecret: true}, TypeOptions: &TypeOptions{Rows: 3}},
+			{Name: "url", Label: "URL", Type: PropertyString, Required: true, Constraints: &Constraints{NoTemplate: true, RegistryOnly: true}},
+			{Name: "headers", Label: "请求头", Type: PropertyKeyValue, Constraints: &Constraints{SecretAllowedIn: []string{"headers"}, RegistryOnly: true}},
+			{Name: "bodyTemplate", Label: "请求体模板", Type: PropertyTextarea, Constraints: &Constraints{NoSecret: true, RegistryOnly: true}, TypeOptions: &TypeOptions{Rows: 3}},
 			{Name: "outputFormat", Label: "输出格式", Type: PropertyOptions, Default: raw(`"text"`),
 				Options: []OptionItem{{Value: "text", Label: "文本"}, {Value: "json", Label: "JSON"}}},
-			{Name: "allowResponseBody", Label: "允许显示响应体", Type: PropertyBoolean, Default: raw(`false`)},
+			{Name: "allowResponseBody", Label: "允许显示响应体", Type: PropertyBoolean, Default: raw(`false`), Constraints: &Constraints{RegistryOnly: true}},
 		},
 	},
 	{
@@ -117,7 +117,7 @@ var builtins = []NodeTypeDescription{
 		Description: "运行 Starlark 脚本对上游输出做转换；禁用密钥与网络。",
 		Inputs:      mainPorts, Outputs: mainPorts,
 		Properties: []Property{
-			{Name: "code", Label: "脚本代码", Type: PropertyCode, Required: true, Constraints: &Constraints{NoSecret: true}, TypeOptions: &TypeOptions{Editor: "starlark", Rows: 8}},
+			{Name: "code", Label: "脚本代码", Type: PropertyCode, Required: true, Constraints: &Constraints{NoSecret: true, RegistryOnly: true}, TypeOptions: &TypeOptions{Editor: "starlark", Rows: 8}},
 			{Name: "outputFormat", Label: "输出格式", Type: PropertyOptions, Default: raw(`"text"`),
 				Options: []OptionItem{{Value: "text", Label: "文本"}, {Value: "json", Label: "JSON"}}},
 		},
