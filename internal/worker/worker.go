@@ -1828,6 +1828,18 @@ func (w *Worker) runCustomHTTP(ctx context.Context, c claimed, in httpParams) (s
 		return "", errRequestFailed
 	}
 
+	if w.cfg.ExprParity {
+		// Parity probe (P3a): compare the expr engine's {{name}} channel against
+		// substituteVars on the RAW header/body templates. Operates on raw templates
+		// + nameVals only — never on secret-resolved values (the {{secret:...}} pass
+		// below runs on the real values; both channels here leave secret: spans
+		// verbatim). Logs metadata only; never feeds the request.
+		for hk, hv := range in.Headers {
+			w.exprParityCheck(ctx, c, "http.header."+hk, hv, substituteVars(hv, nameVals), nameVals)
+		}
+		w.exprParityCheck(ctx, c, "http.body", in.BodyTemplate, substituteVars(in.BodyTemplate, nameVals), nameVals)
+	}
+
 	// 2. Resolve org from the TRUSTED run context (never from input_json/node).
 	orgID, err := w.cfg.Projects.OrgIDForProject(ctx, c.projectID)
 	if err != nil {
