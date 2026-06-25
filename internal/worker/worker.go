@@ -1768,6 +1768,7 @@ func (w *Worker) runCustomLLM(ctx context.Context, c claimed, in llmParams) (str
 	if w.cfg.ExprParity {
 		w.exprParityCheck(ctx, c, "system", in.SystemPrompt, system, replacer)
 		w.exprParityCheck(ctx, c, "user", in.UserPrompt, user, replacer)
+		w.exprNodeProbe(ctx, c, in.Variables)
 	}
 	if in.OutputFormat == "json" {
 		system = strings.TrimSpace(system + "\nRespond with a single valid JSON value and nothing else.")
@@ -1838,6 +1839,7 @@ func (w *Worker) runCustomHTTP(ctx context.Context, c claimed, in httpParams) (s
 			w.exprParityCheck(ctx, c, "http.header."+hk, hv, substituteVars(hv, nameVals), nameVals)
 		}
 		w.exprParityCheck(ctx, c, "http.body", in.BodyTemplate, substituteVars(in.BodyTemplate, nameVals), nameVals)
+		w.exprNodeProbe(ctx, c, in.Variables)
 	}
 
 	// 2. Resolve org from the TRUSTED run context (never from input_json/node).
@@ -1953,6 +1955,9 @@ func (w *Worker) runCustomScript(ctx context.Context, c claimed, in scriptParams
 	inputs, err := w.resolveVariables(ctx, in.Variables)
 	if err != nil {
 		return "", errScriptFailed // opaque: never leak the variable/source
+	}
+	if w.cfg.ExprParity {
+		w.exprNodeProbe(ctx, c, in.Variables)
 	}
 	// Dedicated short wall-time for Starlark execution: the step budget does NOT
 	// bound heap (a comprehension can OOM the shared binary in few steps), so a

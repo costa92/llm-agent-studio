@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"regexp"
 	"strings"
 
@@ -60,6 +61,103 @@ func (w *Worker) exprParityCheck(ctx context.Context, c claimed, label, tpl, leg
 	w.cfg.Logger.Info("worker: expr parity probe",
 		"todo_id", c.todoID, "label", label,
 		"diverged", diverged, "len_legacy", len(legacy), "len_expr", len(got))
+}
+
+// exprNodeProbe is the real-$node shadow probe (P3b). For each variable with a
+// non-empty SourceTodoId it compares the LEGACY whole-output value (mirroring
+// resolveVariables exactly) against the value the cut-over will use: a real
+// $node["<src>"]<accessor> resolution through the LIVE, S-2-enforcing
+// exprNodeResolver (NOT a fresh unscoped expr.Context). The accessor (Q1=A')
+// is derived from the dep's stored node_outputs.format (or, for a straddling dep
+// with no node_outputs row, inferred from the output_ref prefix the itemsForDep
+// fallback will project). Each comparison is classified exact / benign (the
+// accepted H-3/M-1 key-reorder/whitespace case: byte-different but
+// json.Unmarshal+reflect.DeepEqual equal) / divergent.
+//
+// It is a SHADOW probe: it NEVER feeds the resolved value downstream and a probe
+// failure NEVER fails the run (it returns nothing; it only logs). It is gated on
+// w.cfg.ExprParity at the call sites.
+//
+// F4: the log line carries metadata ONLY — todo id, the slice INDEX (not v.Name),
+// the class, the two lengths, and the two error bools. NEVER the resolved values,
+// NEVER v.Name.
+func (w *Worker) exprNodeProbe(ctx context.Context, c claimed, vars []customVariable) {
+	for i, v := range vars {
+		if v.SourceTodoId == "" {
+			continue
+		}
+
+		// 1. Legacy value — mirror resolveVariables EXACTLY.
+		var legacyVal string
+		var legacyErr error
+		var outputRef string
+		if err := w.cfg.DB.WithContext(ctx).Raw(
+			`SELECT COALESCE(output_ref,'') FROM todos WHERE id=$1`, v.SourceTodoId).Row().Scan(&outputRef); err != nil {
+			legacyErr = err
+		} else {
+			legacyVal, legacyErr = w.resolveOutputText(ctx, outputRef)
+		}
+
+		// 2. Determine the Q1=A' accessor from the dep's stored format. A "text"
+		// output is projected as {"text": ...} (accessor .json.text); any other
+		// non-empty format wraps the object itself (accessor .json). With no
+		// node_outputs row (straddling dep — itemsForDep falls back to projecting
+		// output_ref), infer from the output_ref prefix: custom: -> .json.text
+		// (the custom fallback wraps as a textItem), everything else -> .json.
+		accessor := w.exprNodeAccessor(ctx, v.SourceTodoId, c.projectID, outputRef)
+
+		// 3. Expr value via the LIVE resolver (S-2 enforced; Self=nil — custom
+		// nodes reference $node, not $json).
+		tpl := `{{ $node["` + v.SourceTodoId + `"]` + accessor + ` }}`
+		exprVal, exprErr := expr.Resolve(tpl, w.exprNodeResolver(ctx, c, nil))
+
+		// 4. Classify.
+		class := "divergent"
+		switch {
+		case exprErr != nil || legacyErr != nil:
+			class = "divergent"
+		case exprVal == legacyVal:
+			class = "exact"
+		default:
+			var a, b any
+			if json.Unmarshal([]byte(exprVal), &a) == nil &&
+				json.Unmarshal([]byte(legacyVal), &b) == nil &&
+				reflect.DeepEqual(a, b) {
+				class = "benign"
+			} else {
+				class = "divergent"
+			}
+		}
+
+		// 5. Log metadata ONLY (F4).
+		w.cfg.Logger.Info("worker: expr $node shadow probe",
+			"todo_id", c.todoID, "var_index", i, "class", class,
+			"len_legacy", len(legacyVal), "len_expr", len(exprVal),
+			"expr_err", exprErr != nil, "legacy_err", legacyErr != nil)
+	}
+}
+
+// exprNodeAccessor picks the Q1=A' accessor for srcTodoID's dep value: ".json.text"
+// when the dep's stored output is text-shaped, ".json" otherwise. It reads the
+// newest node_outputs.format for the dep; when there is no row (a straddling dep
+// that itemsForDep will satisfy via the output_ref projection) it infers from the
+// output_ref prefix (custom: -> textItem -> .json.text; script:/other -> .json).
+func (w *Worker) exprNodeAccessor(ctx context.Context, srcTodoID, projectID, outputRef string) string {
+	var format string
+	err := w.cfg.DB.WithContext(ctx).Raw(
+		`SELECT COALESCE(format,'') FROM node_outputs WHERE todo_id=$1 AND project_id=$2 ORDER BY created_at DESC LIMIT 1`,
+		srcTodoID, projectID).Row().Scan(&format)
+	if err == nil && format != "" {
+		if format == "text" {
+			return ".json.text"
+		}
+		return ".json"
+	}
+	// No node_outputs row: infer from the output_ref prefix the fallback projects.
+	if strings.HasPrefix(outputRef, "custom:") {
+		return ".json.text"
+	}
+	return ".json"
 }
 
 // exprNodeResolver builds an expr.Context for evaluating {{ }} templates over the
