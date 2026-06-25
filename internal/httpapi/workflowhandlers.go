@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
+	"github.com/costa92/llm-agent-studio/internal/customnodetype"
+	"github.com/costa92/llm-agent-studio/internal/nodedesc"
 	"github.com/costa92/llm-agent-studio/internal/planner"
 	"github.com/costa92/llm-agent-studio/internal/project"
 	"github.com/costa92/llm-agent-studio/internal/workflows"
@@ -43,8 +46,72 @@ func listWorkflowsHandler(ws WorkflowStore) http.HandlerFunc {
 	}
 }
 
+// validateNodeParameterOverlays enforces, at SAVE time on an editor write path
+// (W1 create/update, W2 create-project), the per-node parameters invariants:
+// (a) no RegistryOnly key in the overlay (default-deny, fail-closed), and
+// (b) the overlay's merged value shape is legal per the kind's validator. The
+// run-time resolve+worker gates remain authoritative (W3 backfill / dirty JSON
+// bypass save). A nil resolver → no typed-node overlay can be validated, so the
+// check is skipped (focused tests that omit the registry); the run path still
+// fails closed because resolveCustomTypes rejects typed nodes with a nil resolver.
+// Errors are opaque by design: they name the offending node id + key, never the
+// attacker-controlled value (url/secret/header/body), so nothing leaks.
+func validateNodeParameterOverlays(ctx context.Context, res CustomNodeTypeResolver, orgID string, nodes []planner.WorkflowNode) error {
+	if res == nil {
+		return nil
+	}
+	for _, n := range nodes {
+		if n.TypeId == "" || len(n.Parameters) == 0 {
+			continue
+		}
+		ct, err := res.Get(ctx, n.TypeId, orgID)
+		if err != nil {
+			// Fail closed: cross-tenant / unknown typeId resolves to an error here.
+			return fmt.Errorf("node %q: type unresolved", n.ID)
+		}
+		desc, ok := nodedesc.DescByKind(ct.Kind, n.TypeVersion)
+		if !ok {
+			return fmt.Errorf("node %q: typeVersion %d unsupported", n.ID, n.TypeVersion)
+		}
+		var overlay map[string]json.RawMessage
+		if err := json.Unmarshal(n.Parameters, &overlay); err != nil {
+			return fmt.Errorf("node %q: invalid parameters", n.ID)
+		}
+		registryOnly := map[string]bool{}
+		for _, p := range desc.Properties {
+			if p.Constraints != nil && p.Constraints.RegistryOnly {
+				registryOnly[p.Name] = true
+			}
+		}
+		for k := range overlay {
+			if registryOnly[k] {
+				return fmt.Errorf("node %q: parameter %q is registry-only and cannot be overridden", n.ID, k)
+			}
+		}
+		// Merge onto base, then full validate (catches illegal non-dangerous values).
+		merged, mErr := nodedesc.MergeOverlay(ct.Params, n.Parameters, desc)
+		if mErr != nil {
+			return fmt.Errorf("node %q: invalid parameters", n.ID)
+		}
+		if vErr := customnodetype.ValidateParams(ct.Kind, merged); vErr != nil {
+			return fmt.Errorf("node %q: invalid params: %w", n.ID, vErr)
+		}
+	}
+	return nil
+}
+
+// orgIDForProject loads the project's org via the project store. Used by the
+// W1 editor write paths to scope the registry resolver (mirrors runWorkflowHandler).
+func orgIDForProject(ctx context.Context, ps ProjectStore, projectID string) (string, error) {
+	p, err := ps.Get(ctx, projectID)
+	if err != nil {
+		return "", err
+	}
+	return p.OrgID, nil
+}
+
 // createWorkflowHandler POST /api/projects/{id}/workflows — editor+.
-func createWorkflowHandler(ws WorkflowStore) http.HandlerFunc {
+func createWorkflowHandler(ps ProjectStore, ws WorkflowStore, res CustomNodeTypeResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req workflowReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
@@ -62,6 +129,15 @@ func createWorkflowHandler(ws WorkflowStore) http.HandlerFunc {
 					http.Error(w, "invalid workflow: "+err.Error(), http.StatusBadRequest)
 					return
 				}
+				orgID, err := orgIDForProject(r.Context(), ps, r.PathValue("id"))
+				if err != nil {
+					http.Error(w, "project not found", http.StatusNotFound)
+					return
+				}
+				if err := validateNodeParameterOverlays(r.Context(), res, orgID, nodes); err != nil {
+					http.Error(w, "invalid workflow: "+err.Error(), http.StatusBadRequest)
+					return
+				}
 			}
 		}
 		wf, err := ws.Create(r.Context(), r.PathValue("id"), req.Name, req.Nodes)
@@ -74,7 +150,7 @@ func createWorkflowHandler(ws WorkflowStore) http.HandlerFunc {
 }
 
 // updateWorkflowHandler PUT /api/projects/{id}/workflows/{wfId} — editor+.
-func updateWorkflowHandler(ws WorkflowStore) http.HandlerFunc {
+func updateWorkflowHandler(ps ProjectStore, ws WorkflowStore, res CustomNodeTypeResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req workflowReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
@@ -89,6 +165,15 @@ func updateWorkflowHandler(ws WorkflowStore) http.HandlerFunc {
 			}
 			if len(nodes) > 0 {
 				if err := planner.ValidateCustomGraph(nodes); err != nil {
+					http.Error(w, "invalid workflow: "+err.Error(), http.StatusBadRequest)
+					return
+				}
+				orgID, err := orgIDForProject(r.Context(), ps, r.PathValue("id"))
+				if err != nil {
+					http.Error(w, "project not found", http.StatusNotFound)
+					return
+				}
+				if err := validateNodeParameterOverlays(r.Context(), res, orgID, nodes); err != nil {
 					http.Error(w, "invalid workflow: "+err.Error(), http.StatusBadRequest)
 					return
 				}
