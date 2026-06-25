@@ -8,6 +8,7 @@
 package projectstate
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"time"
@@ -45,6 +46,26 @@ type GraphNode struct {
 	Output string `json:"output,omitempty"`
 	// OutputFormat ∈ "text"|"json" (Output 非空时有意义)。
 	OutputFormat string `json:"outputFormat,omitempty"`
+	// Items 是该节点 node_outputs.items 的逐字透传 (workflow-v2 P5d per-item
+	// inspector)。每个 InspectorItem 镜像 worker.Item ({json, binary})。additive：
+	// nil → JSON 不出 items 键，老客户端忽略。NEVER 重新解析 (P2a 已落地解析后的
+	// json 对象；重新解析会重新引入 M-2 缺陷)。
+	Items []InspectorItem `json:"items,omitempty"`
+}
+
+// InspectorItem 镜像 worker.Item：一个节点执行 datum 的结构化 json + 可选 binary
+// 引用。json 是 P2a 已落地的 canonical typed 对象 (NOT 重新解析)，逐字透传。
+type InspectorItem struct {
+	JSON   json.RawMessage               `json:"json"`
+	Binary map[string]InspectorBinaryRef `json:"binary,omitempty"`
+}
+
+// InspectorBinaryRef 镜像 worker.BinaryRef：指向 assets 表的细指针（字节永不内联）。
+type InspectorBinaryRef struct {
+	AssetID  string `json:"assetId"`
+	MimeType string `json:"mimeType"`
+	Kind     string `json:"kind"`
+	Status   string `json:"status,omitempty"`
 }
 
 // GraphEdge 是一条依赖边:From 依赖 To(To 先于 From 执行)。
@@ -115,6 +136,9 @@ type NodeOutput struct {
 	TodoID  string
 	Content string
 	Format  string
+	// Items 是 node_outputs.items 解析后的逐字透传 (workflow-v2 P5d)。store 层
+	// (project.LoadState) 负责 json.Unmarshal bytes，保持 Compute 纯净。
+	Items []InspectorItem
 }
 
 // Input is everything Compute needs, loaded by project.Store.LoadState.
@@ -429,6 +453,7 @@ func buildGraph(todos []Todo, assetByTodo map[string]Asset, outputByTodo map[str
 		if o, ok := outputByTodo[t.ID]; ok {
 			n.Output = o.Content
 			n.OutputFormat = o.Format
+			n.Items = o.Items // 逐字透传；nil → JSON 省略 items 键
 		}
 		nodes = append(nodes, n)
 	}
