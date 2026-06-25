@@ -5,7 +5,10 @@
 // representations at the call site in a later task.
 package expr
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // Item mirrors worker.Item field-for-field (see internal/worker/items.go). Keeping
 // an independent copy is what keeps this package a leaf: the worker can depend on
@@ -32,4 +35,37 @@ type Context struct {
 	Self     []Item
 	NodeByID func(id string) ([]Item, error)
 	ItemIdx  int
+}
+
+// Resolve renders an n8n-style template string against ctx. Literal text and
+// secret: spans pass through verbatim; {{ expr }} spans are parsed + evaluated +
+// stringified. Any parse/eval error aborts and is returned (no partial output on
+// error). A missing field is an error, never a silent empty string.
+func Resolve(template string, ctx Context) (string, error) {
+	var sb strings.Builder
+	for _, seg := range splitTemplate(template) {
+		switch seg.kind {
+		case segLiteral:
+			sb.WriteString(seg.text)
+		case segSecretLiteral:
+			// Emit verbatim — text still contains the {{ }}, intentionally: the
+			// engine NEVER resolves secrets.
+			sb.WriteString(seg.text)
+		case segExpr:
+			n, err := parse(seg.text)
+			if err != nil {
+				return "", err
+			}
+			v, err := eval(n, ctx)
+			if err != nil {
+				return "", err
+			}
+			s, err := stringify(v)
+			if err != nil {
+				return "", err
+			}
+			sb.WriteString(s)
+		}
+	}
+	return sb.String(), nil
 }
