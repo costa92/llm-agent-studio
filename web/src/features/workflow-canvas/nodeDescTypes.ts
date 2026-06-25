@@ -21,6 +21,7 @@ export interface Constraints {
   noTemplate?: boolean
   noSecret?: boolean
   secretAllowedIn?: string[]
+  registryOnly?: boolean
 }
 
 export interface TypeOptions {

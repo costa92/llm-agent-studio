@@ -120,6 +120,12 @@ export interface WorkflowNode {
   // 每节点变量绑定：把模板里的 {{name}} 绑到上游 workflow-local 节点 id。
   // sourceNodeId 是 workflow-local，所以必须存在节点实例上 (而非组织级 registry params)。
   varBindings?: { name: string; sourceNodeId: string }[]
+  // typed 自定义节点的 schema 化参数覆盖（PropertiesForm value 对象）。非危险键 only；
+  // 危险/RegistryOnly 字段留注册表（后端 resolve 层 default-deny）。preserve-unknown：
+  // toStudioNodes 透传未知键（前端/disk 级前向兼容）。
+  parameters?: Record<string, unknown>
+  // 放置/保存时钉入的 description.version；后端按 (kind, typeVersion) 选描述。
+  typeVersion?: number
 }
 
 // workflow/store.go。一个项目可有多条工作流；nodes 是 JSON 数组（非字符串）。
