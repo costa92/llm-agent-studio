@@ -1,9 +1,11 @@
 package project
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"testing"
@@ -989,5 +991,231 @@ func TestProject_StorageConfigID_RejectsForeignOrg(t *testing.T) {
 	// Update 本 org 配置 → 成功。
 	if _, err := s.Update(ctx, p.ID, UpdateInput{Name: "P", StorageConfigID: cfgA}); err != nil {
 		t.Fatalf("update with own storage config: %v", err)
+	}
+}
+
+// seedNodeOutput inserts one node_outputs row with explicit content/format/items.
+// createdAt offset (interval) lets the multi-row tie-break test order rows.
+func seedNodeOutput(t *testing.T, pool *pgxpool.Pool, id, projectID, todoID, format, content, items, createdInterval string) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format, items, created_at)
+		 VALUES ($1, $2, $3, 'custom:x', $4, $5, $6::jsonb, now() + $7::interval)`,
+		id, projectID, todoID, content, format, items, createdInterval); err != nil {
+		t.Fatalf("seed node_output %s: %v", id, err)
+	}
+}
+
+// loadStateNode runs LoadState and returns the GraphNode for todoID.
+func loadStateNode(t *testing.T, s *Store, projectID, todoID string) projectstate.GraphNode {
+	t.Helper()
+	st, err := s.LoadState(context.Background(), projectID, "")
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	for _, n := range st.Nodes {
+		if n.ID == todoID {
+			return n
+		}
+	}
+	t.Fatalf("node %q not found in %+v", todoID, st.Nodes)
+	return projectstate.GraphNode{}
+}
+
+// setupCustomRun creates a project + custom workflow plan + one custom todo,
+// returning (projectID, todoID). Caller seeds node_outputs against todoID.
+func setupCustomRun(t *testing.T, s *Store, pool *pgxpool.Pool, orgPrefix string) (string, string) {
+	t.Helper()
+	ctx := context.Background()
+	orgID := orgPrefix + uniqueSuffix()
+	p, err := s.Create(ctx, CreateInput{OrgID: orgID, Name: "Items", CreatedBy: "u"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	wfID := "wf_it_" + p.ID
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO workflows (id, project_id, name, nodes) VALUES ($1,$2,'wf','[]'::jsonb)`,
+		wfID, p.ID); err != nil {
+		t.Fatalf("insert workflow: %v", err)
+	}
+	planID := "pln_it_" + p.ID
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO plans (id, project_id, status, valid, fallback_used, workflow_id, created_at)
+		 VALUES ($1,$2,'running',true,false,$3, now())`, planID, p.ID, wfID); err != nil {
+		t.Fatalf("insert plan: %v", err)
+	}
+	todoID := "todo_it_" + p.ID
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO todos (id, project_id, plan_id, type, status) VALUES ($1,$2,$3,'custom:http','done')`,
+		todoID, p.ID, planID); err != nil {
+		t.Fatalf("insert todo: %v", err)
+	}
+	return p.ID, todoID
+}
+
+// TestLoadState_Items_JSONParsedObject (I1/M-2 regression guard): a format='json'
+// node_outputs row stores a real parsed object in items; LoadState must surface
+// it verbatim — $json.field reachable, NOT a {text:"<json string>"} wrapper.
+func TestLoadState_Items_JSONParsedObject(t *testing.T) {
+	s, pool := newStore(t)
+	pid, tid := setupCustomRun(t, s, pool, "org_it_json_")
+	// items as P2a would land for a format='json' output: [{json:<parsed object>}]
+	seedNodeOutput(t, pool, "no_json_"+tid, pid, tid, "json", `{"field":"value","n":3}`,
+		`[{"json":{"field":"value","n":3}}]`, "0 seconds")
+	n := loadStateNode(t, s, pid, tid)
+	if len(n.Items) != 1 {
+		t.Fatalf("items len=%d want 1", len(n.Items))
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(n.Items[0].JSON, &obj); err != nil {
+		t.Fatalf("item json not an object (M-2 regression?): %v raw=%s", err, n.Items[0].JSON)
+	}
+	if obj["field"] != "value" {
+		t.Fatalf("$json.field=%v want value (parsed object, not {text:...} wrapper); raw=%s", obj["field"], n.Items[0].JSON)
+	}
+	if _, isWrapped := obj["text"]; isWrapped {
+		t.Fatalf("json-format item must NOT be wrapped as {text:...}; raw=%s", n.Items[0].JSON)
+	}
+}
+
+// TestLoadState_Items_TextWrapped: a format='text' row's item json == {"text":"..."}.
+func TestLoadState_Items_TextWrapped(t *testing.T) {
+	s, pool := newStore(t)
+	pid, tid := setupCustomRun(t, s, pool, "org_it_text_")
+	seedNodeOutput(t, pool, "no_text_"+tid, pid, tid, "text", "Hello world",
+		`[{"json":{"text":"Hello world"}}]`, "0 seconds")
+	n := loadStateNode(t, s, pid, tid)
+	if len(n.Items) != 1 {
+		t.Fatalf("items len=%d want 1", len(n.Items))
+	}
+	// JSONB normalizes whitespace, so compare semantically (parsed object), not
+	// byte-for-byte: the item must be {"text":"Hello world"} with no other keys.
+	var obj map[string]any
+	if err := json.Unmarshal(n.Items[0].JSON, &obj); err != nil {
+		t.Fatalf("item json not an object: %v raw=%s", err, n.Items[0].JSON)
+	}
+	if len(obj) != 1 || obj["text"] != "Hello world" {
+		t.Fatalf("text item = %v want {text:\"Hello world\"}; raw=%s", obj, n.Items[0].JSON)
+	}
+}
+
+// TestLoadState_Items_BinaryRoundTrip: an items-only row carrying a binary ref
+// round-trips assetId/kind/mimeType/status through InspectorBinaryRef.
+func TestLoadState_Items_BinaryRoundTrip(t *testing.T) {
+	s, pool := newStore(t)
+	pid, tid := setupCustomRun(t, s, pool, "org_it_bin_")
+	items := `[{"json":{"caption":"a"},"binary":{"data":{"assetId":"as9","mimeType":"image/png","kind":"image","status":"accepted"}}}]`
+	seedNodeOutput(t, pool, "no_bin_"+tid, pid, tid, "items", "[]", items, "0 seconds")
+	n := loadStateNode(t, s, pid, tid)
+	if len(n.Items) != 1 {
+		t.Fatalf("items len=%d want 1", len(n.Items))
+	}
+	br, ok := n.Items[0].Binary["data"]
+	if !ok {
+		t.Fatalf("binary[data] missing in %+v", n.Items[0].Binary)
+	}
+	if br.AssetID != "as9" || br.MimeType != "image/png" || br.Kind != "image" || br.Status != "accepted" {
+		t.Fatalf("binary ref round-trip mismatch: %+v", br)
+	}
+}
+
+// TestLoadState_Items_MultiRowNewestWithItemsWins (OQ2 tie-break): a todo with a
+// legacy content row (empty items) plus a newer items-bearing row → the newest
+// non-empty-items row wins.
+func TestLoadState_Items_MultiRowNewestWithItemsWins(t *testing.T) {
+	s, pool := newStore(t)
+	pid, tid := setupCustomRun(t, s, pool, "org_it_multi_")
+	// Oldest: a legacy content row with empty items '[]'.
+	seedNodeOutput(t, pool, "no_legacy_"+tid, pid, tid, "text", "legacy", `[]`, "-10 seconds")
+	// Middle: an items-bearing row (older than the newest).
+	seedNodeOutput(t, pool, "no_mid_"+tid, pid, tid, "items", "[]",
+		`[{"json":{"which":"middle"}}]`, "-5 seconds")
+	// Newest: the row that must win.
+	seedNodeOutput(t, pool, "no_new_"+tid, pid, tid, "items", "[]",
+		`[{"json":{"which":"newest"}}]`, "0 seconds")
+	n := loadStateNode(t, s, pid, tid)
+	if len(n.Items) != 1 {
+		t.Fatalf("items len=%d want 1 (newest-with-items)", len(n.Items))
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(n.Items[0].JSON, &obj); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if obj["which"] != "newest" {
+		t.Fatalf("tie-break picked %v want newest; raw=%s", obj["which"], n.Items[0].JSON)
+	}
+}
+
+// TestLoadState_Items_NewestEmptyDoesNotMaskItems: if the NEWEST row has empty
+// items but an older row has items, the older items-bearing row still wins
+// (we prefer the newest row WHOSE items are non-empty, not just the newest row).
+func TestLoadState_Items_NewestEmptyDoesNotMaskItems(t *testing.T) {
+	s, pool := newStore(t)
+	pid, tid := setupCustomRun(t, s, pool, "org_it_empty_")
+	seedNodeOutput(t, pool, "no_haveitems_"+tid, pid, tid, "items", "[]",
+		`[{"json":{"which":"hasitems"}}]`, "-5 seconds")
+	// Newest row has empty items — must not mask the older items-bearing row.
+	seedNodeOutput(t, pool, "no_emptynew_"+tid, pid, tid, "text", "later", `[]`, "0 seconds")
+	n := loadStateNode(t, s, pid, tid)
+	if len(n.Items) != 1 {
+		t.Fatalf("items len=%d want 1 (older non-empty items wins over newest empty)", len(n.Items))
+	}
+	var obj map[string]any
+	_ = json.Unmarshal(n.Items[0].JSON, &obj)
+	if obj["which"] != "hasitems" {
+		t.Fatalf("tie-break picked %v want hasitems; raw=%s", obj["which"], n.Items[0].JSON)
+	}
+}
+
+// TestLoadState_Items_CrossTenantIsolation: LoadState for project A never
+// surfaces project B's items (the node_outputs query is plan/project-scoped).
+func TestLoadState_Items_CrossTenantIsolation(t *testing.T) {
+	s, pool := newStore(t)
+	pidA, tidA := setupCustomRun(t, s, pool, "org_it_xa_")
+	pidB, tidB := setupCustomRun(t, s, pool, "org_it_xb_")
+	seedNodeOutput(t, pool, "no_a_"+tidA, pidA, tidA, "items", "[]",
+		`[{"json":{"owner":"A"}}]`, "0 seconds")
+	seedNodeOutput(t, pool, "no_b_"+tidB, pidB, tidB, "items", "[]",
+		`[{"json":{"owner":"B"}}]`, "0 seconds")
+	nA := loadStateNode(t, s, pidA, tidA)
+	var obj map[string]any
+	_ = json.Unmarshal(nA.Items[0].JSON, &obj)
+	if obj["owner"] != "A" {
+		t.Fatalf("project A node items owner=%v want A (cross-tenant leak?)", obj["owner"])
+	}
+	// Project A's state must contain no node carrying B's items.
+	stA, _ := s.LoadState(context.Background(), pidA, "")
+	for _, n := range stA.Nodes {
+		for _, it := range n.Items {
+			if bytes.Contains(it.JSON, []byte(`"B"`)) {
+				t.Fatalf("project A leaked project B items: %s", it.JSON)
+			}
+		}
+	}
+}
+
+// TestLoadState_Items_MarshalParity: json.Marshal of the full ProjectState
+// contains "items" (proves SSE/REST parity — both marshal the same struct).
+func TestLoadState_Items_MarshalParity(t *testing.T) {
+	s, pool := newStore(t)
+	pid, tid := setupCustomRun(t, s, pool, "org_it_marshal_")
+	seedNodeOutput(t, pool, "no_m_"+tid, pid, tid, "items", "[]",
+		`[{"json":{"field":"value"}}]`, "0 seconds")
+	st, err := s.LoadState(context.Background(), pid, "")
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	b, err := json.Marshal(st)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(b, []byte(`"items"`)) {
+		t.Fatalf("marshalled ProjectState missing items key: %s", b)
+	}
+	// The verbatim object survives the marshal round-trip. JSONB may normalize
+	// whitespace, so assert on the field/value tokens independently rather than a
+	// fixed compact form.
+	if !bytes.Contains(b, []byte(`"field"`)) || !bytes.Contains(b, []byte(`"value"`)) {
+		t.Fatalf("marshalled items lost the verbatim object: %s", b)
 	}
 }
