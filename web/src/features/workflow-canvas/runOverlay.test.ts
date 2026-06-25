@@ -120,4 +120,38 @@ describe("overlayRunStatus", () => {
     const map = overlayRunStatus(canvas, state)
     expect(map.get("script-1")?.output).toBeUndefined()
   })
+
+  it("(g) threads items[] from state node into overlay entry (P5d inspector)", () => {
+    const canvas: WorkflowNode[] = [
+      { id: "storyboard-1", type: "storyboard", promptId: "", dependsOn: [] },
+    ]
+    const state = stateWith([
+      {
+        id: "uuidS",
+        label: "分镜",
+        type: "storyboard",
+        status: "done",
+        items: [
+          { json: { shot: 1 } },
+          { json: { text: "镜头二" } },
+        ],
+      },
+    ])
+    const map = overlayRunStatus(canvas, state)
+    expect(map.get("storyboard-1")?.items).toEqual([
+      { json: { shot: 1 } },
+      { json: { text: "镜头二" } },
+    ])
+  })
+
+  it("(h) items is absent when state node has no items (old/scalar node)", () => {
+    const canvas: WorkflowNode[] = [
+      { id: "script-1", type: "script", promptId: "", dependsOn: [] },
+    ]
+    const state = stateWith([
+      { id: "uuidA", label: "脚本", type: "script", status: "done" },
+    ])
+    const map = overlayRunStatus(canvas, state)
+    expect(map.get("script-1")?.items).toBeUndefined()
+  })
 })

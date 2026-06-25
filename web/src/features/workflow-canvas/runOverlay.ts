@@ -1,5 +1,5 @@
 import { layerize } from "@/lib/graphLayout"
-import type { GraphNode, GraphEdge, ProjectState } from "@/lib/projectState"
+import type { GraphNode, GraphEdge, ProjectState, InspectorItem } from "@/lib/projectState"
 import type { WorkflowNode } from "@/lib/types"
 
 // run 状态叠加（纯函数，无 React）。
@@ -18,6 +18,9 @@ export interface RunNodeStatus {
   // "http-status" = http 节点响应体被安全策略抑制，content 仅含 {"status":N}。
   output?: string
   outputFormat?: "text" | "json" | "http-status"
+  // 该节点 node_outputs.items 逐字透传（P5d per-item inspector）。
+  // additive：老/标量节点无 items → undefined（调用方回落标量面板）。
+  items?: InspectorItem[]
 }
 
 // 画布工作流节点 → 该类型在拓扑序中的序号（script:0,1…; storyboard:0,1…; asset:0,1…）。
@@ -65,6 +68,7 @@ function runByTypeOrdinal(state: ProjectState): Map<string, RunNodeStatus> {
       todoId: rn.id,
       output: rn.output,
       outputFormat: rn.outputFormat,
+      items: rn.items,
     })
   }
   return out
