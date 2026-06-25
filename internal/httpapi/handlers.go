@@ -17,6 +17,7 @@ import (
 	"github.com/costa92/llm-agent-contract/llm"
 
 	"github.com/costa92/llm-agent-studio/internal/customnodetype"
+	"github.com/costa92/llm-agent-studio/internal/nodedesc"
 	"github.com/costa92/llm-agent-studio/internal/planner"
 	"github.com/costa92/llm-agent-studio/internal/project"
 	"github.com/costa92/llm-agent-studio/internal/projectstate"
@@ -110,7 +111,23 @@ func resolveCustomTypes(ctx context.Context, res CustomNodeTypeResolver, orgID s
 		if err != nil {
 			return nil, fmt.Errorf("custom node %q: resolve type %q: %w", n.ID, n.TypeId, err)
 		}
-		resolved[n.ID] = planner.ResolvedType{Kind: ct.Kind, Params: ct.Params}
+		merged := ct.Params
+		if len(n.Parameters) > 0 || n.TypeVersion != 0 {
+			desc, ok := nodedesc.DescByKind(ct.Kind, n.TypeVersion)
+			if !ok {
+				// Fail closed (spec §4.3): unknown typeVersion would mis-select the
+				// danger classification. Never silently fall back to v1.
+				return nil, fmt.Errorf("custom node %q: typeVersion %d unsupported (max %d); please upgrade", n.ID, n.TypeVersion, nodedesc.Version)
+			}
+			m, mErr := nodedesc.MergeOverlay(ct.Params, n.Parameters, desc)
+			if mErr != nil {
+				return nil, fmt.Errorf("custom node %q: merge params: %w", n.ID, mErr)
+			}
+			// P-write-2 Task 6 inserts the full validator call HERE on `m`
+			// (customnodetype.ValidateParams(ct.Kind, m)) before assigning.
+			merged = m
+		}
+		resolved[n.ID] = planner.ResolvedType{Kind: ct.Kind, Params: merged}
 	}
 	return resolved, nil
 }
