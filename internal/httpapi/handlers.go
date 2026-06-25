@@ -123,8 +123,9 @@ func resolveCustomTypes(ctx context.Context, res CustomNodeTypeResolver, orgID s
 			if mErr != nil {
 				return nil, fmt.Errorf("custom node %q: merge params: %w", n.ID, mErr)
 			}
-			// P-write-2 Task 6 inserts the full validator call HERE on `m`
-			// (customnodetype.ValidateParams(ct.Kind, m)) before assigning.
+			if vErr := customnodetype.ValidateParams(ct.Kind, m); vErr != nil {
+				return nil, fmt.Errorf("custom node %q: invalid merged params: %w", n.ID, vErr)
+			}
 			merged = m
 		}
 		resolved[n.ID] = planner.ResolvedType{Kind: ct.Kind, Params: merged}

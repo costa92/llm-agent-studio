@@ -81,3 +81,19 @@ func TestResolveMergeNoOverlayUnchanged(t *testing.T) {
 		t.Errorf("old node (no overlay) regressed: %s", res["n1"].Params)
 	}
 }
+
+func TestResolveMergeRejectsIllegalMergedValue(t *testing.T) {
+	store := mergeTestStore(t)
+	org := "org-" + t.Name()
+	base, _ := json.Marshal(map[string]any{"method": "GET", "url": "https://api.example.com", "outputFormat": "text"})
+	ct, _ := store.Create(context.Background(), org, customnodetype.UpsertInput{Label: "fetch", Kind: "http", Params: base})
+	// outputFormat is description-known + non-RegistryOnly, so it merges in — but
+	// "xml" is not a legal enum value. The full validator must reject it.
+	nodes := []planner.WorkflowNode{{
+		ID: "n1", Type: "custom:fetch", TypeId: ct.ID, TypeVersion: 1,
+		Parameters: json.RawMessage(`{"outputFormat":"xml"}`),
+	}}
+	if _, err := resolveCustomTypes(context.Background(), store, org, nodes); err == nil {
+		t.Fatal("illegal merged value (outputFormat=xml) must be rejected at run-time resolve")
+	}
+}
