@@ -145,7 +145,7 @@ func NewMux(d Deps) *http.ServeMux {
 	// Org bootstrap + project create/list (org-scoped).
 	mux.Handle("POST /api/orgs", authOnly(createOrgHandler(d.OrgBootstrap)))
 	mux.Handle("GET /api/orgs", authOnly(listOrgsHandler(d.OrgList)))
-	mux.Handle("POST /api/orgs/{org}/projects", scoped(roleEditor, orgScope, createProjectHandler(d.Projects)))
+	mux.Handle("POST /api/orgs/{org}/projects", scoped(roleEditor, orgScope, createProjectHandler(d.Projects, d.CustomNodeType)))
 	mux.Handle("GET /api/orgs/{org}/projects", scoped(roleViewer, orgScope, listProjectsHandler(d.Projects)))
 	// Task center (任务中心): cross-project run dashboard (org-scoped, viewer+).
 	mux.Handle("GET /api/orgs/{org}/tasks", scoped(roleViewer, orgScope, taskboardHandler(d.TaskBoard)))

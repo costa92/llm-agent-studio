@@ -292,8 +292,11 @@ func listOrgsHandler(l OrgLister) http.HandlerFunc {
 	}
 }
 
-// createProjectHandler (POST /api/orgs/{org}/projects): editor+.
-func createProjectHandler(ps ProjectStore) http.HandlerFunc {
+// createProjectHandler (POST /api/orgs/{org}/projects): editor+. When the project
+// enables a custom workflow with inline nodes, save-time parameter-overlay
+// validation (W2, P-write-4) runs before the store write — mirrors the W1
+// workflow create/update gate. The run-time resolve+worker gates stay authoritative.
+func createProjectHandler(ps ProjectStore, res CustomNodeTypeResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		uid := authzhttp.UserID(r.Context())
 		var req struct {
@@ -316,6 +319,17 @@ func createProjectHandler(ps ProjectStore) http.HandlerFunc {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
 			http.Error(w, "bad request: name required", http.StatusBadRequest)
 			return
+		}
+		if req.CustomWorkflowEnabled && len(req.WorkflowNodes) > 0 {
+			var nodes []planner.WorkflowNode
+			if err := json.Unmarshal(req.WorkflowNodes, &nodes); err != nil {
+				http.Error(w, "invalid workflow: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := validateNodeParameterOverlays(r.Context(), res, r.PathValue("org"), nodes); err != nil {
+				http.Error(w, "invalid workflow: "+err.Error(), http.StatusBadRequest)
+				return
+			}
 		}
 		p, err := ps.Create(r.Context(), project.CreateInput{
 			OrgID: r.PathValue("org"), Name: req.Name, Brief: req.Brief,
