@@ -76,9 +76,18 @@ export function toReactFlow(nodes: WorkflowNode[]): {
   return { nodes: rfNodes, edges: rfEdges }
 }
 
+// 某节点的「直接上游」id 集合：以它为 target 的边的 source 集合（不做传递闭包）。
+// EDGES 是 dependsOn 的唯一真源——这条规则被 toStudioNodes（反向转换）和属性面板的
+// 变量绑定上游下拉（WorkflowCanvas.upstreamNodes）共用，保证两处口径完全一致。
+// 直接上游 ONLY：worker 表达式引擎只对节点的直接 depends_on 解析 $node，提供传递上游
+// 会绑定到 worker 运行时拒绝的来源，故这里不能做图遍历。
+export function directUpstreamIds(rfEdges: RFEdge[], nodeId: string): string[] {
+  return rfEdges.filter((e) => e.target === nodeId).map((e) => e.source)
+}
+
 // 反向转换：RF 状态 → studio 工作流模型（保存载荷）。
 // 单一真源约定：EDGES 是 dependsOn 的唯一真源——每个节点的 dependsOn 仅由
-// 「以它为 target 的边的 source 集合」推导，不读 data.node.dependsOn。
+// 「以它为 target 的边的 source 集合」推导（见 directUpstreamIds），不读 data.node.dependsOn。
 // 这样连线/断线/重命名级联只需维护边，不必双写 dependsOn。
 // 其余可编辑字段（id/type/promptId/promptText）取自 rfNode.data.node；
 // position 取自 live 的 rfNode.position（四舍五入为整数）。
@@ -88,9 +97,7 @@ export function toStudioNodes(
 ): WorkflowNode[] {
   return rfNodes.map((rf) => {
     const n = rf.data.node
-    const dependsOn = rfEdges
-      .filter((e) => e.target === rf.id)
-      .map((e) => e.source)
+    const dependsOn = directUpstreamIds(rfEdges, rf.id)
     // preserve-unknown: spread the whole source node first so未识别字段（含未来
     // Property，如 parameters/typeVersion）随 disk JSON 往返存活（B-A1）。再显式
     // 覆盖三条不变量：id 取 RF（重命名级联权威）、dependsOn 由边推导（单一真源）、

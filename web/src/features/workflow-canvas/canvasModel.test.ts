@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   toReactFlow,
   toStudioNodes,
+  directUpstreamIds,
   addNodeAt,
   nextNodeId,
   duplicateNode,
@@ -150,6 +151,26 @@ describe("toStudioNodes", () => {
     const out = toStudioNodes(nodes, [])
     expect(out.find((n) => n.id === "a")!.promptText).toBeUndefined()
     expect(out.find((n) => n.id === "b")!.promptText).toBe("hi")
+  })
+})
+
+describe("directUpstreamIds", () => {
+  it("returns the source ids of edges targeting the node (direct upstream)", () => {
+    const edges: RFEdge[] = [
+      { id: "a->c", source: "a", target: "c" },
+      { id: "b->c", source: "b", target: "c" },
+    ]
+    expect(directUpstreamIds(edges, "c")).toEqual(["a", "b"])
+  })
+
+  it("returns ONLY direct predecessors, never transitive ones (worker expr constraint)", () => {
+    // a -> b -> c：c 的直接上游只有 b；a 是传递上游，必须排除——
+    // worker 表达式引擎只对直接 depends_on 解析 $node，提供 a 会绑定到运行时被拒的来源。
+    const edges: RFEdge[] = [
+      { id: "a->b", source: "a", target: "b" },
+      { id: "b->c", source: "b", target: "c" },
+    ]
+    expect(directUpstreamIds(edges, "c")).toEqual(["b"])
   })
 })
 

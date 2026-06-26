@@ -84,4 +84,33 @@ describe("workflow canvas route", () => {
     // 画布容器存在（主题作用域）。
     expect(document.querySelector(".workflow-canvas")).not.toBeNull()
   })
+
+  // Bug 2 回归：未跑过的工作流（无 latestPlanId）显式 ?mode=run 必须能进运行视图。
+  // 旧逻辑只看 runId（= run ?? latestPlanId），两者皆空时 mode 被拉回 edit，
+  // 「运行」切换对从未运行的工作流是静默 no-op。现 ?mode=run 即进运行态空态。
+  it("enters run mode via ?mode=run even when the workflow never ran", async () => {
+    setAccessToken("tok")
+    const workflow = {
+      id: "w1",
+      projectId: "p1",
+      name: "未跑过的工作流",
+      // 关键：无 latestPlanId —— 从未运行。
+      nodes: [{ id: "script-1", type: "script", promptId: "", dependsOn: [] }],
+      createdAt: "2026-06-22T00:00:00Z",
+      updatedAt: "2026-06-22T00:00:00Z",
+    }
+    installFetchRoutes({
+      "/model-configs": () => jsonResponse({ items: [] }),
+      "/api/projects/p1/workflows": () => jsonResponse({ items: [workflow] }),
+      "/node-types/builtin": () => jsonResponse({ items: [] }),
+      "/node-types": () => jsonResponse({ version: 1, nodeTypes: [] }),
+      // RunCanvas 的 usePlans/useProjectState 等 → /api/ 兜底返回空，运行画布挂载到空态。
+      "/api/": () => jsonResponse({ items: [] }),
+    })
+
+    renderRoute("/orgs/acme/projects/p1/workflow?wf=w1&mode=run")
+
+    // 运行画布的「尚无运行」空态出现 = 运行模式可达（旧逻辑此处会停在编辑画布）。
+    expect(await screen.findByText("尚无运行")).toBeInTheDocument()
+  })
 })
