@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"regexp"
 
 	coreagents "github.com/costa92/llm-agent"
 	"github.com/costa92/llm-agent-contract/llm"
@@ -181,7 +182,21 @@ type CustomVariable struct {
 	Name         string `json:"name"`
 	SourceNodeId string `json:"sourceNodeId,omitempty"`
 	SourceTodoId string `json:"sourceTodoId,omitempty"`
+	// SourceField (B/P5) optional: the target field name of the upstream node's
+	// output. Empty = bind the whole output (= today's behavior, accessor still
+	// inferred by exprNodeAccessor as .json.text / .json). Non-empty = .json.<field>.
+	// MUST match the safe-identifier charset (fieldNameRe, §8.1 injection gate);
+	// candidates come from the upstream type's OutputSchema (§6). Only functional
+	// when ExprChannel is ON.
+	SourceField string `json:"sourceField,omitempty"`
 }
+
+// fieldNameRe is the §8.1 injection gate for varBinding sourceField: a safe
+// identifier contains no '}'/'{'/'"'/'['/'.'/whitespace, so a user-controlled
+// field name can never break out of the {{ $node["id"].json.<field> }} template
+// it is concatenated into. Applied at plan time here AND at run time in the
+// worker (expr_resolver.go) — defense in depth (§8.1 double validation).
+var fieldNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // ResolvedType is the run handler's per-node registry resolution (org-scoped):
 // the entry's Kind + raw Params (LlmParams: systemPrompt/userPrompt/model/
@@ -297,6 +312,13 @@ func (p *Planner) PlanCustom(ctx context.Context, projectID, workflowID string, 
 			continue // not a typed node
 		}
 		for _, v := range n.VarBindings {
+			// §8.1 charset gate (plan-time, defense-in-depth). Checked INDEPENDENT of
+			// the empty-SourceNodeId continue below (§12 amendment 5): a bad field is
+			// rejected even on a binding with no source node, for clarity + regression
+			// safety. Whitespace-only fails the regex (no TrimSpace degrade — §12 a3).
+			if v.SourceField != "" && !fieldNameRe.MatchString(v.SourceField) {
+				return Result{}, fmt.Errorf("planner: custom node %q variable %q invalid sourceField %q", n.ID, v.Name, v.SourceField)
+			}
 			if v.SourceNodeId == "" {
 				continue
 			}
@@ -332,7 +354,11 @@ func (p *Planner) PlanCustom(ctx context.Context, projectID, workflowID string, 
 			}
 			vars := make([]map[string]interface{}, 0, len(n.VarBindings))
 			for _, v := range n.VarBindings {
-				vars = append(vars, map[string]interface{}{"name": v.Name, "sourceNodeId": v.SourceNodeId})
+				m := map[string]interface{}{"name": v.Name, "sourceNodeId": v.SourceNodeId}
+				if v.SourceField != "" {
+					m["sourceField"] = v.SourceField // B/P5: carry the field through pass 1
+				}
+				vars = append(vars, m)
 			}
 			params["variables"] = vars
 			inputMap["kind"] = rt.Kind
@@ -399,6 +425,9 @@ func (p *Planner) PlanCustom(ctx context.Context, projectID, workflowID string, 
 		newVars := make([]map[string]interface{}, 0, len(n.VarBindings))
 		for _, v := range n.VarBindings {
 			out := map[string]interface{}{"name": v.Name}
+			if v.SourceField != "" {
+				out["sourceField"] = v.SourceField // B/P5: carry the field through pass 2 (fresh map)
+			}
 			if v.SourceNodeId != "" {
 				todoID, ok := idMap[v.SourceNodeId]
 				if !ok {

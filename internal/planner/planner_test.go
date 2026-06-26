@@ -432,6 +432,73 @@ func TestPlanCustom_TypedVariableRewrite(t *testing.T) {
 	}
 }
 
+// TestPlanCustom_SourceFieldPassthrough: a typed node varBinding carrying a
+// sourceField survives BOTH planner passes into todos.input_json.params.variables
+// (alongside the rewritten sourceTodoId), while a sibling binding WITHOUT a
+// sourceField produces NO sourceField key (omitempty parity with today). DB-backed.
+func TestPlanCustom_SourceFieldPassthrough(t *testing.T) {
+	p, st, projID := newPlanner(t, nil)
+	ctx := context.Background()
+
+	regParams, _ := json.Marshal(map[string]interface{}{
+		"systemPrompt": "s", "userPrompt": "{{a}} {{b}}", "outputFormat": "text",
+	})
+	nodes := []WorkflowNode{
+		{ID: "script-1", Type: "script"},
+		{
+			ID: "c1", Type: "custom:llm", TypeId: "reg-1",
+			DependsOn: []string{"script-1"},
+			VarBindings: []CustomVariable{
+				{Name: "a", SourceNodeId: "script-1", SourceField: "characterSheet"},
+				{Name: "b", SourceNodeId: "script-1"}, // no sourceField → whole output
+			},
+		},
+	}
+	resolved := map[string]ResolvedType{"c1": {Kind: "llm", Params: regParams}}
+
+	res, err := p.PlanCustom(ctx, projID, "", Brief{Brief: "b"}, nodes, resolved)
+	if err != nil {
+		t.Fatalf("PlanCustom: %v", err)
+	}
+
+	var scriptTodoID string
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT id FROM todos WHERE plan_id=$1 AND type='script'`, res.PlanID).Scan(&scriptTodoID); err != nil {
+		t.Fatalf("query script todo id: %v", err)
+	}
+	var rawInput string
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT input_json FROM todos WHERE plan_id=$1 AND type='custom:llm'`, res.PlanID).Scan(&rawInput); err != nil {
+		t.Fatalf("query c1 input_json: %v", err)
+	}
+
+	var got map[string]interface{}
+	if err := json.Unmarshal([]byte(rawInput), &got); err != nil {
+		t.Fatalf("unmarshal input_json: %v", err)
+	}
+	params := got["params"].(map[string]interface{})
+	vars := params["variables"].([]interface{})
+	if len(vars) != 2 {
+		t.Fatalf("expected 2 variables, got %v", vars)
+	}
+	byName := map[string]map[string]interface{}{}
+	for _, raw := range vars {
+		v := raw.(map[string]interface{})
+		byName[v["name"].(string)] = v
+	}
+	// a: sourceField survived + sourceTodoId rewritten.
+	if byName["a"]["sourceField"] != "characterSheet" {
+		t.Fatalf("var a sourceField=%v want characterSheet (input=%s)", byName["a"]["sourceField"], rawInput)
+	}
+	if byName["a"]["sourceTodoId"] != scriptTodoID {
+		t.Fatalf("var a sourceTodoId=%v want %q", byName["a"]["sourceTodoId"], scriptTodoID)
+	}
+	// b: NO sourceField key (omitempty parity with today).
+	if _, has := byName["b"]["sourceField"]; has {
+		t.Fatalf("var b should have NO sourceField key, got input=%s", rawInput)
+	}
+}
+
 // TestPlanCustom_VariableNotInDependsOn: a typed node whose VarBindings reference
 // a node NOT in DependsOn must be rejected with an error containing "must be in dependsOn".
 func TestPlanCustom_VariableNotInDependsOn(t *testing.T) {
@@ -461,6 +528,67 @@ func TestPlanCustom_VariableNotInDependsOn(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "must be in dependsOn") {
 		t.Fatalf("error should contain \"must be in dependsOn\", got: %v", err)
+	}
+}
+
+// TestSourceFieldRegex: the §8.1 charset gate accepts safe OutputSchema field
+// identifiers and rejects injection-shaped / whitespace inputs. Pure-Go.
+func TestSourceFieldRegex(t *testing.T) {
+	for _, ok := range []string{"title", "characterSheet", "score", "_x", "a1", "logline"} {
+		if !fieldNameRe.MatchString(ok) {
+			t.Errorf("fieldNameRe should ACCEPT %q", ok)
+		}
+	}
+	bad := []string{
+		"",                     // empty (handled separately as "whole output", not via the gate)
+		" ",                    // whitespace-only (must NOT degrade to empty — §12 a3)
+		"a.b",                  // dotted path (multi-level — out of scope)
+		"a-b",                  // hyphen
+		`a"b`,                  // quote
+		`text }} {{ $node["x"`, // template injection attempt
+		"1abc",                 // leading digit
+		"a b",                  // embedded space
+		"a}b",                  // closing brace
+		"a[0]",                 // index
+	}
+	for _, f := range bad {
+		if fieldNameRe.MatchString(f) {
+			t.Errorf("fieldNameRe should REJECT %q", f)
+		}
+	}
+}
+
+// TestPlanCustom_SourceFieldCharsetGate: the plan-time gate rejects an
+// injection-shaped sourceField, INDEPENDENT of SourceNodeId (§12 a5). Pure-Go:
+// the gate returns before any DB access, so a zero-value Planner suffices.
+func TestPlanCustom_SourceFieldCharsetGate(t *testing.T) {
+	p := &Planner{} // gate fires before p.db / p.todos are touched
+	ctx := context.Background()
+	regParams, _ := json.Marshal(map[string]interface{}{"systemPrompt": "s"})
+	mk := func(field, srcNode string) []WorkflowNode {
+		return []WorkflowNode{
+			{ID: "script-1", Type: "script"},
+			{ID: "c1", Type: "custom:llm", TypeId: "reg-1",
+				DependsOn:   []string{"script-1"},
+				VarBindings: []CustomVariable{{Name: "draft", SourceNodeId: srcNode, SourceField: field}}},
+		}
+	}
+	resolved := map[string]ResolvedType{"c1": {Kind: "llm", Params: regParams}}
+
+	for _, f := range []string{`text }} {{ $node["x"]`, "a.b", "a-b", " ", `a"b`} {
+		_, err := p.PlanCustom(ctx, "proj", "", Brief{}, mk(f, "script-1"), resolved)
+		if err == nil {
+			t.Fatalf("expected plan-time rejection for sourceField %q", f)
+		}
+		if !strings.Contains(err.Error(), "sourceField") {
+			t.Fatalf("error should mention sourceField for %q, got: %v", f, err)
+		}
+	}
+	// §12 a5: bad field rejected even with empty SourceNodeId (independent of the
+	// SourceNodeId continue).
+	_, err := p.PlanCustom(ctx, "proj", "", Brief{}, mk("a.b", ""), resolved)
+	if err == nil || !strings.Contains(err.Error(), "sourceField") {
+		t.Fatalf("expected sourceField rejection with empty SourceNodeId, got: %v", err)
 	}
 }
 

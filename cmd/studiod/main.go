@@ -377,6 +377,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		StorageConfig:  storageStore,
 		CustomNodeType: customNodeTypeStore,
 		OrgSecret:      orgSecretStore,
+		ExprChannel:    cfg.ExprChannel, // B/P5: read-only capability for field-level varBindings FE gate
 		Members:        membersSvc,
 		Platform:       platformSvc,
 		TaskBoard:      taskBoard,

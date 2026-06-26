@@ -59,6 +59,11 @@ type Deps struct {
 	CustomNodeType CustomNodeTypeStore // org-scoped typed custom node registry; nil in focused unit tests
 	OrgSecret      OrgSecretStore      // org-scoped named-secret registry (roleAdmin); nil in focused unit tests
 
+	// ExprChannel mirrors config.ExprChannel: surfaced read-only on GET
+	// /api/orgs/{org}/node-types so the canvas can capability-gate field-level
+	// varBindings (B/P5). Default false (zero value = OFF, matches the env default).
+	ExprChannel bool
+
 	// ModelAvailable reports whether a catalog (provider, kind) entry is actually
 	// usable — i.e. its provider API key is configured so the adapter is/will be
 	// registered. nil → all entries treated as available (focused unit tests omit it).
@@ -234,7 +239,7 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("DELETE /api/orgs/{org}/storage-configs/{id}", scoped(roleAdmin, orgScope, deleteOrgStorageConfigHandler(d.StorageConfig)))
 	mux.Handle("POST /api/orgs/{org}/storage-configs/{id}/default", scoped(roleAdmin, orgScope, setDefaultStorageConfigHandler(d.StorageConfig)))
 	if d.CustomNodeType != nil {
-		mux.Handle("GET /api/orgs/{org}/node-types", scoped(roleViewer, orgScope, nodeTypesHandler(d.CustomNodeType)))
+		mux.Handle("GET /api/orgs/{org}/node-types", scoped(roleViewer, orgScope, nodeTypesHandler(d.CustomNodeType, d.ExprChannel)))
 		mux.Handle("GET /api/orgs/{org}/custom-node-types", scoped(roleViewer, orgScope, listCustomNodeTypesHandler(d.CustomNodeType)))
 		mux.Handle("POST /api/orgs/{org}/custom-node-types", scoped(roleEditor, orgScope, createCustomNodeTypeHandler(d.CustomNodeType, d.RoleResolver)))
 		mux.Handle("PUT /api/orgs/{org}/custom-node-types/{id}", scoped(roleEditor, orgScope, updateCustomNodeTypeHandler(d.CustomNodeType, d.RoleResolver)))

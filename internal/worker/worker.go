@@ -1609,6 +1609,12 @@ type customEnvelope struct {
 type customVariable struct {
 	Name         string `json:"name"`
 	SourceTodoId string `json:"sourceTodoId"`
+	// SourceField (B/P5) optional: target field of the upstream node's output.
+	// Empty = whole output (today's behavior). Non-empty = .json.<field> via the
+	// expr channel; structurally requires ExprChannel ON (the legacy resolver has
+	// no item JSON), so resolveVariables fails closed on it (§5.2). Charset-gated
+	// in resolveVariablesExpr (§8.1, run-time authoritative line).
+	SourceField string `json:"sourceField"`
 }
 
 // llmParams is the "llm" kind's params (unchanged from the 2A inline struct).
@@ -1776,6 +1782,17 @@ func (w *Worker) runCustom(ctx context.Context, c claimed) (string, error) {
 func (w *Worker) resolveVariables(ctx context.Context, vars []customVariable) (map[string]string, error) {
 	out := map[string]string{}
 	for _, v := range vars {
+		// B/P5 fail-closed (§5.2 + §12 amendment 1): a field-level binding cannot
+		// work on the legacy channel — resolveOutputText returns whole TEXT, no item
+		// JSON to index a field on. Never silently degrade to whole-output; ERROR.
+		// This check is BEFORE the empty-SourceTodoId continue below so an empty
+		// SourceTodoId + non-empty SourceField binding does NOT slip through. The
+		// error is opaque (errRequestFailed) for http/script and verbatim for llm
+		// (worker.go run* wrappers); the FE capability-gate (Phase 2) is the primary
+		// UX guard, this is the safety backstop.
+		if v.SourceField != "" {
+			return nil, fmt.Errorf("worker: variable %q field-level binding (sourceField) requires the expr channel (STUDIO_EXPR_CHANNEL=1)", v.Name)
+		}
 		if v.SourceTodoId == "" {
 			continue
 		}
