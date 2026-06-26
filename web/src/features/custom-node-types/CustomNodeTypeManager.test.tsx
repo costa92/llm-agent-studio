@@ -46,6 +46,11 @@ vi.mock("@/features/org-secrets/api", () => ({
   useOrgSecrets: () => secretsState.value,
 }))
 
+// org 文本模型：llm 表单模型下拉的源；测试里返回空列表（不影响既有断言）。
+vi.mock("@/features/cost/api", () => ({
+  useOrgTextModels: () => ({ data: [] as { provider: string; model: string }[] }),
+}))
+
 vi.mock("@/app/rbac", () => ({
   useRole: () => roleState.value,
 }))

@@ -27,6 +27,7 @@ import {
   useDeleteCustomNodeType,
 } from "./api"
 import { useOrgSecrets } from "@/features/org-secrets/api"
+import { useOrgTextModels } from "@/features/cost/api"
 import { useRole } from "@/app/rbac"
 import { LlmParamForm } from "./LlmParamForm"
 import { HttpParamForm } from "./HttpParamForm"
@@ -104,6 +105,8 @@ interface TypeDialogProps {
   submitError: string | null
   // 组织密钥名（供 http 表单的「插入密钥」下拉 + secret-bearing 判定）。
   secretNames: string[]
+  // org 文本模型选项（供 llm 表单的模型下拉；与画布模型选择器同源同形）。
+  modelOptions: { value: string; label: string }[]
   // 当前用户是否 admin（http secret-bearing 类型仅 admin 可创建/保存；后端强制，前端镜像）。
   isAdmin: boolean
   onSubmit: (draft: FormDraft) => void
@@ -117,6 +120,7 @@ function TypeDialog({
   submitting,
   submitError,
   secretNames,
+  modelOptions,
   isAdmin,
   onSubmit,
   onOpenChange,
@@ -233,6 +237,7 @@ function TypeDialog({
               <LlmParamForm
                 value={draft.params as LlmParams}
                 onChange={(params) => patch({ params })}
+                modelOptions={modelOptions}
               />
             ) : draft.kind === "http" ? (
               <HttpParamForm
@@ -292,6 +297,13 @@ export function CustomNodeTypeManager({ org }: CustomNodeTypeManagerProps) {
   // 组织密钥名（http 表单「插入密钥」+ secret-bearing 判定）；非 admin 列表会 403 返空。
   const secretsQuery = useOrgSecrets(org)
   const secretNames = (secretsQuery.data ?? []).map((s) => s.name)
+
+  // org 文本模型 → llm 表单模型下拉选项（value=model, label="provider · model"，与画布同形）。
+  const textModelsQuery = useOrgTextModels(org)
+  const modelOptions = (textModelsQuery.data ?? []).map((m) => ({
+    value: m.model,
+    label: `${m.provider} · ${m.model}`,
+  }))
   // 当前用户角色：secret-bearing http 类型仅 admin 可创建/保存（后端权威，前端镜像）。
   const { isAdmin } = useRole(org)
 
@@ -380,6 +392,7 @@ export function CustomNodeTypeManager({ org }: CustomNodeTypeManagerProps) {
           submitting={crud.submitting}
           submitError={crud.submitError}
           secretNames={secretNames}
+          modelOptions={modelOptions}
           isAdmin={isAdmin}
           onSubmit={handleDialogSubmit}
           onOpenChange={(open) => { if (!open) crud.closeDialog() }}
