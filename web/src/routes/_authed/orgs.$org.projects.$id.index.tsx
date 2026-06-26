@@ -207,6 +207,7 @@ function RunsListPage() {
               void navigate({
                 to: "/orgs/$org/projects/$id/workflow",
                 params: { org, id },
+                search: { mode: "create" },
               })
             }
           >
