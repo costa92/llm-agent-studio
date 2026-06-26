@@ -17,6 +17,7 @@ import (
 	"github.com/costa92/llm-agent-contract/llm"
 
 	"github.com/costa92/llm-agent-studio/internal/customnodetype"
+	"github.com/costa92/llm-agent-studio/internal/nodedesc"
 	"github.com/costa92/llm-agent-studio/internal/planner"
 	"github.com/costa92/llm-agent-studio/internal/project"
 	"github.com/costa92/llm-agent-studio/internal/projectstate"
@@ -110,7 +111,24 @@ func resolveCustomTypes(ctx context.Context, res CustomNodeTypeResolver, orgID s
 		if err != nil {
 			return nil, fmt.Errorf("custom node %q: resolve type %q: %w", n.ID, n.TypeId, err)
 		}
-		resolved[n.ID] = planner.ResolvedType{Kind: ct.Kind, Params: ct.Params}
+		merged := ct.Params
+		if len(n.Parameters) > 0 || n.TypeVersion != 0 {
+			desc, ok := nodedesc.DescByKind(ct.Kind, n.TypeVersion)
+			if !ok {
+				// Fail closed (spec §4.3): unknown typeVersion would mis-select the
+				// danger classification. Never silently fall back to v1.
+				return nil, fmt.Errorf("custom node %q: typeVersion %d unsupported (max %d); please upgrade", n.ID, n.TypeVersion, nodedesc.Version)
+			}
+			m, mErr := nodedesc.MergeOverlay(ct.Params, n.Parameters, desc)
+			if mErr != nil {
+				return nil, fmt.Errorf("custom node %q: merge params: %w", n.ID, mErr)
+			}
+			if vErr := customnodetype.ValidateParams(ct.Kind, m); vErr != nil {
+				return nil, fmt.Errorf("custom node %q: invalid merged params: %w", n.ID, vErr)
+			}
+			merged = m
+		}
+		resolved[n.ID] = planner.ResolvedType{Kind: ct.Kind, Params: merged}
 	}
 	return resolved, nil
 }
@@ -274,8 +292,11 @@ func listOrgsHandler(l OrgLister) http.HandlerFunc {
 	}
 }
 
-// createProjectHandler (POST /api/orgs/{org}/projects): editor+.
-func createProjectHandler(ps ProjectStore) http.HandlerFunc {
+// createProjectHandler (POST /api/orgs/{org}/projects): editor+. When the project
+// enables a custom workflow with inline nodes, save-time parameter-overlay
+// validation (W2, P-write-4) runs before the store write — mirrors the W1
+// workflow create/update gate. The run-time resolve+worker gates stay authoritative.
+func createProjectHandler(ps ProjectStore, res CustomNodeTypeResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		uid := authzhttp.UserID(r.Context())
 		var req struct {
@@ -298,6 +319,17 @@ func createProjectHandler(ps ProjectStore) http.HandlerFunc {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
 			http.Error(w, "bad request: name required", http.StatusBadRequest)
 			return
+		}
+		if req.CustomWorkflowEnabled && len(req.WorkflowNodes) > 0 {
+			var nodes []planner.WorkflowNode
+			if err := json.Unmarshal(req.WorkflowNodes, &nodes); err != nil {
+				http.Error(w, "invalid workflow: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := validateNodeParameterOverlays(r.Context(), res, r.PathValue("org"), nodes); err != nil {
+				http.Error(w, "invalid workflow: "+err.Error(), http.StatusBadRequest)
+				return
+			}
 		}
 		p, err := ps.Create(r.Context(), project.CreateInput{
 			OrgID: r.PathValue("org"), Name: req.Name, Brief: req.Brief,

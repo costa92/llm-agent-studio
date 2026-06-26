@@ -91,4 +91,9 @@ type Constraints struct {
 	NoTemplate      bool     `json:"noTemplate,omitempty"`
 	NoSecret        bool     `json:"noSecret,omitempty"`
 	SecretAllowedIn []string `json:"secretAllowedIn,omitempty"`
+	// RegistryOnly marks a field that a per-node parameters overlay may NEVER set
+	// (spec §6.3, M1). The single source of truth for "danger" — covers the
+	// no-constraint exfil launcher (http.allowResponseBody) that no danger
+	// Constraint alone would catch.
+	RegistryOnly bool `json:"registryOnly,omitempty"`
 }

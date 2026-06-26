@@ -1700,12 +1700,52 @@ func classifyScriptError(err error) error {
 // name; the substitution channel is SEPARATE from {{name}} upstream variables.
 var secretRefRe = regexp.MustCompile(`\{\{\s*secret:([A-Za-z0-9_\-]+)\s*\}\}`)
 
+// revalidateCustomParams is the authoritative run-time last line (spec §6.3). It
+// re-asserts the dangerous-field invariants on the params at the moment of
+// execution — covering W3 backfill + direct dirty-JSON writes that bypass save.
+// Reimplemented in-package against httpParams/scriptParams + the worker's own
+// secretRefRe (no cross-package import of the registry into the hot path).
+// Opaque-by-design: callers map the error to the kind's opaque enum.
+func revalidateCustomParams(env customEnvelope) error {
+	switch env.Kind {
+	case "http":
+		var p httpParams
+		if err := json.Unmarshal(env.Params, &p); err != nil {
+			return fmt.Errorf("worker: revalidate http params: %w", err)
+		}
+		if strings.Contains(p.URL, "{{") {
+			return fmt.Errorf("worker: http url must be static literal")
+		}
+		if secretRefRe.MatchString(p.BodyTemplate) || strings.Contains(p.BodyTemplate, "{{secret:") {
+			return fmt.Errorf("worker: {{secret:}} not allowed in http body")
+		}
+	case "script":
+		var p scriptParams
+		if err := json.Unmarshal(env.Params, &p); err != nil {
+			return fmt.Errorf("worker: revalidate script params: %w", err)
+		}
+		if secretRefRe.MatchString(p.Code) || strings.Contains(p.Code, "{{secret:") {
+			return fmt.Errorf("worker: {{secret:}} not allowed in script code")
+		}
+	}
+	return nil
+}
+
 // runCustom dispatches a typed custom todo by its input_json.kind. Each case
 // re-unmarshals params into its own typed struct. A shipped "llm"; B adds "http".
 func (w *Worker) runCustom(ctx context.Context, c claimed) (string, error) {
 	var env customEnvelope
 	if err := json.Unmarshal(c.input, &env); err != nil {
 		return "", fmt.Errorf("worker: custom input unmarshal: %w", err)
+	}
+	if err := revalidateCustomParams(env); err != nil {
+		// Opaque: dirty params (backfill / dirty JSON) → no outbound request, no leak.
+		switch env.Kind {
+		case "script":
+			return "", errScriptFailed
+		default:
+			return "", errRequestFailed
+		}
 	}
 	switch env.Kind {
 	case "llm":

@@ -145,7 +145,7 @@ func NewMux(d Deps) *http.ServeMux {
 	// Org bootstrap + project create/list (org-scoped).
 	mux.Handle("POST /api/orgs", authOnly(createOrgHandler(d.OrgBootstrap)))
 	mux.Handle("GET /api/orgs", authOnly(listOrgsHandler(d.OrgList)))
-	mux.Handle("POST /api/orgs/{org}/projects", scoped(roleEditor, orgScope, createProjectHandler(d.Projects)))
+	mux.Handle("POST /api/orgs/{org}/projects", scoped(roleEditor, orgScope, createProjectHandler(d.Projects, d.CustomNodeType)))
 	mux.Handle("GET /api/orgs/{org}/projects", scoped(roleViewer, orgScope, listProjectsHandler(d.Projects)))
 	// Task center (任务中心): cross-project run dashboard (org-scoped, viewer+).
 	mux.Handle("GET /api/orgs/{org}/tasks", scoped(roleViewer, orgScope, taskboardHandler(d.TaskBoard)))
@@ -168,8 +168,8 @@ func NewMux(d Deps) *http.ServeMux {
 	// assets/timeline (reached via the run's planId). nil Workflows → focused tests.
 	if d.Workflows != nil {
 		mux.Handle("GET /api/projects/{id}/workflows", proj(roleViewer, listWorkflowsHandler(d.Workflows)))
-		mux.Handle("POST /api/projects/{id}/workflows", proj(roleEditor, createWorkflowHandler(d.Workflows)))
-		mux.Handle("PUT /api/projects/{id}/workflows/{wfId}", proj(roleEditor, updateWorkflowHandler(d.Workflows)))
+		mux.Handle("POST /api/projects/{id}/workflows", proj(roleEditor, createWorkflowHandler(d.Projects, d.Workflows, d.CustomNodeType)))
+		mux.Handle("PUT /api/projects/{id}/workflows/{wfId}", proj(roleEditor, updateWorkflowHandler(d.Projects, d.Workflows, d.CustomNodeType)))
 		mux.Handle("DELETE /api/projects/{id}/workflows/{wfId}", proj(roleEditor, deleteWorkflowHandler(d.Workflows)))
 		mux.Handle("POST /api/projects/{id}/workflows/{wfId}/run", proj(roleEditor, runWorkflowHandler(d.Projects, d.Workflows, d.Planner, d.Events, d.Cost, d.GenQuota, d.CustomNodeType)))
 	}

@@ -91,25 +91,21 @@ export function toStudioNodes(
     const dependsOn = rfEdges
       .filter((e) => e.target === rf.id)
       .map((e) => e.source)
+    // preserve-unknown: spread the whole source node first so未识别字段（含未来
+    // Property，如 parameters/typeVersion）随 disk JSON 往返存活（B-A1）。再显式
+    // 覆盖三条不变量：id 取 RF（重命名级联权威）、dependsOn 由边推导（单一真源）、
+    // position 取 live 坐标。
     const out: WorkflowNode = {
+      ...n,
       id: rf.id,
-      type: n.type,
-      promptId: n.promptId,
       dependsOn,
       position: {
         x: Math.round(rf.position.x),
         y: Math.round(rf.position.y),
       },
     }
-    // promptText 为空则省略（与既有保存载荷一致）。
-    if (n.promptText) out.promptText = n.promptText
-    if (n.label) out.label = n.label
-    if (n.color) out.color = n.color
-    // typeId 不是免费透传：toStudioNodes 逐字段重建 WorkflowNode，必须显式拷贝，
-    // 否则首次画布编辑保存即丢 typeId (T1)。
-    if (n.typeId) out.typeId = n.typeId
-    // varBindings 同理：每节点变量绑定也必须显式拷贝，否则编辑保存即丢绑定 (T1)。
-    if (n.varBindings && n.varBindings.length) out.varBindings = n.varBindings
+    // promptText 为空则省略（与既有保存载荷一致）；非空照旧透传。
+    if (!out.promptText) delete out.promptText
     return out
   })
 }

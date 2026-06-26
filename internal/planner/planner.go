@@ -163,6 +163,14 @@ type WorkflowNode struct {
 	// is workflow-local. PlanCustom reads THIS to inject params.variables + two-pass
 	// rewrite local→todo. Empty for annotation nodes.
 	VarBindings []CustomVariable `json:"varBindings"`
+	// TypeVersion records the description.Version pinned at placement/save time.
+	// The resolve layer selects the description by (resolved kind, TypeVersion);
+	// an unknown TypeVersion fails closed (spec §4.3) — never a silent v1 fallback.
+	TypeVersion int `json:"typeVersion,omitempty"`
+	// Parameters is the serialized PropertiesForm value object: NON-dangerous
+	// per-node overrides only. RegistryOnly/dangerous fields stay in the registry
+	// (spec §6) and are filtered out at the resolve choke point.
+	Parameters json.RawMessage `json:"parameters,omitempty"`
 }
 
 // CustomVariable binds a template var name to an upstream node's text output.

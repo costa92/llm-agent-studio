@@ -108,3 +108,32 @@ func TestReservedNamespace(t *testing.T) {
 		}
 	}
 }
+
+func TestRegistryOnlyMarkedOnDangerousFields(t *testing.T) {
+	want := map[string]map[string]bool{
+		"http":   {"url": true, "headers": true, "bodyTemplate": true, "allowResponseBody": true},
+		"script": {"code": true},
+	}
+	for _, d := range Builtins() {
+		exp, ok := want[d.Type]
+		if !ok {
+			continue
+		}
+		got := map[string]bool{}
+		for _, p := range d.Properties {
+			if p.Constraints != nil && p.Constraints.RegistryOnly {
+				got[p.Name] = true
+			}
+		}
+		for name := range exp {
+			if !got[name] {
+				t.Errorf("%s.%s must be RegistryOnly", d.Type, name)
+			}
+		}
+		// allowResponseBody is a PLAIN bool with no other constraint — assert the
+		// marker still lands (spec §6.3: the no-constraint exfil-launcher hole).
+		if d.Type == "http" && !got["allowResponseBody"] {
+			t.Error("http.allowResponseBody (no other constraint) must still be RegistryOnly")
+		}
+	}
+}

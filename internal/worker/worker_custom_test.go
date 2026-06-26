@@ -701,3 +701,77 @@ func TestRunCustomHTTP_NameChannelCannotSmuggleSecret(t *testing.T) {
 		t.Fatalf("secret resolver was asked for LEAKME via the name channel — smuggle succeeded")
 	}
 }
+
+func TestRevalidateCustomParamsRejectsDirty(t *testing.T) {
+	cases := []struct {
+		name string
+		env  customEnvelope
+	}{
+		{"http url template", customEnvelope{Kind: "http", Params: json.RawMessage(`{"method":"GET","url":"http://x/{{y}}"}`)}},
+		{"http body secret", customEnvelope{Kind: "http", Params: json.RawMessage(`{"method":"POST","url":"https://x","bodyTemplate":"{{secret:K}}"}`)}},
+		{"script code secret", customEnvelope{Kind: "script", Params: json.RawMessage(`{"code":"x={{secret:K}}"}`)}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := revalidateCustomParams(tc.env); err == nil {
+				t.Fatalf("dirty %s params must be rejected at run-time", tc.name)
+			}
+		})
+	}
+}
+
+func TestRevalidateCustomParamsAcceptsClean(t *testing.T) {
+	clean := customEnvelope{Kind: "http", Params: json.RawMessage(`{"method":"GET","url":"https://api.example.com","outputFormat":"text"}`)}
+	if err := revalidateCustomParams(clean); err != nil {
+		t.Fatalf("clean params rejected: %v", err)
+	}
+}
+
+// TestRunCustomHTTPDirtyURLNoOutbound (security, P-write-4) [DB]: a backfilled /
+// directly-written dirty http envelope (templated url — bypasses save validation)
+// must be rejected by the run-time gate BEFORE any outbound request — zero calls
+// to the HTTPDoer, opaque error (no url leak).
+func TestRunCustomHTTPDirtyURLNoOutbound(t *testing.T) {
+	if os.Getenv("LLM_AGENT_STUDIO_PG_URL") == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker custom tests")
+	}
+	ctx := context.Background()
+	db := assetTestGorm(t)
+	orgID := "org_dirty_" + randHex3()
+	_, c := seedHTTPProjectTodo(t, db, orgID)
+	doer := &fakeDoer{resp: fetch.Response{Status: 200, Body: []byte(`{}`)}}
+	w := httpTestWorker(t, db, &fakeSecrets{value: "S"}, doer)
+
+	c.input = json.RawMessage(`{"kind":"http","params":{"method":"GET","url":"http://attacker/{{x}}"}}`)
+	_, err := w.runCustom(ctx, c)
+	if err == nil {
+		t.Fatal("dirty url must be rejected before dispatch")
+	}
+	if doer.callCount != 0 {
+		t.Fatalf("no outbound request must be made, got %d", doer.callCount)
+	}
+	if strings.Contains(err.Error(), "attacker") {
+		t.Fatalf("run-time error leaked dirty url: %v", err)
+	}
+}
+
+// TestRunCustomScriptDirtySecretRejected (security, P-write-4) [DB]: a dirty
+// script envelope carrying a {{secret:}} ref in code is rejected at the run-time
+// gate (opaque errScriptFailed), proving the worker holds independently of save.
+func TestRunCustomScriptDirtySecretRejected(t *testing.T) {
+	if os.Getenv("LLM_AGENT_STUDIO_PG_URL") == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker custom tests")
+	}
+	ctx := context.Background()
+	db := assetTestGorm(t)
+	orgID := "org_dirty_s_" + randHex3()
+	_, c := seedHTTPProjectTodo(t, db, orgID)
+	doer := &fakeDoer{}
+	w := httpTestWorker(t, db, &fakeSecrets{value: "S"}, doer)
+
+	c.input = json.RawMessage(`{"kind":"script","params":{"code":"x = {{secret:K}}"}}`)
+	_, err := w.runCustom(ctx, c)
+	if err == nil {
+		t.Fatal("dirty script secret must be rejected before dispatch")
+	}
+}

