@@ -195,7 +195,9 @@ const scriptOutputSchema = [
 function renderTypedPanel(
   node: WorkflowNode,
   params: LlmParams,
-  upstreamNodes = [{ id: "script-1", label: "script-1" }],
+  upstreamNodes: NonNullable<Parameters<typeof PropertiesPanel>[0]["upstreamNodes"]> = [
+    { id: "script-1", label: "script-1" },
+  ],
   extra: Partial<Parameters<typeof PropertiesPanel>[0]> = {},
 ) {
   const onPatch = vi.fn()
@@ -411,12 +413,13 @@ describe("PropertiesPanel typed node (Task 13)", () => {
   it("never surfaces secret VALUES — OrgSecret DTO carries no value field (P5.1)", () => {
     // 安全断言：即便后端 DTO 误带 value，UI 也只投影 name。这里 mock 一个含 value 的脏对象，
     // 断言该 value 文本绝不出现在 DOM。
+    // 故意注入 OrgSecret 不该有的 value 字段（脏 DTO），验证 UI 不泄漏；
+    // 经 unknown 强转，因为带 value 的对象与 OrgSecret 不重叠。
     mockUseOrgSecrets.mockReturnValue({
       data: [
-        // @ts-expect-error 故意注入 OrgSecret 不该有的 value 字段，验证 UI 不泄漏。
         { id: "s1", orgId: "org-1", name: "STRIPE_KEY", hasValue: true, value: "sk_live_SECRETVALUE" },
       ],
-    } as ReturnType<typeof useOrgSecrets>)
+    } as unknown as ReturnType<typeof useOrgSecrets>)
     const description: NodeTypeDescription = {
       type: "custom:translate", version: 1, label: "翻译", description: "", group: "transform",
       inputs: [], outputs: [],
