@@ -16,12 +16,21 @@ import type { LlmParams } from "@/lib/types"
 export interface LlmParamFormProps {
   value: LlmParams
   onChange: (updated: LlmParams) => void
+  // org 的文本(kind="text")model-config 选项（value=model, label="provider · model"），
+  // 与画布 PropertiesPanel 的模型选择器同源同形。缺省为空 → 仅「组织默认」可选。
+  modelOptions?: { value: string; label: string }[]
 }
 
-export function LlmParamForm({ value, onChange }: LlmParamFormProps) {
+export function LlmParamForm({ value, onChange, modelOptions = [] }: LlmParamFormProps) {
   function patch(partial: Partial<LlmParams>) {
     onChange({ ...value, ...partial })
   }
+
+  // 已选 model 若不在 org 配置列表里（旧数据/已删配置），仍保留为可见选项，避免静默归零成「组织默认」。
+  const modelChoices =
+    value.model && !modelOptions.some((m) => m.value === value.model)
+      ? [...modelOptions, { value: value.model, label: `${value.model}（未配置）` }]
+      : modelOptions
 
   return (
     <div className="flex flex-col gap-4">
@@ -59,19 +68,26 @@ export function LlmParamForm({ value, onChange }: LlmParamFormProps) {
         </p>
       </div>
 
-      {/* model — 可选，空则使用路由默认模型 */}
+      {/* model — 可选，空则使用路由默认模型。config-backed select（与画布一致），非自由文本。 */}
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="llm-model" className="text-[13px] font-medium text-text-1">
           模型
           <span className="ml-1 text-text-2 font-normal text-[12px]">（可选，空则使用组织默认）</span>
         </Label>
-        <Input
+        <select
           id="llm-model"
-          placeholder="如 gpt-4o / claude-3-5-sonnet"
+          aria-label="模型"
           value={value.model ?? ""}
           onChange={(e) => patch({ model: e.target.value || undefined })}
-          className="text-[13px]"
-        />
+          className="h-8 rounded border border-input bg-background px-2 text-[13px] text-text-1 focus:ring-1 focus:ring-ring"
+        >
+          <option value="">（组织默认）</option>
+          {modelChoices.map((m) => (
+            <option key={m.value} value={m.value}>
+              {m.label}
+            </option>
+          ))}
+        </select>
       </div>
 
       {/* temperature — 可选数字 */}

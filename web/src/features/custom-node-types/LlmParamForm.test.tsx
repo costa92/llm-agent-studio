@@ -6,8 +6,20 @@ import { LlmParamForm } from "./LlmParamForm"
 
 const BASE: LlmParams = { userPrompt: "翻译：{{text}}" }
 
-function renderForm(value: LlmParams, onChange = vi.fn()) {
-  return { onChange, ...render(<LlmParamForm value={value} onChange={onChange} />) }
+const MODELS = [
+  { value: "gpt-4o", label: "openai · gpt-4o" },
+  { value: "deepseek-chat", label: "deepseek · deepseek-chat" },
+]
+
+function renderForm(
+  value: LlmParams,
+  onChange = vi.fn(),
+  modelOptions: { value: string; label: string }[] = [],
+) {
+  return {
+    onChange,
+    ...render(<LlmParamForm value={value} onChange={onChange} modelOptions={modelOptions} />),
+  }
 }
 
 describe("LlmParamForm", () => {
@@ -21,9 +33,37 @@ describe("LlmParamForm", () => {
     expect(screen.getByLabelText(/用户提示词/)).toHaveValue("翻译：{{text}}")
   })
 
-  it("renders model input", () => {
-    renderForm(BASE)
-    expect(screen.getByLabelText(/模型/)).toBeInTheDocument()
+  it("renders model as a config-backed select (not free-text input)", () => {
+    renderForm(BASE, vi.fn(), MODELS)
+    const field = screen.getByLabelText("模型")
+    // 与画布 PropertiesPanel 一致：模型字段是 org model-config 支持的下拉，而非自由文本输入框。
+    expect(field.tagName).toBe("SELECT")
+    expect(screen.getByRole("option", { name: "openai · gpt-4o" })).toBeInTheDocument()
+    expect(screen.getByRole("option", { name: "deepseek · deepseek-chat" })).toBeInTheDocument()
+    // 「组织默认」空选项始终存在（model 可选）。
+    expect(screen.getByRole("option", { name: /组织默认/ })).toBeInTheDocument()
+  })
+
+  it("selecting a model calls onChange with that model value", () => {
+    const onChange = vi.fn()
+    renderForm(BASE, onChange, MODELS)
+    fireEvent.change(screen.getByLabelText("模型"), { target: { value: "gpt-4o" } })
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect((onChange.mock.calls[0][0] as LlmParams).model).toBe("gpt-4o")
+  })
+
+  it("clearing model selection (组织默认) sets model=undefined", () => {
+    const onChange = vi.fn()
+    renderForm({ ...BASE, model: "gpt-4o" }, onChange, MODELS)
+    fireEvent.change(screen.getByLabelText("模型"), { target: { value: "" } })
+    expect((onChange.mock.calls[0][0] as LlmParams).model).toBeUndefined()
+  })
+
+  it("keeps an already-set model visible even if not among org configs", () => {
+    renderForm({ ...BASE, model: "legacy-model-x" }, vi.fn(), MODELS)
+    const field = screen.getByLabelText("模型") as HTMLSelectElement
+    expect(field.value).toBe("legacy-model-x")
+    expect(screen.getByRole("option", { name: /legacy-model-x/ })).toBeInTheDocument()
   })
 
   it("renders temperature input", () => {
