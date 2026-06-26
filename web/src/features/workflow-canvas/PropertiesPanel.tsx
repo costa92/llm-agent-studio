@@ -140,10 +140,14 @@ export function PropertiesPanel({
   // （resourceLocator dataSource="model" 的选项）；secretNames ← org 密钥的 NAME（DTO 永不含 value）。
   // 仅当渲染可编辑 PropertiesForm（typed + description）时才用到；hook 始终调用以遵守 hooks 规则。
   const modelConfigs = useModelConfigs(org)
-  const modelOptions = (modelConfigs.data ?? []).map((m) => ({
-    value: m.model,
-    label: `${m.provider} · ${m.model}`,
-  }))
+  // 仅文本模型可注入 LLM 节点的 model resourceLocator——图像/音频模型对文本生成无意义。
+  // 白名单 kind==="text"（对齐 useOrgTextModels 的口径），稳健于 audio/speech 标签差异。
+  const modelOptions = (modelConfigs.data ?? [])
+    .filter((m) => m.kind === "text")
+    .map((m) => ({
+      value: m.model,
+      label: `${m.provider} · ${m.model}`,
+    }))
   const orgSecrets = useOrgSecrets(org)
   const secretNames = (orgSecrets.data ?? []).map((s) => s.name)
   const [creating, setCreating] = useState(false)
@@ -271,6 +275,7 @@ export function PropertiesPanel({
               <SelectItem value="script">剧本生成 (script)</SelectItem>
               <SelectItem value="storyboard">分镜拆解 (storyboard)</SelectItem>
               <SelectItem value="asset">生成资源 (asset)</SelectItem>
+              <SelectItem value="prescreen">预审 (prescreen)</SelectItem>
             </SelectContent>
           </Select>
         </div>

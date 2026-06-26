@@ -126,6 +126,14 @@ describe("PropertiesPanel", () => {
       screen.queryByText("系统提示词 (Prompt Library)"),
     ).not.toBeInTheDocument()
   })
+
+  it("shows 预审 (prescreen) in 任务类型 for a prescreen builtin node (not an empty select)", () => {
+    // prescreen 是第一类内置节点（builtinnode/catalog.go），任务类型 Select 必须能解析它，
+    // 否则 value="prescreen" 匹配不到任何 SelectItem → 触发器空白（QA 实测 BUG）。
+    renderPanel(scriptNode({ type: "prescreen" }))
+    const combo = screen.getAllByRole("combobox")[0]
+    expect(within(combo).getByText("预审 (prescreen)")).toBeInTheDocument()
+  })
 })
 
 // ── Task 13: extractTemplateVars unit tests ────────────────────────────────
@@ -349,6 +357,27 @@ describe("PropertiesPanel typed node (Task 13)", () => {
     // 选项来自 org 的 model-config 列表（非空），不再是空下拉。
     expect(within(select).getByRole("option", { name: "openai · gpt-4o" })).toBeInTheDocument()
     expect(within(select).getByRole("option", { name: "anthropic · claude-3" })).toBeInTheDocument()
+  })
+
+  it("filters the model resourceLocator to text-kind configs only — no image/audio (QA bug)", () => {
+    // LLM(文本)节点只应能选文本模型；图像/音频模型对文本生成无意义（QA 实测：扁平列出全部 kind）。
+    mockUseModelConfigs.mockReturnValue({
+      data: [
+        { id: "m1", orgId: "org-1", kind: "text", provider: "deepseek", model: "deepseek-chat", enabled: true, isDefault: false, baseUrl: "", hasApiKey: true },
+        { id: "m2", orgId: "org-1", kind: "image", provider: "minimax", model: "image-01", enabled: true, isDefault: false, baseUrl: "", hasApiKey: true },
+        { id: "m3", orgId: "org-1", kind: "audio", provider: "minimax", model: "speech-2.8-hd", enabled: true, isDefault: false, baseUrl: "", hasApiKey: true },
+      ],
+    } as ReturnType<typeof useModelConfigs>)
+    const description: NodeTypeDescription = {
+      type: "custom:translate", version: 1, label: "翻译", description: "", group: "transform",
+      inputs: [], outputs: [],
+      properties: [{ name: "model", label: "模型", type: "resourceLocator", typeOptions: { dataSource: "model" } }],
+    }
+    renderTypedPanel(typedNode(), defaultTypedParams, undefined, { description })
+    const select = screen.getByLabelText("模型")
+    expect(within(select).getByRole("option", { name: "deepseek · deepseek-chat" })).toBeInTheDocument()
+    expect(within(select).queryByRole("option", { name: "minimax · image-01" })).toBeNull()
+    expect(within(select).queryByRole("option", { name: "minimax · speech-2.8-hd" })).toBeNull()
   })
 
   it("populates secret-insert dropdown with NAMES only from useOrgSecrets (P5.1)", () => {
