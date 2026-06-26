@@ -1,6 +1,6 @@
 import { useState } from "react"
 import {
-  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog"
 import { Button as UiButton } from "@/components/ui/button"
 import { CUSTOM_PALETTE } from "./nodeColor"
@@ -31,6 +31,9 @@ export function CustomTypeDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{mode === "create" ? "新建自定义类型" : "编辑自定义类型"}</DialogTitle>
+          <DialogDescription>
+            创建画布上的注释/草图类型（显示名 + 颜色）；不可运行，仅用于标注。
+          </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3 py-2">
           <label className="flex flex-col gap-1 text-[12px] text-text-2">

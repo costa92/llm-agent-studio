@@ -19,6 +19,7 @@ import { SseIndicator, type SseStatus } from "@/components/studio/SseIndicator"
 import {
   Sheet,
   SheetContent,
+  SheetDescription,
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
@@ -417,6 +418,9 @@ function RunCanvasInner({
         <SheetContent className="w-full overflow-y-auto sm:max-w-xl">
           <SheetHeader>
             <SheetTitle>{drawerKind === "storyboard" ? "分镜" : "剧本"}</SheetTitle>
+            <SheetDescription>
+              {drawerKind === "storyboard" ? "该节点生成的分镜镜头详情" : "该节点生成的剧本内容详情"}
+            </SheetDescription>
           </SheetHeader>
           {drawerKind === "script" && (
             <ScriptView

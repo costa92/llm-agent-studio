@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router"
+import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router"
 import { z } from "zod"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/studio/Button"
@@ -14,11 +14,19 @@ import { WorkflowCanvas } from "@/features/workflow-canvas/WorkflowCanvas"
 const workflowSearchSchema = z.object({
   wf: z.string().optional(),
   run: z.string().optional(),
-  mode: z.enum(["edit", "run"]).optional(),
+  // mode=create 是显式「新建工作流」入口信号（区别于带 wf 的编辑/运行）。
+  mode: z.enum(["edit", "run", "create"]).optional(),
 })
 
 export const Route = createFileRoute("/_authed/orgs/$org/projects/$id/workflow")({
   validateSearch: workflowSearchSchema,
+  // 无 wf 且非显式 create → 重定向到项目页（工作流列表 + 新建入口）。
+  // 防止误打开的 ?mode=edit 深链静默开一个空白新工作流并被保存成 stray 记录。
+  beforeLoad: ({ search, params }) => {
+    if (!search.wf && search.mode !== "create") {
+      throw redirect({ to: "/orgs/$org/projects/$id", params })
+    }
+  },
   component: WorkflowCanvasPage,
 })
 
