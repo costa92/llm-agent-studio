@@ -1,6 +1,8 @@
 package projectstate
 
 import (
+	"bytes"
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -355,5 +357,68 @@ func TestBuildGraph_CustomOutput(t *testing.T) {
 	}
 	if s1Node.Output != "" {
 		t.Fatalf("s1 (no output) should have empty Output, got %q", s1Node.Output)
+	}
+}
+
+// TestBuildGraph_ItemsPassthrough: NodeOutput.Items maps verbatim onto
+// GraphNode.Items; a node with no output gets nil Items (→ omitted in JSON).
+func TestBuildGraph_ItemsPassthrough(t *testing.T) {
+	todos := []Todo{
+		{ID: "c1", Type: "custom:http"},
+		{ID: "s1", Type: "script"},
+	}
+	items := []InspectorItem{
+		{JSON: json.RawMessage(`{"field":"value"}`)},
+		{JSON: json.RawMessage(`{"text":"line2"}`), Binary: map[string]InspectorBinaryRef{
+			"data": {AssetID: "as1", MimeType: "image/png", Kind: "image", Status: "accepted"},
+		}},
+	}
+	outputs := map[string]NodeOutput{
+		"c1": {TodoID: "c1", Content: "[]", Format: "items", Items: items},
+	}
+	nodes, _ := buildGraph(todos, map[string]Asset{}, outputs)
+	var c1Node, s1Node GraphNode
+	for _, n := range nodes {
+		if n.ID == "c1" {
+			c1Node = n
+		}
+		if n.ID == "s1" {
+			s1Node = n
+		}
+	}
+	if len(c1Node.Items) != 2 {
+		t.Fatalf("c1 items len = %d, want 2", len(c1Node.Items))
+	}
+	if string(c1Node.Items[0].JSON) != `{"field":"value"}` {
+		t.Fatalf("c1 item0 json = %s, want verbatim object", c1Node.Items[0].JSON)
+	}
+	br, ok := c1Node.Items[1].Binary["data"]
+	if !ok || br.AssetID != "as1" || br.Kind != "image" || br.MimeType != "image/png" || br.Status != "accepted" {
+		t.Fatalf("c1 item1 binary = %+v, want roundtrip", c1Node.Items[1].Binary)
+	}
+	if s1Node.Items != nil {
+		t.Fatalf("s1 (no output) should have nil Items, got %+v", s1Node.Items)
+	}
+}
+
+// TestGraphNode_ItemsOmittedWhenNil: nil Items → no "items" key in JSON (old
+// clients ignore the additive field); present → array preserved verbatim.
+func TestGraphNode_ItemsOmittedWhenNil(t *testing.T) {
+	nilNode := GraphNode{ID: "n1", Type: "script", Status: "done"}
+	b, err := json.Marshal(nilNode)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if bytes.Contains(b, []byte(`"items"`)) {
+		t.Fatalf("nil Items must be omitted, got %s", b)
+	}
+	withNode := GraphNode{ID: "n2", Type: "custom:x", Status: "done",
+		Items: []InspectorItem{{JSON: json.RawMessage(`{"a":1}`)}}}
+	b2, err := json.Marshal(withNode)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(b2, []byte(`"items":[{"json":{"a":1}}]`)) {
+		t.Fatalf("present Items must serialize verbatim, got %s", b2)
 	}
 }

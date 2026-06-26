@@ -51,6 +51,7 @@ import { useQueryClient } from "@tanstack/react-query"
 import { toReactFlow, type RFNode, type RFEdge, type StudioNodeData } from "./canvasModel"
 import { overlayRunStatus } from "./runOverlay"
 import { resolveSelection, type RunSelection } from "./resolveSelection"
+import { ItemInspector } from "./ItemInspector"
 import { WorkflowNode } from "./WorkflowNode"
 import { StudioEdge } from "./StudioEdge"
 import { NODE_COLOR } from "./nodeColor"
@@ -339,7 +340,11 @@ function RunCanvasInner({
         <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
           选中工件
         </h4>
-        {selection?.kind === "custom" ? (
+        {/* P5d：选中节点有 items → per-item inspector（逐条 json/text + 二进制 chip）。
+            items 缺省（老后端 / 标量节点）或空 → 回落今天的标量面板（下方分支），不破布局。 */}
+        {selection?.items && selection.items.length > 0 ? (
+          <ItemInspector items={selection.items} />
+        ) : selection?.kind === "custom" ? (
           selection.outputFormat === "http-status" ? (
             <SuppressedBodyPanel content={selection.output} />
           ) : (

@@ -23,6 +23,24 @@ export interface PipState {
 // GraphNode.status 与 StageStatus2 同域(后端 buildGraph 用 todoStatusToStage)。
 export type GraphNodeStatus = StageStatus2
 
+// InspectorBinaryRef 镜像后端 worker.BinaryRef / projectstate.InspectorBinaryRef：
+// 指向 assets 表的细指针（字节永不内联，访问受控）。字段为 camelCase。
+export interface InspectorBinaryRef {
+  assetId: string
+  mimeType: string
+  kind: string
+  // status omitempty（后端）→ 可缺省。
+  status?: string
+}
+
+// InspectorItem 镜像后端 worker.Item / projectstate.InspectorItem：一个节点执行
+// datum 的结构化 json + 可选 binary 引用。json 是 P2a 已落地的 canonical 对象
+// （format='json' → 真实对象；format='text' → {"text":"..."}），逐字透传，前端不重解析。
+export interface InspectorItem {
+  json: unknown
+  binary?: Record<string, InspectorBinaryRef>
+}
+
 export interface GraphNode {
   id: string
   label: string
@@ -33,6 +51,9 @@ export interface GraphNode {
   output?: string
   // output 非空时有意义；∈ "text" | "json"。
   outputFormat?: "text" | "json"
+  // 该节点 node_outputs.items 的逐字透传（workflow-v2 P5d per-item inspector）。
+  // additive：后端 omitempty → 老/标量节点无此键（undefined）。
+  items?: InspectorItem[]
 }
 
 export interface GraphEdge {

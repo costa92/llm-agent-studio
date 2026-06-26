@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
-import { render, screen } from "@testing-library/react"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { fireEvent, render, screen } from "@testing-library/react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { RunCanvas, SuppressedBodyPanel, parseHttpStatus } from "./RunCanvas"
 import type { WorkflowNode } from "@/lib/types"
@@ -26,12 +26,15 @@ const RUNNING_STATE: ProjectState = {
   isCustom: true,
 }
 
+// 可变 state holder：默认 RUNNING_STATE，按测试覆盖（useProjectState mock 读它）。
+let currentState: ProjectState = RUNNING_STATE
+
 vi.mock("@/features/workflow/api", () => ({
   usePlans: vi.fn(() => ({
     data: [{ id: "run1", projectId: "p1", status: "running", valid: true, fallbackUsed: false, createdAt: new Date().toISOString(), workflowId: "w1" }],
     refetch: vi.fn(),
   })),
-  useProjectState: vi.fn(() => ({ data: RUNNING_STATE })),
+  useProjectState: vi.fn(() => ({ data: currentState })),
   useRun: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useCancel: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useScript: vi.fn(() => ({ data: null, isLoading: false, isError: false })),
@@ -52,6 +55,9 @@ vi.mock("@/app/rbac", () => ({
   useRole: vi.fn(() => ({ isAdmin: true, role: "admin", can: () => true })),
 }))
 
+beforeEach(() => {
+  currentState = RUNNING_STATE
+})
 afterEach(() => vi.clearAllMocks())
 
 const WF_NODES: WorkflowNode[] = [
@@ -70,6 +76,16 @@ function renderRun() {
         nodes={WF_NODES}
         onSelectRun={vi.fn()}
       />
+    </QueryClientProvider>,
+  )
+}
+
+// 同 renderRun，但返回 container 且可传自定义工作流节点（用于点节点 → 选中态测试）。
+function renderRunTo(nodes: WorkflowNode[] = WF_NODES) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <RunCanvas projectId="p1" org="acme" runId="run1" nodes={nodes} onSelectRun={vi.fn()} />
     </QueryClientProvider>,
   )
 }
@@ -100,6 +116,127 @@ describe("RunCanvas read-only hardening", () => {
     ).map((el) => el.getAttribute("data-status"))
     expect(statuses).toContain("done")
     expect(statuses).toContain("running")
+  })
+})
+
+// P5d：运行视图右栏 per-item inspector + 缺省回落标量面板。
+// 通过点画布节点（ReactFlow onNodeClick）设选中态，断言右栏渲染分支。
+function clickNode(container: HTMLElement, index: number) {
+  const nodes = container.querySelectorAll(".react-flow__node")
+  const target = nodes[index]
+  expect(target).toBeTruthy()
+  fireEvent.click(target)
+}
+
+describe("RunCanvas per-item inspector (P5d)", () => {
+  // 头号用例：storyboard fan-out。该节点同时打开 legacy 抽屉（coexist）——抽屉是
+  // Radix 模态，会 aria-hide 右栏 inspector，故用 { hidden:true } 查右栏 inspector。
+  it("storyboard fan-out: ItemInspector renders the N items in the right rail (coexists with drawer)", () => {
+    currentState = {
+      ...RUNNING_STATE,
+      nodes: [
+        { id: "rn-script", label: "脚本", type: "script", status: "done" },
+        {
+          id: "rn-board",
+          label: "分镜",
+          type: "storyboard",
+          status: "done",
+          items: [
+            { json: { shot: "镜头甲" } },
+            { json: { shot: "镜头乙" } },
+            { json: { shot: "镜头丙" } },
+          ],
+        },
+      ],
+    }
+    const { container } = renderRunTo()
+    clickNode(container, 1) // storyboard-1
+    // 右栏 inspector 渲染（getByText 不按 aria-hidden 过滤，抽屉同时开亦可命中）。
+    expect(screen.getByText(/3 项/)).toBeInTheDocument()
+    expect(screen.getByText(/镜头甲/)).toBeInTheDocument()
+  })
+
+  // 索引切换器机制：用 custom 节点（不开抽屉）验证 N>1 prev/next 切换。
+  it("renders index switcher for N>1 and switches the visible item (custom node, no drawer)", () => {
+    currentState = {
+      ...RUNNING_STATE,
+      nodes: [
+        {
+          id: "rn-custom",
+          label: "翻译",
+          type: "custom:translate",
+          status: "done",
+          output: "first",
+          outputFormat: "text",
+          items: [
+            { json: { line: "第一句" } },
+            { json: { line: "第二句" } },
+          ],
+        },
+      ],
+    }
+    const customWf: WorkflowNode[] = [
+      { id: "custom-1", type: "custom:translate", promptId: "", dependsOn: [], position: { x: 0, y: 0 } },
+    ]
+    const { container } = renderRunTo(customWf)
+    clickNode(container, 0)
+    expect(screen.getByText(/2 项/)).toBeInTheDocument()
+    expect(screen.getByText(/第一句/)).toBeInTheDocument()
+    expect(screen.queryByText(/第二句/)).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "下一项" }))
+    expect(screen.getByText(/第二句/)).toBeInTheDocument()
+    expect(screen.queryByText(/第一句/)).toBeNull()
+  })
+
+  it("FALLBACK: items undefined (old backend) → scalar custom panel renders, no crash", () => {
+    // storyboard 节点无 items，但 custom 文本走标量面板：用 custom 节点带 output 验证回落。
+    currentState = {
+      ...RUNNING_STATE,
+      nodes: [
+        {
+          id: "rn-custom",
+          label: "翻译",
+          type: "custom:translate",
+          status: "done",
+          output: "Bonjour",
+          outputFormat: "text",
+          // 注意：无 items 字段（老后端 / 标量节点）。
+        },
+      ],
+    }
+    const customWf: WorkflowNode[] = [
+      { id: "custom-1", type: "custom:translate", promptId: "", dependsOn: [], position: { x: 0, y: 0 } },
+    ]
+    const { container } = renderRunTo(customWf)
+    clickNode(container, 0)
+    // 回落今天的标量面板：文本产物 + 内容，不抛、不出 ItemInspector「N 项」。
+    expect(screen.getByText("Bonjour")).toBeInTheDocument()
+    expect(screen.getByText(/文本产物/)).toBeInTheDocument()
+    expect(screen.queryByText(/项$/)).toBeNull()
+  })
+
+  it("FALLBACK: empty items[] → scalar panel still renders (no item inspector)", () => {
+    currentState = {
+      ...RUNNING_STATE,
+      nodes: [
+        {
+          id: "rn-custom",
+          label: "翻译",
+          type: "custom:translate",
+          status: "done",
+          output: "Hola",
+          outputFormat: "text",
+          items: [],
+        },
+      ],
+    }
+    const customWf: WorkflowNode[] = [
+      { id: "custom-1", type: "custom:translate", promptId: "", dependsOn: [], position: { x: 0, y: 0 } },
+    ]
+    const { container } = renderRunTo(customWf)
+    clickNode(container, 0)
+    expect(screen.getByText("Hola")).toBeInTheDocument()
+    expect(screen.queryByText(/0 项/)).toBeNull()
   })
 })
 

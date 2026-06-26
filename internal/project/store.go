@@ -608,20 +608,42 @@ func (s *Store) LoadState(ctx context.Context, projectID, planID string) (projec
 		return projectstate.ProjectState{}, fmt.Errorf("project: load state assets rows: %w", err)
 	}
 
-	// custom 节点产物 (node_outputs)，按本 plan 的 todo 关联 (T3 运行视图最小面板)。
+	// custom 节点产物 (node_outputs)，按本 plan 的 todo 关联 (T3 运行视图最小面板 +
+	// P5d per-item inspector items[])。一个 todo 可有多行 node_outputs（items-only 行
+	// + 旧 content 行）；DISTINCT ON 每 todo 取一行，排序键 (OQ2 tie-break)：
+	//   1. items 非空 ('[]'::jsonb 视为空) 优先 —— 让 inspector 拿到带 items 的行，
+	//      即便它不是该 todo 最新的那行（最新行可能只是无 items 的 content 行）；
+	//   2. 再按 created_at DESC —— 多个带 items 的行里取最新。
+	// items 逐字读出为 JSONB（→ json.RawMessage），在 store 层 Unmarshal（保持
+	// Compute 纯净，不在 Compute 里做 I/O/反序列化）。查询仍按 t.plan_id 限定，
+	// 不扩大 project/org scope（无新暴露面）。
 	norows, err := s.db.WithContext(ctx).Raw(
-		`SELECT no.todo_id, no.content, no.format
+		`SELECT DISTINCT ON (no.todo_id) no.todo_id, no.content, no.format, no.items
 		 FROM node_outputs no
 		 JOIN todos t ON no.todo_id = t.id
-		 WHERE t.plan_id=$1`, planRowID).Rows()
+		 WHERE t.plan_id=$1
+		 ORDER BY no.todo_id, (no.items <> '[]'::jsonb) DESC, no.created_at DESC`, planRowID).Rows()
 	if err != nil {
 		return projectstate.ProjectState{}, fmt.Errorf("project: load node outputs: %w", err)
 	}
 	defer norows.Close()
 	for norows.Next() {
 		var o projectstate.NodeOutput
-		if err := norows.Scan(&o.TodoID, &o.Content, &o.Format); err != nil {
+		var itemsRaw []byte
+		if err := norows.Scan(&o.TodoID, &o.Content, &o.Format, &itemsRaw); err != nil {
 			return projectstate.ProjectState{}, fmt.Errorf("project: scan node output: %w", err)
+		}
+		// items 逐字透传：解析 JSONB bytes 成 []InspectorItem（NOT 重新解析每个
+		// item.json —— P2a 已落地解析后的对象，重解析会重新引入 M-2）。'[]' → 空切片。
+		if len(itemsRaw) > 0 {
+			if err := json.Unmarshal(itemsRaw, &o.Items); err != nil {
+				return projectstate.ProjectState{}, fmt.Errorf("project: unmarshal node output items (todo %s): %w", o.TodoID, err)
+			}
+		}
+		// 空 items（旧 content-only 行或 '[]'）→ 归一为 nil，让 GraphNode.Items 的
+		// omitempty 真正省略 JSON 键（避免出 "items":[]，对齐"无 inspector 数据"）。
+		if len(o.Items) == 0 {
+			o.Items = nil
 		}
 		in.Outputs = append(in.Outputs, o)
 	}
