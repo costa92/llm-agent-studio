@@ -63,5 +63,8 @@ export interface NodeTypeDescription {
 
 export interface NodeTypesResponse {
   version: number
+  // P5 运行期能力旗标：ExprChannel (env STUDIO_EXPR_CHANNEL) 是否开启。默认 false。
+  // 字段级 varBindings 结构性依赖它 ON——前端据此 capability-gate 字段选择器。
+  exprChannel?: boolean
   nodeTypes: NodeTypeDescription[]
 }

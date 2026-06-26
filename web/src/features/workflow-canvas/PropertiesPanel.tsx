@@ -16,7 +16,11 @@ import type { BasicPrompt, HttpParams, LlmParams, Prompt, ScriptParams, Workflow
 import { defaultPromptIdFor } from "./canvasModel"
 import { isCustomType, nodeDisplay } from "./nodeColor"
 import { PropertiesForm } from "./PropertiesForm"
-import type { NodeTypeDescription } from "./nodeDescTypes"
+import type { NodeTypeDescription, OutputField } from "./nodeDescTypes"
+
+// 字段选择器「整个输出」哨兵 value——Radix Select 禁止 value=""（mount 即抛），
+// 故整输出用非空哨兵；写回时映射回空 sourceField（= 整输出 / 向后兼容）。
+const WHOLE_OUTPUT = "__whole__"
 
 // 属性面板（Phase 2）：选中单个节点时编辑其字段。行为逐字移植自
 // features/projects/WorkflowNodesEditor.tsx——提示词选择哨兵
@@ -109,8 +113,13 @@ export interface PropertiesPanelProps {
   // typed script 节点（node.typeId 非空 + kind=script）时：对应的 ScriptParams（由画布层注入）。
   // 与 typedParams/typedHttpParams 互斥——按 kind 取其一。
   typedScriptParams?: ScriptParams
-  // 当前节点 dependsOn 的上游节点列表（id + display label）。typed 节点变量绑定的候选 Select 来源。
-  upstreamNodes?: { id: string; label: string }[]
+  // 当前节点 dependsOn 的上游节点列表（id + display label + 该上游类型的 OutputSchema）。
+  // typed 节点变量绑定的候选 Select 来源；outputSchema 由画布层按上游 node.type 从 node-types
+  // 目录解析注入（P5 字段级绑定的字段候选——安全上只列 OutputSchema 字段名，绝不列 secret/params）。
+  upstreamNodes?: { id: string; label: string; outputSchema?: OutputField[] }[]
+  // P5：ExprChannel 能力旗标。OFF 时字段级绑定运行期 fail-closed，故前端禁用字段选择器
+  // （primary UX gate，§12 amendment 1）；整输出绑定不受影响。缺省 false。
+  exprChannel?: boolean
   // typed 节点的注册表 NodeTypeDescription（由画布层按 node.type 解析注入）。
   // 提供时，类型参数改由通用 <PropertiesForm> 渲染并可编辑（P-write-4）：onChange
   // 经 onPatch({ parameters, typeVersion }) 持久化到节点 envelope——parameters/
@@ -134,6 +143,7 @@ export function PropertiesPanel({
   typedScriptParams,
   upstreamNodes = [],
   description,
+  exprChannel = false,
 }: PropertiesPanelProps) {
   const createPrompt = useCreatePrompt(org)
   // P5.1：resourceLocator/secret 数据源。modelOptions ← org 的 model-config 列表
@@ -199,10 +209,17 @@ export function PropertiesPanel({
 
   // varBindings 合并更新：按 name 替换/追加绑定，不清除其它已存在的绑定。
   // node 在此处一定非 null（早返回已在上方处理），断言为 WorkflowNode 避免 TS18047。
-  function patchVarBinding(name: string, sourceNodeId: string) {
+  function patchVarBinding(name: string, sourceNodeId: string, sourceField?: string) {
     const existing = (node as WorkflowNode).varBindings ?? []
     const updated = existing.filter((b) => b.name !== name)
-    onPatch({ varBindings: [...updated, { name, sourceNodeId }] })
+    const binding: { name: string; sourceNodeId: string; sourceField?: string } = {
+      name,
+      sourceNodeId,
+    }
+    // 仅在非空时携带 sourceField——空 = 整输出（向后兼容，与今天逐字节一致）。
+    const field = sourceField?.trim()
+    if (field) binding.sourceField = field
+    onPatch({ varBindings: [...updated, binding] })
   }
 
   return (
@@ -377,6 +394,12 @@ export function PropertiesPanel({
               <Label className="text-[11px] text-text-2">变量绑定</Label>
               {templateVars.map((name) => {
                 const existing = node.varBindings?.find((b) => b.name === name)
+                // 选中上游节点的 OutputSchema 字段（字段级绑定候选）。仅当已选上游节点
+                // 且该类型声明了 OutputSchema 时渲染字段选择器。
+                const selectedUpstream = existing?.sourceNodeId
+                  ? upstreamNodes.find((u) => u.id === existing.sourceNodeId)
+                  : undefined
+                const outputFields = selectedUpstream?.outputSchema ?? []
                 return (
                   <div key={name} className="flex flex-col gap-0.5">
                     <span className="text-[10px] text-text-3">
@@ -385,6 +408,7 @@ export function PropertiesPanel({
                     <Select
                       value={existing?.sourceNodeId ?? ""}
                       onValueChange={(val) => {
+                        // 换上游节点 → 清空 sourceField（字段属于具体上游类型，换节点字段失效）。
                         if (val) patchVarBinding(name, val)
                       }}
                     >
@@ -407,6 +431,44 @@ export function PropertiesPanel({
                         )}
                       </SelectContent>
                     </Select>
+                    {/* P5 字段选择器：候选 ONLY 来自上游 OutputSchema 字段名（绝不列 secret/params）。
+                        ExprChannel OFF → disabled + 提示（primary UX gate）。整输出仍可用。 */}
+                    {outputFields.length > 0 && (
+                      <>
+                        <Select
+                          value={existing?.sourceField || WHOLE_OUTPUT}
+                          disabled={!exprChannel}
+                          onValueChange={(val) => {
+                            // 哨兵 __whole__ → 清空 sourceField（整输出）；否则绑该字段。
+                            patchVarBinding(
+                              name,
+                              existing!.sourceNodeId,
+                              val === WHOLE_OUTPUT ? "" : val,
+                            )
+                          }}
+                        >
+                          <SelectTrigger
+                            className="h-7 text-[11px]"
+                            aria-label={`字段绑定 ${name}`}
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent className="text-[11px]">
+                            <SelectItem value={WHOLE_OUTPUT}>（整个输出）</SelectItem>
+                            {outputFields.map((f) => (
+                              <SelectItem key={f.name} value={f.name}>
+                                {f.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        {!exprChannel && (
+                          <span className="text-[10px] text-text-3">
+                            字段级绑定需开启表达式通道（STUDIO_EXPR_CHANNEL）
+                          </span>
+                        )}
+                      </>
+                    )}
                   </div>
                 )
               })}

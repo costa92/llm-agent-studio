@@ -59,7 +59,7 @@ import { CanvasActionsProvider } from "./CanvasActionsContext"
 import { HelperLines } from "./HelperLines"
 import { NodePalette, PALETTE_DND_TYPE, PALETTE_DND_TYPEID } from "./NodePalette"
 import { PropertiesPanel } from "./PropertiesPanel"
-import { useNodeTypes } from "./api"
+import { useNodeTypes, useNodeTypesExprChannel } from "./api"
 import { NODE_COLOR, isCustomType, slugify } from "./nodeColor"
 import { RunCanvas } from "./RunCanvas"
 import { ModeToggle } from "./ModeToggle"
@@ -290,6 +290,8 @@ function CanvasInner({
   // 节点类型→组件映射，line ~101 + <ReactFlow nodeTypes={…}>），导致画布回退到
   // 默认节点、自定义 WorkflowNode 不挂载。
   const { data: nodeTypeDescs = [] } = useNodeTypes(org)
+  // P5：ExprChannel 能力旗标（同一 /node-types 响应），用于 capability-gate 字段选择器。
+  const exprChannel = useNodeTypesExprChannel(org)
   const nodeDesc = selected
     ? nodeTypeDescs.find((d) => d.type === selected.type)
     : undefined
@@ -1099,9 +1101,19 @@ function CanvasInner({
             selected
               ? (rfNodes as RFNode[])
                   .filter((n) => selected.dependsOn.includes(n.id))
-                  .map((n) => ({ id: n.id, label: n.data.node.label ?? n.id }))
+                  .map((n) => {
+                    // P5：按上游 node.type 在已持目录解析其 OutputSchema（字段选择器候选源）。
+                    const t = n.data.node.type
+                    const desc = nodeTypeDescs.find((d) => d.type === t)
+                    return {
+                      id: n.id,
+                      label: n.data.node.label ?? n.id,
+                      outputSchema: desc?.outputSchema ?? [],
+                    }
+                  })
               : []
           }
+          exprChannel={exprChannel}
           description={nodeDesc}
           onEditType={
             selected && isCustomType(selected.type)
