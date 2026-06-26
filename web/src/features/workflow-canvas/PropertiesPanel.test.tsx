@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { render, screen } from "@testing-library/react"
+import { render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { PropertiesPanel, extractTemplateVars } from "./PropertiesPanel"
 import type { NodeTypeDescription } from "./nodeDescTypes"
@@ -10,7 +10,24 @@ vi.mock("@/features/prompt/api", () => ({
   useCreatePrompt: vi.fn(() => ({ mutateAsync: vi.fn() })),
 }))
 
-afterEach(() => vi.restoreAllMocks())
+// P5.1: resourceLocator/secret 数据源 hook——默认返回空（不崩溃），单测内按需 mockReturnValue。
+import { useModelConfigs } from "@/features/cost/api"
+import { useOrgSecrets } from "@/features/org-secrets/api"
+vi.mock("@/features/cost/api", () => ({
+  useModelConfigs: vi.fn(() => ({ data: undefined })),
+}))
+vi.mock("@/features/org-secrets/api", () => ({
+  useOrgSecrets: vi.fn(() => ({ data: undefined })),
+}))
+const mockUseModelConfigs = vi.mocked(useModelConfigs)
+const mockUseOrgSecrets = vi.mocked(useOrgSecrets)
+
+afterEach(() => {
+  vi.restoreAllMocks()
+  // restoreAllMocks 不重置 vi.mock 工厂返回值——显式恢复默认空态，避免跨用例泄漏。
+  mockUseModelConfigs.mockReturnValue({ data: undefined } as ReturnType<typeof useModelConfigs>)
+  mockUseOrgSecrets.mockReturnValue({ data: undefined } as ReturnType<typeof useOrgSecrets>)
+})
 
 function scriptNode(over: Partial<WorkflowNode> = {}): WorkflowNode {
   return { id: "script-1", type: "script", promptId: "", dependsOn: [], ...over }
@@ -313,6 +330,86 @@ describe("PropertiesPanel typed node (Task 13)", () => {
     expect(arg.typeVersion).toBe(1)
     // The edited field value is carried under parameters.
     expect((arg.parameters as Record<string, unknown>).userPrompt).toContain("!")
+  })
+
+  it("populates the model resourceLocator from useModelConfigs (P5.1)", () => {
+    mockUseModelConfigs.mockReturnValue({
+      data: [
+        { id: "m1", orgId: "org-1", kind: "text", provider: "openai", model: "gpt-4o", enabled: true, isDefault: false, baseUrl: "", hasApiKey: true },
+        { id: "m2", orgId: "org-1", kind: "text", provider: "anthropic", model: "claude-3", enabled: true, isDefault: false, baseUrl: "", hasApiKey: true },
+      ],
+    } as ReturnType<typeof useModelConfigs>)
+    const description: NodeTypeDescription = {
+      type: "custom:translate", version: 1, label: "翻译", description: "", group: "transform",
+      inputs: [], outputs: [],
+      properties: [{ name: "model", label: "模型", type: "resourceLocator", typeOptions: { dataSource: "model" } }],
+    }
+    renderTypedPanel(typedNode(), defaultTypedParams, undefined, { description })
+    const select = screen.getByLabelText("模型")
+    // 选项来自 org 的 model-config 列表（非空），不再是空下拉。
+    expect(within(select).getByRole("option", { name: "openai · gpt-4o" })).toBeInTheDocument()
+    expect(within(select).getByRole("option", { name: "anthropic · claude-3" })).toBeInTheDocument()
+  })
+
+  it("populates secret-insert dropdown with NAMES only from useOrgSecrets (P5.1)", () => {
+    mockUseOrgSecrets.mockReturnValue({
+      data: [
+        { id: "s1", orgId: "org-1", name: "STRIPE_KEY", hasValue: true },
+        { id: "s2", orgId: "org-1", name: "OPENAI_KEY", hasValue: true },
+      ],
+    } as ReturnType<typeof useOrgSecrets>)
+    const description: NodeTypeDescription = {
+      type: "custom:translate", version: 1, label: "翻译", description: "", group: "transform",
+      inputs: [], outputs: [],
+      properties: [{ name: "headers", label: "请求头", type: "keyValue" }],
+    }
+    // KeyValue 行来自 parameters.headers——给一行 header 让密钥插入下拉渲染。
+    const node = { ...typedNode(), parameters: { headers: { Authorization: "" } } }
+    renderTypedPanel(node, defaultTypedParams, undefined, { description })
+    // 密钥插入下拉只列出 NAME 形式的 {{secret:NAME}} 令牌。
+    expect(screen.getByText("{{secret:STRIPE_KEY}}")).toBeInTheDocument()
+    expect(screen.getByText("{{secret:OPENAI_KEY}}")).toBeInTheDocument()
+  })
+
+  it("never surfaces secret VALUES — OrgSecret DTO carries no value field (P5.1)", () => {
+    // 安全断言：即便后端 DTO 误带 value，UI 也只投影 name。这里 mock 一个含 value 的脏对象，
+    // 断言该 value 文本绝不出现在 DOM。
+    mockUseOrgSecrets.mockReturnValue({
+      data: [
+        // @ts-expect-error 故意注入 OrgSecret 不该有的 value 字段，验证 UI 不泄漏。
+        { id: "s1", orgId: "org-1", name: "STRIPE_KEY", hasValue: true, value: "sk_live_SECRETVALUE" },
+      ],
+    } as ReturnType<typeof useOrgSecrets>)
+    const description: NodeTypeDescription = {
+      type: "custom:translate", version: 1, label: "翻译", description: "", group: "transform",
+      inputs: [], outputs: [],
+      properties: [{ name: "headers", label: "请求头", type: "keyValue" }],
+    }
+    const node = { ...typedNode(), parameters: { headers: { Authorization: "" } } }
+    renderTypedPanel(node, defaultTypedParams, undefined, { description })
+    // 名字出现（下拉已渲染），但 value 绝不出现。
+    expect(screen.getByText("{{secret:STRIPE_KEY}}")).toBeInTheDocument()
+    expect(screen.queryByText(/sk_live_SECRETVALUE/)).not.toBeInTheDocument()
+    expect(document.body.innerHTML).not.toContain("sk_live_SECRETVALUE")
+  })
+
+  it("renders without crashing when model/secret hooks are still loading (undefined data) (P5.1)", () => {
+    mockUseModelConfigs.mockReturnValue({ data: undefined } as ReturnType<typeof useModelConfigs>)
+    mockUseOrgSecrets.mockReturnValue({ data: undefined } as ReturnType<typeof useOrgSecrets>)
+    const description: NodeTypeDescription = {
+      type: "custom:translate", version: 1, label: "翻译", description: "", group: "transform",
+      inputs: [], outputs: [],
+      properties: [
+        { name: "model", label: "模型", type: "resourceLocator", typeOptions: { dataSource: "model" } },
+        { name: "headers", label: "请求头", type: "keyValue" },
+      ],
+    }
+    expect(() =>
+      renderTypedPanel(typedNode(), defaultTypedParams, undefined, { description }),
+    ).not.toThrow()
+    // 加载态：model 下拉仅有「（默认）」占位，无 model 选项。
+    const select = screen.getByLabelText("模型")
+    expect(within(select).queryByRole("option", { name: /·/ })).toBeNull()
   })
 
   it("annotation custom node (no typeId) does not show typed UI, shows 编辑类型 button", () => {

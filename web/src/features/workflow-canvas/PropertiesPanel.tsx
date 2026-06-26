@@ -10,6 +10,8 @@ import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { useCreatePrompt } from "@/features/prompt/api"
+import { useModelConfigs } from "@/features/cost/api"
+import { useOrgSecrets } from "@/features/org-secrets/api"
 import type { BasicPrompt, HttpParams, LlmParams, Prompt, ScriptParams, WorkflowNode } from "@/lib/types"
 import { defaultPromptIdFor } from "./canvasModel"
 import { isCustomType, nodeDisplay } from "./nodeColor"
@@ -134,6 +136,16 @@ export function PropertiesPanel({
   description,
 }: PropertiesPanelProps) {
   const createPrompt = useCreatePrompt(org)
+  // P5.1：resourceLocator/secret 数据源。modelOptions ← org 的 model-config 列表
+  // （resourceLocator dataSource="model" 的选项）；secretNames ← org 密钥的 NAME（DTO 永不含 value）。
+  // 仅当渲染可编辑 PropertiesForm（typed + description）时才用到；hook 始终调用以遵守 hooks 规则。
+  const modelConfigs = useModelConfigs(org)
+  const modelOptions = (modelConfigs.data ?? []).map((m) => ({
+    value: m.model,
+    label: `${m.provider} · ${m.model}`,
+  }))
+  const orgSecrets = useOrgSecrets(org)
+  const secretNames = (orgSecrets.data ?? []).map((s) => s.name)
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState("")
   const [newContent, setNewContent] = useState("")
@@ -286,8 +298,8 @@ export function PropertiesPanel({
                 onChange={(next) =>
                   onPatch({ parameters: next, typeVersion: description.version })
                 }
-                secretNames={[]}
-                modelOptions={[]}
+                secretNames={secretNames}
+                modelOptions={modelOptions}
               />
             ) : (
               <>
