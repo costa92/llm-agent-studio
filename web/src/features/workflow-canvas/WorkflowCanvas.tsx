@@ -35,6 +35,7 @@ import { findGraphError } from "@/features/projects/WorkflowDialog.schema"
 import {
   toReactFlow,
   toStudioNodes,
+  directUpstreamIds,
   addNodeAt,
   reconnectEdge,
   duplicateNode,
@@ -1099,20 +1100,27 @@ function CanvasInner({
           })()}
           upstreamNodes={
             selected
-              ? (rfNodes as RFNode[])
-                  .filter((n) => selected.dependsOn.includes(n.id))
-                  .map((n) => {
-                    // P5：按上游 node.type 在已持目录解析其 OutputSchema（字段选择器候选源）。
-                    // descTypeFor 桥接 bare 内置名→studio.* desc 类型（否则裸 script 撞无 schema 的
-                    // Starlark script 条目 → 字段选择器永不渲染，见 nodeColor.descTypeFor）。
-                    const t = descTypeFor(n.data.node.type)
-                    const desc = nodeTypeDescs.find((d) => d.type === t)
-                    return {
-                      id: n.id,
-                      label: n.data.node.label ?? n.id,
-                      outputSchema: desc?.outputSchema ?? [],
-                    }
-                  })
+              ? (() => {
+                  // 直接上游 id 集合从 EDGES 推导（单一真源），而非 selected.dependsOn——
+                  // 后者对会话内新建/连线的节点是陈旧的 []（dependsOn 仅在保存时由边回填）。
+                  const upstreamIds = new Set(
+                    directUpstreamIds(rfEdges, selected.id),
+                  )
+                  return (rfNodes as RFNode[])
+                    .filter((n) => upstreamIds.has(n.id))
+                    .map((n) => {
+                      // P5：按上游 node.type 在已持目录解析其 OutputSchema（字段选择器候选源）。
+                      // descTypeFor 桥接 bare 内置名→studio.* desc 类型（否则裸 script 撞无 schema 的
+                      // Starlark script 条目 → 字段选择器永不渲染，见 nodeColor.descTypeFor）。
+                      const t = descTypeFor(n.data.node.type)
+                      const desc = nodeTypeDescs.find((d) => d.type === t)
+                      return {
+                        id: n.id,
+                        label: n.data.node.label ?? n.id,
+                        outputSchema: desc?.outputSchema ?? [],
+                      }
+                    })
+                })()
               : []
           }
           exprChannel={exprChannel}

@@ -42,10 +42,12 @@ function WorkflowCanvasPage() {
   const { data: prompts } = usePrompts(org)
   const { data: basics } = useBasicPrompts()
 
-  // 模式派生：显式 ?run= 优先；?mode=edit 强制编辑；否则有 latestPlan 默认运行。
+  // 模式派生：显式 ?run= 优先；?mode=edit 强制编辑；?mode=run 即使无 run/latestPlan 也进运行
+  //（未跑过的工作流也能查看运行视图的空态）；否则有 latestPlan 默认运行。
   const explicitEdit = modeParam === "edit"
+  const explicitRun = modeParam === "run"
   const runId = run ?? (explicitEdit ? undefined : workflow?.latestPlanId)
-  const mode = runId ? "run" : "edit"
+  const mode = runId || explicitRun ? "run" : "edit"
 
   const goBack = () =>
     void navigate({
@@ -113,10 +115,11 @@ function WorkflowCanvasPage() {
           void navigate({
             to: "/orgs/$org/projects/$id/workflow",
             params: { org, id },
-            // 切运行：带工作流最近一次 plan；切编辑：显式 ?mode=edit（否则会被默认运行态拉回）。
+            // 切运行：带最近一次 plan + 显式 ?mode=run（未跑过的工作流 latestPlanId 为空，
+            // 仅靠 run 无法进运行态，须显式 mode=run）；切编辑：显式 ?mode=edit（否则会被默认运行态拉回）。
             search:
               next === "run"
-                ? { wf, run: workflow?.latestPlanId }
+                ? { wf, run: workflow?.latestPlanId, mode: "run" }
                 : { wf, mode: "edit" },
           })
         }
