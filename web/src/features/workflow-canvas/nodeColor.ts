@@ -17,6 +17,25 @@ export const TYPE_LABEL: Record<string, string> = {
   prescreen: "预审",
 }
 
+// 命名空间桥接：画布存储的内置节点是 BARE 名（builtinnode/catalog.go：script/storyboard/
+// asset/prescreen），但其 OutputSchema/Properties 描述在 nodedesc 的 studio.* 条目上
+// （internal/nodedesc/builtin.go）。解析上游节点的 OutputSchema（字段级 varBinding 字段选择器
+// 候选源）时须按本表把 bare 名映射到 studio.* desc 类型，否则裸 "script" 会撞到 nodedesc 里
+// 那个无 schema 的 Starlark "script" 条目 → 空 → 字段选择器永不渲染（field-level varBindings DOA）。
+// custom:* 与其它类型原样透传（它们的 type 已与 desc 一致）。
+// 注：画布上裸 "script" 永远是剧本（Starlark 仅以 custom:<slug> 存在），故映射无歧义。
+const BUILTIN_DESC_TYPE: Record<string, string> = {
+  script: "studio.script",
+  storyboard: "studio.storyboard",
+  asset: "studio.asset",
+  prescreen: "studio.prescreen",
+}
+
+// 把画布节点 type 映射到其 nodedesc 描述 type（用于按 type 在 node-types 目录里查描述/OutputSchema）。
+export function descTypeFor(type: string): string {
+  return BUILTIN_DESC_TYPE[type] ?? type
+}
+
 export const CUSTOM_PREFIX = "custom:"
 
 // 自定义节点类型：custom: 前缀 + 非空 slug（大小写敏感、不 trim，与 Go isCustomType 一致）。
