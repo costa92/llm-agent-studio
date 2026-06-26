@@ -184,6 +184,14 @@ const defaultTypedParams: LlmParams = {
   outputFormat: "text",
 }
 
+// P5：上游 studio.script 类型的 OutputSchema（字段级绑定的字段候选源）。
+const scriptOutputSchema = [
+  { name: "title", type: "string" },
+  { name: "logline", type: "string" },
+  { name: "characterSheet", type: "string" },
+  { name: "scenes", type: "array" },
+]
+
 function renderTypedPanel(
   node: WorkflowNode,
   params: LlmParams,
@@ -441,6 +449,14 @@ describe("PropertiesPanel typed node (Task 13)", () => {
     expect(within(select).queryByRole("option", { name: /·/ })).toBeNull()
   })
 
+  it("does NOT render a field picker when no upstream node is selected (no binding)", () => {
+    // 无 sourceNodeId → 不渲染字段选择器，仅上游节点 Select（1 个 combobox）。
+    renderTypedPanel(typedNode(), defaultTypedParams, [
+      { id: "script-1", label: "剧本", outputSchema: scriptOutputSchema },
+    ])
+    expect(screen.getAllByRole("combobox")).toHaveLength(1)
+  })
+
   it("annotation custom node (no typeId) does not show typed UI, shows 编辑类型 button", () => {
     const annotationNode: WorkflowNode = {
       id: "custom-2",
@@ -467,5 +483,137 @@ describe("PropertiesPanel typed node (Task 13)", () => {
     expect(screen.queryByText("类型参数（只读）")).not.toBeInTheDocument()
     // Has 编辑类型 button (annotation path)
     expect(screen.getByRole("button", { name: "编辑类型" })).toBeInTheDocument()
+  })
+})
+
+// ── P5: field-level varBindings ──────────────────────────────────────────────
+
+const scriptUpstream = [{ id: "script-1", label: "剧本", outputSchema: scriptOutputSchema }]
+
+describe("PropertiesPanel field-level varBindings (P5)", () => {
+  it("renders a field picker populated from the upstream node type's OutputSchema + 整个输出 default", async () => {
+    const user = userEvent.setup()
+    const node = typedNode("reg-1", [{ name: "draft", sourceNodeId: "script-1" }])
+    renderTypedPanel(node, defaultTypedParams, scriptUpstream, { exprChannel: true })
+
+    const fieldCombo = screen.getByRole("combobox", { name: "字段绑定 draft" })
+    await user.click(fieldCombo)
+    expect(screen.getByRole("option", { name: "（整个输出）" })).toBeInTheDocument()
+    for (const f of ["title", "logline", "characterSheet", "scenes"]) {
+      expect(screen.getByRole("option", { name: f })).toBeInTheDocument()
+    }
+  })
+
+  it("security: field options come ONLY from OutputSchema names (no secret/params source)", async () => {
+    const user = userEvent.setup()
+    const node = typedNode("reg-1", [{ name: "draft", sourceNodeId: "script-1" }])
+    renderTypedPanel(node, defaultTypedParams, scriptUpstream, { exprChannel: true })
+
+    await user.click(screen.getByRole("combobox", { name: "字段绑定 draft" }))
+    const optionTexts = screen
+      .getAllByRole("option")
+      .map((o) => o.textContent?.trim())
+    // Exactly the whole-output sentinel + the 4 declared OutputSchema fields — nothing else.
+    expect(new Set(optionTexts)).toEqual(
+      new Set(["（整个输出）", "title", "logline", "characterSheet", "scenes"]),
+    )
+  })
+
+  it("selecting a field calls patchVarBinding with sourceField", async () => {
+    const user = userEvent.setup()
+    const node = typedNode("reg-1", [{ name: "draft", sourceNodeId: "script-1" }])
+    const { onPatch } = renderTypedPanel(node, defaultTypedParams, scriptUpstream, {
+      exprChannel: true,
+    })
+
+    await user.click(screen.getByRole("combobox", { name: "字段绑定 draft" }))
+    await user.click(screen.getByRole("option", { name: "characterSheet" }))
+
+    expect(onPatch).toHaveBeenCalledWith({
+      varBindings: [
+        { name: "draft", sourceNodeId: "script-1", sourceField: "characterSheet" },
+      ],
+    })
+  })
+
+  it("selecting 整个输出 clears sourceField (whole-output, back-compat)", async () => {
+    const user = userEvent.setup()
+    const node = typedNode("reg-1", [
+      { name: "draft", sourceNodeId: "script-1", sourceField: "title" },
+    ])
+    const { onPatch } = renderTypedPanel(node, defaultTypedParams, scriptUpstream, {
+      exprChannel: true,
+    })
+
+    await user.click(screen.getByRole("combobox", { name: "字段绑定 draft" }))
+    await user.click(screen.getByRole("option", { name: "（整个输出）" }))
+
+    expect(onPatch).toHaveBeenCalledWith({
+      varBindings: [{ name: "draft", sourceNodeId: "script-1" }],
+    })
+  })
+
+  it("changing the source node resets the field (no sourceField carried over)", async () => {
+    const user = userEvent.setup()
+    const node: WorkflowNode = {
+      ...typedNode("reg-1", [
+        { name: "draft", sourceNodeId: "script-1", sourceField: "title" },
+      ]),
+      dependsOn: ["script-1", "script-2"],
+    }
+    const upstream = [
+      { id: "script-1", label: "剧本一", outputSchema: scriptOutputSchema },
+      { id: "script-2", label: "剧本二", outputSchema: scriptOutputSchema },
+    ]
+    const { onPatch } = renderTypedPanel(node, defaultTypedParams, upstream, {
+      exprChannel: true,
+    })
+
+    // combos[0] = upstream-node Select, combos[1] = field Select.
+    const combos = screen.getAllByRole("combobox")
+    await user.click(combos[0])
+    await user.click(screen.getByRole("option", { name: "剧本二" }))
+
+    // Switching node drops the dangling sourceField.
+    expect(onPatch).toHaveBeenCalledWith({
+      varBindings: [{ name: "draft", sourceNodeId: "script-2" }],
+    })
+  })
+
+  it("capability gate: exprChannel=false disables the field picker + shows hint; node select still works", () => {
+    const node = typedNode("reg-1", [{ name: "draft", sourceNodeId: "script-1" }])
+    renderTypedPanel(node, defaultTypedParams, scriptUpstream, { exprChannel: false })
+
+    const combos = screen.getAllByRole("combobox")
+    expect(combos).toHaveLength(2)
+    expect(combos[0]).not.toBeDisabled() // whole-node binding still usable
+    const fieldCombo = screen.getByRole("combobox", { name: "字段绑定 draft" })
+    expect(fieldCombo).toBeDisabled()
+    expect(
+      screen.getByText("字段级绑定需开启表达式通道（STUDIO_EXPR_CHANNEL）"),
+    ).toBeInTheDocument()
+  })
+
+  it("capability gate: exprChannel=true enables the field picker + no hint", () => {
+    const node = typedNode("reg-1", [{ name: "draft", sourceNodeId: "script-1" }])
+    renderTypedPanel(node, defaultTypedParams, scriptUpstream, { exprChannel: true })
+
+    expect(screen.getByRole("combobox", { name: "字段绑定 draft" })).not.toBeDisabled()
+    expect(
+      screen.queryByText("字段级绑定需开启表达式通道（STUDIO_EXPR_CHANNEL）"),
+    ).not.toBeInTheDocument()
+  })
+
+  it("degenerate: upstream type with empty OutputSchema renders no field picker", () => {
+    const node = typedNode("reg-1", [{ name: "draft", sourceNodeId: "script-1" }])
+    renderTypedPanel(
+      node,
+      defaultTypedParams,
+      [{ id: "script-1", label: "无 schema 节点", outputSchema: [] }],
+      { exprChannel: true },
+    )
+    // Only the upstream-node Select; no field picker.
+    expect(screen.getAllByRole("combobox")).toHaveLength(1)
+    expect(screen.queryByRole("combobox", { name: "字段绑定 draft" })).not.toBeInTheDocument()
   })
 })

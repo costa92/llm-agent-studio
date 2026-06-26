@@ -32,8 +32,9 @@ func (ntListStub) Get(_ context.Context, _, _ string) (customnodetype.CustomNode
 }
 
 type nodeTypesResp struct {
-	Version   int                            `json:"version"`
-	NodeTypes []nodedesc.NodeTypeDescription `json:"nodeTypes"`
+	Version     int                            `json:"version"`
+	ExprChannel bool                           `json:"exprChannel"`
+	NodeTypes   []nodedesc.NodeTypeDescription `json:"nodeTypes"`
 }
 
 func getNodeTypes(t *testing.T, s CustomNodeTypeStore) nodeTypesResp {
@@ -41,7 +42,7 @@ func getNodeTypes(t *testing.T, s CustomNodeTypeStore) nodeTypesResp {
 	req := httptest.NewRequest("GET", "/api/orgs/org1/node-types", nil)
 	req.SetPathValue("org", "org1")
 	rec := httptest.NewRecorder()
-	nodeTypesHandler(s).ServeHTTP(rec, req)
+	nodeTypesHandler(s, false).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -68,6 +69,37 @@ func TestNodeTypesEnvelopeAndBuiltins(t *testing.T) {
 	}
 	if len(out.NodeTypes) != len(nodedesc.Builtins()) {
 		t.Errorf("nodeTypes len = %d, want %d (builtins only)", len(out.NodeTypes), len(nodedesc.Builtins()))
+	}
+}
+
+// TestNodeTypesExposesExprChannel: the envelope carries exprChannel reflecting the
+// config bool (B/P5 capability surface), and OutputSchema is still present on a
+// built-in (regression: proves the existing line cable that the FE field selector
+// consumes is intact).
+func TestNodeTypesExposesExprChannel(t *testing.T) {
+	for _, want := range []bool{true, false} {
+		req := httptest.NewRequest("GET", "/api/orgs/org1/node-types", nil)
+		req.SetPathValue("org", "org1")
+		rec := httptest.NewRecorder()
+		nodeTypesHandler(ntListStub{}, want).ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		var out nodeTypesResp
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if out.ExprChannel != want {
+			t.Errorf("exprChannel = %v, want %v", out.ExprChannel, want)
+		}
+		// OutputSchema regression: studio.script declares title/characterSheet/...
+		d, ok := findType(out.NodeTypes, "studio.script")
+		if !ok {
+			t.Fatal("studio.script missing from node-types")
+		}
+		if len(d.OutputSchema) == 0 {
+			t.Error("studio.script OutputSchema empty — FE field selector line cable broken")
+		}
 	}
 }
 
@@ -165,7 +197,7 @@ func TestNodeTypesMergeOverRealStore(t *testing.T) {
 	req := httptest.NewRequest("GET", "/api/orgs/"+org+"/node-types", nil)
 	req.SetPathValue("org", org)
 	rec := httptest.NewRecorder()
-	nodeTypesHandler(store).ServeHTTP(rec, req)
+	nodeTypesHandler(store, false).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}

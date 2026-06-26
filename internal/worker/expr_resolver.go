@@ -13,6 +13,17 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/expr"
 )
 
+// safeFieldRe is the §8.1 injection gate for varBinding sourceField at RUN time —
+// the AUTHORITATIVE last line. resolveVariablesExpr concatenates the field into a
+// {{ $node["id"].json.<field> }} template; a safe identifier contains no
+// '}'/'{'/'"'/'['/'.'/whitespace, so it cannot break out of the template span.
+// This run-time gate (not just the plan-time one in planner.go) is required
+// because a re-run reuses existing todos.input_json.params.variables[] WITHOUT
+// re-planning (§12 amendment 2) — a dirty direct write there bypasses the planner
+// gate, so the field must be re-validated at the moment of execution. ASCII-only,
+// matching the expr engine's identifier lexer (no unicode mismatch).
+var safeFieldRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 // toExprTemplate rewrites the {{name}} parity subset to {{ $json.<name> }} so the
 // expr engine resolves the same upstream-variable channel as substituteVars. It
 // rewrites ONLY the known variable names (mirroring substituteVars' match), leaving
@@ -82,6 +93,15 @@ func (w *Worker) exprParityCheck(ctx context.Context, c claimed, label, tpl, leg
 // the class, the two lengths, and the two error bools. NEVER the resolved values,
 // NEVER v.Name.
 func (w *Worker) exprNodeProbe(ctx context.Context, c claimed, vars []customVariable) {
+	// B/P5 ordering invariant (§12 amendment 4): this probe deliberately IGNORES
+	// v.SourceField and rebuilds the whole-output accessor unchanged. It is safe
+	// against an injection-shaped sourceField ONLY because the run ABORTS before
+	// reaching here: the gating resolver (resolveVariablesExpr in ExprChannel mode,
+	// or resolveVariables in legacy mode) runs first and returns an error for any
+	// invalid/field-bearing binding, so runCustomLLM/HTTP exit at that point and
+	// never call this probe with a tainted field. Do NOT reorder the probe ahead of
+	// the gating resolver, and do NOT feed v.SourceField into the template here
+	// without adding the same safeFieldRe charset gate.
 	for i, v := range vars {
 		if v.SourceTodoId == "" {
 			continue
@@ -150,12 +170,26 @@ func (w *Worker) resolveVariablesExpr(ctx context.Context, c claimed, vars []cus
 		if v.SourceTodoId == "" {
 			continue
 		}
-		var outputRef string
-		if err := w.cfg.DB.WithContext(ctx).Raw(
-			`SELECT COALESCE(output_ref,'') FROM todos WHERE id=$1`, v.SourceTodoId).Row().Scan(&outputRef); err != nil {
-			return nil, fmt.Errorf("worker: load variable %q source todo: %w", v.Name, err)
+		var accessor string
+		if v.SourceField != "" {
+			// B/P5 field-level binding. §8.1 charset gate FIRST (run-time
+			// authoritative). A whitespace-only field is non-empty and fails the
+			// regex → rejected, NOT trimmed-to-empty-and-degraded (§12 amendment 3).
+			// Built from the field directly — no node_outputs.format lookup needed.
+			if !safeFieldRe.MatchString(v.SourceField) {
+				return nil, fmt.Errorf("worker: variable %q invalid sourceField", v.Name)
+			}
+			accessor = ".json." + v.SourceField
+		} else {
+			// Default (field empty) MUST be byte-for-byte identical to today: infer
+			// the accessor from the dep's stored output format via exprNodeAccessor.
+			var outputRef string
+			if err := w.cfg.DB.WithContext(ctx).Raw(
+				`SELECT COALESCE(output_ref,'') FROM todos WHERE id=$1`, v.SourceTodoId).Row().Scan(&outputRef); err != nil {
+				return nil, fmt.Errorf("worker: load variable %q source todo: %w", v.Name, err)
+			}
+			accessor = w.exprNodeAccessor(ctx, v.SourceTodoId, c.projectID, outputRef)
 		}
-		accessor := w.exprNodeAccessor(ctx, v.SourceTodoId, c.projectID, outputRef)
 		tpl := `{{ $node["` + v.SourceTodoId + `"]` + accessor + ` }}`
 		val, err := expr.Resolve(tpl, w.exprNodeResolver(ctx, c, nil))
 		if err != nil {

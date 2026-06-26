@@ -1,5 +1,35 @@
 import { describe, expect, it } from "vitest"
-import { isCustomType, nodeDisplay, slugify, CUSTOM_PALETTE } from "./nodeColor"
+import { isCustomType, nodeDisplay, slugify, CUSTOM_PALETTE, descTypeFor } from "./nodeColor"
+
+// 回归：上游节点 OutputSchema 解析的命名空间桥接（field-level varBindings DOA 修复）。
+// 画布存储的内置节点是 BARE 名（script/...），但 OutputSchema 在 nodedesc 的 studio.* 条目上。
+// 这组测试走真实解析路径（descTypeFor + find），正是之前单测注入 outputSchema 绕过的那层。
+describe("descTypeFor (builtin bare → studio.* OutputSchema bridge)", () => {
+  it("maps the 4 generation builtins to their studio.* desc type", () => {
+    expect(descTypeFor("script")).toBe("studio.script")
+    expect(descTypeFor("storyboard")).toBe("studio.storyboard")
+    expect(descTypeFor("asset")).toBe("studio.asset")
+    expect(descTypeFor("prescreen")).toBe("studio.prescreen")
+  })
+  it("passes custom:* and non-generation types through unchanged", () => {
+    expect(descTypeFor("custom:translate")).toBe("custom:translate")
+    expect(descTypeFor("llm")).toBe("llm")
+    expect(descTypeFor("http")).toBe("http")
+  })
+  it("resolves a bare script upstream to studio.script OutputSchema, NOT the schema-less Starlark script (the DOA bug)", () => {
+    // 真实 /node-types 形状：同时含 Starlark 裸 script(无 schema) 与 studio.script(4 字段)。
+    const descs = [
+      { type: "script", outputSchema: [] as { name: string }[] }, // Starlark transform (陷阱)
+      { type: "studio.script", outputSchema: [{ name: "title" }, { name: "logline" }, { name: "characterSheet" }, { name: "scenes" }] },
+      { type: "studio.storyboard", outputSchema: [{ name: "shotNo" }, { name: "description" }, { name: "narration" }] },
+      { type: "custom:translate", outputSchema: [{ name: "text" }] },
+    ]
+    const resolve = (t: string) => descs.find((d) => d.type === descTypeFor(t))?.outputSchema ?? []
+    expect(resolve("script").map((f) => f.name)).toEqual(["title", "logline", "characterSheet", "scenes"])
+    expect(resolve("storyboard").length).toBeGreaterThan(0)
+    expect(resolve("custom:translate").map((f) => f.name)).toEqual(["text"])
+  })
+})
 
 describe("isCustomType", () => {
   it("true only for custom: with non-empty slug", () => {

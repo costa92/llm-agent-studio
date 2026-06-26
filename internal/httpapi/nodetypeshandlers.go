@@ -17,7 +17,10 @@ import (
 // always wins — and reserved-namespace slugs (studio.*, llm, http, script) are
 // dropped, so a malicious/buggy org cannot hijack the canvas. Built-ins are
 // emitted first (declared order); customs follow, sorted by Type for stability.
-func nodeTypesHandler(s CustomNodeTypeStore) http.HandlerFunc {
+// exprChannel reflects config.ExprChannel: a read-only capability flag the FE
+// uses to gate field-level varBindings (B/P5) — field bindings only function when
+// the expr channel is ON, so the FE disables the field selector when it is OFF.
+func nodeTypesHandler(s CustomNodeTypeStore, exprChannel bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		builtins := nodedesc.Builtins()
 		// Base description per kind a custom row may extend.
@@ -55,8 +58,9 @@ func nodeTypesHandler(s CustomNodeTypeStore) http.HandlerFunc {
 		out = append(out, customs...)
 
 		writeJSON(w, http.StatusOK, map[string]any{
-			"version":   nodedesc.Version,
-			"nodeTypes": out,
+			"version":     nodedesc.Version,
+			"exprChannel": exprChannel,
+			"nodeTypes":   out,
 		})
 	}
 }
