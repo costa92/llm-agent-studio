@@ -1,6 +1,15 @@
-import { describe, it, expect, beforeEach } from "vitest"
+import { describe, it, expect, beforeEach, vi } from "vitest"
 import { render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
+
+// useMyOrgs 是 useQuery，AppShell 测试无 QueryClientProvider → mock 成可配置态。
+// 默认空（data: undefined）→ org 显示回退到 id，保持既有断言不变。
+const myOrgsState: { value: { data: { id: string; name: string; role: string }[] | undefined } } = {
+  value: { data: undefined },
+}
+vi.mock("./myOrgs", () => ({
+  useMyOrgs: () => myOrgsState.value,
+}))
 import {
   createRootRoute,
   createRoute,
@@ -66,6 +75,28 @@ const desktopNav = () => screen.getAllByRole("navigation", { name: "主导航" }
 describe("AppShell", () => {
   beforeEach(() => {
     localStorage.clear()
+    myOrgsState.value = { data: undefined }
+  })
+
+  // 面包屑里的「切换组织」按钮（抽屉关闭时它是 DOM 里唯一同名按钮）。
+  // 路由异步挂载 AppShell，故须 await findBy。
+  const breadcrumbOrgButton = () => screen.findByRole("button", { name: "切换组织" })
+
+  it("renders the org NAME (not the raw id) in the breadcrumb, keeping the id in the tooltip", async () => {
+    const orgId = "169278fcd0dec7d485c741215a578fab"
+    myOrgsState.value = { data: [{ id: orgId, name: "小红帽工作室", role: "org_admin" }] }
+    renderShell({ org: orgId, initialEntry: `/orgs/${orgId}/projects` })
+    const btn = await breadcrumbOrgButton()
+    expect(btn).toHaveTextContent("小红帽工作室")
+    expect(btn).not.toHaveTextContent(orgId)
+    expect(btn).toHaveAttribute("title", orgId)
+  })
+
+  it("falls back to the org id when no name is resolved", async () => {
+    const orgId = "169278fcd0dec7d485c741215a578fab"
+    myOrgsState.value = { data: [] }
+    renderShell({ org: orgId, initialEntry: `/orgs/${orgId}/projects` })
+    expect(await breadcrumbOrgButton()).toHaveTextContent(orgId)
   })
 
   it("renders all nav entries for admin", async () => {

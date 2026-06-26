@@ -5,6 +5,7 @@ import { Button } from "@/components/studio/Button"
 import { ThemeSwitcher } from "@/components/studio/ThemeSwitcher"
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
 import { cleanOrg } from "./org"
+import { useMyOrgs } from "./myOrgs"
 import {
   findActiveLabel,
   NAV_SECTIONS,
@@ -39,6 +40,11 @@ export function AppShell({
 }: AppShellProps) {
   const currentOrg = cleanOrg(org)
   const hasOrg = currentOrg !== ""
+  // org id → 可读组织名（解析失败/加载中回退到 id）。hex id 保留在 title 提示里供排障。
+  const myOrgs = useMyOrgs()
+  const orgName = myOrgs.data?.find((o) => o.id === currentOrg)?.name ?? ""
+  const orgLabel = orgName || currentOrg
+  const orgInitials = (orgLabel || "—").slice(0, 2).toUpperCase()
   const navigate = useNavigate()
   // 当前路径 → 页面标签（面包屑右段）。
   const pathname = useRouterState({ select: (s) => s.location.pathname })
@@ -170,7 +176,7 @@ export function AppShell({
                   className="justify-start gap-3"
                 >
                   <span className="grid h-7 w-7 place-items-center rounded-[8px] bg-bg-raised text-[10px]">
-                    {currentOrg.slice(0, 2).toUpperCase()}
+                    {orgInitials}
                   </span>
                   切换组织
                 </Button>
@@ -246,20 +252,25 @@ export function AppShell({
           <div className="mt-auto flex flex-col items-center gap-2 border-t border-line p-2.5 flex-shrink-0">
             {hasOrg && (
               <div
-                title={`当前组织：${currentOrg}`}
+                title={`当前组织：${orgLabel}（${currentOrg}）`}
                 className="grid h-8 w-8 place-items-center rounded-[8px] bg-bg-raised text-[10px] font-semibold text-text-2"
               >
-                {currentOrg.slice(0, 2).toUpperCase()}
+                {orgInitials}
               </div>
             )}
           </div>
         ) : (
           <div className="mt-auto flex items-center gap-2.5 border-t border-line p-3 flex-shrink-0">
             <div className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-[8px] bg-bg-raised text-[10px] font-semibold text-text-2">
-              {(currentOrg || "—").slice(0, 2).toUpperCase()}
+              {orgInitials}
             </div>
             <div className="min-w-0">
-              <div className="truncate text-[13px] font-semibold text-text-1">{currentOrg || "未选择组织"}</div>
+              <div
+                className="truncate text-[13px] font-semibold text-text-1"
+                title={hasOrg ? currentOrg : undefined}
+              >
+                {orgLabel || "未选择组织"}
+              </div>
               <div className="truncate text-[11px] text-text-3">
                 {isPlatformAdmin ? "平台管理员" : isAdmin ? "管理员" : "成员"}
               </div>
@@ -275,10 +286,11 @@ export function AppShell({
               <button
                 type="button"
                 aria-label="切换组织"
+                title={currentOrg}
                 onClick={() => void navigate({ to: "/" })}
                 className="max-w-[180px] truncate text-text-2 transition-colors hover:text-text-1"
               >
-                {currentOrg}
+                {orgLabel}
               </button>
             )}
             {hasOrg && pageLabel && <ChevronRight className="h-3.5 w-3.5 flex-shrink-0 text-text-3" aria-hidden />}
