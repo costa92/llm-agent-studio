@@ -36,6 +36,9 @@ export function useCreateCustomNodeType(
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["custom-node-types", org] })
+      // node-types 目录（PropertiesPanel 可编辑表单 + 字段 outputSchema 的数据源）
+      // 也含 typed 节点条目；不一起失效则新建/改名的 typed 节点在重载前只读、无表单。
+      void queryClient.invalidateQueries({ queryKey: ["node-types", org] })
     },
   })
 }
@@ -55,6 +58,8 @@ export function useUpdateCustomNodeType(
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["custom-node-types", org] })
+      // 同上：node-types 目录含 typed 条目，须一起失效。
+      void queryClient.invalidateQueries({ queryKey: ["node-types", org] })
     },
   })
 }
@@ -72,6 +77,8 @@ export function useDeleteCustomNodeType(
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["custom-node-types", org] })
+      // 同上：node-types 目录含 typed 条目，须一起失效。
+      void queryClient.invalidateQueries({ queryKey: ["node-types", org] })
     },
   })
 }
