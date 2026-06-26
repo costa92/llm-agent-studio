@@ -19,17 +19,31 @@ export interface PaletteCustomType {
   typeId?: string
 }
 
+// 快建 chip 的 kind（→ 打开类型化创建对话框预置该 kind）。这些都是注册表支撑的
+// 可运行类型（最终生成带 typeId 的 custom:<slug> chip），与「+ 自定义类型」注释草图不同。
+export type QuickCreateKind = "llm" | "http" | "script"
+
+// 可运行快建 chip 定义。脚本明确标注 Starlark，区别于内置「剧本」(bare script)。
+const QUICK_CREATE_CHIPS: { kind: QuickCreateKind; label: string; title: string }[] = [
+  { kind: "llm", label: "+ LLM 节点", title: "新建一个 LLM 类型（注册表支撑，可运行）" },
+  { kind: "http", label: "+ HTTP 节点", title: "新建一个 HTTP 类型（注册表支撑，可运行）" },
+  { kind: "script", label: "+ 脚本节点(Starlark)", title: "新建一个 Starlark 脚本变换类型（注册表支撑，可运行；区别于「剧本」）" },
+]
+
 export interface NodePaletteProps {
   // 点「标准管线」一键把画布填充为 脚本→分镜（由画布层实现，含确认替换）。
   onStandardPipeline: () => void
   // 点「自动整理」按分层种子坐标重排现有节点（由画布层实现，可撤销 + fitView）。
   onAutoTidy?: () => void
   customTypes?: PaletteCustomType[]
+  // 快建可运行类型：打开类型化创建对话框并预置 kind（llm/http/script）。
+  // 保存后经注册表创建 → 新的 typed chip 自动出现 → 用户拖入画布。
+  onQuickCreate?: (kind: QuickCreateKind) => void
   onAddCustomType?: () => void
   onEditCustomType?: (type: string) => void
 }
 
-export function NodePalette({ onStandardPipeline, onAutoTidy, customTypes, onAddCustomType, onEditCustomType }: NodePaletteProps) {
+export function NodePalette({ onStandardPipeline, onAutoTidy, customTypes, onQuickCreate, onAddCustomType, onEditCustomType }: NodePaletteProps) {
   const { data: builtins = [] } = useBuiltinNodeTypes()
   return (
     <aside className="flex w-44 shrink-0 flex-col gap-3 border-r border-line bg-bg-surface p-3">
@@ -94,16 +108,45 @@ export function NodePalette({ onStandardPipeline, onAutoTidy, customTypes, onAdd
             )}
           </div>
         ))}
-        {onAddCustomType && (
+      </div>
+
+      {/* 可运行类型：快建 LLM / HTTP / 脚本(Starlark) 类型。打开类型化创建对话框预置
+          kind，保存后经注册表生成带 typeId 的可拖拽 chip（可运行）。与下方「注释」区分。 */}
+      {onQuickCreate && (
+        <div className="flex flex-col gap-2">
+          <h4 className="text-[11px] font-semibold uppercase tracking-wider text-text-3">
+            可运行类型
+          </h4>
+          {QUICK_CREATE_CHIPS.map((chip) => (
+            <button
+              key={chip.kind}
+              type="button"
+              onClick={() => onQuickCreate(chip.kind)}
+              title={chip.title}
+              className="rounded-md border border-dashed border-amber/30 px-2.5 py-1.5 text-left text-[12px] text-amber hover:border-amber hover:text-amber"
+            >
+              {chip.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* 注释：仅作画布草图标记，无 typeId、不可运行。与上方可运行类型刻意分组区分。 */}
+      {onAddCustomType && (
+        <div className="flex flex-col gap-2">
+          <h4 className="text-[11px] font-semibold uppercase tracking-wider text-text-3">
+            注释
+          </h4>
           <button
             type="button"
             onClick={onAddCustomType}
+            title="添加一个不可运行的注释/草图节点（无类型参数）"
             className="rounded-md border border-dashed border-line px-2.5 py-1.5 text-left text-[12px] text-text-3 hover:border-text-3 hover:text-text-1"
           >
             + 自定义类型
           </button>
-        )}
-      </div>
+        </div>
+      )}
       <button
         type="button"
         onClick={onStandardPipeline}

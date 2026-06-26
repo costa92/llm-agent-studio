@@ -65,8 +65,19 @@ import { RunCanvas } from "./RunCanvas"
 import { ModeToggle } from "./ModeToggle"
 import { CanvasContextMenu, type ContextMenuItem } from "./CanvasContextMenu"
 import { CustomTypeDialog, type CustomTypePayload } from "./CustomTypeDialog"
-import { useCustomNodeTypes } from "@/features/custom-node-types/api"
-import type { CustomNodeType, HttpParams, LlmParams, ScriptParams } from "@/lib/types"
+import { useCustomNodeTypes, useCreateCustomNodeType } from "@/features/custom-node-types/api"
+import { TypeDialog } from "@/features/custom-node-types/TypeDialog"
+import { type FormDraft, type NodeKind } from "@/features/custom-node-types/typeDraft"
+import { useOrgSecrets } from "@/features/org-secrets/api"
+import { useOrgTextModels } from "@/features/cost/api"
+import { useRole } from "@/app/rbac"
+import type {
+  CustomNodeType,
+  HttpParams,
+  LlmParams,
+  ScriptParams,
+  UpsertCustomNodeTypeInput,
+} from "@/lib/types"
 
 export type CanvasMode = "edit" | "run"
 
@@ -187,6 +198,59 @@ function CanvasInner({
     | { mode: "edit"; type: string; initial: CustomTypePayload }
     | null
   >(null)
+  // 快建可运行类型（llm/http/script）：打开类型化创建对话框（TypeDialog）预置 kind。
+  // 保存经注册表创建 → useCustomNodeTypes 失效 → 新 typed chip 自动出现，用户再拖入画布。
+  // 注：这里走的是与「自定义节点」管理页相同的注册表路径——绝不创建 bare 泛型节点
+  // （type:"llm"/"http"/"script" + 空 typeId 会绕过 S-1 危险参数过滤链）。
+  const [quickCreate, setQuickCreate] = useState<NodeKind | null>(null)
+  const [quickSubmitting, setQuickSubmitting] = useState(false)
+  const [quickSubmitError, setQuickSubmitError] = useState<string | null>(null)
+  const createTypedType = useCreateCustomNodeType(org)
+  // http secret-bearing 类型守卫：密钥名（「插入密钥」下拉 + 判定）+ admin 角色（前端镜像，后端权威）。
+  const secretsQuery = useOrgSecrets(org)
+  const secretNames = useMemo(
+    () => (secretsQuery.data ?? []).map((s) => s.name),
+    [secretsQuery.data],
+  )
+  // org 文本模型 → 快建 llm 类型对话框的模型下拉（与画布/管理页同源同形）。
+  const textModelsQuery = useOrgTextModels(org)
+  const modelOptions = useMemo(
+    () => (textModelsQuery.data ?? []).map((m) => ({ value: m.model, label: `${m.provider} · ${m.model}` })),
+    [textModelsQuery.data],
+  )
+  const { isAdmin } = useRole(org)
+
+  const onQuickCreateSubmit = useCallback(
+    (draft: FormDraft) => {
+      const input: UpsertCustomNodeTypeInput = {
+        label: draft.label.trim(),
+        color: draft.color,
+        kind: draft.kind,
+        params: draft.params,
+      }
+      setQuickSubmitting(true)
+      setQuickSubmitError(null)
+      createTypedType
+        .mutateAsync(input)
+        .then(() => {
+          // onSuccess（api 层）已失效 useCustomNodeTypes → 新 typed chip 自动出现。
+          setQuickCreate(null)
+          toast.success("自定义节点类型已创建，可从面板拖入画布")
+        })
+        .catch((err: unknown) => {
+          // 优雅呈现冲突/权限错误（对话框内联，不 dead-end）。
+          if (err instanceof ApiError && err.status === 409) {
+            setQuickSubmitError("名称或 slug 已被占用，请使用其他名称")
+          } else if (err instanceof ApiError && err.status === 403) {
+            setQuickSubmitError("引用了密钥的 HTTP 类型需要管理员权限")
+          } else {
+            setQuickSubmitError(err instanceof Error ? err.message : "创建失败，请重试")
+          }
+        })
+        .finally(() => setQuickSubmitting(false))
+    },
+    [createTypedType],
+  )
   // 右键上下文菜单态（Phase D）：kind 决定菜单项；targetId 为节点/边 id。
   const [menu, setMenu] = useState<
     | { kind: "pane"; screenX: number; screenY: number; canPaste: boolean }
@@ -883,6 +947,7 @@ function CanvasInner({
           onStandardPipeline={onStandardPipeline}
           onAutoTidy={onAutoTidy}
           customTypes={customTypes}
+          onQuickCreate={(kind) => { setQuickSubmitError(null); setQuickCreate(kind) }}
           onAddCustomType={() => setTypeDialog({ mode: "create" })}
           onEditCustomType={(type) => { const c = customTypes.find((x) => x.type === type); if (c) setTypeDialog({ mode: "edit", type, initial: { label: c.label, color: c.color } }) }}
         />
@@ -989,6 +1054,23 @@ function CanvasInner({
               initial={typeDialog.mode === "edit" ? typeDialog.initial : undefined}
               onSubmit={typeDialog.mode === "edit" ? onEditCustomTypeSubmit : onCreateCustomType}
               onCancel={() => setTypeDialog(null)}
+            />
+          )}
+          {/* 快建可运行类型对话框（注册表化的 typed 创建，预置 kind）。每次打开都以
+              key=kind 重新挂载，确保 TypeDialog 的 useState 从最新 initialKind 初始化。 */}
+          {quickCreate && (
+            <TypeDialog
+              key={quickCreate}
+              open
+              mode="create"
+              initialKind={quickCreate}
+              submitting={quickSubmitting}
+              submitError={quickSubmitError}
+              secretNames={secretNames}
+              modelOptions={modelOptions}
+              isAdmin={isAdmin}
+              onSubmit={onQuickCreateSubmit}
+              onOpenChange={(open) => { if (!open) { setQuickCreate(null); setQuickSubmitError(null) } }}
             />
           )}
         </div>
