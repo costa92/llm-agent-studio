@@ -46,6 +46,8 @@ export interface TypeDialogProps {
   submitError: string | null
   // 组织密钥名（供 http 表单的「插入密钥」下拉 + secret-bearing 判定）。
   secretNames: string[]
+  // org 文本模型选项（供 llm 表单的模型下拉；与画布模型选择器同源同形）。
+  modelOptions?: { value: string; label: string }[]
   // 当前用户是否 admin（http secret-bearing 类型仅 admin 可创建/保存；后端强制，前端镜像）。
   isAdmin: boolean
   onSubmit: (draft: FormDraft) => void
@@ -60,6 +62,7 @@ export function TypeDialog({
   submitting,
   submitError,
   secretNames,
+  modelOptions = [],
   isAdmin,
   onSubmit,
   onOpenChange,
@@ -169,6 +172,7 @@ export function TypeDialog({
               <LlmParamForm
                 value={draft.params as LlmParams}
                 onChange={(params) => patch({ params })}
+                modelOptions={modelOptions}
               />
             ) : draft.kind === "http" ? (
               <HttpParamForm

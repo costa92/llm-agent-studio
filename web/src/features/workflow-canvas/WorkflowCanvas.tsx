@@ -69,6 +69,7 @@ import { useCustomNodeTypes, useCreateCustomNodeType } from "@/features/custom-n
 import { TypeDialog } from "@/features/custom-node-types/TypeDialog"
 import { type FormDraft, type NodeKind } from "@/features/custom-node-types/typeDraft"
 import { useOrgSecrets } from "@/features/org-secrets/api"
+import { useOrgTextModels } from "@/features/cost/api"
 import { useRole } from "@/app/rbac"
 import type {
   CustomNodeType,
@@ -210,6 +211,12 @@ function CanvasInner({
   const secretNames = useMemo(
     () => (secretsQuery.data ?? []).map((s) => s.name),
     [secretsQuery.data],
+  )
+  // org 文本模型 → 快建 llm 类型对话框的模型下拉（与画布/管理页同源同形）。
+  const textModelsQuery = useOrgTextModels(org)
+  const modelOptions = useMemo(
+    () => (textModelsQuery.data ?? []).map((m) => ({ value: m.model, label: `${m.provider} · ${m.model}` })),
+    [textModelsQuery.data],
   )
   const { isAdmin } = useRole(org)
 
@@ -1060,6 +1067,7 @@ function CanvasInner({
               submitting={quickSubmitting}
               submitError={quickSubmitError}
               secretNames={secretNames}
+              modelOptions={modelOptions}
               isAdmin={isAdmin}
               onSubmit={onQuickCreateSubmit}
               onOpenChange={(open) => { if (!open) { setQuickCreate(null); setQuickSubmitError(null) } }}
