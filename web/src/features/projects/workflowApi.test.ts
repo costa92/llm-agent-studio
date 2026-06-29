@@ -144,18 +144,35 @@ describe("useRunWorkflow", () => {
 
     const { wrapper, invalidateSpy } = setup()
     const { result } = renderHook(() => useRunWorkflow("p1"), { wrapper })
-    result.current.mutate("wf1")
+    result.current.mutate({ wfId: "wf1" })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
 
     expect(String(fetchMock.mock.calls[0][0])).toBe(
       "/api/projects/p1/workflows/wf1/run",
     )
     expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("POST")
+    // 无 inputs → 不带 body（与历史行为一致，零回归）。
+    expect((fetchMock.mock.calls[0][1] as RequestInit).body).toBeUndefined()
     expect(result.current.data?.planId).toBe("plan9")
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: ["workflows", "p1"],
     })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["project", "p1"] })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["plans", "p1"] })
+  })
+
+  it("带 inputs → POST body 携带 {inputs}", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ planId: "plan9", valid: true, fallbackUsed: false, workflowId: "wf1" }),
+    )
+    vi.stubGlobal("fetch", fetchMock)
+
+    const { wrapper } = setup()
+    const { result } = renderHook(() => useRunWorkflow("p1"), { wrapper })
+    result.current.mutate({ wfId: "wf1", inputs: { heroName: "阿力" } })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    const body = (fetchMock.mock.calls[0][1] as RequestInit).body
+    expect(JSON.parse(String(body))).toEqual({ inputs: { heroName: "阿力" } })
   })
 })
