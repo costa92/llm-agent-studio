@@ -300,7 +300,7 @@ func runWorkflowHandler(ps ProjectStore, ws WorkflowStore, pl PlannerPort, ev Ev
 			http.Error(w, rerr.Error(), http.StatusBadRequest)
 			return
 		}
-		result, err := pl.PlanCustom(r.Context(), id, wfID, brief, nodes, resolved)
+		result, err := pl.PlanCustom(r.Context(), id, wfID, brief, nodes, resolved, nil)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

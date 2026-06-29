@@ -49,10 +49,10 @@ func (s *stubWorkflows) Delete(_ context.Context, _, _ string) error { return ni
 // recordingPlanner captures the workflowID passed to PlanCustom.
 type recordingPlanner struct{ gotWorkflowID string }
 
-func (recordingPlanner) Plan(_ context.Context, _ string, _ planner.Brief) (planner.Result, error) {
+func (recordingPlanner) Plan(_ context.Context, _ string, _ planner.Brief, _ json.RawMessage) (planner.Result, error) {
 	return planner.Result{PlanID: "pl"}, nil
 }
-func (recordingPlanner) PlanWith(_ context.Context, _ string, _ llm.ChatModel, _ planner.Brief) (planner.Result, error) {
+func (recordingPlanner) PlanWith(_ context.Context, _ string, _ llm.ChatModel, _ planner.Brief, _ json.RawMessage) (planner.Result, error) {
 	return planner.Result{PlanID: "pl"}, nil
 }
 
@@ -317,7 +317,7 @@ func TestRunWorkflowHandlerRefusesCustomNodes(t *testing.T) {
 	}
 }
 
-func (rp *recordingPlanner) PlanCustom(_ context.Context, _, workflowID string, _ planner.Brief, _ []planner.WorkflowNode, _ map[string]planner.ResolvedType) (planner.Result, error) {
+func (rp *recordingPlanner) PlanCustom(_ context.Context, _, workflowID string, _ planner.Brief, _ []planner.WorkflowNode, _ map[string]planner.ResolvedType, _ json.RawMessage) (planner.Result, error) {
 	rp.gotWorkflowID = workflowID
 	return planner.Result{PlanID: "pl", Valid: true, ReadyTodos: []planner.ReadyTodo{{ID: "t1", Type: "script"}}}, nil
 }

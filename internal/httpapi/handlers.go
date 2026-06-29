@@ -73,9 +73,9 @@ type ProjectStore interface {
 // accepts an explicit chat model (BYOK 模型路由 via the ChatRouter); Plan uses
 // the planner's bound default.
 type PlannerPort interface {
-	Plan(ctx context.Context, projectID string, b planner.Brief) (planner.Result, error)
-	PlanWith(ctx context.Context, projectID string, model llm.ChatModel, b planner.Brief) (planner.Result, error)
-	PlanCustom(ctx context.Context, projectID, workflowID string, b planner.Brief, nodes []planner.WorkflowNode, resolved map[string]planner.ResolvedType) (planner.Result, error)
+	Plan(ctx context.Context, projectID string, b planner.Brief, runInputs json.RawMessage) (planner.Result, error)
+	PlanWith(ctx context.Context, projectID string, model llm.ChatModel, b planner.Brief, runInputs json.RawMessage) (planner.Result, error)
+	PlanCustom(ctx context.Context, projectID, workflowID string, b planner.Brief, nodes []planner.WorkflowNode, resolved map[string]planner.ResolvedType, runInputs json.RawMessage) (planner.Result, error)
 }
 
 // ChatRouter resolves an org's BYOK chat model (satisfied by *modelrouter.Router).
@@ -494,7 +494,7 @@ func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore,
 				http.Error(w, rerr.Error(), http.StatusBadRequest)
 				return
 			}
-			res, err = pl.PlanCustom(r.Context(), id, "", brief, customNodes, resolved)
+			res, err = pl.PlanCustom(r.Context(), id, "", brief, customNodes, resolved, nil)
 		} else {
 			// M5.1: per-project 规划模型 override 优先于 org 默认。如果 project 上
 			// 配了 planner_provider+planner_model，runHandler 拿这个去 modelrouter
@@ -502,9 +502,9 @@ func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore,
 			// 查不到 / build 失败 → 退回 org 默认 chat。空 = 走完全默认。
 			plannerModel := chatModelForPlan(r.Context(), cr, p)
 			if plannerModel != nil {
-				res, err = pl.PlanWith(r.Context(), id, plannerModel, brief)
+				res, err = pl.PlanWith(r.Context(), id, plannerModel, brief, nil)
 			} else {
-				res, err = pl.Plan(r.Context(), id, brief)
+				res, err = pl.Plan(r.Context(), id, brief, nil)
 			}
 		}
 		if err != nil {
