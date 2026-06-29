@@ -545,15 +545,31 @@ func (w *Worker) applyPBOverride(ctx context.Context, c claimed, cfg project.Pic
 	return overlayPBConfig(cfg, res.PBOverride)
 }
 
+// clampTargetPages maps an overlaid pageCount to the storyboard agent's target-pages
+// soft constraint, clamped to [4,24]. 0 (unset) passes through as 0 = no constraint
+// (today's behavior — the LLM decides page count). Out-of-range values clamp to the
+// nearest bound.
+func clampTargetPages(pageCount int) int {
+	switch {
+	case pageCount <= 0:
+		return 0
+	case pageCount < 4:
+		return 4
+	case pageCount > 24:
+		return 24
+	default:
+		return pageCount
+	}
+}
+
 // overlayPBConfig applies the pbConfig override layer onto the baseline cfg. The
 // override is a complete-field-set snapshot (front-end submits all fields), so each
 // present key replaces the corresponding cfg field. Malformed individual values are
 // skipped (the snapshot was validated at submit time; this is belt-and-suspenders).
 //
-// PageCount is overlaid for snapshot completeness but has NO downstream consumer yet
-// (page count is decided by the storyboard agent's LLM). Wiring it into the storyboard
-// agent input requires changing the StoryboardInput contract + prompt — out of this
-// task's scope; escalated to the main thread.
+// PageCount feeds the storyboard agent's PBTargetPages (via clampTargetPages in
+// runStoryboard) as a soft "约 N 页" constraint — the LLM still decides the actual
+// page count, same as PBMaxWordsPerSpread.
 func overlayPBConfig(cfg project.PictureBookConfig, ov map[string]json.RawMessage) project.PictureBookConfig {
 	applyStr := func(key string, dst *string) {
 		if r, ok := ov[key]; ok {
@@ -646,6 +662,7 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 		storyboardIn.PBMaxWordsPerSpread = pbCfg.MaxWordsPerSpread()
 		storyboardIn.PBIllustrationStyle = pbCfg.IllustrationStyle
 		storyboardIn.PBCharacterSheet = sc.CharacterSheet
+		storyboardIn.PBTargetPages = clampTargetPages(pbCfg.PageCount)
 	}
 	var out studioagents.StoryboardOutput
 	if m, ok := w.routedChatModel(ctx, c.projectID); ok {
