@@ -528,6 +528,7 @@ func (s *Storage) goSteps() []migrationStep {
 	}
 	return []migrationStep{
 		{version: "m21", run: m21AddItemsColumn},
+		{version: "m22", run: m22CreateExportJobs},
 	}
 }
 
@@ -578,6 +579,45 @@ func m21AddItemsColumn(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `UPDATE node_outputs SET items=$1 WHERE id=$2`, items, r.id); err != nil {
 			return fmt.Errorf("backfill %s: %w", r.id, err)
 		}
+	}
+	return nil
+}
+
+// m22CreateExportJobs creates the export_jobs queue table (picturebook 成书导出).
+// It is an INDEPENDENT async queue (NOT the todos run-queue): exporting is a
+// read-only consumption of accepted assets and must not pollute run lifecycle.
+// It reuses the worker's claim/lease/reaper PATTERN (status + locked_by/
+// locked_until + next_run_at), with the same FOR UPDATE SKIP LOCKED claim. Two
+// indexes: claim path (status, next_run_at) and project listing (project_id).
+// Idempotent (CREATE TABLE / INDEX IF NOT EXISTS).
+func m22CreateExportJobs(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS export_jobs (
+			id                TEXT PRIMARY KEY,
+			project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+			plan_id           TEXT NOT NULL DEFAULT '',
+			format            TEXT NOT NULL,
+			status            TEXT NOT NULL DEFAULT 'pending',
+			blob_key          TEXT NOT NULL DEFAULT '',
+			storage_config_id TEXT NOT NULL DEFAULT '',
+			size_bytes        BIGINT NOT NULL DEFAULT 0,
+			error             TEXT NOT NULL DEFAULT '',
+			attempts          INT NOT NULL DEFAULT 0,
+			locked_by         TEXT NOT NULL DEFAULT '',
+			locked_until      TIMESTAMPTZ,
+			next_run_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+			created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`); err != nil {
+		return fmt.Errorf("create export_jobs: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`CREATE INDEX IF NOT EXISTS export_jobs_claim_idx ON export_jobs (status, next_run_at)`); err != nil {
+		return fmt.Errorf("create export_jobs_claim_idx: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`CREATE INDEX IF NOT EXISTS export_jobs_project_idx ON export_jobs (project_id)`); err != nil {
+		return fmt.Errorf("create export_jobs_project_idx: %w", err)
 	}
 	return nil
 }
