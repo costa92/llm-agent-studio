@@ -2,6 +2,7 @@ package picturebook
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -76,5 +77,12 @@ func TestRenderPDF(t *testing.T) {
 	}
 	if len(out) < 1024 {
 		t.Fatalf("PDF size %d too small to be real", len(out))
+	}
+	// 页数须与 Page 数一致（每页一页），防零页/丢页冒充通过。
+	// RenderPDF 只回字节，故断言页树对象里的 /Count（gopdf 明文写入、等于
+	// pdf.GetNumberOfPages() 的值）而非直接调方法。
+	wantCount := fmt.Sprintf("/Count %d", len(book))
+	if !bytes.Contains(out, []byte(wantCount)) {
+		t.Fatalf("PDF page tree missing %q (expected %d pages)", wantCount, len(book))
 	}
 }

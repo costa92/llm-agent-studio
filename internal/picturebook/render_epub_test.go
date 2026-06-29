@@ -115,3 +115,25 @@ func TestEPUBMissingAudio(t *testing.T) {
 		}
 	}
 }
+
+// TestEPUBUnknownMimeImageDegrades：扩展名无法判定的图片不得中断整本导出，
+// 而是降级为纯文本页（镜像 zip 容错）。锁定 ImageFrom 之外的图片容错契约。
+func TestEPUBUnknownMimeImageDegrades(t *testing.T) {
+	book := []Page{
+		{Kind: "content", Narration: "未知图片格式页", ImageAssetID: "a1"},
+	}
+	pb := []PageBytes{
+		// 无 magic 的随意字节：mime 未知 + DetectContentType 兜底失败 → extFor=""。
+		{ImageBytes: []byte("not-an-image-no-magic-bytes-here"), ImageMIME: ""},
+	}
+	out, _, err := RenderEPUB("我的绘本", book, pb)
+	if err != nil {
+		t.Fatalf("unknown-mime image must degrade, not error: %v", err)
+	}
+	files, _, _ := readEPUBEntries(t, out)
+	for name, content := range files {
+		if (strings.HasSuffix(name, ".xhtml") || strings.HasSuffix(name, ".html")) && strings.Contains(content, "<img") {
+			t.Errorf("unknown-mime image page %s unexpectedly embedded <img", name)
+		}
+	}
+}

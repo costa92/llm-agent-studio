@@ -99,10 +99,3 @@ func TestRenderZip(t *testing.T) {
 		t.Errorf("manifest[1] assetIds wrong: image=%v audio=%v", mf[1]["imageAssetId"], mf[1]["audioAssetId"])
 	}
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

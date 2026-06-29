@@ -3,6 +3,7 @@ package picturebook
 import (
 	"bytes"
 	_ "embed"
+	"fmt"
 	"image"
 	_ "image/jpeg"
 	_ "image/png"
@@ -37,18 +38,19 @@ func RenderPDF(projectName string, book []Page, pb []PageBytes) ([]byte, string,
 	pdf.Start(gopdf.Config{PageSize: gopdf.Rect{W: pdfPageW, H: pdfPageH}})
 
 	if err := pdf.AddTTFFontData(pdfFontName, notoSCFont); err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("picturebook pdf: load embedded font: %w", err)
 	}
 
 	contentW := pdfPageW - 2*pdfMargin
 	for i, page := range book {
+		idx := i + 1
 		pdf.AddPage()
 		y := pdfMargin
 
 		// cover/ending 顶部标题。
 		if page.Kind != "content" && page.Title != "" {
 			if err := pdf.SetFont(pdfFontName, "", pdfTitleSize); err != nil {
-				return nil, "", err
+				return nil, "", fmt.Errorf("picturebook pdf: set title font on page %d: %w", idx, err)
 			}
 			y = drawCenteredLines(pdf, wrapText(pdf, page.Title, contentW, pdfTitleSize, pdfFontName), y, pdfTitleSize)
 			y += pdfLineGap * 2
@@ -59,14 +61,19 @@ func RenderPDF(projectName string, book []Page, pb []PageBytes) ([]byte, string,
 			resolved = pb[i]
 		}
 
-		// 图片：解码失败/缺字节 → 占位文本。
+		// 图片：缺字节/解码失败/嵌入失败 → 一律落到「插图缺失」占位文本，
+		// 保证任何一页都至少有图或占位，不会出现空白页。
 		img := decodeImage(resolved.ImageBytes)
+		imageDrawn := false
 		if img != nil {
-			y = drawImageFit(pdf, img, y, contentW)
-			y += pdfLineGap * 2
-		} else {
+			if ny, err := drawImageFit(pdf, img, y, contentW); err == nil {
+				y = ny + pdfLineGap*2
+				imageDrawn = true
+			}
+		}
+		if !imageDrawn {
 			if err := pdf.SetFont(pdfFontName, "", pdfNarrationSize); err != nil {
-				return nil, "", err
+				return nil, "", fmt.Errorf("picturebook pdf: set placeholder font on page %d: %w", idx, err)
 			}
 			y = drawCenteredLines(pdf, []string{"插图缺失"}, y, pdfNarrationSize)
 			y += pdfLineGap * 2
@@ -75,7 +82,7 @@ func RenderPDF(projectName string, book []Page, pb []PageBytes) ([]byte, string,
 		// 旁白：手算折行后居中。
 		if page.Narration != "" {
 			if err := pdf.SetFont(pdfFontName, "", pdfNarrationSize); err != nil {
-				return nil, "", err
+				return nil, "", fmt.Errorf("picturebook pdf: set narration font on page %d: %w", idx, err)
 			}
 			lines := wrapText(pdf, page.Narration, contentW, pdfNarrationSize, pdfFontName)
 			drawCenteredLines(pdf, lines, y, pdfNarrationSize)
@@ -84,7 +91,7 @@ func RenderPDF(projectName string, book []Page, pb []PageBytes) ([]byte, string,
 
 	var buf bytes.Buffer
 	if _, err := pdf.WriteTo(&buf); err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("picturebook pdf: write document: %w", err)
 	}
 	return buf.Bytes(), "application/pdf", nil
 }
@@ -102,11 +109,12 @@ func decodeImage(data []byte) image.Image {
 }
 
 // drawImageFit 把图按内容宽等比缩放居中绘制，返回图下沿 y。
-func drawImageFit(pdf *gopdf.GoPdf, img image.Image, y, contentW float64) float64 {
+// 尺寸非法或 gopdf 嵌入失败时返回 error，调用方据此改画占位文本。
+func drawImageFit(pdf *gopdf.GoPdf, img image.Image, y, contentW float64) (float64, error) {
 	b := img.Bounds()
 	iw, ih := float64(b.Dx()), float64(b.Dy())
 	if iw <= 0 || ih <= 0 {
-		return y
+		return y, fmt.Errorf("invalid image bounds %gx%g", iw, ih)
 	}
 	w := contentW
 	h := w * ih / iw
@@ -118,9 +126,9 @@ func drawImageFit(pdf *gopdf.GoPdf, img image.Image, y, contentW float64) float6
 	}
 	x := (pdfPageW - w) / 2
 	if err := pdf.ImageFrom(img, x, y, &gopdf.Rect{W: w, H: h}); err != nil {
-		return y
+		return y, err
 	}
-	return y + h
+	return y + h, nil
 }
 
 // wrapText 逐 rune 累计宽度手算折行（gopdf 无 CJK 折行）。

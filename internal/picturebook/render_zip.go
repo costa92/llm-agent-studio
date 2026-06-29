@@ -48,14 +48,14 @@ func RenderZip(projectName string, book []Page, pb []PageBytes) ([]byte, string,
 			ext := extFor(resolved.ImageMIME, resolved.ImageBytes)
 			imageFile = prefix + "_image" + ext
 			if err := writeEntry(zw, imageFile, resolved.ImageBytes); err != nil {
-				return nil, "", err
+				return nil, "", fmt.Errorf("picturebook zip: write image for page %d: %w", idx, err)
 			}
 		}
 
 		if page.Narration != "" {
 			name := prefix + "_narration.txt"
 			if err := writeEntry(zw, name, []byte(page.Narration)); err != nil {
-				return nil, "", err
+				return nil, "", fmt.Errorf("picturebook zip: write narration for page %d: %w", idx, err)
 			}
 		}
 
@@ -63,7 +63,7 @@ func RenderZip(projectName string, book []Page, pb []PageBytes) ([]byte, string,
 			ext := extFor(resolved.AudioMIME, resolved.AudioBytes)
 			audioFile = prefix + "_audio" + ext
 			if err := writeEntry(zw, audioFile, resolved.AudioBytes); err != nil {
-				return nil, "", err
+				return nil, "", fmt.Errorf("picturebook zip: write audio for page %d: %w", idx, err)
 			}
 		}
 
@@ -84,14 +84,14 @@ func RenderZip(projectName string, book []Page, pb []PageBytes) ([]byte, string,
 
 	mfBytes, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("picturebook zip: marshal manifest: %w", err)
 	}
 	if err := writeEntry(zw, "manifest.json", mfBytes); err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("picturebook zip: write manifest: %w", err)
 	}
 
 	if err := zw.Close(); err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("picturebook zip: finalize archive: %w", err)
 	}
 	return buf.Bytes(), "application/zip", nil
 }
