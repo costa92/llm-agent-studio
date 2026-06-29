@@ -1,10 +1,13 @@
 package exports
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
+	"io"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -202,10 +205,13 @@ func TestRunOnceDegradesMissingBytes(t *testing.T) {
 	ctx := context.Background()
 	fake := blob.NewFake()
 
-	// Two accepted images: one present, one whose key is NOT in the Fake.
+	// Two accepted images: one present (distinctive bytes), one whose key is NOT
+	// in the Fake. The present one must go through the Fake.Get rung into the zip;
+	// the missing one degrades its page only — the job still succeeds.
 	presentKey := "exports-test/present.png"
 	missingKey := "exports-test/missing.png"
-	if err := fake.Put(ctx, presentKey, bytesReader([]byte{0x89, 0x50, 0x4E, 0x47, 'x'}), "image/png"); err != nil {
+	presentBytes := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 'D', 'E', 'G', 'R', 'A', 'D', 'E', '!'}
+	if err := fake.Put(ctx, presentKey, bytesReader(presentBytes), "image/png"); err != nil {
 		t.Fatalf("put present: %v", err)
 	}
 	projID, planID := seedBook(t, pool, "org-degrade", 3, map[int]string{0: presentKey, 1: missingKey})
@@ -223,6 +229,39 @@ func TestRunOnceDegradesMissingBytes(t *testing.T) {
 	got, _ := store.Get(ctx, job.ID)
 	if got.Status != "done" {
 		t.Fatalf("degraded job should still be done, got %q (err=%q)", got.Status, got.Error)
+	}
+
+	// The present image's bytes must be inside the zip (it went through Fake.Get);
+	// exactly one image entry should exist (the missing one degraded to no entry).
+	artifact, _, ok := fake.Get(got.BlobKey)
+	if !ok {
+		t.Fatalf("artifact not found in fake at %q", got.BlobKey)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(artifact), int64(len(artifact)))
+	if err != nil {
+		t.Fatalf("open zip artifact: %v", err)
+	}
+	var foundPresent bool
+	var imageEntries int
+	for _, f := range zr.File {
+		if strings.Contains(f.Name, "_image") {
+			imageEntries++
+			rc, err := f.Open()
+			if err != nil {
+				t.Fatalf("open zip entry %s: %v", f.Name, err)
+			}
+			content, _ := io.ReadAll(rc)
+			rc.Close()
+			if bytes.Equal(content, presentBytes) {
+				foundPresent = true
+			}
+		}
+	}
+	if !foundPresent {
+		t.Fatalf("present image bytes not found in zip (Fake.Get rung not exercised)")
+	}
+	if imageEntries != 1 {
+		t.Fatalf("want exactly 1 image entry (missing degraded), got %d", imageEntries)
 	}
 }
 

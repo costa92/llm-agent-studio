@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -30,6 +31,47 @@ import (
 
 // signedURLTTL 是读字节阶梯第 4 级预签名 URL 的有效期（仅 s3/oss 真后端走到这一级）。
 const signedURLTTL = 10 * time.Minute
+
+// maxAssetBytes 是单张资产读字节的上限（防御无 Content-Length 响应 OOM）。
+const maxAssetBytes = 64 << 20 // 64 MiB
+
+// assetHTTPClient 是读字节阶梯第 4 级专用的 HTTP 客户端：显式 Timeout 独立于
+// CallTimeout，保证 CallTimeout==0（默认）时预签名拉取仍有死线——慢/半开的存储端点
+// 不会永久阻塞唯一的 Run goroutine、卡死整个导出队列（Reap 只改 DB 行，解不开 goroutine）。
+// CheckRedirect 拒绝跳转到 loopback/私网/链路本地的目标（SSRF-via-redirect 纵深防御）。
+var assetHTTPClient = &http.Client{
+	Timeout: 60 * time.Second,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return fmt.Errorf("exports: too many redirects")
+		}
+		return guardPublicHost(req.URL.Hostname())
+	},
+}
+
+// guardPublicHost 拒绝解析到 loopback/私网/链路本地/未指定地址的主机（SSRF 纵深防御）。
+func guardPublicHost(host string) error {
+	if host == "" {
+		return fmt.Errorf("exports: redirect to empty host refused")
+	}
+	var ips []net.IP
+	if ip := net.ParseIP(host); ip != nil {
+		ips = []net.IP{ip}
+	} else {
+		resolved, err := net.LookupIP(host)
+		if err != nil {
+			return fmt.Errorf("exports: resolve redirect host %q: %w", host, err)
+		}
+		ips = resolved
+	}
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+			ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+			return fmt.Errorf("exports: redirect to non-public host %q refused", host)
+		}
+	}
+	return nil
+}
 
 // bookData 提供某 plan 装订成书所需的输入（分镜 + 已审核资产）。
 // 生产实现 = 本包内 gorm 支撑的 BookData；测试实现 = 替身。
@@ -177,7 +219,14 @@ func (r *Runner) process(ctx context.Context, job ExportJob) {
 		byID[a.ID] = a
 	}
 
-	pages := picturebook.Assemble(name, shots, assetList)
+	// 标题回落 "绘本"（spec 行 136）。只在调用方加，picturebook.Assemble 须保持
+	// 与前端 assemblePages 逐字一致（双端 golden），不可把回落塞进 Assemble。
+	title := name
+	if title == "" {
+		title = "绘本"
+	}
+
+	pages := picturebook.Assemble(title, shots, assetList)
 	pageBytes := make([]picturebook.PageBytes, len(pages))
 	for i, p := range pages {
 		var pb picturebook.PageBytes
@@ -190,20 +239,29 @@ func (r *Runner) process(ctx context.Context, job ExportJob) {
 		pageBytes[i] = pb
 	}
 
-	data, contentType, err := render(name, pages, pageBytes)
+	data, contentType, err := render(title, pages, pageBytes)
 	if err != nil {
 		r.fail(ctx, job.ID, fmt.Errorf("render %s: %w", job.Format, err))
 		return
 	}
 
 	bs, cfgID, _ := r.router.ResolveWriteTarget(ctx, orgID, projConfigID)
+	if bs == nil {
+		// ResolveWriteTarget 在配置坏掉时可能回落到 nil Default——别 panic，失败这单。
+		r.fail(ctx, job.ID, errors.New("resolve write target returned nil blob store"))
+		return
+	}
 	blobKey := fmt.Sprintf("exports/%s/%s%s", job.ProjectID, job.ID, extForFormat(job.Format))
 	if err := bs.Put(ctx, blobKey, bytes.NewReader(data), contentType); err != nil {
 		r.fail(ctx, job.ID, fmt.Errorf("put export artifact: %w", err))
 		return
 	}
 
-	if err := r.store.MarkDone(ctx, job.ID, blobKey, cfgID, int64(len(data))); err != nil {
+	// 终态写用脱离取消的新 ctx：CallTimeout 触发或 shutdown 取消了 ctx 时，落库仍要成功，
+	// 否则任务卡 running 直到被 Reap 用 "lease expired" 覆盖、丢失真实结果。
+	doneCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if err := r.store.MarkDone(doneCtx, job.ID, blobKey, cfgID, int64(len(data))); err != nil {
 		if errors.Is(err, ErrNotRunning) {
 			// 竞态输家：任务已被 Reap/抢占，落库结果作废，记录后退出。
 			r.log.Info("export job left running before MarkDone (race loser)", "job", job.ID)
@@ -281,7 +339,7 @@ func readBytes(ctx context.Context, bs blob.BlobStore, key string) ([]byte, stri
 	if err != nil {
 		return nil, "", fmt.Errorf("exports: build read request for %q: %w", key, err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := assetHTTPClient.Do(req)
 	if err != nil {
 		return nil, "", fmt.Errorf("exports: http get %q: %w", key, err)
 	}
@@ -289,16 +347,23 @@ func readBytes(ctx context.Context, bs blob.BlobStore, key string) ([]byte, stri
 	if resp.StatusCode != http.StatusOK {
 		return nil, "", fmt.Errorf("exports: http get %q: status %d", key, resp.StatusCode)
 	}
-	data, err := io.ReadAll(resp.Body)
+	// 读到 max+1 以便检出溢出：>max 即超限报错，绝不静默截断。
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAssetBytes+1))
 	if err != nil {
 		return nil, "", fmt.Errorf("exports: read body for %q: %w", key, err)
+	}
+	if int64(len(data)) > maxAssetBytes {
+		return nil, "", fmt.Errorf("exports: asset %q exceeds max size %d bytes", key, maxAssetBytes)
 	}
 	return data, resp.Header.Get("Content-Type"), nil
 }
 
-// fail 包一层 MarkFailed，把 ErrNotRunning（竞态输家）当作良性。
+// fail 包一层 MarkFailed，把 ErrNotRunning（竞态输家）当作良性。终态写脱离取消
+// （context.WithoutCancel + 短超时），保证 CallTimeout/shutdown 取消 ctx 后失败原因仍落库。
 func (r *Runner) fail(ctx context.Context, id string, cause error) {
-	if err := r.store.MarkFailed(ctx, id, cause.Error(), r.maxAttempts, r.backoff); err != nil {
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if err := r.store.MarkFailed(wctx, id, cause.Error(), r.maxAttempts, r.backoff); err != nil {
 		if errors.Is(err, ErrNotRunning) {
 			r.log.Info("export job left running before MarkFailed (race loser)", "job", id, "cause", cause)
 			return
