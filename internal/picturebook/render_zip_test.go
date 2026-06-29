@@ -91,6 +91,13 @@ func TestRenderZip(t *testing.T) {
 	if mf[2]["imageFile"] != "" {
 		t.Errorf("manifest[2] should have empty imageFile, got %v", mf[2]["imageFile"])
 	}
+	// assetId 须落入 manifest（便于复现）。
+	if mf[0]["imageAssetId"] != "a0" {
+		t.Errorf("manifest[0].imageAssetId = %v, want a0", mf[0]["imageAssetId"])
+	}
+	if mf[1]["imageAssetId"] != "a1" || mf[1]["audioAssetId"] != "au1" {
+		t.Errorf("manifest[1] assetIds wrong: image=%v audio=%v", mf[1]["imageAssetId"], mf[1]["audioAssetId"])
+	}
 }
 
 func min(a, b int) int {

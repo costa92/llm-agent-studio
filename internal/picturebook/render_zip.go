@@ -10,15 +10,17 @@ import (
 
 // manifestEntry 描述 manifest.json 里的一条页记录，足以复现页序与 provenance。
 type manifestEntry struct {
-	Page      int    `json:"page"`
-	Kind      string `json:"kind"`
-	Title     string `json:"title"`
-	Narration string `json:"narration"`
-	Prompt    string `json:"prompt"`
-	Provider  string `json:"provider"`
-	Model     string `json:"model"`
-	ImageFile string `json:"imageFile"`
-	AudioFile string `json:"audioFile"`
+	Page         int    `json:"page"`
+	Kind         string `json:"kind"`
+	Title        string `json:"title"`
+	Narration    string `json:"narration"`
+	Prompt       string `json:"prompt"`
+	Provider     string `json:"provider"`
+	Model        string `json:"model"`
+	ImageAssetID string `json:"imageAssetId"`
+	AudioAssetID string `json:"audioAssetId"`
+	ImageFile    string `json:"imageFile"`
+	AudioFile    string `json:"audioFile"`
 }
 
 // RenderZip 把绘本逐页打包成 zip：每页含 accepted 图、音（有字节才打）、
@@ -66,15 +68,17 @@ func RenderZip(projectName string, book []Page, pb []PageBytes) ([]byte, string,
 		}
 
 		manifest = append(manifest, manifestEntry{
-			Page:      idx,
-			Kind:      page.Kind,
-			Title:     page.Title,
-			Narration: page.Narration,
-			Prompt:    page.Prompt,
-			Provider:  page.Provider,
-			Model:     page.Model,
-			ImageFile: imageFile,
-			AudioFile: audioFile,
+			Page:         idx,
+			Kind:         page.Kind,
+			Title:        page.Title,
+			Narration:    page.Narration,
+			Prompt:       page.Prompt,
+			Provider:     page.Provider,
+			Model:        page.Model,
+			ImageAssetID: page.ImageAssetID,
+			AudioAssetID: page.AudioAssetID,
+			ImageFile:    imageFile,
+			AudioFile:    audioFile,
 		})
 	}
 
