@@ -456,7 +456,7 @@ func (w *Worker) runScript(ctx context.Context, c claimed) (string, error) {
 	// characterSheet。整段 ScriptOutput（含 characterSheet）随后被序列化进
 	// content_json，所以 storyboard 端解析该 JSON 即可回灌 characterSheet——无需
 	// 在此单独挑字段存。
-	isPB, cfg, err := w.pictureBookConfig(ctx, c.projectID)
+	isPB, cfg, err := w.pictureBookConfig(ctx, c)
 	if err != nil {
 		return "", err
 	}
@@ -493,10 +493,14 @@ func (w *Worker) runScript(ctx context.Context, c claimed) (string, error) {
 // missing/empty config) yields (false, zero, nil). A DB error is fatal to the
 // caller (the绘本 data flow depends on it); a config PARSE error degrades to
 // (false, zero, nil) so a malformed config can't wedge a standard run.
-func (w *Worker) pictureBookConfig(ctx context.Context, projectID string) (bool, project.PictureBookConfig, error) {
+//
+// 本 run 覆盖：解析出基线 cfg 后，按 c.todoID 反查本 run 的 plans.run_inputs，把
+// target=="pbConfig" 项叠加到 cfg（仅内存，projects 表全程只读）。这是绘本运行期
+// 覆盖的唯一改点——5 个绘本消费点自动拿到合并后的 cfg。
+func (w *Worker) pictureBookConfig(ctx context.Context, c claimed) (bool, project.PictureBookConfig, error) {
 	var kind, raw string
 	if err := w.cfg.DB.WithContext(ctx).Raw(
-		`SELECT kind, picturebook_config FROM projects WHERE id=$1`, projectID).Row().Scan(&kind, &raw); err != nil {
+		`SELECT kind, picturebook_config FROM projects WHERE id=$1`, c.projectID).Row().Scan(&kind, &raw); err != nil {
 		return false, project.PictureBookConfig{}, fmt.Errorf("worker: load project kind: %w", err)
 	}
 	if kind != "picturebook" {
@@ -505,10 +509,78 @@ func (w *Worker) pictureBookConfig(ctx context.Context, projectID string) (bool,
 	cfg, perr := project.ParsePictureBookConfig(raw)
 	if perr != nil {
 		w.cfg.Logger.Warn("worker: parse picturebook_config failed; treating as non-绘本",
-			"project", projectID, "err", perr)
+			"project", c.projectID, "err", perr)
 		return false, project.PictureBookConfig{}, nil
 	}
-	return true, cfg, nil
+	return true, w.applyPBOverride(ctx, c, cfg), nil
+}
+
+// applyPBOverride reverse-looks-up THIS todo's run-time inputs (plans.run_inputs),
+// JOIN-scoped to the project (defense-in-depth), and overlays the target=="pbConfig"
+// fields onto the baseline cfg. Old plans (run_inputs='{}'), no pbConfig override, or
+// any lookup/parse error degrade to the baseline cfg (safe fallback, no error). The
+// snapshot was already validated at run-handler time; re-running runinputs.Validate
+// here is cheap defense-in-depth and the single source of truth for stringify.
+func (w *Worker) applyPBOverride(ctx context.Context, c claimed, cfg project.PictureBookConfig) project.PictureBookConfig {
+	var raw []byte
+	if err := w.cfg.DB.WithContext(ctx).Raw(
+		`SELECT p.run_inputs FROM plans p JOIN todos t ON t.plan_id = p.id WHERE t.id = $1 AND t.project_id = $2`,
+		c.todoID, c.projectID).Row().Scan(&raw); err != nil {
+		return cfg
+	}
+	if len(raw) == 0 {
+		return cfg
+	}
+	var ri struct {
+		Values map[string]json.RawMessage `json:"values"`
+		Schema []runinputs.Field          `json:"schema"`
+	}
+	if err := json.Unmarshal(raw, &ri); err != nil {
+		return cfg
+	}
+	res, err := runinputs.Validate(ri.Schema, ri.Values)
+	if err != nil || len(res.PBOverride) == 0 {
+		return cfg
+	}
+	return overlayPBConfig(cfg, res.PBOverride)
+}
+
+// overlayPBConfig applies the pbConfig override layer onto the baseline cfg. The
+// override is a complete-field-set snapshot (front-end submits all fields), so each
+// present key replaces the corresponding cfg field. Malformed individual values are
+// skipped (the snapshot was validated at submit time; this is belt-and-suspenders).
+//
+// PageCount is overlaid for snapshot completeness but has NO downstream consumer yet
+// (page count is decided by the storyboard agent's LLM). Wiring it into the storyboard
+// agent input requires changing the StoryboardInput contract + prompt — out of this
+// task's scope; escalated to the main thread.
+func overlayPBConfig(cfg project.PictureBookConfig, ov map[string]json.RawMessage) project.PictureBookConfig {
+	applyStr := func(key string, dst *string) {
+		if r, ok := ov[key]; ok {
+			var s string
+			if json.Unmarshal(r, &s) == nil {
+				*dst = s
+			}
+		}
+	}
+	applyStr("voice", &cfg.Voice)
+	applyStr("ageBand", &cfg.AgeBand)
+	applyStr("bookType", &cfg.BookType)
+	applyStr("illustrationStyle", &cfg.IllustrationStyle)
+	applyStr("narrationStyle", &cfg.NarrationStyle)
+	if r, ok := ov["themes"]; ok {
+		var arr []string
+		if json.Unmarshal(r, &arr) == nil {
+			cfg.Themes = arr
+		}
+	}
+	if r, ok := ov["pageCount"]; ok {
+		var n int
+		if json.Unmarshal(r, &n) == nil {
+			cfg.PageCount = n
+		}
+	}
+	return cfg
 }
 
 // runStoryboard reads the latest script for the project, runs the
@@ -561,7 +633,7 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 	// 绘本项目透传绘本分镜参数 + 回灌 characterSheet。characterSheet 来源：上游
 	// script 的整段 ScriptOutput 已序列化进 content_json（即 ScriptJSON），从中解析
 	// 出 characterSheet 写回 storyboard 输入，保证跨页插图主角一致。
-	isPB, pbCfg, err := w.pictureBookConfig(ctx, c.projectID)
+	isPB, pbCfg, err := w.pictureBookConfig(ctx, c)
 	if err != nil {
 		return "", err
 	}
