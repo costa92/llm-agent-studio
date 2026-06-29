@@ -41,6 +41,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/modelrouter"
 	"github.com/costa92/llm-agent-studio/internal/models"
 	"github.com/costa92/llm-agent-studio/internal/project"
+	"github.com/costa92/llm-agent-studio/internal/runinputs"
 	"github.com/costa92/llm-agent-studio/internal/scriptengine"
 	"github.com/costa92/llm-agent-studio/internal/storagerouter"
 	"github.com/costa92/llm-agent-studio/internal/todos"
@@ -1706,6 +1707,62 @@ func classifyScriptError(err error) error {
 // name; the substitution channel is SEPARATE from {{name}} upstream variables.
 var secretRefRe = regexp.MustCompile(`\{\{\s*secret:([A-Za-z0-9_\-]+)\s*\}\}`)
 
+// inputRefRe matches {{input:NAME}} (whitespace-tolerant). NAME uses the same
+// charset as safeFieldRe (^[A-Za-z_][A-Za-z0-9_]*$). The `input:` namespace carries
+// a colon, so it is disjoint from the {{name}} upstream-variable namespace (no
+// colon) AND the {{secret:NAME}} namespace — an input pass therefore never collides
+// with the name pass and is never matched by the secret pass.
+var inputRefRe = regexp.MustCompile(`\{\{\s*input:([A-Za-z_][A-Za-z0-9_]*)\s*\}\}`)
+
+// applyInputPass is the FINAL string-substitution pass for the LLM/HTTP channels:
+// it replaces each {{input:NAME}} with its run-time value. SECURITY-CRITICAL: it runs
+// strictly AFTER every secret/name/expr pass, and its single-pass ReplaceAllStringFunc
+// product is never re-scanned by another channel. A {{secret:X}} / {{var}} / {{ $node }}
+// / {{input:y}} arriving inside an input VALUE is emitted as a literal, never resolved.
+// An undeclared {{input:foo}} resolves to "" (no error).
+func applyInputPass(s string, vals map[string]string) string {
+	if len(vals) == 0 && !strings.Contains(s, "{{") {
+		return s
+	}
+	return inputRefRe.ReplaceAllStringFunc(s, func(m string) string {
+		name := inputRefRe.FindStringSubmatch(m)[1]
+		return vals[name] // missing → "" (zero value); never errors
+	})
+}
+
+// runInputValues reverse-looks-up THIS todo's run-time inputs (plans.run_inputs),
+// JOIN-scoped to the project for defense-in-depth, and returns only target=="variable"
+// fields as a name→string map (number/select values stringified the same way the
+// runinputs package does at submit time). Old plans (run_inputs='{}') and any
+// lookup/parse error degrade to an empty map — {{input:x}} then resolves to "" rather
+// than failing the todo. The persisted snapshot was already validated at run-handler
+// time; re-running runinputs.Validate here is cheap defense-in-depth that also gives a
+// single source of truth for the variable stringify.
+func (w *Worker) runInputValues(ctx context.Context, c claimed) map[string]string {
+	empty := map[string]string{}
+	var raw []byte
+	if err := w.cfg.DB.WithContext(ctx).Raw(
+		`SELECT p.run_inputs FROM plans p JOIN todos t ON t.plan_id = p.id WHERE t.id = $1 AND t.project_id = $2`,
+		c.todoID, c.projectID).Row().Scan(&raw); err != nil {
+		return empty
+	}
+	if len(raw) == 0 {
+		return empty
+	}
+	var ri struct {
+		Values map[string]json.RawMessage `json:"values"`
+		Schema []runinputs.Field          `json:"schema"`
+	}
+	if err := json.Unmarshal(raw, &ri); err != nil {
+		return empty
+	}
+	res, err := runinputs.Validate(ri.Schema, ri.Values)
+	if err != nil || res.Variables == nil {
+		return empty
+	}
+	return res.Variables
+}
+
 // revalidateCustomParams is the authoritative run-time last line (spec §6.3). It
 // re-asserts the dangerous-field invariants on the params at the moment of
 // execution — covering W3 backfill + direct dirty-JSON writes that bypass save.
@@ -1837,6 +1894,12 @@ func (w *Worker) runCustomLLM(ctx context.Context, c claimed, in llmParams) (str
 		w.exprParityCheck(ctx, c, "user", in.UserPrompt, user, replacer)
 		w.exprNodeProbe(ctx, c, in.Variables)
 	}
+	// {{input:}} pass — the FINAL substitution (after name pass + parity probe). No
+	// secret pass on the LLM channel. Run-time input values land literally and are
+	// never re-scanned by any other channel.
+	inputVals := w.runInputValues(ctx, c)
+	system = applyInputPass(system, inputVals)
+	user = applyInputPass(user, inputVals)
 	if in.OutputFormat == "json" {
 		system = strings.TrimSpace(system + "\nRespond with a single valid JSON value and nothing else.")
 	}
@@ -1931,6 +1994,12 @@ func (w *Worker) runCustomHTTP(ctx context.Context, c claimed, in httpParams) (s
 	// harmless literal text — which preserves the editor→admin admin-gate.
 	// secretBearing tracks whether ANY secret was injected (reliable; not a post-hoc
 	// header scan).
+	// {{input:}} run-time values (target=="variable"). Injected as the FINAL pass in
+	// BOTH the header and body positions below, strictly after secret+name (header)
+	// and after the body residue guard (body) — so an input value is never re-scanned
+	// for {{secret:}}/{{name}} and a {{secret:X}} smuggled via an input stays literal.
+	inputVals := w.runInputValues(ctx, c)
+
 	secretBearing := false
 	resolvedHeaders := make(map[string]string, len(in.Headers))
 	for k, val := range in.Headers {
@@ -1956,15 +2025,24 @@ func (w *Worker) runCustomHTTP(ctx context.Context, c claimed, in httpParams) (s
 		// {{name}} upstream variables next. A {{secret:...}} smuggled in via a
 		// {{name}} value has already passed the secret pass untouched and stays literal.
 		val = substituteVars(val, nameVals)
+		// {{input:}} LAST. An input value (e.g. a {{secret:X}} ref) is injected here,
+		// after both prior passes, so it is emitted literally and never resolved.
+		val = applyInputPass(val, inputVals)
 		resolvedHeaders[k] = val
 	}
 
 	// 4. Substitute body ({{name}} only — {{secret}} forbidden in body, enforced at
 	// save-time validate(); re-check here post-substitution).
 	body := substituteVars(in.BodyTemplate, nameVals)
+	// Residue guard: the author's template (after the name pass) must not carry a
+	// {{secret:}} ref. This MUST stay strictly between the name pass and the input
+	// pass — it validates author + name-channel text only; a {{secret:X}} arriving via
+	// an input value is injected AFTER this check and goes out as a harmless literal.
 	if secretRefRe.MatchString(body) || strings.Contains(body, "{{secret:") {
 		return "", errRequestFailed
 	}
+	// {{input:}} pass — body, LAST (post residue guard).
+	body = applyInputPass(body, inputVals)
 	// url is a static literal; re-confirm no template residue anywhere.
 	if strings.Contains(in.URL, "{{") {
 		return "", errRequestFailed
@@ -2038,6 +2116,21 @@ func (w *Worker) runCustomScript(ctx context.Context, c claimed, in scriptParams
 	}
 	if w.cfg.ExprParity {
 		w.exprNodeProbe(ctx, c, in.Variables)
+	}
+	// {{input:}} run-time values join the predeclared Starlark globals as read-only
+	// data (SECURITY-CRITICAL: NEVER substituted into in.Code — that would be code
+	// injection). The script reads them by bare global name. On a name collision the
+	// node author's {{name}} variable WINS (it is the explicit upstream wire); a
+	// run-time input never silently shadows it.
+	if inputVals := w.runInputValues(ctx, c); len(inputVals) > 0 {
+		if inputs == nil {
+			inputs = map[string]string{}
+		}
+		for k, v := range inputVals {
+			if _, exists := inputs[k]; !exists {
+				inputs[k] = v
+			}
+		}
 	}
 	// Dedicated short wall-time for Starlark execution: the step budget does NOT
 	// bound heap (a comprehension can OOM the shared binary in few steps), so a
