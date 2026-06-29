@@ -99,7 +99,7 @@ RunCanvas 组装:
 |---|---|
 | `web/src/components/ui/popover.tsx` | shadcn/radix Popover 包装层，对齐 `sheet.tsx` 的 `data-slot` + token 风格。**交付物**（仓内此前没有）。 |
 | `web/src/lib/autoLayout.ts` | 泛化 `seedPositions`：`autoLayout(nodes: WorkflowNode[], direction)` → `Map<id,{x,y}>`。复用 `layerize`（边由 `dependsOn` 建 `GraphEdge{from:id,to:dep}`）；TB 等价现有 seedPositions，LR 交换主/交叉轴。`seedPositions` 重构为调用 `autoLayout(_, "TB")`，避免两份分层漂移。 |
-| `web/src/features/workflow-canvas/useTopologySettings.ts` | localStorage 持久化偏好。**`layout` 按项目键** `studio.topology.layout.<projectId>`；其余偏好全局键 `studio.topology.settings`。zod schema + 默认值 + `safeParse` 坏数据回落。 |
+| `web/src/features/workflow-canvas/useTopologySettings.ts` | localStorage 持久化偏好。**`layout` 按项目键** `studio.topology.layout.<projectId>`；其余偏好全局键 `studio.topology.prefs`。zod schema + 默认值 + `safeParse` 坏数据回落。 |
 | `web/src/features/workflow-canvas/TopologySettingsPanel.tsx` | 齿轮按钮（`aria-label="视图设置"`+`title`）→ Popover。控件用既有 `label`/`checkbox`/`select`，实时生效。落点**并入运行控制簇** `RunCanvas.tsx:377` 的 `right-[280px] top-[56px]` 浮层，避免与右栏/MiniMap/Controls 撞位。 |
 | `web/src/features/workflow/useNodeTiming.ts` | 据 §4 计时规则从 `onEvent(isReplay)` 累积 `todoId → 耗时`；running 跳秒（轻量 interval，仅有实时 running 时启用，planId 变更/卸载清理）。 |
 
@@ -182,3 +182,25 @@ rfNodes 坐标/data 与现状逐项一致；`flowAnimation=true` 对**历史 run
   layout 每项目持久化（§5/§6）。
 - **nit 已注明**：undefined status→pending 口径（§7）；v2/custom 漂移保守渲染（§7）；
   flowAnimation 实时默认 ON 的可发现性取舍（§6）。
+
+---
+
+## 实现完成记录（2026-06-29）
+
+DONE，分支 `feat/runtime-topology-viz`（9 个实现任务 TDD + 两阶段审查 + 整体审查）。
+
+**as-built 与本设计的偏差（均经审查认定为改进，特此勾稽）：**
+- **计时回放/实时区分 API**：§4 提案 `onEvent(frame, {isReplay})` 单回调带标志；实际落地为
+  `useProductionTimeline` 的 **`onReplay(frames[])` + `onFrame(frame)` 双出口** + `useNodeTiming`
+  的 **seq 水位线**（回放批次最大 seq 作 baseline，仅 `seq>水位线` 帧记 startedAt）。比原提案更稳健：
+  无需 SSE 客户端区分「回放结束/实时开始」，天然幂等于服务端每次重连 `after=0` 全量回放。
+- **全局偏好 localStorage 键**：§5 写 `studio.topology.settings`，实际用 `studio.topology.prefs`
+  （已回改 §5 表格对齐）；`layout` 仍按项目键 `studio.topology.layout.<projectId>`。
+- **纯函数落点**：`computeNodeVisibility`/`computeEdgeActive` 抽到独立
+  `web/src/features/workflow-canvas/topologyUtils.ts`（去 `react-refresh` 抑制、可独立复用）。
+- **「全被过滤」空态**：含一键「清除过滤」按钮（复位 hideCompleted + focus）。
+
+**交付文件**：`components/ui/popover.tsx`、`lib/autoLayout.ts`、`features/workflow/useNodeTiming.ts`、
+`features/workflow-canvas/{useTopologySettings,TopologySettingsPanel,topologyUtils}.ts(x)`；
+改动 `useProductionTimeline.ts`、`StudioEdge.tsx`+`canvasTheme.css`、`WorkflowNode.tsx`+`canvasModel.ts`、
+`RunCanvas.tsx`。全量前端测试 768 passed、`npm run build` 通过；零后端改动。
