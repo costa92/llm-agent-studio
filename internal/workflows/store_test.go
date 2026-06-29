@@ -94,7 +94,7 @@ func TestCreateGetWorkflow(t *testing.T) {
 	pid := newProject(t, pool)
 
 	nodes := json.RawMessage(`[{"id":"n1","type":"script","promptId":"","dependsOn":[]}]`)
-	w, err := s.Create(ctx, pid, "工作流 A", nodes)
+	w, err := s.Create(ctx, pid, "工作流 A", nodes, nil)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -120,19 +120,92 @@ func TestCreateGetWorkflow(t *testing.T) {
 	}
 }
 
+func TestWorkflowInputsSchemaRoundTrip(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	pid := newProject(t, pool)
+
+	schema := json.RawMessage(`[{"name":"heroName","label":"主角","type":"text","target":"variable","required":true}]`)
+	w, err := s.Create(ctx, pid, "带 schema", json.RawMessage(`[]`), schema)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if !sameJSON(t, w.InputsSchema, schema) {
+		t.Fatalf("create did not return inputs_schema: %q", w.InputsSchema)
+	}
+
+	got, err := s.Get(ctx, pid, w.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !sameJSON(t, got.InputsSchema, schema) {
+		t.Fatalf("get round-trip inputs_schema mismatch: %q", got.InputsSchema)
+	}
+
+	// Update replaces the schema.
+	schema2 := json.RawMessage(`[{"name":"voice","type":"select","target":"pbConfig","options":[{"value":"warm"}]}]`)
+	upd, err := s.Update(ctx, pid, w.ID, "带 schema", json.RawMessage(`[]`), schema2)
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if !sameJSON(t, upd.InputsSchema, schema2) {
+		t.Fatalf("update inputs_schema mismatch: %q", upd.InputsSchema)
+	}
+
+	// ListByProject also carries inputs_schema.
+	list, err := s.ListByProject(ctx, pid)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var found bool
+	for _, lw := range list {
+		if lw.ID == w.ID {
+			found = true
+			if !sameJSON(t, lw.InputsSchema, schema2) {
+				t.Fatalf("list inputs_schema mismatch: %q", lw.InputsSchema)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("created workflow not in list")
+	}
+}
+
+func TestWorkflowInputsSchemaDefaultsEmpty(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	pid := newProject(t, pool)
+
+	// nil schema → defaults to '[]' (not NULL).
+	w, err := s.Create(ctx, pid, "无 schema", json.RawMessage(`[]`), nil)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if string(w.InputsSchema) != "[]" {
+		t.Fatalf("nil schema should default to []: %q", w.InputsSchema)
+	}
+	got, err := s.Get(ctx, pid, w.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if string(got.InputsSchema) != "[]" {
+		t.Fatalf("get nil schema should be []: %q", got.InputsSchema)
+	}
+}
+
 func TestCreateDefaultsEmptyNodes(t *testing.T) {
 	s, pool := newStore(t)
 	ctx := context.Background()
 	pid := newProject(t, pool)
 
-	w, err := s.Create(ctx, pid, "空节点", nil)
+	w, err := s.Create(ctx, pid, "空节点", nil, nil)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	if string(w.Nodes) != "[]" {
 		t.Fatalf("nil nodes should default to []: %q", w.Nodes)
 	}
-	if _, err := s.Create(ctx, pid, "", nil); err == nil {
+	if _, err := s.Create(ctx, pid, "", nil, nil); err == nil {
 		t.Fatalf("empty name should error")
 	}
 }
@@ -142,8 +215,8 @@ func TestUpdateWorkflow(t *testing.T) {
 	ctx := context.Background()
 	pid := newProject(t, pool)
 
-	w, _ := s.Create(ctx, pid, "old", json.RawMessage(`[]`))
-	updated, err := s.Update(ctx, pid, w.ID, "new", json.RawMessage(`[{"id":"x","type":"asset","promptId":"","dependsOn":[]}]`))
+	w, _ := s.Create(ctx, pid, "old", json.RawMessage(`[]`), nil)
+	updated, err := s.Update(ctx, pid, w.ID, "new", json.RawMessage(`[{"id":"x","type":"asset","promptId":"","dependsOn":[]}]`), nil)
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -154,7 +227,7 @@ func TestUpdateWorkflow(t *testing.T) {
 		t.Fatalf("updated_at not bumped: %v -> %v", w.UpdatedAt, updated.UpdatedAt)
 	}
 	// Wrong project → ErrNotFound.
-	if _, err := s.Update(ctx, "other-project", w.ID, "n", nil); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Update(ctx, "other-project", w.ID, "n", nil, nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("cross-project update: want ErrNotFound, got %v", err)
 	}
 }
@@ -164,7 +237,7 @@ func TestDeleteWorkflow(t *testing.T) {
 	ctx := context.Background()
 	pid := newProject(t, pool)
 
-	w, _ := s.Create(ctx, pid, "del", nil)
+	w, _ := s.Create(ctx, pid, "del", nil, nil)
 	if err := s.Delete(ctx, pid, w.ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
@@ -178,8 +251,8 @@ func TestListByProjectDerivesLatestRunStatus(t *testing.T) {
 	ctx := context.Background()
 	pid := newProject(t, pool)
 
-	wNoRun, _ := s.Create(ctx, pid, "never run", nil)
-	wRun, _ := s.Create(ctx, pid, "has run", nil)
+	wNoRun, _ := s.Create(ctx, pid, "never run", nil, nil)
+	wRun, _ := s.Create(ctx, pid, "has run", nil, nil)
 
 	// Seed a plan tagged with wRun + a done todo → latest run status = completed.
 	planID := "plan_" + uniqueSuffix()

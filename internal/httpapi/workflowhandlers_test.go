@@ -22,12 +22,13 @@ type stubWorkflows struct {
 	createIn struct {
 		projectID, name string
 		nodes           json.RawMessage
+		inputsSchema    json.RawMessage
 	}
 }
 
-func (s *stubWorkflows) Create(_ context.Context, projectID, name string, nodes json.RawMessage) (workflows.Workflow, error) {
-	s.createIn.projectID, s.createIn.name, s.createIn.nodes = projectID, name, nodes
-	return workflows.Workflow{ID: "wf1", ProjectID: projectID, Name: name, Nodes: nodes}, nil
+func (s *stubWorkflows) Create(_ context.Context, projectID, name string, nodes, inputsSchema json.RawMessage) (workflows.Workflow, error) {
+	s.createIn.projectID, s.createIn.name, s.createIn.nodes, s.createIn.inputsSchema = projectID, name, nodes, inputsSchema
+	return workflows.Workflow{ID: "wf1", ProjectID: projectID, Name: name, Nodes: nodes, InputsSchema: inputsSchema}, nil
 }
 func (s *stubWorkflows) Get(_ context.Context, _, id string) (workflows.Workflow, error) {
 	if s.getErr != nil {
@@ -40,8 +41,8 @@ func (s *stubWorkflows) Get(_ context.Context, _, id string) (workflows.Workflow
 func (s *stubWorkflows) ListByProject(_ context.Context, _ string) ([]workflows.Workflow, error) {
 	return []workflows.Workflow{{ID: "wf1", Name: "a"}}, nil
 }
-func (s *stubWorkflows) Update(_ context.Context, projectID, id, name string, nodes json.RawMessage) (workflows.Workflow, error) {
-	return workflows.Workflow{ID: id, ProjectID: projectID, Name: name, Nodes: nodes}, nil
+func (s *stubWorkflows) Update(_ context.Context, projectID, id, name string, nodes, inputsSchema json.RawMessage) (workflows.Workflow, error) {
+	return workflows.Workflow{ID: id, ProjectID: projectID, Name: name, Nodes: nodes, InputsSchema: inputsSchema}, nil
 }
 func (s *stubWorkflows) Delete(_ context.Context, _, _ string) error { return nil }
 
@@ -80,6 +81,79 @@ func TestCreateWorkflowHandlerHappy(t *testing.T) {
 	if ws.createIn.projectID != "p1" || ws.createIn.name != "工作流 A" {
 		t.Fatalf("create args mismatch: %+v", ws.createIn)
 	}
+}
+
+// TestCreateWorkflowRejectsInvalidInputsSchema verifies store-time schema
+// validation: an illegal inputs_schema is rejected with 400 BEFORE the store
+// write (Create must not be called).
+func TestCreateWorkflowRejectsInvalidInputsSchema(t *testing.T) {
+	cases := []struct {
+		name   string
+		schema string
+	}{
+		{"bad name", `[{"name":"1bad","type":"text","target":"variable"}]`},
+		{"select no options", `[{"name":"voice","type":"select","target":"pbConfig"}]`},
+		{"unknown type", `[{"name":"x","type":"color","target":"variable"}]`},
+		{"unknown target", `[{"name":"x","type":"text","target":"secret"}]`},
+		{"multiselect non-pbConfig", `[{"name":"themes","type":"multiselect","target":"variable","options":[{"value":"a"}]}]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := &cycleRejectingWorkflows{t: t} // Create must NOT be called
+			h := createWorkflowHandler(stubProjects{orgID: "o1"}, ws, nil)
+			body := `{"name":"wf1","inputsSchema":` + tc.schema + `}`
+			req := httptest.NewRequest("POST", "/api/projects/p1/workflows", strings.NewReader(body))
+			req.SetPathValue("id", "p1")
+			rr := httptest.NewRecorder()
+			h(rr, req)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("invalid inputs_schema should 400, got %d: %s", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+// TestCreateWorkflowAcceptsValidInputsSchema verifies a legal schema persists
+// (passed through to the store), and an empty/absent schema also passes.
+func TestCreateWorkflowAcceptsValidInputsSchema(t *testing.T) {
+	ws := &stubWorkflows{}
+	h := createWorkflowHandler(stubProjects{orgID: "o1"}, ws, nil)
+	schema := `[{"name":"heroName","type":"text","target":"variable","required":true}]`
+	body := `{"name":"wf1","inputsSchema":` + schema + `}`
+	req := httptest.NewRequest("POST", "/api/projects/p1/workflows", strings.NewReader(body))
+	req.SetPathValue("id", "p1")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("valid schema should 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !sameJSONBytes(ws.createIn.inputsSchema, json.RawMessage(schema)) {
+		t.Fatalf("store did not receive inputs_schema: %q", ws.createIn.inputsSchema)
+	}
+}
+
+func TestUpdateWorkflowRejectsInvalidInputsSchema(t *testing.T) {
+	ws := &cycleRejectingWorkflows{t: t} // Update must NOT be called
+	h := updateWorkflowHandler(stubProjects{orgID: "o1"}, ws, nil)
+	body := `{"name":"wf1","inputsSchema":[{"name":"x","type":"select","target":"variable"}]}`
+	req := httptest.NewRequest("PUT", "/api/projects/p1/workflows/w1", strings.NewReader(body))
+	req.SetPathValue("id", "p1")
+	req.SetPathValue("wfId", "w1")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("invalid inputs_schema update should 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func sameJSONBytes(a, b json.RawMessage) bool {
+	var av, bv any
+	if json.Unmarshal(a, &av) != nil || json.Unmarshal(b, &bv) != nil {
+		return false
+	}
+	ab, _ := json.Marshal(av)
+	bb, _ := json.Marshal(bv)
+	return string(ab) == string(bb)
 }
 
 func TestRunWorkflowHandlerNotFound(t *testing.T) {
@@ -172,7 +246,7 @@ type cycleRejectingWorkflows struct {
 	t *testing.T
 }
 
-func (s *cycleRejectingWorkflows) Create(_ context.Context, _, _ string, _ json.RawMessage) (workflows.Workflow, error) {
+func (s *cycleRejectingWorkflows) Create(_ context.Context, _, _ string, _, _ json.RawMessage) (workflows.Workflow, error) {
 	s.t.Fatal("Create must not be called when the graph is invalid")
 	return workflows.Workflow{}, nil
 }
@@ -182,7 +256,7 @@ func (s *cycleRejectingWorkflows) Get(_ context.Context, _, id string) (workflow
 func (s *cycleRejectingWorkflows) ListByProject(_ context.Context, _ string) ([]workflows.Workflow, error) {
 	return nil, nil
 }
-func (s *cycleRejectingWorkflows) Update(_ context.Context, _, id, name string, nodes json.RawMessage) (workflows.Workflow, error) {
+func (s *cycleRejectingWorkflows) Update(_ context.Context, _, id, name string, nodes, inputsSchema json.RawMessage) (workflows.Workflow, error) {
 	s.t.Fatal("Update must not be called when the graph is invalid")
 	return workflows.Workflow{}, nil
 }
