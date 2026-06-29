@@ -393,9 +393,16 @@ function RunCanvasInner({
         )}
         {rfNodes.length > 0 && visibleCount === 0 && (
           <div className="pointer-events-none absolute inset-0 grid place-items-center">
-            <p className="rounded-md border border-line bg-bg-surface/80 px-4 py-2 text-center text-[12.5px] text-text-3">
-              当前过滤隐藏了所有节点
-            </p>
+            <div className="pointer-events-auto flex flex-col items-center gap-2 rounded-md border border-line bg-bg-surface/90 px-4 py-3 text-center shadow-sm">
+              <p className="text-[12.5px] text-text-3">当前过滤隐藏了所有节点</p>
+              <button
+                type="button"
+                onClick={() => update({ hideCompleted: false, focus: "none" })}
+                className="rounded border border-line bg-bg-raised px-2 py-1 text-[12px] text-text-1 hover:bg-bg-surface hover:text-text-1"
+              >
+                清除过滤
+              </button>
+            </div>
           </div>
         )}
       </div>

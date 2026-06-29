@@ -283,6 +283,11 @@ describe("RunCanvas 过滤/边-active 纯函数", () => {
     expect(computeNodeVisibility("done", s).dimmed).toBe(true)
     expect(computeNodeVisibility("running", s).dimmed).toBe(false)
   })
+  it("聚焦失败时 blocked 也 dim（非 failed）", () => {
+    const s = { ...DEFAULT_TOPOLOGY_SETTINGS, focus: "failed" as const }
+    expect(computeNodeVisibility("blocked", s).dimmed).toBe(true)
+    expect(computeNodeVisibility("blocked", s).hidden).toBe(false)
+  })
   it("边 active：源 done & 目标 running", () => {
     expect(computeEdgeActive("done", "running")).toBe(true)
     expect(computeEdgeActive("running", "running")).toBe(false)
