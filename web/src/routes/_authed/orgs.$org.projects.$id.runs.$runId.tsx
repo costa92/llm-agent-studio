@@ -17,6 +17,7 @@ import { ScriptView } from "@/features/workflow/ScriptView"
 import { StoryboardView } from "@/features/workflow/StoryboardView"
 import { AssetGalleryModal } from "@/features/workflow/AssetGalleryModal"
 import { PictureBookReader } from "@/features/workflow/PictureBookReader"
+import { ExportDialog } from "@/features/workflow/ExportDialog"
 import { assemblePages, isBookReady } from "@/features/workflow/pictureBookPages"
 import { Button } from "@/components/studio/Button"
 import {
@@ -101,6 +102,8 @@ function RunWorkbenchPage() {
   const [galleryOpen, setGalleryOpen] = useState(false)
   // 绘本阅读器开合（仅 picturebook 项目）。
   const [readerOpen, setReaderOpen] = useState(false)
+  // 绘本成书导出对话框开合（仅成书就绪后可用）。
+  const [exportOpen, setExportOpen] = useState(false)
 
   // 绘本阅读器数据：仅 picturebook 项目拉取该 run 的分镜 + 项目资产（按 shotId 配对成页）。
   const isPictureBook = project?.kind === "picturebook"
@@ -359,6 +362,11 @@ function RunWorkbenchPage() {
             📖 阅读绘本
           </Button>
         )}
+        {bookReady && (
+          <Button variant="amber" onClick={() => setExportOpen(true)}>
+            📥 导出成书
+          </Button>
+        )}
         {doneAssetIds.length > 0 && (
           <Button variant="ghost" onClick={() => setGalleryOpen(true)}>
             查看全部素材 ({doneAssetIds.length})
@@ -455,6 +463,15 @@ function RunWorkbenchPage() {
               onOpenChange={setReaderOpen}
               onRegenIllustration={handleRegenIllustration}
               onEditNarration={handleEditNarration}
+            />
+          )}
+          {/* 成书导出对话框：planId 传当前查看的 runId，使导出匹配该 plan。 */}
+          {isPictureBook && (
+            <ExportDialog
+              projectId={id}
+              planId={runId}
+              open={exportOpen}
+              onClose={() => setExportOpen(false)}
             />
           )}
         </>
