@@ -432,6 +432,53 @@ func TestRunCustomScript_NameVariableWinsCollision(t *testing.T) {
 	}
 }
 
+// ---- Test: CRLF in an input value cannot split an HTTP header ----
+
+// TestRunCustomHTTP_InputCRLFNoHeaderSplit contractualizes a previously-implicit
+// defense: an input text value carrying CRLF + a forged header line, injected into a
+// header VALUE, must NOT produce a split-out header. The worker substitutes into a
+// single map[string]string value, so the forged line stays embedded in the original
+// header's value (no new key); the real fetch transport's stdlib header writer would
+// additionally reject the illegal value at send time (→ request_failed). Either
+// outcome is acceptable — both deny header injection.
+func TestRunCustomHTTP_InputCRLFNoHeaderSplit(t *testing.T) {
+	if os.Getenv("LLM_AGENT_STUDIO_PG_URL") == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker input tests")
+	}
+	ctx := context.Background()
+	db := assetTestGorm(t)
+	orgID := "org_in_" + randHex3()
+	runInputs := variableRunInputs(map[string]string{"tok": "line1\r\nX-Injected: evil"})
+	_, c := seedInputsTodo(t, db, orgID, "custom:http", runInputs)
+
+	doer := &fakeDoer{resp: fetch.Response{Status: 200, Body: []byte("ok")}}
+	w := httpTestWorker(t, db, &inputSecretsSpy{values: map[string]string{}}, doer)
+
+	_, err := w.runCustomHTTP(ctx, c, httpParams{
+		Method:  "GET",
+		URL:     "https://api.example.com",
+		Headers: map[string]string{"Authorization": "Bearer {{input:tok}}"},
+	})
+	if err != nil {
+		// A real transport rejected the illegal header value before sending — also fine.
+		if err.Error() != "request_failed" {
+			t.Fatalf("want request_failed if the CRLF value is rejected, got %v", err)
+		}
+		if doer.callCount != 0 {
+			t.Fatalf("a rejected request must not reach the doer, got callCount=%d", doer.callCount)
+		}
+		return
+	}
+	// No forged header split out of the CRLF value.
+	if _, ok := doer.gotReq.Headers["X-Injected"]; ok {
+		t.Fatalf("CRLF in input value forged a split header X-Injected=%q", doer.gotReq.Headers["X-Injected"])
+	}
+	// The forged line stays confined inside the Authorization value (literal text).
+	if !strings.Contains(doer.gotReq.Headers["Authorization"], "X-Injected: evil") {
+		t.Fatalf("forged line must stay embedded in the Authorization value, got %q", doer.gotReq.Headers["Authorization"])
+	}
+}
+
 // ---- Test #5: undeclared {{input:foo}} → empty string, no error ----
 
 func TestInputPass_UndeclaredResolvesToEmpty(t *testing.T) {

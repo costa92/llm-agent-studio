@@ -2042,6 +2042,11 @@ func (w *Worker) runCustomHTTP(ctx context.Context, c claimed, in httpParams) (s
 		return "", errRequestFailed
 	}
 	// {{input:}} pass — body, LAST (post residue guard).
+	// NOTE: {{input:}} (like {{name}}) is plain string-template interpolation into the
+	// body — an input value may break the body's JSON/structure. Escaping the value so
+	// the body stays well-formed is the NODE AUTHOR's responsibility, identical to the
+	// pre-existing {{name}} channel; it is same-origin and crosses no privilege
+	// boundary (whoever can run-with-inputs can already edit this template).
 	body = applyInputPass(body, inputVals)
 	// url is a static literal; re-confirm no template residue anywhere.
 	if strings.Contains(in.URL, "{{") {
