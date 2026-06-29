@@ -3,6 +3,7 @@ import { autoLayout } from "@/lib/autoLayout"
 import type { Prompt, WorkflowNode } from "@/lib/types"
 import type { RunNodeStatus } from "./runOverlay"
 import { isCustomType, nodeDisplay } from "./nodeColor"
+import type { NodeTiming } from "@/features/workflow/useNodeTiming"
 
 // 纯模型适配层（无 React）：把 studio 工作流 DAG（WorkflowNode[]）转成 ReactFlow
 // 的 nodes/edges。节点缺省 position 时用 autoLayout 分层种子坐标兜底。
@@ -12,6 +13,9 @@ import { isCustomType, nodeDisplay } from "./nodeColor"
 export interface StudioNodeData {
   node: WorkflowNode
   run?: RunNodeStatus
+  // 运行态拓扑增强：实时耗时（仅实时观测到的节点有值）+ 失败高亮开关。
+  timing?: NodeTiming
+  highlightFailed?: boolean
   [key: string]: unknown
 }
 
