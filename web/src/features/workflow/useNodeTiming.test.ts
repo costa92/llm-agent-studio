@@ -13,6 +13,8 @@ afterEach(() => vi.useRealTimers())
 describe("formatDuration", () => {
   it("亚分钟显秒一位小数", () => expect(formatDuration(1234)).toBe("1.2s"))
   it("满分钟显 m s", () => expect(formatDuration(63000)).toBe("1m03s"))
+  it("0ms", () => expect(formatDuration(0)).toBe("0.0s"))
+  it("恰好 60s 走分钟分支", () => expect(formatDuration(60000)).toBe("1m00s"))
 })
 
 describe("useNodeTiming seq 水位线", () => {
@@ -72,5 +74,14 @@ describe("useNodeTiming seq 水位线", () => {
     expect(result.current.timingByTodoId.get("t1")).toBeDefined()
     rerender({ p: "plan2" })
     expect(result.current.timingByTodoId.get("t1")).toBeUndefined()
+  })
+
+  it("首帧 elapsedMs 不为负（at 晚于挂载 now 时钳到 0）", () => {
+    const { result } = renderHook(() => useNodeTiming("plan1"))
+    act(() => result.current.onReplay([]))
+    // 帧到达时刻晚于挂载 now：interval 首个 tick 前 now-startedAt 为负，须钳到 0。
+    act(() => vi.advanceTimersByTime(2000))
+    act(() => result.current.onFrame(f(1, "todo_started", "t1")))
+    expect(result.current.timingByTodoId.get("t1")!.elapsedMs).toBe(0)
   })
 })

@@ -33,8 +33,9 @@ function reducer(state: State, action: Action): State {
     case "reset":
       return INIT
     case "replay":
-      // 回放批次只抬高 baseline 水位线，绝不产生耗时。
-      return { ...state, watermark: Math.max(state.watermark, action.maxSeq) }
+      // 回放批次只抬高 baseline 水位线，绝不产生耗时；不超过水位线则 no-op 免重渲染。
+      if (action.maxSeq <= state.watermark) return state
+      return { ...state, watermark: action.maxSeq }
     case "frame": {
       // seq 水位线：<=水位线 = 回放/重连重放/重复 → 忽略（幂等）。
       if (action.seq <= state.watermark) return state
@@ -95,7 +96,6 @@ export function useNodeTiming(planId: string): {
 
   useEffect(() => {
     if (!hasRunning) return
-    setNow(Date.now())
     const h = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(h)
   }, [hasRunning])
@@ -104,7 +104,8 @@ export function useNodeTiming(planId: string): {
     const out = new Map<string, NodeTiming>()
     for (const [todoId, startedAt] of Object.entries(state.started)) {
       const finishedAt = state.finished[todoId]
-      const elapsedMs = (finishedAt ?? now) - startedAt
+      // 钳制：首个 interval tick 前 now 可能早于帧到达时刻 startedAt，避免瞬时负值。
+      const elapsedMs = Math.max(0, (finishedAt ?? now) - startedAt)
       out.set(todoId, { startedAt, finishedAt, elapsedMs })
     }
     return out
