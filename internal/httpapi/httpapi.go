@@ -40,24 +40,28 @@ type Deps struct {
 	Artifacts    ArtifactReader
 	PerUserLimit int
 
-	Review        ReviewPort
-	AssetLibrary  AssetLibrary
-	CoverGen      CoverGenerator   // per-org media generator for project cover生成; nil → cover/generate route unmounted
-	CoverAssets   CoverAssetWriter // cover asset writer (create + set blob); nil → cover/generate+upload routes unmounted
-	BlobRouter    BlobRouter // per-org → global → 内置默认 的对象存储路由 (asset content 按 org 签名)
-	BlobServer    BlobServer // 内置 localfs回源 handler (始终非空)
-	Models        ModelStore
-	StorageConfig StorageConfigStore // per-org / global 对象存储后端配置 (secret write-only)
-	Members       MemberService      // org 成员管理: 列出/按邮箱添加/改角色/移除 (org-scoped)
-	Platform      PlatformService    // 平台超级管理员: 系统级存储配置 + 所有 org 视图 + 平台管理员名册
-	TaskBoard     TaskBoardReader    // 任务中心: 跨项目运行状态聚合 (org-scoped, viewer+)
-	Health        HealthReporter     // 平台健康/数据完整性监控 + 修复 (unauth probes + platformAdmin 报告/修复)
-	Cost          CostStore
-	PromptBuilder *prompt.Builder
-	PromptStore   *prompt.Store
-	GenQuota      int // rolling-24h per-org generation quota; 0 = unlimited
+	Review         ReviewPort
+	AssetLibrary   AssetLibrary
+	CoverGen       CoverGenerator   // per-org media generator for project cover生成; nil → cover/generate route unmounted
+	CoverAssets    CoverAssetWriter // cover asset writer (create + set blob); nil → cover/generate+upload routes unmounted
+	BlobRouter     BlobRouter       // per-org → global → 内置默认 的对象存储路由 (asset content 按 org 签名)
+	BlobServer     BlobServer       // 内置 localfs回源 handler (始终非空)
+	Models         ModelStore
+	StorageConfig  StorageConfigStore // per-org / global 对象存储后端配置 (secret write-only)
+	Members        MemberService      // org 成员管理: 列出/按邮箱添加/改角色/移除 (org-scoped)
+	Platform       PlatformService    // 平台超级管理员: 系统级存储配置 + 所有 org 视图 + 平台管理员名册
+	TaskBoard      TaskBoardReader    // 任务中心: 跨项目运行状态聚合 (org-scoped, viewer+)
+	Health         HealthReporter     // 平台健康/数据完整性监控 + 修复 (unauth probes + platformAdmin 报告/修复)
+	Cost           CostStore
+	PromptBuilder  *prompt.Builder
+	PromptStore    *prompt.Store
+	GenQuota       int                 // rolling-24h per-org generation quota; 0 = unlimited
 	CustomNodeType CustomNodeTypeStore // org-scoped typed custom node registry; nil in focused unit tests
 	OrgSecret      OrgSecretStore      // org-scoped named-secret registry (roleAdmin); nil in focused unit tests
+
+	// 绘本成书导出 (picturebook export). nil → 整组导出路由不挂载 (focused unit tests skip)。
+	Exports    ExportsStore   // export_jobs 队列读写 (satisfied by *exports.Store)
+	ExportBook ExportBookData // 成书阈值判定输入 (satisfied by *exports.BookData)
 
 	// ExprChannel mirrors config.ExprChannel: surfaced read-only on GET
 	// /api/orgs/{org}/node-types so the canvas can capability-gate field-level
@@ -99,6 +103,23 @@ func assetScope(lib AssetLibrary) authzhttp.ScopeFromRequest {
 func projectScope(lookup orgLookup) authzhttp.ScopeFromRequest {
 	return func(r *http.Request) (string, string) {
 		orgID, err := lookup.OrgIDForProject(r.Context(), r.PathValue("id"))
+		if err != nil {
+			return "", ""
+		}
+		return orgID, ""
+	}
+}
+
+// exportScope resolves (orgID, scopeID="") for the export-content route
+// (/api/exports/{id}/content): the path carries the jobId, not a project id, so we
+// go job → project → org. Missing job / lookup failure → ("","") → RoleNone → 403.
+func exportScope(lookup orgLookup, store ExportsStore) authzhttp.ScopeFromRequest {
+	return func(r *http.Request) (string, string) {
+		job, err := store.Get(r.Context(), r.PathValue("id"))
+		if err != nil {
+			return "", ""
+		}
+		orgID, err := lookup.OrgIDForProject(r.Context(), job.ProjectID)
 		if err != nil {
 			return "", ""
 		}
@@ -187,6 +208,18 @@ func NewMux(d Deps) *http.ServeMux {
 		mux.Handle("POST /api/projects/{id}/cover/upload", proj(roleEditor, coverUploadHandler(d.Projects, d.CoverAssets, d.BlobRouter)))
 		mux.Handle("PUT /api/projects/{id}/cover", proj(roleEditor, coverSetHandler(d.Projects, d.AssetLibrary)))
 		mux.Handle("GET /api/projects/{id}/cover/options", proj(roleViewer, coverOptionsHandler(d.Projects, d.AssetLibrary)))
+	}
+
+	// 绘本成书导出 (picturebook export). 项目级三端点走 projScope；产物下载走 exportScope
+	// (job→project→org)。整组在 Exports 未注入时跳过 (focused tests omit it)。
+	if d.Exports != nil {
+		export := func(min authzrole.Role, h http.HandlerFunc) http.Handler {
+			return scoped(min, exportScope(d.Projects, d.Exports), h)
+		}
+		mux.Handle("POST /api/projects/{id}/exports", proj(roleEditor, createExportHandler(d.Projects, d.Exports, d.ExportBook)))
+		mux.Handle("GET /api/projects/{id}/exports", proj(roleViewer, listExportsHandler(d.Exports)))
+		mux.Handle("GET /api/projects/{id}/exports/{jobId}", proj(roleViewer, getExportHandler(d.Exports)))
+		mux.Handle("GET /api/exports/{id}/content", export(roleViewer, exportContentHandler(d.Exports, d.BlobRouter, d.Projects)))
 	}
 
 	asset := func(min authzrole.Role, h http.HandlerFunc) http.Handler {
