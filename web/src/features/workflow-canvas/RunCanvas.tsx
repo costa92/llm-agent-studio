@@ -1,10 +1,11 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import {
   ReactFlow,
   ReactFlowProvider,
   Background,
   Controls,
   MiniMap,
+  useReactFlow,
   type Node,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
@@ -12,7 +13,7 @@ import { useNavigate } from "@tanstack/react-router"
 import { toast } from "sonner"
 import "./canvasTheme.css"
 import type { ProjectStatus, WorkflowNode as WorkflowNodeType } from "@/lib/types"
-import type { ProjectState } from "@/lib/projectState"
+import type { ProjectState, GraphNodeStatus } from "@/lib/projectState"
 import { Badge } from "@/components/studio/Badge"
 import { Button } from "@/components/studio/Button"
 import { SseIndicator, type SseStatus } from "@/components/studio/SseIndicator"
@@ -56,6 +57,33 @@ import { ItemInspector } from "./ItemInspector"
 import { WorkflowNode } from "./WorkflowNode"
 import { StudioEdge } from "./StudioEdge"
 import { NODE_COLOR } from "./nodeColor"
+import { autoLayout } from "@/lib/autoLayout"
+import { useNodeTiming } from "@/features/workflow/useNodeTiming"
+import { useTopologySettings } from "./useTopologySettings"
+import type { TopologySettings } from "./useTopologySettings"
+import { TopologySettingsPanel } from "./TopologySettingsPanel"
+
+// 节点可见性：hideCompleted 隐藏 done；focus 把非聚焦目标降透明。
+// eslint-disable-next-line react-refresh/only-export-components
+export function computeNodeVisibility(
+  status: GraphNodeStatus,
+  s: TopologySettings,
+): { hidden: boolean; dimmed: boolean } {
+  const hidden = s.hideCompleted && status === "done"
+  let dimmed = false
+  if (s.focus === "failed") dimmed = status !== "failed"
+  else if (s.focus === "running") dimmed = status !== "running"
+  return { hidden, dimmed }
+}
+
+// 边「执行前沿」：源已完成、目标进行中。
+// eslint-disable-next-line react-refresh/only-export-components
+export function computeEdgeActive(
+  sourceStatus: GraphNodeStatus | undefined,
+  targetStatus: GraphNodeStatus | undefined,
+): boolean {
+  return sourceStatus === "done" && targetStatus === "running"
+}
 
 const GRID = 16
 const nodeTypes = { studio: WorkflowNode }
@@ -110,6 +138,10 @@ function RunCanvasInner({
   // 素材画廊开合。
   const [galleryOpen, setGalleryOpen] = useState(false)
 
+  const { settings, update } = useTopologySettings(projectId)
+  const timing = useNodeTiming(runId ?? "")
+  const { fitView } = useReactFlow()
+
   // 抽屉数据 gated 拉取：非该类型时传 "" 不发请求（与 RunWorkbenchPage 一致）。
   const scriptQuery = useScript(
     selection?.kind === "script" ? projectId : "",
@@ -157,21 +189,67 @@ function RunCanvasInner({
     fetchAllEvents,
     planId: runId,
     onState: (s) => qc.setQueryData(["project-state", projectId, runId ?? ""], s),
+    onReplay: timing.onReplay,
+    onFrame: timing.onFrame,
   })
   const live = wfState.runStatus !== "done" && !!runId
 
   // overlay map：画布节点 id → run 状态（点节点解析选中态、画布注入 data.run 共用）。
   const overlay = useMemo(() => overlayRunStatus(nodes, wfState), [nodes, wfState])
 
+  const autoPos = useMemo(
+    () => (settings.layout === "saved" ? null : autoLayout(nodes, settings.layout)),
+    [nodes, settings.layout],
+  )
+
   // 运行 rfNodes：从已保存节点（自存 position）建，按 overlay 注入 data.run。
-  const { rfNodes, rfEdges } = useMemo(() => {
+  // 同时注入 visibility（hidden/dim）、timing chip、边 active。
+  const { rfNodes, rfEdges, visibleCount } = useMemo(() => {
     const { nodes: rn, edges: re } = toReactFlow(nodes)
-    const withRun: RFNode[] = rn.map((n) => ({
-      ...n,
-      data: { ...n.data, run: overlay.get(n.id) },
-    }))
-    return { rfNodes: withRun, rfEdges: re as RFEdge[] }
-  }, [nodes, overlay])
+    const withRun: RFNode[] = rn.map((n) => {
+      const run = overlay.get(n.id)
+      const status: GraphNodeStatus = run?.status ?? "pending"
+      const { hidden, dimmed } = computeNodeVisibility(status, settings)
+      const t = settings.showTiming && run?.todoId ? timing.timingByTodoId.get(run.todoId) : undefined
+      return {
+        ...n,
+        position: autoPos?.get(n.id) ?? n.position,
+        hidden,
+        style: dimmed ? { ...n.style, opacity: 0.35 } : n.style,
+        data: {
+          ...n.data,
+          run,
+          timing: t,
+          highlightFailed: settings.focus === "failed",
+        },
+      }
+    })
+    const visibleCount = withRun.filter((n) => !n.hidden).length
+    const hiddenIds = new Set(withRun.filter((n) => n.hidden).map((n) => n.id))
+    const dimIds = new Set(
+      withRun.filter((n) => (n.style as { opacity?: number } | undefined)?.opacity != null).map((n) => n.id),
+    )
+    const edges: RFEdge[] = (re as RFEdge[]).map((e) => {
+      const active = computeEdgeActive(overlay.get(e.source)?.status, overlay.get(e.target)?.status)
+      const edgeHidden = hiddenIds.has(e.source) || hiddenIds.has(e.target)
+      const edgeDim = dimIds.has(e.source) || dimIds.has(e.target)
+      return {
+        ...e,
+        hidden: edgeHidden,
+        style: edgeDim ? { ...e.style, opacity: 0.35 } : e.style,
+        data: { ...(e.data ?? {}), active: settings.flowAnimation && active },
+      }
+    })
+    return { rfNodes: withRun, rfEdges: edges, visibleCount }
+  }, [nodes, overlay, settings, timing.timingByTodoId, autoPos])
+
+  // 布局变更且 fitOnUpdate 时命令式 fitView。
+  useEffect(() => {
+    if (settings.layout !== "saved" && settings.fitOnUpdate) {
+      const h = requestAnimationFrame(() => fitView({ duration: 200 }))
+      return () => cancelAnimationFrame(h)
+    }
+  }, [settings.layout, settings.fitOnUpdate, fitView])
 
   // 点节点（运行模式只读）：按 overlay 命中项 + 节点类型解析选中态。
   // 未命中（pending/未匹配）节点点击无操作。
@@ -334,6 +412,13 @@ function RunCanvasInner({
             </p>
           </div>
         )}
+        {rfNodes.length > 0 && visibleCount === 0 && (
+          <div className="pointer-events-none absolute inset-0 grid place-items-center">
+            <p className="rounded-md border border-line bg-bg-surface/80 px-4 py-2 text-center text-[12.5px] text-text-3">
+              当前过滤隐藏了所有节点
+            </p>
+          </div>
+        )}
       </div>
 
       {/* 右：选中工件预览（资产 或 自定义节点文本产物）。无选中则回落最近 done 资产。 */}
@@ -376,6 +461,7 @@ function RunCanvasInner({
       {/* 运行顶栏控制：徽标 / SSE / 去审核 / 运行控制——挂在主区右上浮层，与编辑顶栏区分。 */}
       <div className="pointer-events-none absolute right-[280px] top-[56px] z-10 flex items-center gap-2">
         <div className="pointer-events-auto flex items-center gap-2 rounded-md border border-line bg-bg-surface/90 px-3 py-1.5 shadow-sm">
+          <TopologySettingsPanel settings={settings} update={update} />
           {badge}
           {live && <SseIndicator status={CONN_TO_STATUS[conn]} />}
           {doneAssetIds.length > 0 && (

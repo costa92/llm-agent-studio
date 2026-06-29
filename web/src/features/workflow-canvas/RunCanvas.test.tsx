@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { fireEvent, render, screen } from "@testing-library/react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { RunCanvas, SuppressedBodyPanel, parseHttpStatus } from "./RunCanvas"
+import { RunCanvas, SuppressedBodyPanel, parseHttpStatus, computeNodeVisibility, computeEdgeActive } from "./RunCanvas"
+import { DEFAULT_TOPOLOGY_SETTINGS } from "./useTopologySettings"
 import type { WorkflowNode } from "@/lib/types"
 import type { ProjectState } from "@/lib/projectState"
 
@@ -263,5 +264,27 @@ describe("SuppressedBodyPanel (http-status output)", () => {
     expect(screen.getByText(/响应体已按安全策略隐藏/)).toBeInTheDocument()
     // 无可解析状态码时不渲染「状态码：」行。
     expect(screen.queryByText(/状态码/)).toBeNull()
+  })
+})
+
+describe("RunCanvas 过滤/边-active 纯函数", () => {
+  it("隐藏已完成：done→hidden", () => {
+    const v = computeNodeVisibility("done", { ...DEFAULT_TOPOLOGY_SETTINGS, hideCompleted: true })
+    expect(v.hidden).toBe(true)
+  })
+  it("聚焦失败：非 failed→dim，failed→不 dim", () => {
+    const s = { ...DEFAULT_TOPOLOGY_SETTINGS, focus: "failed" as const }
+    expect(computeNodeVisibility("running", s).dimmed).toBe(true)
+    expect(computeNodeVisibility("failed", s).dimmed).toBe(false)
+  })
+  it("聚焦进行中：非 running→dim", () => {
+    const s = { ...DEFAULT_TOPOLOGY_SETTINGS, focus: "running" as const }
+    expect(computeNodeVisibility("done", s).dimmed).toBe(true)
+    expect(computeNodeVisibility("running", s).dimmed).toBe(false)
+  })
+  it("边 active：源 done & 目标 running", () => {
+    expect(computeEdgeActive("done", "running")).toBe(true)
+    expect(computeEdgeActive("running", "running")).toBe(false)
+    expect(computeEdgeActive("done", "done")).toBe(false)
   })
 })
