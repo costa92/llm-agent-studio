@@ -331,6 +331,60 @@ func TestPictureBookSchema(t *testing.T) {
 	}
 }
 
+// 空音色兜底：cfg.Voice=="" 时，派生 schema 的 voice 字段必须放行提交空字符串，
+// 否则绘本带运行期输入跑会必然 400（前端预填并提交全部字段，voice 总会被提交）。
+func TestPictureBookSchema_EmptyVoiceAllowsEmptySubmission(t *testing.T) {
+	cfg := project.PictureBookConfig{
+		AgeBand:           "3-6",
+		BookType:          "narrative",
+		IllustrationStyle: "watercolor",
+		NarrationStyle:    "plain",
+		Themes:            []string{"friendship"},
+		PageCount:         16,
+		Voice:             "",
+	}
+	fields := PictureBookSchema(cfg)
+	// voice 仍是 select（不破注入边界）。
+	byName := map[string]Field{}
+	for _, f := range fields {
+		byName[f.Name] = f
+	}
+	if byName["voice"].Type != "select" {
+		t.Fatalf("voice type=%q want select", byName["voice"].Type)
+	}
+	// 提交空音色（连同其它字段合法值）→ 之前这条路径会 400，现在应通过。
+	values := map[string]json.RawMessage{
+		"voice":             raw(`""`),
+		"themes":            raw(`["friendship"]`),
+		"ageBand":           raw(`"3-6"`),
+		"bookType":          raw(`"narrative"`),
+		"illustrationStyle": raw(`"watercolor"`),
+		"narrationStyle":    raw(`"plain"`),
+		"pageCount":         raw(`16`),
+	}
+	res, err := Validate(fields, values)
+	if err != nil {
+		t.Fatalf("空音色提交应通过，得到错误: %v", err)
+	}
+	if string(res.PBOverride["voice"]) != `""` {
+		t.Errorf("pb override voice=%q want \"\"", string(res.PBOverride["voice"]))
+	}
+}
+
+// 非空音色仍守枚举边界：只放行当前值，拒绝其它串。
+func TestPictureBookSchema_NonEmptyVoiceEnforcesEnum(t *testing.T) {
+	cfg := project.PictureBookConfig{Voice: "someVoice"}
+	fields := PictureBookSchema(cfg)
+	// 提交当前值 → 通过。
+	if _, err := Validate(fields, map[string]json.RawMessage{"voice": raw(`"someVoice"`)}); err != nil {
+		t.Fatalf("提交当前音色应通过，得到错误: %v", err)
+	}
+	// 提交其它值 → 拒绝（守枚举边界）。
+	if _, err := Validate(fields, map[string]json.RawMessage{"voice": raw(`"other"`)}); err == nil {
+		t.Fatalf("提交非当前音色应被拒绝")
+	}
+}
+
 func TestPictureBookSchema_EnumOutOfRangeRejected(t *testing.T) {
 	cfg := project.PictureBookConfig{AgeBand: "3-6", BookType: "narrative", IllustrationStyle: "watercolor"}
 	fields := PictureBookSchema(cfg)

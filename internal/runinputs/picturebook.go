@@ -68,11 +68,16 @@ var (
 // pageCount 为 number），Default 取 cfg 当前值，Options 取镜像枚举。
 //
 // voice 在后端/前端均无枚举来源（前端仅占位「默认音色」，org 音色列表未接入），
-// 故其 options 退化为「当前值」单元素（cfg.Voice 为空则空 options）。这保证
-// voice 仍是 select（不破注入边界），但在 org 音色枚举接入前，voice 运行期覆盖
-// 实质受限于当前值——是已知缺口，待后续接 org 音色列表后回填 voiceOptions。
+// 故其 options 退化为「当前值」单元素。这保证 voice 仍是 select（不破注入边界），
+// 但在 org 音色枚举接入前，voice 运行期覆盖实质受限于当前值——是已知缺口，待后续
+// 接 org 音色列表后回填 voiceOptions。
+//
+// 空值兜底：cfg.Voice 为空时，options 退化为「单个空值选项」{{Value: ""}}，而非
+// 空 options。否则运行期校验对空 options 的 select 会拒绝任何提交值（含前端预填
+// 提交的空字符串 ""），而绘本运行期表单按设计预填并提交全部字段，voice 必被提交
+// → 空音色绘本带运行期输入跑会必然 400。空值选项放行提交空音色，仍守 select 边界。
 func PictureBookSchema(cfg project.PictureBookConfig) []Field {
-	voiceOpts := []Option(nil)
+	voiceOpts := []Option{{Value: ""}}
 	if cfg.Voice != "" {
 		voiceOpts = []Option{{Value: cfg.Voice, Label: cfg.Voice}}
 	}
