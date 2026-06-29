@@ -535,7 +535,10 @@ func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore,
 			Brief: p.Description, ContentType: p.ContentType,
 			TargetPlatform: p.TargetPlatform, Style: p.Style,
 		}
-		// brief override：仅本 run 叠加（绘本分支），不写回 projects。
+		// brief override：仅本 run 叠加，不写回 projects。绘本派生 schema
+		// （PictureBookSchema）只产 target:"pbConfig" 字段，故绘本分支下 briefOverride
+		// 恒空、此块当前 no-op；保留是为与自定义工作流 run 路径结构对称、且为未来
+		// 绘本支持 brief 类字段留口。
 		if v, ok := briefOverride["brief"]; ok {
 			brief.Brief = v
 		}

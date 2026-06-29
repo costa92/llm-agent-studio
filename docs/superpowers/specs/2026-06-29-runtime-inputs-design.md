@@ -130,7 +130,7 @@ SELECT p.run_inputs FROM plans p JOIN todos t ON t.plan_id = p.id WHERE t.id = $
 
 **绘本 PB 覆盖**：`pictureBookConfig` 签名改为接受 todo 上下文（按 `c.todoID` 反查 plan_id → run_inputs），在 `ParsePictureBookConfig` 之后叠加 `target=="pbConfig"` 覆盖层。**这是唯一改点**，5 个绘本消费点零改动。projects 表全程只读。
 
-> **ageBand 派生默认值**（评审）：`ParsePictureBookConfig` 按 `ageBand` 给未提供的字段填默认。为避免「覆盖 ageBand 但未覆盖 pageCount → 年龄段-默认值错位」，**绘本运行期表单预填并提交全部可覆盖字段**（前端不发部分集），PB override 是一份完整快照而非增量。spec 把"PB override 必须是完整字段集"列为不变量并加测试。
+> **ageBand 派生默认值 / 覆盖语义**（评审 + 终审修正）：`ParsePictureBookConfig` 按 `ageBand` 给未提供的字段填默认。实际实现是**增量覆盖 over baseline**（worker `overlayPBConfig` 只替换 present 的 key，缺省字段保留 baseline cfg 值）。绘本运行期表单**用当前 config 预填所有字段**，所以表单即 baseline 的可见快照：用户在表单里看到 pageCount=16，改 ageBand 时 pageCount 字段不自动级联重算（停在 baseline，仍可见可手改）——这是 WYSIWYG，无隐藏错位，非正确性/安全问题。注：number 字段（pageCount）只要有值总会提交；空标量 select 省略提交（等价"不覆盖=用 baseline"）。
 
 ## 绘本覆盖具体方案
 
