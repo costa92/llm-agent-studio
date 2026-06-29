@@ -22,6 +22,73 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/storage"
 )
 
+// TestExportContentDisposition is a pure-function table test (no DB): asserts the
+// Content-Disposition header carries a clean quoted ASCII filename (no stray quote)
+// AND an RFC 5987 filename* whose percent-decode round-trips to the UTF-8 original.
+func TestExportContentDisposition(t *testing.T) {
+	cases := []struct {
+		name      string
+		projName  string
+		ext       string
+		wantASCII string // expected quoted ASCII filename value
+		wantUTF8  string // expected round-tripped filename* value
+	}{
+		{"plain ascii", "My Book", ".pdf", "My Book.pdf", "My Book.pdf"},
+		{"embedded quote", `a"b`, ".zip", "a_b.zip", `a"b.zip`},
+		{"chinese", "绘本", ".epub", "export.epub", "绘本.epub"},
+		{"chinese mixed", "绘本v2", ".pdf", "__v2.pdf", "绘本v2.pdf"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := exportContentDisposition(c.projName, c.ext)
+
+			// Extract the quoted ASCII filename="...".
+			ascii := extractDispParam(t, got, `filename="`, `"`)
+			if ascii != c.wantASCII {
+				t.Fatalf("ascii filename: want %q, got %q (header=%q)", c.wantASCII, ascii, got)
+			}
+			if strings.ContainsAny(ascii, "\"\\") {
+				t.Fatalf("ascii filename must not contain a raw quote/backslash, got %q", ascii)
+			}
+			for _, r := range ascii {
+				if r > 0x7e || r < 0x20 {
+					t.Fatalf("ascii filename must be printable ASCII, got rune %q in %q", r, ascii)
+				}
+			}
+
+			// Extract filename*=UTF-8''<pct> and decode it.
+			const marker = "filename*=UTF-8''"
+			idx := strings.Index(got, marker)
+			if idx < 0 {
+				t.Fatalf("header missing filename* param: %q", got)
+			}
+			pct := got[idx+len(marker):]
+			decoded, err := url.PathUnescape(pct)
+			if err != nil {
+				t.Fatalf("filename* not valid percent-encoding: %v (raw=%q)", err, pct)
+			}
+			if decoded != c.wantUTF8 {
+				t.Fatalf("filename* round-trip: want %q, got %q", c.wantUTF8, decoded)
+			}
+		})
+	}
+}
+
+// extractDispParam pulls the substring between open and closeDelim delimiters.
+func extractDispParam(t *testing.T, s, open, closeDelim string) string {
+	t.Helper()
+	i := strings.Index(s, open)
+	if i < 0 {
+		t.Fatalf("param %q not found in %q", open, s)
+	}
+	rest := s[i+len(open):]
+	j := strings.Index(rest, closeDelim)
+	if j < 0 {
+		t.Fatalf("unterminated param %q in %q", open, s)
+	}
+	return rest[:j]
+}
+
 // openFreshExport creates a brand-new database (the shared one carries dirty rows
 // that trip unique indexes), migrates it, and returns its pool + gorm handle. The
 // DB is dropped on cleanup. Skips when no PG URL is set. Mirrors exports.openFresh.

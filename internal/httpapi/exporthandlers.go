@@ -14,6 +14,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/costa92/llm-agent-studio/internal/exports"
 	"github.com/costa92/llm-agent-studio/internal/picturebook"
@@ -212,13 +213,13 @@ func exportContentHandler(store ExportsStore, router BlobRouter, projects export
 			return
 		}
 
-		// 文件名：项目名（回落 "绘本"）+ 格式扩展名。
+		// 文件名：项目名（回落 "绘本"）+ 格式扩展名。项目名是用户可控且常为中文/UTF-8，
+		// 故走 RFC 6266/5987：ASCII filename 兜底 + filename*（UTF-8 百分号编码）。
 		name := "绘本"
 		if proj, perr := projects.Get(r.Context(), job.ProjectID); perr == nil && proj.Name != "" {
 			name = proj.Name
 		}
-		filename := name + exportExt(job.Format)
-		w.Header().Set("Content-Disposition", "attachment; filename=\""+filename+"\"")
+		w.Header().Set("Content-Disposition", exportContentDisposition(name, exportExt(job.Format)))
 
 		// 回源阶梯：优先带 ctx 的直读直发，否则签名 302（镜像 assetContentHandler）。
 		type ctxReader interface {
@@ -245,6 +246,49 @@ func exportContentHandler(store ExportsStore, router BlobRouter, projects export
 		}
 		http.Redirect(w, r, signed, http.StatusFound)
 	}
+}
+
+// exportContentDisposition 构造 attachment 的 Content-Disposition 头：同时给出经
+// sanitize 的 ASCII filename 兜底 + RFC 5987 的 filename*（UTF-8 百分号编码），以兼容
+// 含引号或中文/UTF-8 的项目名（RFC 6266）。name 已含回落（"绘本"），ext 形如 ".pdf"。
+//   - ASCII 兜底：引号/反斜杠/控制字符/非 ASCII 一律替换为 '_'；sanitize 后只剩扩展名/
+//     空（如纯中文名）时回落到 "export"+ext，避免下出空名文件。
+//   - filename*：对完整 UTF-8 文件名按 RFC 5987 百分号编码（仅 unreserved 不编码）。
+func exportContentDisposition(name, ext string) string {
+	full := name + ext
+	ascii := make([]byte, 0, len(full))
+	for _, rn := range full {
+		if rn < 0x20 || rn == 0x7f || rn > 0x7e || rn == '"' || rn == '\\' {
+			ascii = append(ascii, '_')
+			continue
+		}
+		ascii = append(ascii, byte(rn))
+	}
+	asciiName := string(ascii)
+	if strings.Trim(strings.TrimSuffix(asciiName, ext), "_") == "" {
+		asciiName = "export" + ext
+	}
+	return "attachment; filename=\"" + asciiName + "\"; filename*=UTF-8''" + rfc5987Encode(full)
+}
+
+// rfc5987Encode 百分号编码 s 的每个字节，仅保留 RFC 3986 的 unreserved 集合
+// （A-Za-z0-9-._~），其余字节编码为大写 %HH（按字节、非按 rune，故对多字节 UTF-8 正确）。
+func rfc5987Encode(s string) string {
+	const upperhex = "0123456789ABCDEF"
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+			c == '-' || c == '.' || c == '_' || c == '~' {
+			b.WriteByte(c)
+			continue
+		}
+		b.WriteByte('%')
+		b.WriteByte(upperhex[c>>4])
+		b.WriteByte(upperhex[c&0x0f])
+	}
+	return b.String()
 }
 
 // exportExt 把导出格式映射到下载文件扩展名。

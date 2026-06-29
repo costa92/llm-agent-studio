@@ -353,8 +353,9 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	})
 	wg.Add(1)
 	go func() { defer wg.Done(); exportRunner.Run(workerCtx, 10*time.Second) }()
-	// Export reaper — terminal-states ('failed') export jobs whose lease has been
-	// stranded (crashed runner) past 2× the lease TTL. Mirrors the orphan reaper.
+	// Export reaper — terminal-states RUNNING export jobs whose lease has expired
+	// beyond 2× the lease TTL (a crashed runner stranded them) → 'failed'. Mirrors
+	// the orphan reaper.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
