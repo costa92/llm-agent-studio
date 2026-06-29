@@ -99,6 +99,7 @@ function WorkflowCanvasPage() {
         org={org}
         workflowName={workflow?.name ?? ""}
         nodes={workflow?.nodes ?? []}
+        inputsSchema={workflow?.inputsSchema}
         prompts={prompts}
         basics={basics}
         mode={mode}
