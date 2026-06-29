@@ -4,9 +4,13 @@ import {
   EdgeLabelRenderer,
   getBezierPath,
   useReactFlow,
+  type Edge,
   type EdgeProps,
 } from "@xyflow/react"
+import { cn } from "@/lib/utils"
 import { useCanvasActions } from "./CanvasActionsContext"
+
+type StudioEdgeData = { active?: boolean }
 
 // 自定义边（Phase B）：在边中点渲染一个小控制簇。
 // 常驻一个淡「+」按钮（插入拆分）；hover 时额外显示「删除」。
@@ -21,7 +25,8 @@ export function StudioEdge({
   targetPosition,
   markerEnd,
   style,
-}: EdgeProps) {
+  data,
+}: EdgeProps<Edge<StudioEdgeData>>) {
   const [hover, setHover] = useState(false)
   const { onDeleteEdge, onInsertOnEdge } = useCanvasActions()
   const { flowToScreenPosition } = useReactFlow()
@@ -34,9 +39,19 @@ export function StudioEdge({
     targetPosition,
   })
 
+  const active = data?.active === true
+
   return (
     <>
-      <BaseEdge id={id} path={edgePath} markerEnd={markerEnd} style={style} />
+      <BaseEdge
+        id={id}
+        path={edgePath}
+        markerEnd={markerEnd}
+        style={style}
+        className={cn(active && "studio-edge-active")}
+        data-slot="studio-edge-path"
+        data-active={active ? "true" : "false"}
+      />
       <EdgeLabelRenderer>
         <div
           data-slot="studio-edge-controls"

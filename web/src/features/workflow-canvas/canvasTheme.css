@@ -16,3 +16,19 @@
   --xy-minimap-background-color: var(--bg-surface);
   --xy-attribution-background-color: transparent;
 }
+
+/* 运行态数据流向：active 边走流动虚线（执行前沿：源 done & 目标 running）。 */
+.studio-edge-active {
+  stroke: var(--amber);
+  stroke-dasharray: 6 4;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .studio-edge-active {
+    animation: studio-edge-flow 0.6s linear infinite;
+  }
+}
+@keyframes studio-edge-flow {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
