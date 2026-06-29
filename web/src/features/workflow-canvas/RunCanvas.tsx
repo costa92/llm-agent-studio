@@ -60,30 +60,8 @@ import { NODE_COLOR } from "./nodeColor"
 import { autoLayout } from "@/lib/autoLayout"
 import { useNodeTiming } from "@/features/workflow/useNodeTiming"
 import { useTopologySettings } from "./useTopologySettings"
-import type { TopologySettings } from "./useTopologySettings"
 import { TopologySettingsPanel } from "./TopologySettingsPanel"
-
-// 节点可见性：hideCompleted 隐藏 done；focus 把非聚焦目标降透明。
-// eslint-disable-next-line react-refresh/only-export-components
-export function computeNodeVisibility(
-  status: GraphNodeStatus,
-  s: TopologySettings,
-): { hidden: boolean; dimmed: boolean } {
-  const hidden = s.hideCompleted && status === "done"
-  let dimmed = false
-  if (s.focus === "failed") dimmed = status !== "failed"
-  else if (s.focus === "running") dimmed = status !== "running"
-  return { hidden, dimmed }
-}
-
-// 边「执行前沿」：源已完成、目标进行中。
-// eslint-disable-next-line react-refresh/only-export-components
-export function computeEdgeActive(
-  sourceStatus: GraphNodeStatus | undefined,
-  targetStatus: GraphNodeStatus | undefined,
-): boolean {
-  return sourceStatus === "done" && targetStatus === "running"
-}
+import { computeNodeVisibility, computeEdgeActive } from "./topologyUtils"
 
 const GRID = 16
 const nodeTypes = { studio: WorkflowNode }
@@ -206,10 +184,15 @@ function RunCanvasInner({
   // 同时注入 visibility（hidden/dim）、timing chip、边 active。
   const { rfNodes, rfEdges, visibleCount } = useMemo(() => {
     const { nodes: rn, edges: re } = toReactFlow(nodes)
+    // 从逻辑 dimmed/hidden 标志收集 id（不回读 style，避免与未来其它 opacity 用途串扰）。
+    const dimIds = new Set<string>()
+    const hiddenIds = new Set<string>()
     const withRun: RFNode[] = rn.map((n) => {
       const run = overlay.get(n.id)
       const status: GraphNodeStatus = run?.status ?? "pending"
       const { hidden, dimmed } = computeNodeVisibility(status, settings)
+      if (hidden) hiddenIds.add(n.id)
+      if (dimmed) dimIds.add(n.id)
       const t = settings.showTiming && run?.todoId ? timing.timingByTodoId.get(run.todoId) : undefined
       return {
         ...n,
@@ -224,11 +207,7 @@ function RunCanvasInner({
         },
       }
     })
-    const visibleCount = withRun.filter((n) => !n.hidden).length
-    const hiddenIds = new Set(withRun.filter((n) => n.hidden).map((n) => n.id))
-    const dimIds = new Set(
-      withRun.filter((n) => (n.style as { opacity?: number } | undefined)?.opacity != null).map((n) => n.id),
-    )
+    const visibleCount = withRun.length - hiddenIds.size
     const edges: RFEdge[] = (re as RFEdge[]).map((e) => {
       const active = computeEdgeActive(overlay.get(e.source)?.status, overlay.get(e.target)?.status)
       const edgeHidden = hiddenIds.has(e.source) || hiddenIds.has(e.target)
