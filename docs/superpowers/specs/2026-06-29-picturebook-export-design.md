@@ -12,7 +12,7 @@
 
 - **前端已有装订逻辑**（要镜像到后端）：`web/src/features/workflow/pictureBookPages.ts:16` `assemblePages()`——按 `shotId` 归集 `status==="accepted"` 的 image/audio（同 shot 多版本取 `version` 最大），首 shot=cover、末 shot=ending、其余=content，旁白取 `shot.action`，title=项目名（`runs.$runId.tsx:284` `bookTitle=project.name`）。`isBookReady()` 阈值=accepted image ≥ `ceil(内容页/2)` 且 ≥1。
 - **后端同源数据**：`internal/studiosvc/artifacts.go` `Shots(...)`（`ORDER BY ordering ASC`，返回 `{id,shotNo,action,prompt,...}`）+ `Assets(...)`（按 project/status，返回 `{id,shotId,type,blob_key,status,version,...}`）。**后端镜像 assemblePages 几乎零成本**（同两表同排序）。
-- **服务端读 blob 字节**：`blob.BlobStore` 只统一暴露 `Put/SignedURL/Delete`；`ReadKey` 是可选且签名不统一（localfs 无 ctx、github 有 ctx、s3/oss 无 ReadKey）。`assetContentHandler`（`m2handlers.go`）因此对非 localfs 一律 `SignedURL` + 302。**结论：服务端读字节唯一通用路径 = `SignedURL` + `http.Get`。**
+- **服务端读 blob 字节（评审修正 🔴 R1）**：`blob.BlobStore` 只统一暴露 `Put/SignedURL/Delete`；`ReadKey` 是可选且签名不统一（github `ReadKey(ctx,key)`、localfs `ReadKey(key)` 无 ctx、s3/oss 无 ReadKey；Fake 有 `Get(key)` 不在接口上）。**`SignedURL+http.Get` 对 localfs/Fake 不成立**——localfs `SignedURL` 返**相对路径** `/api/blob/{key}?...`（`localfs.go:88`，无 scheme/host），Fake 返 `fake://...`（`fake.go:38`），服务端 `http.Get` 直接 `unsupported protocol scheme`。`assetContentHandler` 能用 SignedURL 是因为它 **302 给浏览器**（浏览器按 app origin 解析相对 URL），服务端 runner 无此 origin、全仓也无 app base-URL 配置。**结论：runner 必须用读字节阶梯**：① type-assert `ReadKey(ctx,key)`（github，仿 `m2handlers.go:441-457` 已有 ladder）→ ② type-assert localfs `ReadKey(key)` → ③ Fake `Get(key)` → ④ 兜底 `SignedURL`+`http.Get`（s3/oss 绝对 URL）。
 - **异步任务蓝本**：worker `claim()`（`internal/worker/worker.go:240`）用 `FOR UPDATE SKIP LOCKED` + 租约（`locked_by/locked_until`）；`reaper.go` ticker 兜底；`cmd/studiod/main.go:298-340` 起 worker pool + reaper。但 **worker 队列=todos 表、深耦合 run 生命周期**（`DeriveStatus` 计入全部 todo、`MarkFailed` 级联 cancel），导出塞 todos 会污染运行态。
 - **迁移框架**：`storage.go` `Migrate()` —— 旧式幂等 DDL 列表 `m1…m19` + 版本化 Go step（`goSteps()`）。
 - **路由/鉴权**：`internal/httpapi/httpapi.go` —— asset accept/reject 用 `asset(roleAdmin,…)`（按 asset 所属 org RBAC）；项目级读用 `proj(roleViewer,…)`（经 `OrgIDForProject` 解析 org）。下载用 302→SignedURL 成熟模式。
@@ -36,7 +36,7 @@
 
 ## 异步任务方案：独立 export_jobs 表 + 独立 runner
 
-**只复用模式不复用表**（worker 的 todos 队列会污染 run 生命周期）。新建 `export_jobs` 表（走 Go step 版本化迁移）：
+**只复用模式不复用表**（worker 的 todos 队列会污染 run 生命周期）。新建 `export_jobs` 表，**走 Go step 版本化迁移 m22**（Y8：现状 `goSteps()` 最新是 m21 `m21AddItemsColumn`，`storage.go:525-532`；新增 `{version:"m22", run:m22CreateExportJobs}` 追加进切片 + 一个 `func(ctx, pgx.Tx) error`。Go step 跑在 **pgx.Tx**，与 store.go 的 GORM 铁律是两回事，别混）：
 
 ```sql
 CREATE TABLE IF NOT EXISTS export_jobs (
@@ -93,23 +93,25 @@ func IsBookReady(shots []Shot, assets []Asset) bool
 
 > **双端 golden 对照测试**（防漂移）：同一组 shots/assets 输入，断言 Go `Assemble` 与 `pictureBookPages.test.ts` 同结构（仿 README 的 regex-parity-check 思路）。
 
-拉字节走通用路径：`bs.SignedURL(ctx, asset.BlobKey, ttl)`（bs 按 `asset.StorageConfigID` 解析，同 assetContentHandler）→ `httpClient.Get(url)`。
+拉字节走**读字节阶梯**（🔴 R1，不是单纯 SignedURL+http.Get）：bs 按 asset 的 `storage_config_id` 解析后端——`StorageConfigID==""` → `router.BlobStoreForMode(orgID, proj.StorageMode)`；否则 `router.BlobStoreForConfigID(ctx, orgID, cfgID)`（`storagerouter/router.go:137`），orgID 经 `OrgIDForProject` 取（Y2）。拿到 bs 后按 §架构事实的阶梯读字节（github ReadKey(ctx) → localfs ReadKey → Fake Get → s3/oss SignedURL+http.Get）。
+
+> **🟡 Y1：`artifacts.Assets` 不返回 `storage_config_id`**（`artifacts.go:133-170` 选列无此列）。runner 解析后端必须有它——T2/T4 用**专用查询**（或扩 Assets 选列）补 `storage_config_id`，别直接复用 `artifacts.Assets`。装订用的字段（shotId/type/blob_key/status/version/action）`artifacts.Shots/Assets` 已够。
 
 ## 三种格式渲染 + Go 库选型
 
 `internal/picturebook/render_{pdf,epub,zip}.go`，接口 `Render(book) ([]byte, contentType, error)`。
 
-### PDF — `github.com/signintech/gopdf`（做字形子集，体积小）
-- **中文字体（最高风险）**：gopdf 子集化需**带 glyf 轮廓的 TTF**（非 CFF/OTF——Noto Sans CJK 官方是 OTF/CFF，子集会失败）。用 **Noto Sans SC TTF**（或思源黑体 TTF），OFL 可商用，`go:embed` 进二进制（一份 SC Regular 足够旁白），随附许可文件。**task 先 1h spike 验证子集化产出中文 + 体积合理**。
-- 每页布局：上方 `object-contain` 缩放图（填满页宽保比例），下方居中旁白（自动换行）；cover/ending 居中大图 + 标题。
-- 简体为目标受众；繁体/emoji 覆盖暂不保证。
+### PDF — `github.com/signintech/gopdf`（做字形子集，体积小；源码确认走 glyf 子集，无 CFF 处理）
+- **中文字体（最高风险，评审 R1 收紧）**：gopdf 子集化需**静态、单字重、glyf-flavored TTF**——三个来源陷阱都要避开：① Noto Sans CJK 官方包是 `.otf`=CFF → 直接失败；② Google Fonts 网页下的 Noto Sans SC 现在是**可变字体**（含 fvar/gvar）→ gopdf 忽略变体退化默认实例、有边角风险，**不用**；③ **正解**：取静态单字重 glyf-TTF 实例——Fontsource 的 Noto Sans SC「full/static」TTF（`fontsource.org/fonts/noto-sans-sc`，OFL），或 fonttools `instancer` 从可变字体烘一个静态 Regular（构建期一次性）。`go:embed []byte` + `pdf.AddTTFFontData(family, data)` + `pdf.SetFont`（**不用** `AddTTFFont` 路径版，因要 embed）。随附 `OFL.txt` + 保留字体名。
+- **spike 第一性命题（R1）**：把**将要 `go:embed` 的那个具体 TTF 文件**喂给 `AddTTFFontData`+`SetFont`+`Cell(nil,"中文旁白")`+`WritePdf`，断言无 error 且 PDF 文本层含中文。**验证「那一个文件」而非「Noto Sans SC 家族」**（同名家族不同打包格式天差地别）。
+- 每页布局：上方缩放图（填满页宽保比例），下方居中旁白。**Y2：gopdf 无 CJK 断行器**——中文自动换行需用 `MeasureTextWidth` 逐字累加折行手算（实现复杂度，非可行性）；cover/ending 居中大图 + 标题。
+- 简体为目标受众；繁体/emoji 覆盖暂不保证。嵌全集 ~8–10MB TTF v1 可接受，**预子集省体积是 YAGNI（首版不做）**。
 
-### EPUB3（含嵌入音频）— `github.com/bmaupin/go-epub`，音频需 spike
-- 图片/章节/CSS：go-epub `AddImage`/`AddSection`/`AddCSS` 成熟；每页一个 XHTML section（图 + `<p>` 旁白）；中文只需 XHTML UTF-8，**阅读器自带 CJK 字体，无需嵌字体**。
-- **音频嵌入（风险）**：EPUB3 用 `<audio>` 引用 OPF manifest 内音频项。go-epub 的任意 media+manifest 能力**待实测**——
-  - 若支持 `AddMedia` 类 API → `<audio controls src="...">`。
-  - **兜底**：手工 `archive/zip` 写 EPUB（`mimetype` 非压缩首项 + `META-INF/container.xml` + `content.opf`(含 `media-type=audio/mpeg`) + XHTML + `audio/*`）。绘本结构固定，手工 OPF 不复杂。
-- **task 先 spike go-epub 音频（半天），不行则走手工 OPF**。音频缺失页降级为纯图+文。
+### EPUB3（含嵌入音频）— `github.com/bmaupin/go-epub`（**pin v1.1.0**，已归档，评审 R2 上调）
+- 图片/章节/CSS：`AddImage`/`AddSection`（接受任意 XHTML，不校验）/`AddCSS` 成熟；每页一个 XHTML section（图 + `<p>` 旁白）；中文只需 XHTML UTF-8，**阅读器自带 CJK 字体，无需嵌字体**。
+- **音频嵌入（主路径已确认可行，非"待实测"）**：go-epub **v1.1.0 已有正式 `AddAudio(source, filename) (string, error)`**，Write 时经 `addToManifest` 写进 OPF manifest，media-type 用 `gabriel-vasile/mimetype` 检测（比 `http.DetectContentType` 强，正确识别 mp3→`audio/mpeg`，规避 mp3 误判 octet-stream 的坑）。**主路径**：`AddAudio` + `AddSection` 内嵌 `<audio controls src="../audios/xxx.mp3">`。mp3/mp4/m4a 是 EPUB3 Core Media Type，规范合法。
+- **plan B（仅文档化，预计用不上）**：若 go-epub 归档导致某场景不可用，手工 `archive/zip` 写 EPUB（`mimetype` 非压缩首项 + `META-INF/container.xml` + `content.opf` 含 `media-type` + XHTML + `audio/*`）。
+- **spike 验收（R2，补 epubcheck）**：造 1 页带音频最小 EPUB → 解 zip 断言 ① `mimetype` 非压缩首项 ② OPF manifest 含 `media-type="audio/mpeg"` item ③ XHTML 含 `<audio>` ④ **跑 W3C `epubcheck` 通过**（只断魔数/manifest 不够）。音频缺失页降级为纯图+文。
 
 ### 资产 zip — stdlib `archive/zip`（零新依赖）
 打包全部 accepted 原始图/音 + 旁白文本 + manifest.json（页序列 + 每页 assetId/prompt/provider/model，便于复现）。结构：
@@ -122,12 +124,17 @@ book/cover.png  001_image.png 001_narration.txt 001_audio.mp3  002_...  manifest
 
 | 方法 路由 | 鉴权 | 说明 |
 |---|---|---|
-| `POST /api/projects/{id}/exports` | `proj(roleEditor,…)` | body `{format, planId?}`；校验 `kind=='picturebook'` + `IsBookReady` → 未就绪 **409**；INSERT pending → `201 {jobId}` |
+| `POST /api/projects/{id}/exports` | `proj(roleEditor,…)` | body `{format, planId?}`；非绘本(`kind!='picturebook'`) → **400**（Y5）；**planId 省略=取最新 plan**（`plansQuery` 第一个，`artifacts.go:197` `isLatestPlan`），解析出的 planId 落 export_jobs.plan_id（🔴 R2，必须确定单一 plan，否则跨 plan 混页）；`IsBookReady`(按该 planId 的 shots+assets) 未就绪 → **409**；INSERT pending → `201 {jobId}` |
 | `GET /api/projects/{id}/exports` | `proj(roleViewer,…)` | 列该项目导出历史（可选） |
 | `GET /api/projects/{id}/exports/{jobId}` | `proj(roleViewer,…)` | 轮询 `{id,format,status,sizeBytes,error,createdAt}`；**校验 jobId.project_id==id** 防越权 |
 | `GET /api/exports/{jobId}/content` | 新建 `export(roleViewer,…)` scope | done 才给；按 `storage_config_id` 解析后端 → `302 SignedURL`；`Content-Disposition: attachment; filename="<项目名>.<ext>"` |
 
-新增 `exportScope`（仿 `assetScope`）：经 `export_jobs.id → project_id → projects.org_id` 解析 org 做 RBAC。
+新增 `exportScope`（仿 `assetScope`，`httpapi.go:83-93`/`:192-194`）需三处接线（Y6）：(a) Deps store 方法 `export_jobs.id → project_id → org`（链式复用 `OrgIDForProject`）；(b) 新增 `export := func(min,h)` 闭包；(c) 新 Deps 字段。`GET /api/projects/{id}/exports/{jobId}` 用 `proj(roleViewer)` 只校 `{id}` 的 org，故 handler 内**必须校验 `jobId.project_id==id`** 防越权（spec 既定）。
+
+**关键数据流细节（评审 Y）**：
+- **planId 单一真源**：POST 解析出的 planId 同时传给 `Shots(planId)`、`Assets(planId)`、`Assemble`、`IsBookReady`——四者必须同 plan（🔴 R2）。
+- **装订保真**（Y3/Y4）：实现者**逐字镜像 `pictureBookPages.ts:16-61`**，别照本 spec 摘要——`IsBookReady` 含 `shots<3 用 shots 兜底` + `contentCount<=0 守卫`；cover/ending 标题用 `project.Name || "绘本"`（`runs.$runId.tsx:284` 同款兜底），否则项目名为空时双端 golden 裂、与阅读器不一致。
+- **写产物落后端**（Y7）：`ResolveWriteTarget(ctx, orgID, projConfigID)` 是**三返回值** `(BlobStore, configID, error)`（`router.go:161`）；projConfigID 传**项目自己的 `StorageConfigID`**，返回的 configID 写进 `export_jobs.storage_config_id`（与下载读回一致）。
 
 ## 前端
 
@@ -161,14 +168,15 @@ book/cover.png  001_image.png 001_narration.txt 001_audio.mp3  002_...  manifest
 
 ## 任务拆分
 
-依赖序：T1 → T2 → T3 → T4 → T5 → T6（T6 前端可与 T3-T5 部分并行，但单实现者顺序执行）。
+依赖序：T0(前置) → T1 → T2 → T3 → T4 → T5 → T6（单实现者顺序执行）。
 
-- **T1** 迁移（export_jobs，Go step）+ `internal/exports/store.go`（Create/Claim/MarkRunning/MarkDone/MarkFailed/Get/List/Reap + 状态机测试）
-- **T2** `internal/picturebook/assemble.go`（镜像 assemblePages）+ `Shot`/`Asset`/`Page` 类型 + 测试 + 双端 golden
-- **T3** 渲染器：`render_zip.go`（最易，先）→ `render_pdf.go`（含 `go:embed` Noto Sans SC TTF + spike）→ `render_epub.go`（go-epub + 音频 spike / 手工 OPF 兜底）。接口 `Render(book)([]byte,string,error)`
-- **T4** `internal/exports/runner.go`（claim/poll/lease + reaper，仿 worker）+ 拉字节(SignedURL+http.Get) + ResolveWriteTarget.Put
-- **T5** `internal/httpapi/exporthandlers.go`（4 端点 + exportScope）+ 路由注册（httpapi.go）+ `cmd/studiod/main.go` 起 export runner+reaper + Deps 注入
-- **T6** 前端：`ExportDialog.tsx` + api.ts hooks（useCreateExport/useExportJob 轮询）+ 运行页导出按钮
+- **T0（前置确认，并入 T2/T3）** 确认 studio 旁白音频实际 MIME（看 worker `mimeToExt` 表 / 抽样 blob `http.DetectContentType`）——mp3/wav/m4a 才与 go-epub mimetype 检测 + zip 扩展名推断对得上（Y5 lib）。
+- **T1** 迁移 m22（`goSteps()` 追加，跑 **pgx.Tx**）+ `internal/exports/store.go`（Create/Claim[FOR UPDATE SKIP LOCKED]/MarkRunning/MarkDone/MarkFailed[WHERE status='running' 守卫]/Get/List/Reap + 状态机 DB-backed 测试）
+- **T2** `internal/picturebook/assemble.go`（**逐字镜像 `pictureBookPages.ts:16-61`**，含 IsBookReady 的 shots<3 兜底/<=0 守卫、title `||"绘本"`）+ `Shot`/`Asset`/`Page` 类型 + 测试 + **双端 golden 对照** + **资产查询补 `storage_config_id`**（Y1）
+- **T3** 渲染器接口 `Render(book)([]byte,string,error)`：`render_zip.go`（stdlib archive/zip，最易先做，扩展名用 mimeToExt）→ `render_pdf.go`（`go:embed` **静态 glyf TTF** + `AddTTFFontData` + 手算 CJK 折行 + **spike 验证具体文件**）→ `render_epub.go`（go-epub v1.1.0 `AddAudio`+`AddSection` 主路径 + **epubcheck spike**，手工 OPF 仅 plan B）
+- **T4** `internal/exports/runner.go`（claim/poll/lease + reaper，仿 worker `:240-340`）+ **读字节阶梯**（🔴 R1：github ReadKey(ctx)→localfs ReadKey→Fake Get→s3/oss SignedURL+http.Get）+ `ResolveWriteTarget`(三返回值)→`Put`，DB-backed 测试用 Fake 后端（故必须走阶梯非 SignedURL）
+- **T5** `internal/httpapi/exporthandlers.go`（4 端点）+ **planId 解析(省略=最新 plan，单传 Shots/Assets/Assemble/IsBookReady)** + 非绘本 400 + jobId.project_id==id 越权校验 + **exportScope 三处接线**(Deps 方法/闭包/字段) + 路由注册(httpapi.go) + `cmd/studiod/main.go` 起 export runner+reaper(仿 `:301-340`) + Deps 注入
+- **T6** 前端：`ExportDialog.tsx`（格式单选）+ api.ts hooks（useCreateExport/useExportJob 轮询，done/failed 停）+ 运行页 `bookReady` 时导出按钮 + 下载链接
 
 ## 风险 / 需关注
 
