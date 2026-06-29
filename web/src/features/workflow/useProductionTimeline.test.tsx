@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 import { renderHook, waitFor } from "@testing-library/react"
 import { useProductionTimeline } from "./useProductionTimeline"
 import type { SseClient } from "@/lib/sse"
-import type { ProjectStatus, StudioEvent } from "@/lib/types"
+import type { ProjectStatus, SseFrame, StudioEvent } from "@/lib/types"
 import type { ProjectState } from "@/lib/projectState"
 
 // 脚本化 fake SSE client：开 onopen → 顺序喂 frames → onclose。
@@ -147,5 +147,43 @@ describe("useProductionTimeline (replay-then-live orchestration)", () => {
     await new Promise((r) => setTimeout(r, 10))
     expect(fetchAllEvents).not.toHaveBeenCalled()
     expect(sseClient).not.toHaveBeenCalled()
+  })
+})
+
+describe("useProductionTimeline onReplay/onFrame 出口", () => {
+  it("回放批次经 onReplay 透出；实时帧经 onFrame 透出", async () => {
+    const replayed: SseFrame[][] = []
+    const live: SseFrame[] = []
+
+    const history: StudioEvent[] = [
+      ev(1, "todo_started", "t1", { type: "script" }),
+    ]
+    const fetchAllEvents = vi.fn().mockResolvedValue(history)
+
+    // fake SSE client：onopen → 推一帧 seq=2 的实时帧 → onclose。
+    // 形状对齐真实 SseClient（typeof fetchEventSource）：第二参带 onopen/onmessage/onclose。
+    const sseClient = fakeSse([
+      { event: "todo_started", data: frameData(2, "todo_started", "t2") },
+    ])
+
+    renderHook(() =>
+      useProductionTimeline({
+        projectId: "p1",
+        accessToken: "tok",
+        status: "running" as ProjectStatus,
+        fetchAllEvents,
+        sseClient,
+        onReplay: (f) => replayed.push(f),
+        onFrame: (f) => live.push(f),
+      }),
+    )
+
+    // 回放批次经 onReplay 透出（一次，含历史帧）。
+    await waitFor(() => expect(replayed.length).toBe(1))
+    expect(replayed[0]).toHaveLength(1)
+    expect(replayed[0][0].seq).toBe(1)
+
+    // 实时帧（seq=2）经 onFrame 透出。
+    await waitFor(() => expect(live.some((f) => f.seq === 2)).toBe(true))
   })
 })
