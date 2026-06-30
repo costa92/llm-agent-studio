@@ -90,23 +90,35 @@ func TestLoadExprFlags(t *testing.T) {
 			return "", false
 		}
 	}
-	// Default: both workflow-v2 cut-over flags OFF (production unchanged).
+	// Default (P3e flip): ExprChannel ON, ExprParity OFF. The expr engine is the
+	// live custom-node value channel by default.
 	cfg, err := LoadFromLookup(base(nil))
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if cfg.ExprParity || cfg.ExprChannel {
-		t.Fatalf("ExprParity/ExprChannel must default off, got %v/%v", cfg.ExprParity, cfg.ExprChannel)
+	if cfg.ExprParity {
+		t.Fatalf("ExprParity must default off, got %v", cfg.ExprParity)
 	}
-	// STUDIO_EXPR_PARITY=1 enables the shadow probe only.
+	if !cfg.ExprChannel {
+		t.Fatalf("ExprChannel must default ON after P3e flip, got %v", cfg.ExprChannel)
+	}
+	// STUDIO_EXPR_CHANNEL=0 is the REVERSIBLE kill-switch (revert to legacy resolver).
+	cfg, err = LoadFromLookup(base(map[string]string{"STUDIO_EXPR_CHANNEL": "0"}))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.ExprChannel {
+		t.Fatalf("STUDIO_EXPR_CHANNEL=0 should disable ExprChannel (kill-switch)")
+	}
+	// STUDIO_EXPR_PARITY=1 enables the shadow probe.
 	cfg, err = LoadFromLookup(base(map[string]string{"STUDIO_EXPR_PARITY": "1"}))
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if !cfg.ExprParity || cfg.ExprChannel {
-		t.Fatalf("STUDIO_EXPR_PARITY=1 should set only ExprParity, got %v/%v", cfg.ExprParity, cfg.ExprChannel)
+	if !cfg.ExprParity {
+		t.Fatalf("STUDIO_EXPR_PARITY=1 should set ExprParity, got %v", cfg.ExprParity)
 	}
-	// STUDIO_EXPR_CHANNEL=1 enables the live channel flip.
+	// STUDIO_EXPR_CHANNEL=1 keeps the live channel on (explicit).
 	cfg, err = LoadFromLookup(base(map[string]string{"STUDIO_EXPR_CHANNEL": "1"}))
 	if err != nil {
 		t.Fatalf("load: %v", err)
