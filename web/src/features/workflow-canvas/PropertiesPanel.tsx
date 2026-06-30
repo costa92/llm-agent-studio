@@ -12,10 +12,11 @@ import { Textarea } from "@/components/ui/textarea"
 import { useCreatePrompt } from "@/features/prompt/api"
 import { useModelConfigs } from "@/features/cost/api"
 import { useOrgSecrets } from "@/features/org-secrets/api"
-import type { BasicPrompt, HttpParams, LlmParams, Prompt, ScriptParams, WorkflowNode } from "@/lib/types"
+import type { BasicPrompt, HttpParams, LlmParams, PictureBookConfig, Prompt, ScriptParams, WorkflowNode } from "@/lib/types"
 import { defaultPromptIdFor } from "./canvasModel"
 import { isCustomType, nodeDisplay } from "./nodeColor"
 import { PropertiesForm } from "./PropertiesForm"
+import { PictureBookConfigForm } from "@/features/projects/PictureBookConfigForm"
 import type { NodeTypeDescription, OutputField } from "./nodeDescTypes"
 
 // 字段选择器「整个输出」哨兵 value——Radix Select 禁止 value=""（mount 即抛），
@@ -126,6 +127,15 @@ export interface PropertiesPanelProps {
   // typeVersion 是 WorkflowNode 上的扁平键，与 onPatch 兼容。危险/RegistryOnly 字段
   // 在后端 resolve 层 default-deny + save 时校验拒绝。缺省时回退到手写的逐 kind 摘要 JSX。
   description?: NodeTypeDescription
+  // 绘本参数（仅绘本项目的 script 节点）：编辑项目级 picturebook_config 的视图。
+  // ⚠️ Option A（PR-2 决策）：绘本配置存项目行、由 worker 运行期读取——内置节点的
+  // node.parameters 在 planner/worker 里是死的（从不读）。故此处不写 node.parameters，
+  // 而是 onChange 回写项目（容器层经 useUpdateProject 持久化到 projects.picturebook_config）。
+  // 仅当 node.type==="script" 且项目 kind==="picturebook" 时由容器层注入。
+  pictureBook?: {
+    config: PictureBookConfig
+    onChange: (next: PictureBookConfig) => void
+  }
 }
 
 export function PropertiesPanel({
@@ -144,6 +154,7 @@ export function PropertiesPanel({
   upstreamNodes = [],
   description,
   exprChannel = false,
+  pictureBook,
 }: PropertiesPanelProps) {
   const createPrompt = useCreatePrompt(org)
   // P5.1：resourceLocator/secret 数据源。modelOptions ← org 的 model-config 列表
@@ -475,6 +486,23 @@ export function PropertiesPanel({
             </div>
           )}
         </>
+      )}
+
+      {/* 绘本参数（仅绘本项目的 script 节点）：复用项目创建/编辑的同款受控表单。
+          编辑即写回项目级 picturebook_config（容器层防抖持久化），是 worker 运行期真正读取的源。 */}
+      {node.type === "script" && pictureBook && (
+        <div
+          data-slot="picturebook-config"
+          className="flex flex-col gap-2 rounded border border-line/60 bg-bg-base p-2"
+        >
+          <Label className="text-[10px] font-semibold uppercase tracking-wider text-text-3">
+            绘本参数
+          </Label>
+          <PictureBookConfigForm
+            value={pictureBook.config}
+            onChange={pictureBook.onChange}
+          />
+        </div>
       )}
 
       {/* 提示词选择（仅内置 script/storyboard，typed 节点跳过） */}
