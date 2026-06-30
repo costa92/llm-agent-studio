@@ -38,6 +38,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/cost"
 	"github.com/costa92/llm-agent-studio/internal/customnodetype"
 	"github.com/costa92/llm-agent-studio/internal/events"
+	"github.com/costa92/llm-agent-studio/internal/exports"
 	"github.com/costa92/llm-agent-studio/internal/fetch"
 	"github.com/costa92/llm-agent-studio/internal/generate"
 	genaudio "github.com/costa92/llm-agent-studio/internal/generate/audio"
@@ -340,6 +341,39 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		worker.RunOrphanReaper(workerCtx, assetStore, cfg.MaxPollBackoff, ttl)
 	}()
 
+	// 绘本成书导出 (picturebook export): 独立的 export_jobs 异步队列 — 单 runner +
+	// reaper，共享 worker pool 的 ctx/wg 优雅退出。导出是只读消费已审核资产→渲染→落 blob，
+	// 与 todos 运行队列完全隔离 (见 internal/exports)。
+	exportStore := exports.New(st.GORM())
+	exportLeaseTTL := 2 * time.Minute
+	exportRunner := exports.NewRunner(exportStore, exports.NewBookData(st.GORM()), exports.NewProjectInfo(st.GORM()), storageRouter, exports.RunnerConfig{
+		WorkerID:    "studiod-export",
+		LeaseTTL:    exportLeaseTTL,
+		CallTimeout: 5 * time.Minute,
+	})
+	wg.Add(1)
+	go func() { defer wg.Done(); exportRunner.Run(workerCtx, 10*time.Second) }()
+	// Export reaper — terminal-states RUNNING export jobs whose lease has expired
+	// beyond 2× the lease TTL (a crashed runner stranded them) → 'failed'. Mirrors
+	// the orphan reaper.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		exportReapTTL := 2 * exportLeaseTTL
+		ticker := time.NewTicker(exportLeaseTTL)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-workerCtx.Done():
+				return
+			case <-ticker.C:
+				if _, err := exportStore.Reap(workerCtx, exportReapTTL); err != nil {
+					log.Printf("studiod: export reaper failed: %v", err)
+				}
+			}
+		}
+	}()
+
 	issuer := authztoken.NewIssuer([]byte(cfg.JWTSecret), cfg.AccessTTL)
 	authService := authzsvc.New(az, issuer, cfg.RefreshTTL)
 	authHandlers := authzhttp.New(authService)
@@ -377,6 +411,8 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		StorageConfig:  storageStore,
 		CustomNodeType: customNodeTypeStore,
 		OrgSecret:      orgSecretStore,
+		Exports:        exportStore,
+		ExportBook:     exports.NewBookData(st.GORM()),
 		ExprChannel:    cfg.ExprChannel, // B/P5: read-only capability for field-level varBindings FE gate
 		Members:        membersSvc,
 		Platform:       platformSvc,

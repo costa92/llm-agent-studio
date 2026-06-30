@@ -2,7 +2,14 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { renderHook, waitFor } from "@testing-library/react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { createElement, type ReactNode } from "react"
-import { fetchAllEvents, fetchProjectState, fetchScript, useCancel, useRun } from "./api"
+import {
+  fetchAllEvents,
+  fetchProjectState,
+  fetchScript,
+  useCancel,
+  useCreateExport,
+  useRun,
+} from "./api"
 import { setAccessToken } from "@/lib/apiClient"
 import { jsonResponse } from "@/test/helpers"
 
@@ -157,5 +164,41 @@ describe("useCancel (POST /cancel)", () => {
     expect(String(fetchMock.mock.calls[0][0])).toBe("/api/projects/p1/cancel")
     expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("POST")
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["project", "p1"] })
+  })
+})
+
+describe("useCreateExport (POST /exports)", () => {
+  it("posts the chosen format (+ planId) and returns jobId", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ jobId: "job7" }, { status: 201 }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    const { wrapper } = setup()
+    const { result } = renderHook(() => useCreateExport("p1"), { wrapper })
+    result.current.mutate({ format: "epub", planId: "plan3" })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe("/api/projects/p1/exports")
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    expect(init.method).toBe("POST")
+    expect(JSON.parse(String(init.body))).toEqual({ format: "epub", planId: "plan3" })
+    expect(result.current.data?.jobId).toBe("job7")
+  })
+
+  // planId 省略 → 请求体不带 planId（后端取最新 plan）。
+  it("omits planId when not provided", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ jobId: "job8" }, { status: 201 }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    const { wrapper } = setup()
+    const { result } = renderHook(() => useCreateExport("p1"), { wrapper })
+    result.current.mutate({ format: "pdf" })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    expect(JSON.parse(String(init.body))).toEqual({ format: "pdf" })
   })
 })
