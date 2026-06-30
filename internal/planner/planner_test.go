@@ -1,6 +1,7 @@
 package planner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -42,7 +43,7 @@ func TestPlanValidGraph(t *testing.T) {
 	}))
 	p, st, projID := newPlanner(t, model)
 	ctx := context.Background()
-	res, err := p.Plan(ctx, projID, Brief{Brief: "make an ad", Style: "realistic"})
+	res, err := p.Plan(ctx, projID, Brief{Brief: "make an ad", Style: "realistic"}, nil)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -68,7 +69,7 @@ func TestPlanWithUsesPassedModel(t *testing.T) {
 		Text: `{"nodes":[{"id":"s","type":"script","dependsOn":[]},{"id":"b","type":"storyboard","dependsOn":["s"]}]}`,
 	}))
 	p, _, projID := newPlanner(t, bound)
-	res, err := p.PlanWith(context.Background(), projID, routed, Brief{Brief: "ad"})
+	res, err := p.PlanWith(context.Background(), projID, routed, Brief{Brief: "ad"}, nil)
 	if err != nil {
 		t.Fatalf("planWith: %v", err)
 	}
@@ -81,7 +82,7 @@ func TestPlanFallbackOnMalformed(t *testing.T) {
 	model := llm.NewScriptedLLM(llm.WithResponses(llm.Response{Text: "I refuse to plan."}))
 	p, st, projID := newPlanner(t, model)
 	ctx := context.Background()
-	res, err := p.Plan(ctx, projID, Brief{Brief: "make an ad"})
+	res, err := p.Plan(ctx, projID, Brief{Brief: "make an ad"}, nil)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -237,7 +238,7 @@ func TestPlanCustom(t *testing.T) {
 		t.Fatalf("seed workflow: %v", err)
 	}
 
-	res, err := p.PlanCustom(ctx, projID, wfID, Brief{Brief: "custom brief", Style: "custom style"}, nodes, nil)
+	res, err := p.PlanCustom(ctx, projID, wfID, Brief{Brief: "custom brief", Style: "custom style"}, nodes, nil, nil)
 	if err != nil {
 		t.Fatalf("PlanCustom: %v", err)
 	}
@@ -275,7 +276,7 @@ func TestPlanCustom(t *testing.T) {
 	}
 
 	// An empty workflowID stores NULL (legacy project-level custom run).
-	res2, err := p.PlanCustom(ctx, projID, "", Brief{Brief: "legacy"}, nodes, nil)
+	res2, err := p.PlanCustom(ctx, projID, "", Brief{Brief: "legacy"}, nodes, nil, nil)
 	if err != nil {
 		t.Fatalf("PlanCustom legacy: %v", err)
 	}
@@ -295,7 +296,7 @@ func TestPlanCustomBuiltinPrompt(t *testing.T) {
 	ctx := context.Background()
 
 	nodes := []WorkflowNode{{ID: "node-script", Type: "script", PromptID: "builtin:script-basic"}}
-	res, err := p.PlanCustom(ctx, projID, "", Brief{Brief: "b"}, nodes, nil)
+	res, err := p.PlanCustom(ctx, projID, "", Brief{Brief: "b"}, nodes, nil, nil)
 	if err != nil {
 		t.Fatalf("PlanCustom: %v", err)
 	}
@@ -333,7 +334,7 @@ func TestPlanCustomInlinePromptText(t *testing.T) {
 		PromptID:   "nonexistent-id",
 		PromptText: "临时手写的系统提示词内容",
 	}}
-	res, err := p.PlanCustom(ctx, projID, "", Brief{Brief: "b"}, nodes, nil)
+	res, err := p.PlanCustom(ctx, projID, "", Brief{Brief: "b"}, nodes, nil, nil)
 	if err != nil {
 		t.Fatalf("PlanCustom: %v", err)
 	}
@@ -379,7 +380,7 @@ func TestPlanCustom_TypedVariableRewrite(t *testing.T) {
 		"c1": {Kind: "llm", Params: regParams},
 	}
 
-	res, err := p.PlanCustom(ctx, projID, wfID, Brief{Brief: "b"}, nodes, resolved)
+	res, err := p.PlanCustom(ctx, projID, wfID, Brief{Brief: "b"}, nodes, resolved, nil)
 	if err != nil {
 		t.Fatalf("PlanCustom: %v", err)
 	}
@@ -456,7 +457,7 @@ func TestPlanCustom_SourceFieldPassthrough(t *testing.T) {
 	}
 	resolved := map[string]ResolvedType{"c1": {Kind: "llm", Params: regParams}}
 
-	res, err := p.PlanCustom(ctx, projID, "", Brief{Brief: "b"}, nodes, resolved)
+	res, err := p.PlanCustom(ctx, projID, "", Brief{Brief: "b"}, nodes, resolved, nil)
 	if err != nil {
 		t.Fatalf("PlanCustom: %v", err)
 	}
@@ -522,7 +523,7 @@ func TestPlanCustom_VariableNotInDependsOn(t *testing.T) {
 		"c1": {Kind: "llm", Params: regParams},
 	}
 
-	_, err := p.PlanCustom(ctx, projID, "", Brief{Brief: "b"}, nodes, resolved)
+	_, err := p.PlanCustom(ctx, projID, "", Brief{Brief: "b"}, nodes, resolved, nil)
 	if err == nil {
 		t.Fatal("expected error for binding outside DependsOn, got nil")
 	}
@@ -576,7 +577,7 @@ func TestPlanCustom_SourceFieldCharsetGate(t *testing.T) {
 	resolved := map[string]ResolvedType{"c1": {Kind: "llm", Params: regParams}}
 
 	for _, f := range []string{`text }} {{ $node["x"]`, "a.b", "a-b", " ", `a"b`} {
-		_, err := p.PlanCustom(ctx, "proj", "", Brief{}, mk(f, "script-1"), resolved)
+		_, err := p.PlanCustom(ctx, "proj", "", Brief{}, mk(f, "script-1"), resolved, nil)
 		if err == nil {
 			t.Fatalf("expected plan-time rejection for sourceField %q", f)
 		}
@@ -586,7 +587,7 @@ func TestPlanCustom_SourceFieldCharsetGate(t *testing.T) {
 	}
 	// §12 a5: bad field rejected even with empty SourceNodeId (independent of the
 	// SourceNodeId continue).
-	_, err := p.PlanCustom(ctx, "proj", "", Brief{}, mk("a.b", ""), resolved)
+	_, err := p.PlanCustom(ctx, "proj", "", Brief{}, mk("a.b", ""), resolved, nil)
 	if err == nil || !strings.Contains(err.Error(), "sourceField") {
 		t.Fatalf("expected sourceField rejection with empty SourceNodeId, got: %v", err)
 	}
@@ -619,5 +620,78 @@ func TestWorkflowNodeParametersRoundTrip(t *testing.T) {
 	bare, _ := json.Marshal(WorkflowNode{ID: "n", Type: "script", DependsOn: []string{}})
 	if strings.Contains(string(bare), "typeVersion") || strings.Contains(string(bare), "parameters") {
 		t.Fatalf("omitempty broken: %s", bare)
+	}
+}
+
+// TestPlanRunInputs verifies the run-time inputs snapshot lands in
+// plans.run_inputs: a non-nil JSON is stored verbatim, and a nil snapshot
+// defaults to '{}' (never NULL) — for both the LLM path (PlanWith) and the
+// custom-workflow path (PlanCustom).
+func TestPlanRunInputs(t *testing.T) {
+	model := llm.NewScriptedLLM(llm.WithResponses(llm.Response{
+		Text: `{"nodes":[{"id":"s","type":"script","dependsOn":[]}]}`,
+	}))
+	p, st, projID := newPlanner(t, model)
+	ctx := context.Background()
+
+	// JSONB reformats on storage (adds whitespace); compare compacted forms.
+	compact := func(s string) string {
+		var buf bytes.Buffer
+		if err := json.Compact(&buf, []byte(s)); err != nil {
+			t.Fatalf("compact %q: %v", s, err)
+		}
+		return buf.String()
+	}
+
+	ri := json.RawMessage(`{"values":{"x":"1"}}`)
+
+	// PlanWith stores the snapshot.
+	res, err := p.PlanWith(ctx, projID, model, Brief{Brief: "ad"}, ri)
+	if err != nil {
+		t.Fatalf("PlanWith: %v", err)
+	}
+	var got string
+	if err := st.Pool().QueryRow(ctx, `SELECT run_inputs FROM plans WHERE id=$1`, res.PlanID).Scan(&got); err != nil {
+		t.Fatalf("query run_inputs: %v", err)
+	}
+	if compact(got) != `{"values":{"x":"1"}}` {
+		t.Fatalf("PlanWith run_inputs=%q want %q", got, `{"values":{"x":"1"}}`)
+	}
+
+	// PlanWith with nil → '{}' (not NULL).
+	resNil, err := p.PlanWith(ctx, projID, model, Brief{Brief: "ad"}, nil)
+	if err != nil {
+		t.Fatalf("PlanWith nil: %v", err)
+	}
+	if err := st.Pool().QueryRow(ctx, `SELECT run_inputs FROM plans WHERE id=$1`, resNil.PlanID).Scan(&got); err != nil {
+		t.Fatalf("query nil run_inputs: %v", err)
+	}
+	if got != `{}` {
+		t.Fatalf("PlanWith nil run_inputs=%q want '{}'", got)
+	}
+
+	// PlanCustom stores the snapshot.
+	nodes := []WorkflowNode{{ID: "node-script", Type: "script", DependsOn: []string{}}}
+	resC, err := p.PlanCustom(ctx, projID, "", Brief{Brief: "b"}, nodes, nil, ri)
+	if err != nil {
+		t.Fatalf("PlanCustom: %v", err)
+	}
+	if err := st.Pool().QueryRow(ctx, `SELECT run_inputs FROM plans WHERE id=$1`, resC.PlanID).Scan(&got); err != nil {
+		t.Fatalf("query custom run_inputs: %v", err)
+	}
+	if compact(got) != `{"values":{"x":"1"}}` {
+		t.Fatalf("PlanCustom run_inputs=%q want %q", got, `{"values":{"x":"1"}}`)
+	}
+
+	// PlanCustom with nil → '{}'.
+	resCNil, err := p.PlanCustom(ctx, projID, "", Brief{Brief: "b"}, nodes, nil, nil)
+	if err != nil {
+		t.Fatalf("PlanCustom nil: %v", err)
+	}
+	if err := st.Pool().QueryRow(ctx, `SELECT run_inputs FROM plans WHERE id=$1`, resCNil.PlanID).Scan(&got); err != nil {
+		t.Fatalf("query custom nil run_inputs: %v", err)
+	}
+	if got != `{}` {
+		t.Fatalf("PlanCustom nil run_inputs=%q want '{}'", got)
 	}
 }

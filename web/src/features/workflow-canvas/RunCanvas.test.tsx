@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { fireEvent, render, screen } from "@testing-library/react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { RunCanvas, SuppressedBodyPanel, parseHttpStatus } from "./RunCanvas"
-import { computeNodeVisibility, computeEdgeActive } from "./topologyUtils"
+import { computeNodeVisibility } from "./topologyUtils"
 import { DEFAULT_TOPOLOGY_SETTINGS } from "./useTopologySettings"
 import type { WorkflowNode } from "@/lib/types"
 import type { ProjectState } from "@/lib/projectState"
@@ -268,7 +268,10 @@ describe("SuppressedBodyPanel (http-status output)", () => {
   })
 })
 
-describe("RunCanvas 过滤/边-active 纯函数", () => {
+// #127：节点可见性纯函数（focus 聚焦 / hideCompleted 隐藏已完成）。
+// 注：边 active 判定改用已合的 runEdges.markActiveEdges（其自带测试），故 #127 的
+// computeEdgeActive 测试随该函数一并退役。
+describe("RunCanvas computeNodeVisibility（focus / hideCompleted）", () => {
   it("隐藏已完成：done→hidden", () => {
     const v = computeNodeVisibility("done", { ...DEFAULT_TOPOLOGY_SETTINGS, hideCompleted: true })
     expect(v.hidden).toBe(true)
@@ -288,9 +291,46 @@ describe("RunCanvas 过滤/边-active 纯函数", () => {
     expect(computeNodeVisibility("blocked", s).dimmed).toBe(true)
     expect(computeNodeVisibility("blocked", s).hidden).toBe(false)
   })
-  it("边 active：源 done & 目标 running", () => {
-    expect(computeEdgeActive("done", "running")).toBe(true)
-    expect(computeEdgeActive("running", "running")).toBe(false)
-    expect(computeEdgeActive("done", "done")).toBe(false)
+})
+
+// PR-3：有逐页扇出资产的 storyboard → 渲成可折叠大功能容器；选中 → 右栏 Run Matrix。
+describe("RunCanvas group container + Run Matrix (PR-3)", () => {
+  // storyboard 扇出 2 个 asset todo（边 from=asset, to=storyboard todoId="rn-board"）。
+  const FANOUT_STATE: ProjectState = {
+    ...RUNNING_STATE,
+    nodes: [
+      { id: "rn-script", label: "脚本", type: "script", status: "done" },
+      { id: "rn-board", label: "分镜", type: "storyboard", status: "done" },
+      { id: "rn-a0", label: "图0", type: "asset", status: "done", assetId: "img0" },
+      { id: "rn-a1", label: "图1", type: "asset", status: "running" },
+    ],
+    edges: [
+      { from: "rn-board", to: "rn-script" },
+      { from: "rn-a0", to: "rn-board" },
+      { from: "rn-a1", to: "rn-board" },
+    ],
+  }
+
+  it("storyboard 有扇出资产 → 渲大功能容器（[N 项] 徽标 + 状态条），不再平铺独立子节点", () => {
+    currentState = FANOUT_STATE
+    const { container } = renderRunTo()
+    const group = container.querySelector('[data-slot="group-run-node"]')
+    expect(group).toBeInTheDocument()
+    expect(screen.getByText("2 项")).toBeInTheDocument()
+    // 状态条每页一格（2 个 asset → 2 格）。
+    const bar = container.querySelector('[data-slot="group-run-bar"]')!
+    expect(bar.querySelectorAll("span").length).toBe(2)
+    // 旧平铺子节点（asset-run-node）不再存在。
+    expect(container.querySelector('[data-slot="asset-run-node"]')).toBeNull()
+  })
+
+  it("点容器主体 → 右栏渲 Run Matrix（图例 + 汇总），而非 storyboard ItemInspector", () => {
+    currentState = FANOUT_STATE
+    const { container } = renderRunTo()
+    clickNode(container, 1) // storyboard-1 → groupRun
+    expect(container.querySelector('[data-slot="run-matrix-legend"]')).toBeInTheDocument()
+    expect(screen.getByText(/1\/2 完成/)).toBeInTheDocument()
+    // 矩阵每页一格。
+    expect(container.querySelectorAll('[data-slot="run-matrix-cell"]').length).toBe(2)
   })
 })

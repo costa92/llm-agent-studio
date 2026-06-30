@@ -67,13 +67,14 @@ func newID() string {
 // a malformed/invalid plan it falls back to the default pipeline (spec §7.1)
 // and records fallback_used=true. The plans row stores the raw LLM text. Uses
 // the bound default model; PlanWith routes per-org (BYOK).
-func (p *Planner) Plan(ctx context.Context, projectID string, b Brief) (Result, error) {
-	return p.PlanWith(ctx, projectID, p.model, b)
+func (p *Planner) Plan(ctx context.Context, projectID string, b Brief, runInputs json.RawMessage) (Result, error) {
+	return p.PlanWith(ctx, projectID, p.model, b, runInputs)
 }
 
 // PlanWith is Plan with an explicit chat model (BYOK 模型路由): the run handler
 // resolves the org's text model through the ModelRouter and passes it here.
-func (p *Planner) PlanWith(ctx context.Context, projectID string, model llm.ChatModel, b Brief) (Result, error) {
+// runInputs is the run-time inputs snapshot ({values, schema}); nil/empty stores '{}'.
+func (p *Planner) PlanWith(ctx context.Context, projectID string, model llm.ChatModel, b Brief, runInputs json.RawMessage) (Result, error) {
 	agent := coreagents.NewSimpleAgent(model, coreagents.SimpleOptions{
 		Name: "planner", SystemPrompt: plannerSystemPrompt,
 	})
@@ -104,10 +105,13 @@ func (p *Planner) PlanWith(ctx context.Context, projectID string, model llm.Chat
 
 	// Persist the plan row (raw text stored as a JSON string for auditing).
 	rawJSON, _ := json.Marshal(rawText)
+	if len(runInputs) == 0 {
+		runInputs = []byte("{}") // run_inputs is NOT NULL DEFAULT '{}'
+	}
 	if err := p.db.WithContext(ctx).Exec(
-		`INSERT INTO plans (id, project_id, status, raw_plan_json, valid, fallback_used)
-		 VALUES ($1,$2,'created',$3,$4,$5)`,
-		planID, projectID, rawJSON, valid, fallback).Error; err != nil {
+		`INSERT INTO plans (id, project_id, status, raw_plan_json, valid, fallback_used, run_inputs)
+		 VALUES ($1,$2,'created',$3,$4,$5,$6)`,
+		planID, projectID, rawJSON, valid, fallback, []byte(runInputs)).Error; err != nil {
 		return Result{}, fmt.Errorf("planner: insert plan: %w", err)
 	}
 
@@ -290,7 +294,7 @@ func HasUnboundCustomNode(nodes []WorkflowNode) bool {
 // project-level custom run (stored as NULL workflow_id).
 // resolved is the handler-built org-scoped registry map (nodeID→ResolvedType);
 // nil/empty means no typed custom nodes in this workflow.
-func (p *Planner) PlanCustom(ctx context.Context, projectID, workflowID string, b Brief, nodes []WorkflowNode, resolved map[string]ResolvedType) (Result, error) {
+func (p *Planner) PlanCustom(ctx context.Context, projectID, workflowID string, b Brief, nodes []WorkflowNode, resolved map[string]ResolvedType, runInputs json.RawMessage) (Result, error) {
 	if err := ValidateCustomGraph(nodes); err != nil {
 		return Result{}, fmt.Errorf("planner: validate custom graph: %w", err)
 	}
@@ -333,10 +337,13 @@ func (p *Planner) PlanCustom(ctx context.Context, projectID, workflowID string, 
 	// Persist the plan row. Status 'created', valid true, fallback_used false.
 	// NULLIF maps an empty workflowID to NULL (the FK is nullable).
 	rawJSON, _ := json.Marshal(nodes)
+	if len(runInputs) == 0 {
+		runInputs = []byte("{}") // run_inputs is NOT NULL DEFAULT '{}'
+	}
 	if err := p.db.WithContext(ctx).Exec(
-		`INSERT INTO plans (id, project_id, workflow_id, status, raw_plan_json, valid, fallback_used)
-		 VALUES ($1,$2,NULLIF($3,''),'created',$4,true,false)`,
-		planID, projectID, workflowID, rawJSON).Error; err != nil {
+		`INSERT INTO plans (id, project_id, workflow_id, status, raw_plan_json, valid, fallback_used, run_inputs)
+		 VALUES ($1,$2,NULLIF($3,''),'created',$4,true,false,$5)`,
+		planID, projectID, workflowID, rawJSON, []byte(runInputs)).Error; err != nil {
 		return Result{}, fmt.Errorf("planner: insert plan: %w", err)
 	}
 

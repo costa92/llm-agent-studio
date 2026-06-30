@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -50,22 +50,35 @@ import {
   type SseConnState,
 } from "@/features/workflow/useProductionTimeline"
 import { useQueryClient } from "@tanstack/react-query"
-import { toReactFlow, type RFNode, type RFEdge, type StudioNodeData } from "./canvasModel"
+import { toReactFlow, type RFEdge, type StudioNodeData } from "./canvasModel"
 import { overlayRunStatus } from "./runOverlay"
+import {
+  buildRunGroups,
+  type AssetKind,
+  type ParentAnchor,
+  type GroupCell,
+} from "./runFanout"
 import { resolveSelection, type RunSelection } from "./resolveSelection"
 import { ItemInspector } from "./ItemInspector"
 import { WorkflowNode } from "./WorkflowNode"
-import { StudioEdge } from "./StudioEdge"
+import { GroupNode, type GroupRunNodeData } from "./GroupNode"
+import { RunMatrix } from "./RunMatrix"
+import { RunEdge } from "./RunEdge"
+import { markActiveEdges } from "./runEdges"
 import { NODE_COLOR } from "./nodeColor"
 import { autoLayout } from "@/lib/autoLayout"
 import { useNodeTiming } from "@/features/workflow/useNodeTiming"
 import { useTopologySettings } from "./useTopologySettings"
 import { TopologySettingsPanel } from "./TopologySettingsPanel"
-import { computeNodeVisibility, computeEdgeActive } from "./topologyUtils"
+// 边活动判定改用已合的 runEdges.markActiveEdges（与 #127 的 computeEdgeActive 等价）；
+// 仅保留节点可见性 computeNodeVisibility（focus/hideCompleted）。
+import { computeNodeVisibility } from "./topologyUtils"
+import type { Node as RFNodeBase } from "@xyflow/react"
 
 const GRID = 16
-const nodeTypes = { studio: WorkflowNode }
-const edgeTypes = { studio: StudioEdge }
+const nodeTypes = { studio: WorkflowNode, groupRun: GroupNode }
+// 运行态用只读 RunEdge（活动边渲流动粒子）；不复用编辑态 StudioEdge 的 +/× 控制簇。
+const edgeTypes = { studio: RunEdge }
 
 // SseConnState → SseIndicator 可视态（与 WorkbenchPage CONN_TO_STATUS 一致）。
 const CONN_TO_STATUS: Record<SseConnState, SseStatus> = {
@@ -111,10 +124,23 @@ function RunCanvasInner({
   const run = useRun(projectId)
   const cancel = useCancel(projectId)
 
-  // 选中态：点节点 → 看工件（剧本/分镜抽屉 或 右栏资产预览）。
+  // 选中态：点节点 → 看工件（剧本/分镜抽屉 或 右栏资产预览 或大功能容器 Run Matrix）。
   const [selection, setSelection] = useState<RunSelection>(null)
   // 素材画廊开合。
   const [galleryOpen, setGalleryOpen] = useState(false)
+  // 大功能容器折叠/展开（视图态，按画布节点 id）。绝不回写 dependsOn。
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
+  const onToggleGroup = useCallback((nodeId: string) => {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev)
+      if (next.has(nodeId)) next.delete(nodeId)
+      else next.add(nodeId)
+      return next
+    })
+  }, [])
+  const onSelectCell = useCallback((nodeId: string, cell: GroupCell) => {
+    setSelection({ kind: "group", groupId: nodeId, selectedTodoId: cell.todoId })
+  }, [])
 
   const { settings, update } = useTopologySettings(projectId)
   const timing = useNodeTiming(runId ?? "")
@@ -134,29 +160,58 @@ function RunCanvasInner({
   // 该 run 项目资产：供画廊提示词元信息（按 assetId）。无 runId 时传 "" 不发请求。
   const projectAssetsQuery = useProjectAssets(runId ? projectId : "", undefined, runId)
 
+  // 权威工作流状态（加载中回落 draft 草态）。useMemo 稳定化：未加载时 `??` 兜底对象
+  // 每帧新建会令下游 overlay/runGroups memo 每帧失效，故记忆化。
+  const wfState: ProjectState = useMemo(
+    () =>
+      stateQuery.data ?? {
+        projectId,
+        version: 0,
+        status: "draft",
+        runStatus: "idle",
+        stages: [],
+        pips: [],
+        assets: { total: 0, done: 0, pending: 0 },
+        nodes: [],
+        edges: [],
+        isCustom: false,
+      },
+    [stateQuery.data, projectId],
+  )
+
+  // overlay map：画布节点 id → run 状态（点节点解析选中态、画布注入 data.run 共用）。
+  const overlay = useMemo(() => overlayRunStatus(nodes, wfState), [nodes, wfState])
+
+  // 大功能容器分组：已命中 run 的 storyboard → 逐页 cell + 状态计数（Map<画布节点 id, RunGroup>）。
+  const runGroups = useMemo(() => {
+    const parents: ParentAnchor[] = nodes
+      .filter((n) => n.type === "storyboard")
+      .map((n) => ({ todoId: overlay.get(n.id)?.todoId, canvasNodeId: n.id }))
+      .filter((p): p is ParentAnchor => p.todoId != null)
+    const assetKindById = new Map<string, AssetKind>()
+    for (const a of projectAssetsQuery.data ?? []) {
+      assetKindById.set(a.id, (a.type as AssetKind) ?? "unknown")
+    }
+    return buildRunGroups(wfState, parents, assetKindById)
+  }, [nodes, overlay, wfState, projectAssetsQuery.data])
+
   // 选中资产详情（hooks 规则：early return 前无条件调用）。
-  // 用 stateQuery 的 pips 算回落 latestAssetId 得完整 previewAssetId；
+  // 用 stateQuery 的 pips 算回落 latestAssetId；选中大功能容器某页（image）则用该页 assetId。
   // useAsset 内部 enabled: id !== "" 防护空串不发请求。
   const latestAssetIdEarly = [...(stateQuery.data?.pips ?? [])]
     .reverse()
     .find((p) => p.status === "done" && p.assetId)?.assetId
+  const selectedGroupCellEarly =
+    selection?.kind === "group" && selection.selectedTodoId
+      ? runGroups
+          .get(selection.groupId)
+          ?.cells.find((c) => c.todoId === selection.selectedTodoId)
+      : undefined
   const previewAssetIdEarly =
-    selection?.kind === "asset" ? selection.assetId : latestAssetIdEarly
+    selection?.kind === "asset"
+      ? selection.assetId
+      : (selectedGroupCellEarly?.assetId ?? latestAssetIdEarly)
   const previewDetailQuery = useAsset(previewAssetIdEarly ?? "")
-
-  // 权威工作流状态（加载中回落 draft 草态）。
-  const wfState: ProjectState = stateQuery.data ?? {
-    projectId,
-    version: 0,
-    status: "draft",
-    runStatus: "idle",
-    stages: [],
-    pips: [],
-    assets: { total: 0, done: 0, pending: 0 },
-    nodes: [],
-    edges: [],
-    isCustom: false,
-  }
 
   // SSE：回放 → 续接实时；驱动 live/conn 指示器与事件日志。state 帧写回缓存使画布实时刷新。
   const { log, conn } = useProductionTimeline({
@@ -172,55 +227,90 @@ function RunCanvasInner({
   })
   const live = wfState.runStatus !== "done" && !!runId
 
-  // overlay map：画布节点 id → run 状态（点节点解析选中态、画布注入 data.run 共用）。
-  const overlay = useMemo(() => overlayRunStatus(nodes, wfState), [nodes, wfState])
-
   const autoPos = useMemo(
     () => (settings.layout === "saved" ? null : autoLayout(nodes, settings.layout)),
     [nodes, settings.layout],
   )
 
-  // 运行 rfNodes：从已保存节点（自存 position）建，按 overlay 注入 data.run。
-  // 同时注入 visibility（hidden/dim）、timing chip、边 active。
-  const { rfNodes, rfEdges, visibleCount } = useMemo(() => {
+  // 运行 rfNodes（融合 #136/#137 与 #127）：从已保存节点（自存 position / autoLayout 坐标）建，
+  // 按 overlay 注入 data.run；有逐页扇出资产的 storyboard → 渲成可折叠大功能容器（groupRun）；
+  // 同时叠加 #127 的 visibility（hidden/dim）+ timing chip + autoLayout 坐标。
+  // 边的 active（流动粒子）走已合的 markActiveEdges（受设置面板 flowAnimation 控，见下 rfEdges）。
+  const { rfNodes, baseEdges, hiddenIds, dimIds, visibleCount } = useMemo(() => {
     const { nodes: rn, edges: re } = toReactFlow(nodes)
-    // 从逻辑 dimmed/hidden 标志收集 id（不回读 style，避免与未来其它 opacity 用途串扰）。
-    const dimIds = new Set<string>()
-    const hiddenIds = new Set<string>()
-    const withRun: RFNode[] = rn.map((n) => {
+    // 逻辑 hidden/dim id 集合（不回读 style，避免与其它 opacity 用途串扰）。
+    const hidden = new Set<string>()
+    const dim = new Set<string>()
+    const mapped: RFNodeBase[] = rn.map((n) => {
       const run = overlay.get(n.id)
       const status: GraphNodeStatus = run?.status ?? "pending"
-      const { hidden, dimmed } = computeNodeVisibility(status, settings)
-      if (hidden) hiddenIds.add(n.id)
-      if (dimmed) dimIds.add(n.id)
-      const t = settings.showTiming && run?.todoId ? timing.timingByTodoId.get(run.todoId) : undefined
-      return {
-        ...n,
-        position: autoPos?.get(n.id) ?? n.position,
-        hidden,
-        style: dimmed ? { ...n.style, opacity: 0.35 } : n.style,
-        data: {
-          ...n.data,
-          run,
-          timing: t,
-          highlightFailed: settings.focus === "failed",
-        },
+      const vis = computeNodeVisibility(status, settings)
+      if (vis.hidden) hidden.add(n.id)
+      if (vis.dimmed) dim.add(n.id)
+      const t =
+        settings.showTiming && run?.todoId
+          ? timing.timingByTodoId.get(run.todoId)
+          : undefined
+      const position = autoPos?.get(n.id) ?? n.position
+      const style = vis.dimmed ? { ...n.style, opacity: 0.35 } : n.style
+      const baseData = {
+        ...n.data,
+        run,
+        timing: t,
+        highlightFailed: settings.focus === "failed",
       }
+      const g = runGroups.get(n.id)
+      if (g && n.data.node.type === "storyboard") {
+        const data: GroupRunNodeData = {
+          ...baseData,
+          cells: g.cells,
+          counts: g.counts,
+          expanded: expandedGroups.has(n.id),
+          selectedTodoId:
+            selection?.kind === "group" && selection.groupId === n.id
+              ? selection.selectedTodoId
+              : undefined,
+          onToggle: onToggleGroup,
+          onSelectCell,
+        }
+        return { ...n, position, hidden: vis.hidden, style, type: "groupRun", data }
+      }
+      return { ...n, position, hidden: vis.hidden, style, data: baseData }
     })
-    const visibleCount = withRun.length - hiddenIds.size
-    const edges: RFEdge[] = (re as RFEdge[]).map((e) => {
-      const active = computeEdgeActive(overlay.get(e.source)?.status, overlay.get(e.target)?.status)
+    return {
+      rfNodes: mapped,
+      baseEdges: re as RFEdge[],
+      hiddenIds: hidden,
+      dimIds: dim,
+      visibleCount: mapped.length - hidden.size,
+    }
+  }, [
+    nodes,
+    overlay,
+    runGroups,
+    expandedGroups,
+    selection,
+    onToggleGroup,
+    onSelectCell,
+    settings,
+    timing.timingByTodoId,
+    autoPos,
+  ])
+
+  // 活动边（markActiveEdges + RunEdge 粒子）受设置面板 flowAnimation 控；
+  // 再叠加节点可见性导致的边 hidden/dim。
+  const rfEdges = useMemo(() => {
+    const active = markActiveEdges(baseEdges, overlay, settings.flowAnimation)
+    return active.map((e) => {
       const edgeHidden = hiddenIds.has(e.source) || hiddenIds.has(e.target)
       const edgeDim = dimIds.has(e.source) || dimIds.has(e.target)
       return {
         ...e,
         hidden: edgeHidden,
         style: edgeDim ? { ...e.style, opacity: 0.35 } : e.style,
-        data: { ...(e.data ?? {}), active: settings.flowAnimation && active },
       }
     })
-    return { rfNodes: withRun, rfEdges: edges, visibleCount }
-  }, [nodes, overlay, settings, timing.timingByTodoId, autoPos])
+  }, [baseEdges, overlay, settings.flowAnimation, hiddenIds, dimIds])
 
   // 布局变更且 fitOnUpdate 时命令式 fitView。
   useEffect(() => {
@@ -251,7 +341,7 @@ function RunCanvasInner({
 
   async function handleRun() {
     try {
-      const res = await run.mutateAsync()
+      const res = await run.mutateAsync(undefined)
       if (res.fallbackUsed) {
         toast.warning("Planner 输出畸形，已回落默认管线")
       } else {
@@ -371,17 +461,28 @@ function RunCanvasInner({
           nodesConnectable={false}
           elementsSelectable
           deleteKeyCode={null}
-          onNodeClick={(_, node) => handleSelectNode(node.id)}
+          onNodeClick={(_, node) => {
+            // 大功能容器：点容器主体（非 header/子卡，二者已 stopPropagation）→ 选中该组，
+            // 右栏渲 Run Matrix（不预选某页）。
+            if (node.type === "groupRun") {
+              setSelection({ kind: "group", groupId: node.id })
+              return
+            }
+            handleSelectNode(node.id)
+          }}
           fitView
           proOptions={{ hideAttribution: false }}
         >
           <Background gap={GRID} />
           <Controls showInteractive={false} />
           <MiniMap
-            nodeColor={(n) =>
-              NODE_COLOR[(n as Node<StudioNodeData>).data.node.type] ??
-              "var(--line)"
-            }
+            nodeColor={(n) => {
+              // studio 与 groupRun 节点都带 data.node（groupRun 复用 storyboard 节点），统一取色。
+              return (
+                NODE_COLOR[(n as Node<StudioNodeData>).data.node.type] ??
+                "var(--line)"
+              )
+            }}
           />
         </ReactFlow>
         {rfNodes.length === 0 && (
@@ -412,9 +513,24 @@ function RunCanvasInner({
         <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
           选中工件
         </h4>
-        {/* P5d：选中节点有 items → per-item inspector（逐条 json/text + 二进制 chip）。
-            items 缺省（老后端 / 标量节点）或空 → 回落今天的标量面板（下方分支），不破布局。 */}
-        {selection?.items && selection.items.length > 0 ? (
+        {/* 选中大功能容器 → Run Matrix（逐页状态格 + 选中页产物）。取代 storyboard 旧 ItemInspector。
+            P5d：其余选中态有 items → per-item inspector；items 缺省/空 → 回落标量面板。 */}
+        {selection?.kind === "group" ? (
+          <RunMatrix
+            group={runGroups.get(selection.groupId)}
+            selectedTodoId={selection.selectedTodoId}
+            onSelectCell={(cell) =>
+              setSelection({
+                kind: "group",
+                groupId: selection.groupId,
+                selectedTodoId: cell.todoId,
+              })
+            }
+            org={org}
+            isAdmin={isAdmin}
+            assetDetail={previewDetailQuery.data}
+          />
+        ) : selection?.items && selection.items.length > 0 ? (
           <ItemInspector items={selection.items} />
         ) : selection?.kind === "custom" ? (
           selection.outputFormat === "http-status" ? (
@@ -447,6 +563,7 @@ function RunCanvasInner({
       {/* 运行顶栏控制：徽标 / SSE / 去审核 / 运行控制——挂在主区右上浮层，与编辑顶栏区分。 */}
       <div className="pointer-events-none absolute right-[280px] top-[56px] z-10 flex items-center gap-2">
         <div className="pointer-events-auto flex items-center gap-2 rounded-md border border-line bg-bg-surface/90 px-3 py-1.5 shadow-sm">
+          {/* 流动效果开关已并入 TopologySettingsPanel（settings.flowAnimation），不再单列。 */}
           <TopologySettingsPanel settings={settings} update={update} />
           {badge}
           {live && <SseIndicator status={CONN_TO_STATUS[conn]} />}

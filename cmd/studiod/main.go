@@ -38,6 +38,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/cost"
 	"github.com/costa92/llm-agent-studio/internal/customnodetype"
 	"github.com/costa92/llm-agent-studio/internal/events"
+	"github.com/costa92/llm-agent-studio/internal/exports"
 	"github.com/costa92/llm-agent-studio/internal/fetch"
 	"github.com/costa92/llm-agent-studio/internal/generate"
 	genaudio "github.com/costa92/llm-agent-studio/internal/generate/audio"
@@ -340,6 +341,39 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		worker.RunOrphanReaper(workerCtx, assetStore, cfg.MaxPollBackoff, ttl)
 	}()
 
+	// 绘本成书导出 (picturebook export): 独立的 export_jobs 异步队列 — 单 runner +
+	// reaper，共享 worker pool 的 ctx/wg 优雅退出。导出是只读消费已审核资产→渲染→落 blob，
+	// 与 todos 运行队列完全隔离 (见 internal/exports)。
+	exportStore := exports.New(st.GORM())
+	exportLeaseTTL := 2 * time.Minute
+	exportRunner := exports.NewRunner(exportStore, exports.NewBookData(st.GORM()), exports.NewProjectInfo(st.GORM()), storageRouter, exports.RunnerConfig{
+		WorkerID:    "studiod-export",
+		LeaseTTL:    exportLeaseTTL,
+		CallTimeout: 5 * time.Minute,
+	})
+	wg.Add(1)
+	go func() { defer wg.Done(); exportRunner.Run(workerCtx, 10*time.Second) }()
+	// Export reaper — terminal-states RUNNING export jobs whose lease has expired
+	// beyond 2× the lease TTL (a crashed runner stranded them) → 'failed'. Mirrors
+	// the orphan reaper.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		exportReapTTL := 2 * exportLeaseTTL
+		ticker := time.NewTicker(exportLeaseTTL)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-workerCtx.Done():
+				return
+			case <-ticker.C:
+				if _, err := exportStore.Reap(workerCtx, exportReapTTL); err != nil {
+					log.Printf("studiod: export reaper failed: %v", err)
+				}
+			}
+		}
+	}()
+
 	issuer := authztoken.NewIssuer([]byte(cfg.JWTSecret), cfg.AccessTTL)
 	authService := authzsvc.New(az, issuer, cfg.RefreshTTL)
 	authHandlers := authzhttp.New(authService)
@@ -377,6 +411,8 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		StorageConfig:  storageStore,
 		CustomNodeType: customNodeTypeStore,
 		OrgSecret:      orgSecretStore,
+		Exports:        exportStore,
+		ExportBook:     exports.NewBookData(st.GORM()),
 		ExprChannel:    cfg.ExprChannel, // B/P5: read-only capability for field-level varBindings FE gate
 		Members:        membersSvc,
 		Platform:       platformSvc,
@@ -452,12 +488,34 @@ func (m *fakeChatModel) Generate(_ context.Context, req llm.Request) (llm.Respon
 	sys := req.SystemPrompt
 	var text string
 	switch {
+	case strings.Contains(sys, "planner"):
+		// 必须最先匹配：planner 系统提示（plannerSystemPrompt）本身含 "script" 与
+		// "storyboard" 等词，若排在 storyboard 分支之后会被其抢先命中 → planner 收到
+		// 分镜 JSON → ParseGraph 失败 → 每次运行 fallback_used=true，UI 恒弹「Planner
+		// 输出畸形，已回落默认管线」。规划图本身就含 script→storyboard，下游 worker
+		// 在 storyboard 完成后按 shot 自动派生 asset todos（asset 不在规划图里）。
+		text = `{"nodes":[{"id":"s","type":"script","dependsOn":[]},{"id":"b","type":"storyboard","dependsOn":["s"]}]}`
+	case strings.Contains(sys, "儿童绘本作家"):
+		// 绘本脚本提示是中文（agents.pictureBookSystemPrompt），且 JSON 契约比标准
+		// 脚本多了 characterSheet 字段——必须先于英文 "screenwriter" 分支匹配，否则
+		// 落到 default 的评审 JSON，ScriptAgent 拿不到 title/scenes 而失败，导致绘本
+		// 在无 key 的 dev/demo 栈里永远生成不出来（脚本阶段 failed）。
+		text = `{"title":"假数据绘本","logline":"无密钥 demo 占位绘本","characterSheet":"主角：小兔子 / 主色：米白 / 服饰：蓝色背带裤 / 特征：长耳朵","scenes":[{"heading":"第一页","description":"小兔子在清晨醒来","dialogue":"新的一天开始啦"},{"heading":"第二页","description":"小兔子走进森林","dialogue":"去探险吧"},{"heading":"第三页","description":"小兔子遇到好朋友","dialogue":"我们一起玩"},{"heading":"第四页","description":"大家快乐地回家","dialogue":"今天真开心"}]}`
 	case strings.Contains(sys, "screenwriter"):
 		text = `{"title":"Fake Demo","logline":"a keyless demo","scenes":[{"heading":"INT. STUDIO","description":"a placeholder scene","dialogue":"hello"}]}`
+	case strings.Contains(sys, "儿童绘本分镜师"):
+		// 绘本分镜提示同样是中文（agents.pictureBookStoryboardSystemPrompt），不含英文
+		// "storyboard" 标记——必须单独匹配，否则落到 default 而「no shots produced」。
+		// 产出封面（action 留空）+ 3 内容页 + 结尾页，让无 key 的 dev/demo 绘本能跑到
+		// 可成书阈值（contentCount=3 → 需 2 张已接受插图即 bookReady）。
+		text = `{"shots":[` +
+			`{"shotNo":1,"camera":"wide","scene":"封面","action":"","prompt":"卡通风格，小兔子站在森林入口，米白主色，蓝色背带裤","duration":3},` +
+			`{"shotNo":2,"camera":"medium","scene":"清晨","action":"小兔子在清晨醒来","prompt":"卡通风格，小兔子在床上伸懒腰","duration":3},` +
+			`{"shotNo":3,"camera":"wide","scene":"森林","action":"小兔子走进森林","prompt":"卡通风格，小兔子走在森林小路上","duration":3},` +
+			`{"shotNo":4,"camera":"medium","scene":"相遇","action":"小兔子遇到好朋友","prompt":"卡通风格，小兔子和小熊握手","duration":3},` +
+			`{"shotNo":5,"camera":"wide","scene":"结尾","action":"大家快乐地回家","prompt":"卡通风格，伙伴们在夕阳下挥手","duration":3}]}`
 	case strings.Contains(sys, "storyboard"):
 		text = `{"shots":[{"shotNo":1,"camera":"wide","scene":"studio","action":"open","prompt":"a placeholder shot","duration":3}]}`
-	case strings.Contains(sys, "planner"):
-		text = `{"nodes":[{"id":"s","type":"script","dependsOn":[]},{"id":"b","type":"storyboard","dependsOn":["s"]}]}`
 	default:
 		// ReviewAgent + anything else: a neutral advisory verdict.
 		text = `{"score":80,"flags":[],"note":"fake-mode placeholder"}`
@@ -741,6 +799,10 @@ func buildMediaFactory(tp trace.TracerProvider) func(kind, provider, model, apiK
 			switch provider {
 			case "openai":
 				return obs.WrapGenerator(genaudio.NewOpenAITTS(apiKey), tp), nil
+			case "minimax":
+				// 真实 MiniMax T2A（speech-2.8-hd 等）：同步 TTS，用 config 的
+				// api_key + base_url。补 M4 骨架遗留的真实音频实现。
+				return obs.WrapGenerator(genaudio.NewMinimaxTTS(apiKey, model, baseURL), tp), nil
 			default:
 				return nil, fmt.Errorf("studiod: unknown audio provider %q", provider)
 			}

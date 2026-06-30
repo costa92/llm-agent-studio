@@ -13,10 +13,5 @@ export function computeNodeVisibility(
   return { hidden, dimmed }
 }
 
-// 边「执行前沿」：源已完成、目标进行中。
-export function computeEdgeActive(
-  sourceStatus: GraphNodeStatus | undefined,
-  targetStatus: GraphNodeStatus | undefined,
-): boolean {
-  return sourceStatus === "done" && targetStatus === "running"
-}
+// 注：边「执行前沿」active 判定已统一到 runEdges.markActiveEdges（与原 computeEdgeActive
+// 等价：源 done & 目标 running），运行态边走 RunEdge 渲流动粒子。此处不再重复导出。

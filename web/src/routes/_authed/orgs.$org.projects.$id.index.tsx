@@ -19,8 +19,11 @@ import {
 import { useOrgTextModels, useOrgImageModels } from "@/features/cost/api"
 import { useStorageConfigs } from "@/features/storage/api"
 import { EditProjectDialog } from "@/features/projects/EditProjectDialog"
+import { RunInputsDialog } from "@/features/workflow/RunInputsDialog"
+import { pictureBookRunSchema } from "@/features/projects/pbRunSchema"
+import { parsePbConfig } from "@/features/projects/ProjectFields.schema"
 import { statusLabel, statusVariant } from "@/features/projects/status"
-import type { ProjectStatus } from "@/lib/types"
+import type { InputField, ProjectStatus, Workflow } from "@/lib/types"
 
 export const Route = createFileRoute("/_authed/orgs/$org/projects/$id/")({
   component: RunsListPage,
@@ -39,6 +42,14 @@ function RunsListPage() {
 
   const [isRunning, setIsRunning] = useState(false)
 
+  // 运行期输入弹窗：run 触发处若有 schema（工作流 inputsSchema / 绘本派生）则先弹表单，
+  // 填完再 run；无 schema 直接 run（零回归）。把「填完后做什么」装进 submit 闭包。
+  const [runDialog, setRunDialog] = useState<{
+    schema: InputField[]
+    title: string
+    submit: (inputs: Record<string, unknown>) => Promise<void>
+  } | null>(null)
+
   // M5.1/M9: 项目级"编辑模型配置"。
   const updateProject = useUpdateProject(org)
   const textModelsQuery = useOrgTextModels(org)
@@ -52,9 +63,22 @@ function RunsListPage() {
   const runWorkflow = useRunWorkflow(id)
   const deleteWorkflow = useDeleteWorkflow(id)
 
-  async function handleRunWorkflow(wfId: string) {
+  // 工作流 run 入口：inputsSchema 非空 → 先弹运行期表单；空 → 直接跑（零回归）。
+  function handleRunWorkflow(wf: Workflow) {
+    if (wf.inputsSchema && wf.inputsSchema.length > 0) {
+      setRunDialog({
+        schema: wf.inputsSchema,
+        title: `运行工作流「${wf.name}」`,
+        submit: (inputs) => doRunWorkflow(wf.id, inputs),
+      })
+      return
+    }
+    void doRunWorkflow(wf.id)
+  }
+
+  async function doRunWorkflow(wfId: string, inputs?: Record<string, unknown>) {
     try {
-      const res = await runWorkflow.mutateAsync(wfId)
+      const res = await runWorkflow.mutateAsync({ wfId, inputs })
       if (res.fallbackUsed) {
         toast.warning("工作流校验未通过，已回落默认管线")
       } else {
@@ -90,10 +114,25 @@ function RunsListPage() {
     }
   }
 
-  async function handleStartGeneration() {
+  // 标准/绘本 run 入口：绘本 → 用 pbConfig 枚举 + 当前 picturebook_config 派生 schema（与后端
+  // PictureBookSchema 对称）弹表单，预填全字段；标准 → 直接跑（零回归）。
+  function handleStartGeneration() {
+    if (project?.kind === "picturebook") {
+      const cfg = parsePbConfig(project.pictureBookConfig)
+      setRunDialog({
+        schema: pictureBookRunSchema(cfg),
+        title: "运行绘本（可临时调整本次参数）",
+        submit: (inputs) => doStartGeneration(inputs),
+      })
+      return
+    }
+    void doStartGeneration()
+  }
+
+  async function doStartGeneration(inputs?: Record<string, unknown>) {
     try {
       setIsRunning(true)
-      const res = await run.mutateAsync()
+      const res = await run.mutateAsync(inputs)
       if (res.fallbackUsed) {
         toast.warning("Planner 输出畸形，已回落默认管线")
       } else {
@@ -258,10 +297,11 @@ function RunsListPage() {
                       <div className="flex items-center justify-end gap-1">
                         <Button
                           variant="ghost"
-                          onClick={() => void handleRunWorkflow(wf.id)}
+                          onClick={() => handleRunWorkflow(wf)}
                           disabled={runWorkflow.isPending}
                         >
-                          {runWorkflow.isPending && runWorkflow.variables === wf.id
+                          {runWorkflow.isPending &&
+                          runWorkflow.variables?.wfId === wf.id
                             ? "运行中…"
                             : "运行"}
                         </Button>
@@ -423,6 +463,24 @@ function RunsListPage() {
           </section>
         </div>
       </div>
+
+      {/* 运行期输入表单：工作流 inputsSchema 非空 / 绘本项目时弹出，填完再发起 run。
+          条件挂载 → 每次打开都以最新 schema 重置内部表单态（无 reset effect）。 */}
+      {runDialog && (
+        <RunInputsDialog
+          open
+          onOpenChange={(o) => {
+            if (!o) setRunDialog(null)
+          }}
+          title={runDialog.title}
+          schema={runDialog.schema}
+          submitting={run.isPending || runWorkflow.isPending}
+          onSubmit={async (inputs) => {
+            await runDialog.submit(inputs)
+            setRunDialog(null)
+          }}
+        />
+      )}
     </div>
   )
 }

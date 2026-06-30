@@ -60,6 +60,7 @@ import { CanvasActionsProvider } from "./CanvasActionsContext"
 import { HelperLines } from "./HelperLines"
 import { NodePalette, PALETTE_DND_TYPE, PALETTE_DND_TYPEID } from "./NodePalette"
 import { PropertiesPanel } from "./PropertiesPanel"
+import { InputsSchemaPanel } from "./InputsSchemaPanel"
 import { useNodeTypes, useNodeTypesExprChannel } from "./api"
 import { NODE_COLOR, isCustomType, slugify, descTypeFor } from "./nodeColor"
 import { RunCanvas } from "./RunCanvas"
@@ -75,6 +76,7 @@ import { useRole } from "@/app/rbac"
 import type {
   CustomNodeType,
   HttpParams,
+  InputField,
   LlmParams,
   ScriptParams,
   UpsertCustomNodeTypeInput,
@@ -94,6 +96,8 @@ export interface WorkflowCanvasProps {
   org: string
   workflowName: string
   nodes: WorkflowNodeType[]
+  // 运行期输入声明（设计期编辑；新建/旧工作流缺省 = []）。
+  inputsSchema?: InputField[]
   prompts?: Prompt[]
   basics?: BasicPrompt[]
   // 返回项目页（顶栏「返回」）。由路由层注入，画布本身不持有路由知识。
@@ -114,9 +118,14 @@ const nodeTypes = { studio: WorkflowNode }
 const edgeTypes = { studio: StudioEdge }
 const defaultEdgeOptions = { type: "studio" }
 
-// 保存载荷的稳定签名（name + studio nodes）。用于 dirty 比较。
-function snapshotOf(name: string, studioNodes: WorkflowNodeType[]): string {
-  return JSON.stringify({ name, nodes: studioNodes })
+// 保存载荷的稳定签名（name + studio nodes + 输入 schema）。用于 dirty 比较——
+// 编辑输入 schema 同样要让「保存」可点，故纳入签名。
+function snapshotOf(
+  name: string,
+  studioNodes: WorkflowNodeType[],
+  inputsSchema: InputField[],
+): string {
+  return JSON.stringify({ name, nodes: studioNodes, inputsSchema })
 }
 
 function CanvasInner({
@@ -125,6 +134,7 @@ function CanvasInner({
   org,
   workflowName: initialName,
   nodes,
+  inputsSchema: initialInputsSchema,
   prompts,
   basics,
   onBack,
@@ -137,6 +147,11 @@ function CanvasInner({
   const [selectedId, setSelectedId] = useState<string | null>(null)
   // 名称：编辑态用既有名（只读展示），新建态可编辑（无独立名称对话框）。
   const [workflowName, setWorkflowName] = useState(initialName)
+  // 运行期输入 schema（设计期编辑）。右栏在「节点属性 / 工作流输入」间切换。
+  const [inputsSchema, setInputsSchema] = useState<InputField[]>(
+    initialInputsSchema ?? [],
+  )
+  const [rightPanel, setRightPanel] = useState<"props" | "inputs">("props")
   const { screenToFlowPosition, getNodes, getEdges, fitView } =
     useReactFlow<RFNode, RFEdge>()
   const { takeSnapshot, undo, redo, canUndo, canRedo } = useUndoRedo()
@@ -262,7 +277,11 @@ function CanvasInner({
 
   // 载入时的 studio-model 快照，作为 dirty 比较基线。
   const loadedSnapshot = useRef(
-    snapshotOf(initialName, toStudioNodes(initial.nodes, initial.edges)),
+    snapshotOf(
+      initialName,
+      toStudioNodes(initial.nodes, initial.edges),
+      initialInputsSchema ?? [],
+    ),
   )
 
   const createWorkflow = useCreateWorkflow(projectId)
@@ -271,6 +290,7 @@ function CanvasInner({
   const currentSnapshot = snapshotOf(
     workflowName,
     toStudioNodes(rfNodes as RFNode[], rfEdges),
+    inputsSchema,
   )
   const dirty = currentSnapshot !== loadedSnapshot.current
   const saving = createWorkflow.isPending || updateWorkflow.isPending
@@ -830,9 +850,9 @@ function CanvasInner({
   // ── 保存 ─────────────────────────────────────────────────
   const onSave = useCallback(() => {
     const studioNodes = toStudioNodes(rfNodes as RFNode[], rfEdges)
-    const input = { name: workflowName, nodes: studioNodes }
+    const input = { name: workflowName, nodes: studioNodes, inputsSchema }
     const done = (saved: { id: string }, created: boolean) => {
-      loadedSnapshot.current = snapshotOf(workflowName, studioNodes)
+      loadedSnapshot.current = snapshotOf(workflowName, studioNodes, inputsSchema)
       toast.success("工作流已保存")
       if (created) onCreated?.(saved.id)
     }
@@ -862,6 +882,7 @@ function CanvasInner({
     rfNodes,
     rfEdges,
     workflowName,
+    inputsSchema,
     workflowId,
     updateWorkflow,
     createWorkflow,
@@ -913,6 +934,31 @@ function CanvasInner({
           )}
         </div>
         <div className="flex items-center gap-2">
+          {/* 右栏切换：节点属性 / 工作流输入（设计期输入 schema 编辑器）。 */}
+          <div className="flex overflow-hidden rounded-md border border-line text-[12px]">
+            <button
+              type="button"
+              onClick={() => setRightPanel("props")}
+              className={
+                rightPanel === "props"
+                  ? "bg-bg-base px-2.5 py-1 text-text-1"
+                  : "px-2.5 py-1 text-text-3 hover:text-text-1"
+              }
+            >
+              节点属性
+            </button>
+            <button
+              type="button"
+              onClick={() => setRightPanel("inputs")}
+              className={
+                rightPanel === "inputs"
+                  ? "bg-bg-base px-2.5 py-1 text-text-1"
+                  : "px-2.5 py-1 text-text-3 hover:text-text-1"
+              }
+            >
+              工作流输入
+            </button>
+          </div>
           <button
             type="button"
             aria-label="撤销"
@@ -1077,6 +1123,9 @@ function CanvasInner({
             />
           )}
         </div>
+        {rightPanel === "inputs" ? (
+          <InputsSchemaPanel schema={inputsSchema} onChange={setInputsSchema} />
+        ) : (
         <PropertiesPanel
           node={selected}
           prompts={prompts}
@@ -1134,6 +1183,7 @@ function CanvasInner({
               : undefined
           }
         />
+        )}
       </div>
     </div>
   )

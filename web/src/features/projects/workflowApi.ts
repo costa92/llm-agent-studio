@@ -95,16 +95,33 @@ export function useDeleteWorkflow(
 }
 
 // POST /api/projects/{id}/workflows/{wfId}/run → 202 {planId,valid,fallbackUsed,workflowId}
-//（editor+）。成功后失效工作流列表（更新 latestRunStatus/latestPlanId）+ 项目 + 运行历史。
+//（editor+）。可带运行期输入 {inputs}（wf.inputsSchema 非空时）；inputs 缺省 → 不带 body
+//（与历史行为一致，零回归）。成功后失效工作流列表（更新 latestRunStatus/latestPlanId）+ 项目 + 运行历史。
 export function useRunWorkflow(
   projectId: string,
-): UseMutationResult<RunWorkflowResponse, Error, string> {
+): UseMutationResult<
+  RunWorkflowResponse,
+  Error,
+  { wfId: string; inputs?: Record<string, unknown> }
+> {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (wfId: string) =>
+    mutationFn: ({
+      wfId,
+      inputs,
+    }: {
+      wfId: string
+      inputs?: Record<string, unknown>
+    }) =>
       apiJSON<RunWorkflowResponse>(
         `/api/projects/${projectId}/workflows/${wfId}/run`,
-        { method: "POST" },
+        inputs
+          ? {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ inputs }),
+            }
+          : { method: "POST" },
       ),
     onSuccess: () => {
       void queryClient.invalidateQueries({

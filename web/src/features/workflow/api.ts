@@ -77,13 +77,23 @@ export function useProjectState(id: string, planId?: string): UseQueryResult<Pro
 }
 
 // POST /api/projects/{id}/run → 202 {planId,valid,fallbackUsed}（editor+）。配额超限 429；不存在 404。
+// 可带运行期输入 {inputs}（绘本派生 schema 时）；inputs 缺省 → 不带 body（与历史行为一致，零回归）。
 export function useRun(
   id: string,
-): UseMutationResult<RunResponse, Error, void> {
+): UseMutationResult<RunResponse, Error, Record<string, unknown> | undefined> {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: () =>
-      apiJSON<RunResponse>(`/api/projects/${id}/run`, { method: "POST" }),
+    mutationFn: (inputs?: Record<string, unknown>) =>
+      apiJSON<RunResponse>(
+        `/api/projects/${id}/run`,
+        inputs
+          ? {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ inputs }),
+            }
+          : { method: "POST" },
+      ),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["project", id] })
       // 新建了一个 plan：失效运行历史，使运行页导航到新 runId 后 usePlans()[0]
@@ -275,5 +285,50 @@ export function usePlans(projectId: string): UseQueryResult<Plan[]> {
         (env) => env.items,
       ),
     enabled: projectId !== "",
+  })
+}
+
+// 绘本成书导出：导出格式与异步任务（后端 T1-T5）。
+export type ExportFormat = "pdf" | "epub" | "zip"
+
+// GET /api/projects/{id}/exports/{jobId} 的任务态。status ∈ pending|running|done|failed。
+export interface ExportJob {
+  id: string
+  format: string
+  status: "pending" | "running" | "done" | "failed"
+  sizeBytes?: number
+  error?: string
+  createdAt: string
+}
+
+// POST /api/projects/{id}/exports body {format, planId?} → 201 {jobId}（editor+）。配额超限 429。
+// planId 省略 = 后端用最新 plan。
+export function useCreateExport(
+  projectId: string,
+): UseMutationResult<{ jobId: string }, Error, { format: ExportFormat; planId?: string }> {
+  return useMutation({
+    mutationFn: ({ format, planId }) =>
+      apiJSON<{ jobId: string }>(`/api/projects/${projectId}/exports`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(planId ? { format, planId } : { format }),
+      }),
+  })
+}
+
+// GET /api/projects/{id}/exports/{jobId} → ExportJob，轮询至终态（done/failed）即停。
+// refetchInterval 回调（react-query v5：接收 query 实例）读 query.state.data.status 决定续轮/停轮。
+export function useExportJob(
+  projectId: string,
+  jobId: string | null,
+): UseQueryResult<ExportJob> {
+  return useQuery({
+    queryKey: ["export-job", projectId, jobId ?? ""],
+    queryFn: () => apiJSON<ExportJob>(`/api/projects/${projectId}/exports/${jobId}`),
+    enabled: !!jobId,
+    refetchInterval: (query) => {
+      const s = query.state.data?.status
+      return s === "done" || s === "failed" ? false : 2000
+    },
   })
 }
