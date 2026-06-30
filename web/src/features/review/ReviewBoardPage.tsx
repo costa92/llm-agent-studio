@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Sheet, SheetContent } from "@/components/ui/sheet"
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   Dialog,
@@ -204,6 +204,9 @@ export function ReviewBoardView({
         }}
       >
         <SheetContent className="w-full gap-0 overflow-y-auto bg-bg-surface p-0 sm:max-w-[520px]">
+          {/* Radix 要求 DialogContent/SheetContent 必带 Title 供屏幕阅读器；详情正文
+              自带可视标题，这里用 sr-only 满足无障碍约束（同 LibraryPage 筛选抽屉）。 */}
+          <SheetTitle className="sr-only">审核详情</SheetTitle>
           {detailLoading || detail == null ? (
             <div className="p-6">
               <Skeleton className="aspect-square w-full rounded-[10px]" />
