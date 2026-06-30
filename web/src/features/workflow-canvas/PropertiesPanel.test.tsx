@@ -620,3 +620,39 @@ describe("PropertiesPanel field-level varBindings (P5)", () => {
     expect(screen.queryByRole("combobox", { name: "字段绑定 draft" })).not.toBeInTheDocument()
   })
 })
+
+// PR-2：绘本参数段（Option A）——仅绘本项目的 script 节点渲，编辑回写项目级 picturebook_config。
+import { emptyPictureBookConfig } from "@/features/projects/pbConfig"
+
+describe("PropertiesPanel picturebook config (PR-2)", () => {
+  it("script 节点 + 绘本项目（注入 pictureBook）→ 渲绘本参数段（年龄段等）", () => {
+    renderPanel(scriptNode(), {
+      pictureBook: { config: emptyPictureBookConfig, onChange: vi.fn() },
+    })
+    expect(document.querySelector('[data-slot="picturebook-config"]')).toBeInTheDocument()
+    expect(screen.getByText("绘本参数")).toBeInTheDocument()
+    expect(screen.getByText("年龄段")).toBeInTheDocument()
+  })
+
+  it("script 节点但未注入 pictureBook（标准项目）→ 不渲绘本参数段", () => {
+    renderPanel(scriptNode())
+    expect(document.querySelector('[data-slot="picturebook-config"]')).toBeNull()
+  })
+
+  it("非 script 节点（storyboard）即便注入 pictureBook → 不渲（绘本参数只挂剧本节点）", () => {
+    renderPanel(scriptNode({ id: "storyboard-1", type: "storyboard" }), {
+      pictureBook: { config: emptyPictureBookConfig, onChange: vi.fn() },
+    })
+    expect(document.querySelector('[data-slot="picturebook-config"]')).toBeNull()
+  })
+
+  it("改年龄段 → pictureBook.onChange 触发（回写项目配置）", async () => {
+    const onChange = vi.fn()
+    renderPanel(scriptNode(), {
+      pictureBook: { config: emptyPictureBookConfig, onChange },
+    })
+    await userEvent.click(screen.getByRole("button", { name: "3-6" }))
+    expect(onChange).toHaveBeenCalledOnce()
+    expect(onChange.mock.calls[0][0]).toMatchObject({ ageBand: "3-6" })
+  })
+})
