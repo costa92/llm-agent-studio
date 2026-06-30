@@ -48,7 +48,12 @@ func NewAssetAgent(builder *prompt.Builder, gen generate.MediaGenerator) *AssetA
 // the org's default model_config through the registry and passes the resolved
 // generator here. Run keeps the bound default for un-routed callers.
 func (a *AssetAgent) RunWith(ctx context.Context, gen generate.MediaGenerator, in AssetInput) (AssetOutput, error) {
-	built := a.builder.Build(in.ShotPrompt, in.Style)
+	// 音频（TTS）须念「原始旁白文本」，不能走图片 prompt 工程化（PromptBuilder 会按
+	// 风格预设追加 ", <风格后缀>"，TTS 会把风格描述也念出来）。image/video 照旧工程化。
+	built := in.ShotPrompt
+	if gen.Kind() != "audio" {
+		built = a.builder.Build(in.ShotPrompt, in.Style)
+	}
 	res, err := gen.Generate(ctx, generate.GenRequest{
 		Prompt: built, N: 1, Size: in.Size, DurationSeconds: in.Duration, Voice: in.Voice,
 	})

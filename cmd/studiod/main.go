@@ -799,6 +799,10 @@ func buildMediaFactory(tp trace.TracerProvider) func(kind, provider, model, apiK
 			switch provider {
 			case "openai":
 				return obs.WrapGenerator(genaudio.NewOpenAITTS(apiKey), tp), nil
+			case "minimax":
+				// 真实 MiniMax T2A（speech-2.8-hd 等）：同步 TTS，用 config 的
+				// api_key + base_url。补 M4 骨架遗留的真实音频实现。
+				return obs.WrapGenerator(genaudio.NewMinimaxTTS(apiKey, model, baseURL), tp), nil
 			default:
 				return nil, fmt.Errorf("studiod: unknown audio provider %q", provider)
 			}
