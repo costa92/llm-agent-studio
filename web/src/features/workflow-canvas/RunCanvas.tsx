@@ -62,13 +62,15 @@ import { ItemInspector } from "./ItemInspector"
 import { WorkflowNode } from "./WorkflowNode"
 import { GroupNode, type GroupRunNodeData } from "./GroupNode"
 import { RunMatrix } from "./RunMatrix"
-import { StudioEdge } from "./StudioEdge"
+import { RunEdge } from "./RunEdge"
+import { markActiveEdges } from "./runEdges"
 import { NODE_COLOR } from "./nodeColor"
 import type { Node as RFNodeBase } from "@xyflow/react"
 
 const GRID = 16
 const nodeTypes = { studio: WorkflowNode, groupRun: GroupNode }
-const edgeTypes = { studio: StudioEdge }
+// 运行态用只读 RunEdge（活动边渲流动粒子）；不复用编辑态 StudioEdge 的 +/× 控制簇。
+const edgeTypes = { studio: RunEdge }
 
 // SseConnState → SseIndicator 可视态（与 WorkbenchPage CONN_TO_STATUS 一致）。
 const CONN_TO_STATUS: Record<SseConnState, SseStatus> = {
@@ -118,6 +120,8 @@ function RunCanvasInner({
   const [selection, setSelection] = useState<RunSelection>(null)
   // 素材画廊开合。
   const [galleryOpen, setGalleryOpen] = useState(false)
+  // 顶栏「流动效果」开关：关则活动边不渲流动粒子（仍静态显示拓扑）。
+  const [flowEnabled, setFlowEnabled] = useState(true)
   // 大功能容器折叠/展开（视图态，按画布节点 id）。绝不回写 dependsOn。
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   const onToggleGroup = useCallback((nodeId: string) => {
@@ -246,6 +250,12 @@ function RunCanvasInner({
     onToggleGroup,
     onSelectCell,
   ])
+
+  // 活动边标记（上游 done & 下游 running → 流动粒子）。顶栏关流动则全部静态。
+  const flowEdges = useMemo(
+    () => markActiveEdges(rfEdges, overlay, flowEnabled),
+    [rfEdges, overlay, flowEnabled],
+  )
 
   // 点节点（运行模式只读）：按 overlay 命中项 + 节点类型解析选中态。
   // 未命中（pending/未匹配）节点点击无操作。
@@ -381,7 +391,7 @@ function RunCanvasInner({
       <div className="workflow-canvas relative flex-1">
         <ReactFlow
           nodes={rfNodes}
-          edges={rfEdges}
+          edges={flowEdges}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           nodesDraggable={false}
@@ -478,6 +488,20 @@ function RunCanvasInner({
         <div className="pointer-events-auto flex items-center gap-2 rounded-md border border-line bg-bg-surface/90 px-3 py-1.5 shadow-sm">
           {badge}
           {live && <SseIndicator status={CONN_TO_STATUS[conn]} />}
+          {/* 流动效果开关：控制活动边（上游 done & 下游 running）是否渲流动粒子。 */}
+          <button
+            type="button"
+            data-slot="flow-toggle"
+            aria-pressed={flowEnabled}
+            onClick={() => setFlowEnabled((v) => !v)}
+            title="流动效果（活动边动画）"
+            className={
+              "rounded px-2 py-1 text-[12px] transition-colors " +
+              (flowEnabled ? "text-amber" : "text-text-3 hover:text-text-1")
+            }
+          >
+            流动效果{flowEnabled ? " · 开" : " · 关"}
+          </button>
           {doneAssetIds.length > 0 && (
             <Button variant="ghost" onClick={() => setGalleryOpen(true)}>
               查看全部素材 ({doneAssetIds.length})
