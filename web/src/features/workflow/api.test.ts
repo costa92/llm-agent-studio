@@ -138,13 +138,32 @@ describe("useRun (POST /run)", () => {
 
     const { wrapper, invalidateSpy } = setup()
     const { result } = renderHook(() => useRun("p1"), { wrapper })
-    result.current.mutate()
+    result.current.mutate(undefined)
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
 
     expect(String(fetchMock.mock.calls[0][0])).toBe("/api/projects/p1/run")
     expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("POST")
+    // 无 inputs → 不带 body（标准项目零回归）。
+    expect((fetchMock.mock.calls[0][1] as RequestInit).body).toBeUndefined()
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["project", "p1"] })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["plans", "p1"] })
+  })
+
+  it("带 inputs（绘本运行期覆盖）→ POST body 携带 {inputs}", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ planId: "plan9", valid: true, fallbackUsed: false }),
+    )
+    vi.stubGlobal("fetch", fetchMock)
+
+    const { wrapper } = setup()
+    const { result } = renderHook(() => useRun("p1"), { wrapper })
+    result.current.mutate({ voice: "warm", pageCount: 12 })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    const body = (fetchMock.mock.calls[0][1] as RequestInit).body
+    expect(JSON.parse(String(body))).toEqual({
+      inputs: { voice: "warm", pageCount: 12 },
+    })
   })
 })
 

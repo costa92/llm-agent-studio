@@ -203,7 +203,7 @@ function RunWorkbenchPage() {
 
   async function handleRun() {
     try {
-      const res = await run.mutateAsync()
+      const res = await run.mutateAsync(undefined)
       setFallbackUsed(res.fallbackUsed)
       if (res.fallbackUsed) {
         toast.warning("Planner 输出畸形，已回落默认管线")

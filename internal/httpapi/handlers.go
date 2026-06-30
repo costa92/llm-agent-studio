@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -21,6 +22,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/planner"
 	"github.com/costa92/llm-agent-studio/internal/project"
 	"github.com/costa92/llm-agent-studio/internal/projectstate"
+	"github.com/costa92/llm-agent-studio/internal/runinputs"
 	"github.com/costa92/llm-agent-studio/internal/studiosvc"
 )
 
@@ -73,9 +75,9 @@ type ProjectStore interface {
 // accepts an explicit chat model (BYOK 模型路由 via the ChatRouter); Plan uses
 // the planner's bound default.
 type PlannerPort interface {
-	Plan(ctx context.Context, projectID string, b planner.Brief) (planner.Result, error)
-	PlanWith(ctx context.Context, projectID string, model llm.ChatModel, b planner.Brief) (planner.Result, error)
-	PlanCustom(ctx context.Context, projectID, workflowID string, b planner.Brief, nodes []planner.WorkflowNode, resolved map[string]planner.ResolvedType) (planner.Result, error)
+	Plan(ctx context.Context, projectID string, b planner.Brief, runInputs json.RawMessage) (planner.Result, error)
+	PlanWith(ctx context.Context, projectID string, model llm.ChatModel, b planner.Brief, runInputs json.RawMessage) (planner.Result, error)
+	PlanCustom(ctx context.Context, projectID, workflowID string, b planner.Brief, nodes []planner.WorkflowNode, resolved map[string]planner.ResolvedType, runInputs json.RawMessage) (planner.Result, error)
 }
 
 // ChatRouter resolves an org's BYOK chat model (satisfied by *modelrouter.Router).
@@ -469,6 +471,54 @@ func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore,
 			http.Error(w, "当前 Workflow 包含未绑定类型的自定义节点，请先在注册表中为其指定类型后再运行", http.StatusBadRequest)
 			return
 		}
+		// 运行期输入：读 body（带读取上限）→ 解析可选 {"inputs":...}，空 body 合法。
+		// 三分支按 CustomWorkflowEnabled + Kind 分流；整段在 SetStatus("planning")/
+		// planner_started 之前，校验失败 → 400，避免项目悬挂在 planning。projects 表
+		// 全程只读——绘本覆盖仅落 plans.run_inputs 快照，worker 执行期叠加。
+		r.Body = http.MaxBytesReader(w, r.Body, maxRunInputsBody)
+		var runBody struct {
+			Inputs map[string]json.RawMessage `json:"inputs"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&runBody); err != nil && !errors.Is(err, io.EOF) {
+			http.Error(w, "invalid run inputs: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		var runInputsJSON json.RawMessage
+		var briefOverride map[string]string
+		switch {
+		case p.CustomWorkflowEnabled:
+			// 分支 A：legacy 自定义。v1 不支持其 inputs_schema（无 workflows 行）→
+			// body.inputs 忽略（不报错、不落 run_inputs），runInputsJSON 留 nil。
+		case p.Kind == "picturebook":
+			// 分支 B：绘本。从当前 picturebook_config 派生 schema → 校验提交值 →
+			// 落 run_inputs 快照（含 schema 快照保证可复现）。
+			cfg, perr := project.ParsePictureBookConfig(p.PictureBookConfig)
+			if perr != nil {
+				// config 解析失败：退化为「无 schema 来源」（与 worker 端
+				// ParsePictureBookConfig 失败的降级一致——覆盖失效）。有 inputs 则
+				// 按标准项目 400，无 inputs 照常 run。
+				if len(runBody.Inputs) > 0 {
+					http.Error(w, "this project does not accept run inputs", http.StatusBadRequest)
+					return
+				}
+				break
+			}
+			schema := runinputs.PictureBookSchema(cfg)
+			resolved, verr := runinputs.Validate(schema, runBody.Inputs)
+			if verr != nil {
+				http.Error(w, "invalid run inputs: "+verr.Error(), http.StatusBadRequest)
+				return
+			}
+			briefOverride = resolved.BriefOverride
+			schemaJSON, _ := json.Marshal(schema)
+			runInputsJSON = buildRunInputs(runBody.Inputs, schemaJSON)
+		default:
+			// 分支 C：标准项目。无 schema 来源 → body.inputs 非空则 400；空则照常 run。
+			if len(runBody.Inputs) > 0 {
+				http.Error(w, "this project does not accept run inputs", http.StatusBadRequest)
+				return
+			}
+		}
 		if over, err := quotaExceeded(r.Context(), cs, quota, p.OrgID); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -485,6 +535,22 @@ func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore,
 			Brief: p.Description, ContentType: p.ContentType,
 			TargetPlatform: p.TargetPlatform, Style: p.Style,
 		}
+		// brief override：仅本 run 叠加，不写回 projects。绘本派生 schema
+		// （PictureBookSchema）只产 target:"pbConfig" 字段，故绘本分支下 briefOverride
+		// 恒空、此块当前 no-op；保留是为与自定义工作流 run 路径结构对称、且为未来
+		// 绘本支持 brief 类字段留口。
+		if v, ok := briefOverride["brief"]; ok {
+			brief.Brief = v
+		}
+		if v, ok := briefOverride["contentType"]; ok {
+			brief.ContentType = v
+		}
+		if v, ok := briefOverride["targetPlatform"]; ok {
+			brief.TargetPlatform = v
+		}
+		if v, ok := briefOverride["style"]; ok {
+			brief.Style = v
+		}
 		var res planner.Result
 		if p.CustomWorkflowEnabled {
 			// customNodes already validated and populated above; use them directly.
@@ -494,7 +560,7 @@ func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore,
 				http.Error(w, rerr.Error(), http.StatusBadRequest)
 				return
 			}
-			res, err = pl.PlanCustom(r.Context(), id, "", brief, customNodes, resolved)
+			res, err = pl.PlanCustom(r.Context(), id, "", brief, customNodes, resolved, nil)
 		} else {
 			// M5.1: per-project 规划模型 override 优先于 org 默认。如果 project 上
 			// 配了 planner_provider+planner_model，runHandler 拿这个去 modelrouter
@@ -502,9 +568,9 @@ func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore,
 			// 查不到 / build 失败 → 退回 org 默认 chat。空 = 走完全默认。
 			plannerModel := chatModelForPlan(r.Context(), cr, p)
 			if plannerModel != nil {
-				res, err = pl.PlanWith(r.Context(), id, plannerModel, brief)
+				res, err = pl.PlanWith(r.Context(), id, plannerModel, brief, runInputsJSON)
 			} else {
-				res, err = pl.Plan(r.Context(), id, brief)
+				res, err = pl.Plan(r.Context(), id, brief, runInputsJSON)
 			}
 		}
 		if err != nil {

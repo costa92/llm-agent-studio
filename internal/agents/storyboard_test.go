@@ -72,6 +72,31 @@ func TestStoryboardAgent_TruncatesOverlongNarration(t *testing.T) {
 	}
 }
 
+// TestStoryboardAgent_TargetPagesClause: PBTargetPages>0 injects a soft "约 N 页"
+// page-count constraint into the prompt; =0 leaves it out (no regression).
+func TestStoryboardAgent_TargetPagesClause(t *testing.T) {
+	const shots = `{"shots":[{"shotNo":1,"action":"","prompt":"p"},{"shotNo":2,"action":"a","prompt":"p"}]}`
+	with := &sbCaptureModel{text: shots}
+	if _, err := NewStoryboardAgent(with).Run(context.Background(), StoryboardInput{
+		ScriptJSON: "{}", PictureBook: true, PBTargetPages: 12,
+	}); err != nil {
+		t.Fatalf("with-pages run: %v", err)
+	}
+	if !strings.Contains(with.gotSys, "12 页") {
+		t.Fatalf("target-pages clause missing from prompt: %q", with.gotSys)
+	}
+
+	without := &sbCaptureModel{text: shots}
+	if _, err := NewStoryboardAgent(without).Run(context.Background(), StoryboardInput{
+		ScriptJSON: "{}", PictureBook: true, PBTargetPages: 0,
+	}); err != nil {
+		t.Fatalf("no-pages run: %v", err)
+	}
+	if strings.Contains(without.gotSys, "页（含封面") {
+		t.Fatalf("target-pages clause should be absent when PBTargetPages=0: %q", without.gotSys)
+	}
+}
+
 func TestStoryboardAgentParsesShots(t *testing.T) {
 	model := llm.NewScriptedLLM(llm.WithResponses(llm.Response{
 		Text: `{"shots":[{"shotNo":1,"camera":"wide","scene":"cafe","action":"door opens","prompt":"a cafe door opening","duration":3},{"shotNo":2,"camera":"close","scene":"cafe","action":"sip","prompt":"close up sip","duration":2}]}`,

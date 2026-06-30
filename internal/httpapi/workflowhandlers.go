@@ -5,29 +5,71 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/costa92/llm-agent-studio/internal/customnodetype"
 	"github.com/costa92/llm-agent-studio/internal/nodedesc"
 	"github.com/costa92/llm-agent-studio/internal/planner"
 	"github.com/costa92/llm-agent-studio/internal/project"
+	"github.com/costa92/llm-agent-studio/internal/runinputs"
 	"github.com/costa92/llm-agent-studio/internal/workflows"
 )
 
+// maxRunInputsBody caps the run-with-inputs request body at the read layer, so
+// a giant body can't blow up memory during decode (shared by all run paths).
+const maxRunInputsBody = 64 << 10
+
 // WorkflowStore is the workflows CRUD surface (satisfied by *workflows.Store).
 type WorkflowStore interface {
-	Create(ctx context.Context, projectID, name string, nodes json.RawMessage) (workflows.Workflow, error)
+	Create(ctx context.Context, projectID, name string, nodes, inputsSchema json.RawMessage) (workflows.Workflow, error)
 	Get(ctx context.Context, projectID, id string) (workflows.Workflow, error)
 	ListByProject(ctx context.Context, projectID string) ([]workflows.Workflow, error)
-	Update(ctx context.Context, projectID, id, name string, nodes json.RawMessage) (workflows.Workflow, error)
+	Update(ctx context.Context, projectID, id, name string, nodes, inputsSchema json.RawMessage) (workflows.Workflow, error)
 	Delete(ctx context.Context, projectID, id string) error
 }
 
 // workflowReq is the create/update body. nodes is the DAG (array of
-// planner.WorkflowNode shape); kept raw so the store stays decoupled.
+// planner.WorkflowNode shape); inputsSchema is the design-time run-input
+// declaration (array of runinputs.Field shape). Both kept raw so the store
+// stays decoupled.
 type workflowReq struct {
-	Name  string          `json:"name"`
-	Nodes json.RawMessage `json:"nodes"`
+	Name         string          `json:"name"`
+	Nodes        json.RawMessage `json:"nodes"`
+	InputsSchema json.RawMessage `json:"inputsSchema"`
+}
+
+// validateInputsSchema runs the design-time (save-time) check on a raw
+// inputs_schema payload: it unmarshals to []runinputs.Field then delegates to
+// runinputs.ValidateSchema (name regex, type/target allowlist, select/multiselect
+// options, multiselect×非pbConfig). An empty/absent schema is valid.
+func validateInputsSchema(raw json.RawMessage) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	var fields []runinputs.Field
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return fmt.Errorf("invalid inputs schema: %w", err)
+	}
+	return runinputs.ValidateSchema(fields)
+}
+
+// buildRunInputs serializes the immutable {values, schema} snapshot persisted to
+// plans.run_inputs: values are the raw submitted inputs (empty map when none),
+// schema is THIS run's inputs_schema snapshot (so replay/audit doesn't depend on
+// the mutable workflows.inputs_schema). Shape matches the spec's plans.run_inputs.
+func buildRunInputs(values map[string]json.RawMessage, schema json.RawMessage) json.RawMessage {
+	if values == nil {
+		values = map[string]json.RawMessage{}
+	}
+	if len(schema) == 0 {
+		schema = json.RawMessage("[]")
+	}
+	out, _ := json.Marshal(struct {
+		Values map[string]json.RawMessage `json:"values"`
+		Schema json.RawMessage            `json:"schema"`
+	}{Values: values, Schema: schema})
+	return out
 }
 
 // listWorkflowsHandler GET /api/projects/{id}/workflows — viewer+. Each item
@@ -118,6 +160,10 @@ func createWorkflowHandler(ps ProjectStore, ws WorkflowStore, res CustomNodeType
 			http.Error(w, "bad request: name required", http.StatusBadRequest)
 			return
 		}
+		if err := validateInputsSchema(req.InputsSchema); err != nil {
+			http.Error(w, "invalid inputs schema: "+err.Error(), http.StatusBadRequest)
+			return
+		}
 		if len(req.Nodes) > 0 {
 			var nodes []planner.WorkflowNode
 			if err := json.Unmarshal(req.Nodes, &nodes); err != nil {
@@ -140,7 +186,7 @@ func createWorkflowHandler(ps ProjectStore, ws WorkflowStore, res CustomNodeType
 				}
 			}
 		}
-		wf, err := ws.Create(r.Context(), r.PathValue("id"), req.Name, req.Nodes)
+		wf, err := ws.Create(r.Context(), r.PathValue("id"), req.Name, req.Nodes, req.InputsSchema)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -157,6 +203,10 @@ func updateWorkflowHandler(ps ProjectStore, ws WorkflowStore, res CustomNodeType
 			http.Error(w, "bad request: name required", http.StatusBadRequest)
 			return
 		}
+		if err := validateInputsSchema(req.InputsSchema); err != nil {
+			http.Error(w, "invalid inputs schema: "+err.Error(), http.StatusBadRequest)
+			return
+		}
 		if len(req.Nodes) > 0 {
 			var nodes []planner.WorkflowNode
 			if err := json.Unmarshal(req.Nodes, &nodes); err != nil {
@@ -179,7 +229,7 @@ func updateWorkflowHandler(ps ProjectStore, ws WorkflowStore, res CustomNodeType
 				}
 			}
 		}
-		wf, err := ws.Update(r.Context(), r.PathValue("id"), r.PathValue("wfId"), req.Name, req.Nodes)
+		wf, err := ws.Update(r.Context(), r.PathValue("id"), r.PathValue("wfId"), req.Name, req.Nodes, req.InputsSchema)
 		if errors.Is(err, workflows.ErrNotFound) {
 			http.Error(w, "workflow not found", http.StatusNotFound)
 			return
@@ -252,6 +302,29 @@ func runWorkflowHandler(ps ProjectStore, ws WorkflowStore, pl PlannerPort, ev Ev
 			http.Error(w, "当前 Workflow 包含未绑定类型的自定义节点，请先在注册表中为其指定类型后再运行", http.StatusBadRequest)
 			return
 		}
+		// 运行期输入：读 body（带读取上限）→ 解析可选 {"inputs":...} → 按 workflow
+		// 的 inputs_schema 校验。整段必须在 SetStatus("planning")/planner_started
+		// 之前，校验失败 → 400，避免项目悬挂在 planning。
+		r.Body = http.MaxBytesReader(w, r.Body, maxRunInputsBody)
+		var runReq struct {
+			Inputs map[string]json.RawMessage `json:"inputs"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&runReq); err != nil && !errors.Is(err, io.EOF) {
+			http.Error(w, "invalid run inputs: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		var schema []runinputs.Field
+		if len(wf.InputsSchema) > 0 {
+			if err := json.Unmarshal(wf.InputsSchema, &schema); err != nil {
+				http.Error(w, "invalid inputs schema: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+		runResolved, verr := runinputs.Validate(schema, runReq.Inputs)
+		if verr != nil {
+			http.Error(w, "invalid run inputs: "+verr.Error(), http.StatusBadRequest)
+			return
+		}
 		if over, err := quotaExceeded(r.Context(), cs, quota, p.OrgID); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -268,12 +341,25 @@ func runWorkflowHandler(ps ProjectStore, ws WorkflowStore, pl PlannerPort, ev Ev
 			Brief: p.Description, ContentType: p.ContentType,
 			TargetPlatform: p.TargetPlatform, Style: p.Style,
 		}
+		// brief override：仅本 run 叠加，不写回 projects。
+		if v, ok := runResolved.BriefOverride["brief"]; ok {
+			brief.Brief = v
+		}
+		if v, ok := runResolved.BriefOverride["contentType"]; ok {
+			brief.ContentType = v
+		}
+		if v, ok := runResolved.BriefOverride["targetPlatform"]; ok {
+			brief.TargetPlatform = v
+		}
+		if v, ok := runResolved.BriefOverride["style"]; ok {
+			brief.Style = v
+		}
 		resolved, rerr := resolveCustomTypes(r.Context(), customTypeResolver, p.OrgID, nodes)
 		if rerr != nil {
 			http.Error(w, rerr.Error(), http.StatusBadRequest)
 			return
 		}
-		result, err := pl.PlanCustom(r.Context(), id, wfID, brief, nodes, resolved)
+		result, err := pl.PlanCustom(r.Context(), id, wfID, brief, nodes, resolved, buildRunInputs(runReq.Inputs, wf.InputsSchema))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

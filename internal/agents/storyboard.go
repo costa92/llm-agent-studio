@@ -22,6 +22,7 @@ type StoryboardInput struct {
 	PBMaxWordsPerSpread int    // 每页旁白字数上限（rune 计数），>0 才截断
 	PBIllustrationStyle string // 插图统一风格，如 "watercolor"
 	PBCharacterSheet    string // 主角固定外观，写进插图前缀以保证跨页一致
+	PBTargetPages       int    // 目标页数（含封面与结尾页），>0 才注入软约束；实际页数仍由 LLM 决定
 }
 
 // Shot is one storyboard shot (persisted as a shots row).
@@ -67,7 +68,13 @@ func pictureBookStoryboardSystemPromptFor(in StoryboardInput) string {
 	}
 	illustration := strings.TrimSpace(in.PBIllustrationStyle + " " + in.PBCharacterSheet)
 	r := strings.NewReplacer("{{MAXWORDS}}", maxWords, "{{ILLUSTRATION}}", illustration)
-	return r.Replace(pictureBookStoryboardSystemPrompt)
+	out := r.Replace(pictureBookStoryboardSystemPrompt)
+	// 目标页数软约束（与 maxWords 同性质：只是「约」，实际页数由 LLM 决定）。
+	// >0 才注入，0/未设时不约束，维持今日「页数由模型自行决定」的行为。
+	if in.PBTargetPages > 0 {
+		out += fmt.Sprintf("\n请把绘本拆成约 %d 页（含封面与结尾页）。", in.PBTargetPages)
+	}
+	return out
 }
 
 // NewStoryboardAgent builds a StoryboardAgent over the given model.

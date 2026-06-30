@@ -130,6 +130,35 @@ export interface WorkflowNode {
   typeVersion?: number
 }
 
+// 运行期输入 schema（设计期声明，存 workflows.inputs_schema）。字段形态对齐后端
+// internal/runinputs.Field：name + label + type + target + options + default + required。
+export type InputFieldType = "text" | "textarea" | "number" | "select" | "multiselect"
+export type InputFieldTarget =
+  | "variable"
+  | "brief"
+  | "contentType"
+  | "targetPlatform"
+  | "style"
+  | "pbConfig"
+
+export interface InputFieldOption {
+  value: string
+  label?: string
+}
+
+export interface InputField {
+  // ^[A-Za-z_][A-Za-z0-9_]*$（前端 zod 与后端 ValidateSchema 双校验）。
+  name: string
+  label?: string
+  type: InputFieldType
+  target: InputFieldTarget
+  // 仅 select/multiselect 用；非空校验。
+  options?: InputFieldOption[]
+  // 默认值（可选）；后端为 json.RawMessage，前端以字符串字面量提交（合法 JSON）。
+  default?: string
+  required?: boolean
+}
+
 // workflow/store.go。一个项目可有多条工作流；nodes 是 JSON 数组（非字符串）。
 // latestRunStatus 为最近一次 run 的项目状态串（从未跑过 = 空串）；latestPlanId 同理。
 export interface Workflow {
@@ -137,6 +166,8 @@ export interface Workflow {
   projectId: string
   name: string
   nodes: WorkflowNode[]
+  // 运行期输入声明；旧工作流缺省（后端 DEFAULT '[]'）。
+  inputsSchema?: InputField[]
   createdAt: string
   updatedAt: string
   latestRunStatus?: string
@@ -147,6 +178,8 @@ export interface Workflow {
 export interface CreateWorkflowInput {
   name: string
   nodes: WorkflowNode[]
+  // 省略 = 不变更（后端按缺省 '[]' 处理）。
+  inputsSchema?: InputField[]
 }
 
 // runWorkflow 返回：POST /api/projects/{id}/workflows/{wfId}/run → 202。

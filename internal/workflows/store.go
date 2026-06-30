@@ -33,6 +33,7 @@ type Workflow struct {
 	ProjectID       string          `json:"projectId"`
 	Name            string          `json:"name"`
 	Nodes           json.RawMessage `json:"nodes"`
+	InputsSchema    json.RawMessage `json:"inputsSchema"`
 	CreatedAt       time.Time       `json:"createdAt"`
 	UpdatedAt       time.Time       `json:"updatedAt"`
 	LatestRunStatus string          `json:"latestRunStatus,omitempty"`
@@ -62,17 +63,27 @@ func normalizeNodes(nodes json.RawMessage) json.RawMessage {
 	return nodes
 }
 
+// normalizeSchema defaults a nil/empty inputs_schema to an empty JSON array so
+// the NOT NULL inputs_schema column always holds valid JSON (never NULL).
+func normalizeSchema(schema json.RawMessage) json.RawMessage {
+	if len(schema) == 0 {
+		return json.RawMessage("[]")
+	}
+	return schema
+}
+
 // Create inserts a workflow under a project.
-func (s *Store) Create(ctx context.Context, projectID, name string, nodes json.RawMessage) (Workflow, error) {
+func (s *Store) Create(ctx context.Context, projectID, name string, nodes, inputsSchema json.RawMessage) (Workflow, error) {
 	if projectID == "" || name == "" {
 		return Workflow{}, fmt.Errorf("workflows: projectID and name required")
 	}
-	w := Workflow{ID: newID(), ProjectID: projectID, Name: name, Nodes: normalizeNodes(nodes)}
+	w := Workflow{ID: newID(), ProjectID: projectID, Name: name, Nodes: normalizeNodes(nodes), InputsSchema: normalizeSchema(inputsSchema)}
+	// JSONB columns bound via []byte (避免直接绑 json.RawMessage 的 NULL/编码问题).
 	err := s.db.WithContext(ctx).Raw(
-		`INSERT INTO workflows (id, project_id, name, nodes)
-		 VALUES ($1,$2,$3,$4)
+		`INSERT INTO workflows (id, project_id, name, nodes, inputs_schema)
+		 VALUES ($1,$2,$3,$4,$5)
 		 RETURNING created_at, updated_at`,
-		w.ID, w.ProjectID, w.Name, w.Nodes).Row().Scan(&w.CreatedAt, &w.UpdatedAt)
+		w.ID, w.ProjectID, w.Name, []byte(w.Nodes), []byte(w.InputsSchema)).Row().Scan(&w.CreatedAt, &w.UpdatedAt)
 	if err != nil {
 		return Workflow{}, fmt.Errorf("workflows: insert: %w", err)
 	}
@@ -83,11 +94,11 @@ func (s *Store) Create(ctx context.Context, projectID, name string, nodes json.R
 // ErrNotFound, not a leak.
 func (s *Store) Get(ctx context.Context, projectID, id string) (Workflow, error) {
 	var w Workflow
-	var nodesB []byte
+	var nodesB, schemaB []byte
 	err := s.db.WithContext(ctx).Raw(
-		`SELECT id, project_id, name, nodes, created_at, updated_at
+		`SELECT id, project_id, name, nodes, inputs_schema, created_at, updated_at
 		 FROM workflows WHERE id=$1 AND project_id=$2`, id, projectID).Row().
-		Scan(&w.ID, &w.ProjectID, &w.Name, &nodesB, &w.CreatedAt, &w.UpdatedAt)
+		Scan(&w.ID, &w.ProjectID, &w.Name, &nodesB, &schemaB, &w.CreatedAt, &w.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Workflow{}, ErrNotFound
 	}
@@ -95,6 +106,7 @@ func (s *Store) Get(ctx context.Context, projectID, id string) (Workflow, error)
 		return Workflow{}, fmt.Errorf("workflows: get: %w", err)
 	}
 	w.Nodes = json.RawMessage(nodesB)
+	w.InputsSchema = json.RawMessage(schemaB)
 	return w, nil
 }
 
@@ -103,7 +115,7 @@ func (s *Store) Get(ctx context.Context, projectID, id string) (Workflow, error)
 // like project.ListPlans). Workflows that have never run get an empty status.
 func (s *Store) ListByProject(ctx context.Context, projectID string) ([]Workflow, error) {
 	rows, err := s.db.WithContext(ctx).Raw(`
-		SELECT w.id, w.project_id, w.name, w.nodes, w.created_at, w.updated_at,
+		SELECT w.id, w.project_id, w.name, w.nodes, w.inputs_schema, w.created_at, w.updated_at,
 		       COALESCE(lp.plan_id, ''),
 		       COALESCE(t.total, 0),
 		       COALESCE(t.ready, 0),
@@ -147,14 +159,15 @@ func (s *Store) ListByProject(ctx context.Context, projectID string) ([]Workflow
 	var out []Workflow
 	for rows.Next() {
 		var w Workflow
-		var nodesB []byte
+		var nodesB, schemaB []byte
 		var c project.TodoCounts
-		if err := rows.Scan(&w.ID, &w.ProjectID, &w.Name, &nodesB, &w.CreatedAt, &w.UpdatedAt,
+		if err := rows.Scan(&w.ID, &w.ProjectID, &w.Name, &nodesB, &schemaB, &w.CreatedAt, &w.UpdatedAt,
 			&w.LatestPlanID,
 			&c.Total, &c.Ready, &c.Running, &c.Blocked, &c.Done, &c.Failed, &c.Canceled, &c.PendingAssets); err != nil {
 			return nil, fmt.Errorf("workflows: list: scan: %w", err)
 		}
 		w.Nodes = json.RawMessage(nodesB)
+		w.InputsSchema = json.RawMessage(schemaB)
 		// No run yet → leave status empty (the UI shows "未运行"); a run with todos
 		// derives the same status as project.ListPlans.
 		if w.LatestPlanID != "" {
@@ -170,13 +183,13 @@ func (s *Store) ListByProject(ctx context.Context, projectID string) ([]Workflow
 
 // Update changes a workflow's name + nodes, scoped by (id AND project_id).
 // 0 rows affected → ErrNotFound.
-func (s *Store) Update(ctx context.Context, projectID, id, name string, nodes json.RawMessage) (Workflow, error) {
+func (s *Store) Update(ctx context.Context, projectID, id, name string, nodes, inputsSchema json.RawMessage) (Workflow, error) {
 	if name == "" {
 		return Workflow{}, fmt.Errorf("workflows: name required")
 	}
 	res := s.db.WithContext(ctx).Exec(
-		`UPDATE workflows SET name=$3, nodes=$4, updated_at=now()
-		 WHERE id=$1 AND project_id=$2`, id, projectID, name, normalizeNodes(nodes))
+		`UPDATE workflows SET name=$3, nodes=$4, inputs_schema=$5, updated_at=now()
+		 WHERE id=$1 AND project_id=$2`, id, projectID, name, []byte(normalizeNodes(nodes)), []byte(normalizeSchema(inputsSchema)))
 	if res.Error != nil {
 		return Workflow{}, fmt.Errorf("workflows: update: %w", res.Error)
 	}

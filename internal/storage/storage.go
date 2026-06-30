@@ -500,6 +500,14 @@ var m19Migrations = []string{
 	`CREATE UNIQUE INDEX IF NOT EXISTS org_secrets_org_name_uniq ON org_secrets (org_id, name)`,
 }
 
+// m20Migrations 加「运行期输入」双列：workflows.inputs_schema（设计期声明的 InputField[]，
+// DEFAULT '[]'）与 plans.run_inputs（本次 run 的值+schema 快照，DEFAULT '{}'）。DEFAULT
+// 保证旧行零回归。plans.run_inputs 列在此一并建，T3 才写入。幂等 DDL，additive only。
+var m20Migrations = []string{
+	`ALTER TABLE workflows ADD COLUMN IF NOT EXISTS inputs_schema JSONB NOT NULL DEFAULT '[]'`,
+	`ALTER TABLE plans     ADD COLUMN IF NOT EXISTS run_inputs   JSONB NOT NULL DEFAULT '{}'`,
+}
+
 // schemaMigrationsDDL creates the version-tracking table for Go-coded migration
 // steps. Runs FIRST (before legacy DDL) and is itself idempotent. Only the Go
 // steps (goSteps) are version-tracked here; the legacy m1…m19 DDL runs
@@ -660,6 +668,7 @@ func (s *Storage) Migrate(ctx context.Context) error {
 	all = append(all, m17Migrations...)
 	all = append(all, m18Migrations...)
 	all = append(all, m19Migrations...)
+	all = append(all, m20Migrations...)
 	for _, stmt := range all {
 		if _, err := conn.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("storage: migrate: %w", err)

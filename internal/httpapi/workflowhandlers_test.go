@@ -22,12 +22,13 @@ type stubWorkflows struct {
 	createIn struct {
 		projectID, name string
 		nodes           json.RawMessage
+		inputsSchema    json.RawMessage
 	}
 }
 
-func (s *stubWorkflows) Create(_ context.Context, projectID, name string, nodes json.RawMessage) (workflows.Workflow, error) {
-	s.createIn.projectID, s.createIn.name, s.createIn.nodes = projectID, name, nodes
-	return workflows.Workflow{ID: "wf1", ProjectID: projectID, Name: name, Nodes: nodes}, nil
+func (s *stubWorkflows) Create(_ context.Context, projectID, name string, nodes, inputsSchema json.RawMessage) (workflows.Workflow, error) {
+	s.createIn.projectID, s.createIn.name, s.createIn.nodes, s.createIn.inputsSchema = projectID, name, nodes, inputsSchema
+	return workflows.Workflow{ID: "wf1", ProjectID: projectID, Name: name, Nodes: nodes, InputsSchema: inputsSchema}, nil
 }
 func (s *stubWorkflows) Get(_ context.Context, _, id string) (workflows.Workflow, error) {
 	if s.getErr != nil {
@@ -40,18 +41,22 @@ func (s *stubWorkflows) Get(_ context.Context, _, id string) (workflows.Workflow
 func (s *stubWorkflows) ListByProject(_ context.Context, _ string) ([]workflows.Workflow, error) {
 	return []workflows.Workflow{{ID: "wf1", Name: "a"}}, nil
 }
-func (s *stubWorkflows) Update(_ context.Context, projectID, id, name string, nodes json.RawMessage) (workflows.Workflow, error) {
-	return workflows.Workflow{ID: id, ProjectID: projectID, Name: name, Nodes: nodes}, nil
+func (s *stubWorkflows) Update(_ context.Context, projectID, id, name string, nodes, inputsSchema json.RawMessage) (workflows.Workflow, error) {
+	return workflows.Workflow{ID: id, ProjectID: projectID, Name: name, Nodes: nodes, InputsSchema: inputsSchema}, nil
 }
 func (s *stubWorkflows) Delete(_ context.Context, _, _ string) error { return nil }
 
-// recordingPlanner captures the workflowID passed to PlanCustom.
-type recordingPlanner struct{ gotWorkflowID string }
+// recordingPlanner captures the workflowID, brief and runInputs passed to PlanCustom.
+type recordingPlanner struct {
+	gotWorkflowID string
+	gotBrief      planner.Brief
+	gotRunInputs  json.RawMessage
+}
 
-func (recordingPlanner) Plan(_ context.Context, _ string, _ planner.Brief) (planner.Result, error) {
+func (recordingPlanner) Plan(_ context.Context, _ string, _ planner.Brief, _ json.RawMessage) (planner.Result, error) {
 	return planner.Result{PlanID: "pl"}, nil
 }
-func (recordingPlanner) PlanWith(_ context.Context, _ string, _ llm.ChatModel, _ planner.Brief) (planner.Result, error) {
+func (recordingPlanner) PlanWith(_ context.Context, _ string, _ llm.ChatModel, _ planner.Brief, _ json.RawMessage) (planner.Result, error) {
 	return planner.Result{PlanID: "pl"}, nil
 }
 
@@ -80,6 +85,79 @@ func TestCreateWorkflowHandlerHappy(t *testing.T) {
 	if ws.createIn.projectID != "p1" || ws.createIn.name != "工作流 A" {
 		t.Fatalf("create args mismatch: %+v", ws.createIn)
 	}
+}
+
+// TestCreateWorkflowRejectsInvalidInputsSchema verifies store-time schema
+// validation: an illegal inputs_schema is rejected with 400 BEFORE the store
+// write (Create must not be called).
+func TestCreateWorkflowRejectsInvalidInputsSchema(t *testing.T) {
+	cases := []struct {
+		name   string
+		schema string
+	}{
+		{"bad name", `[{"name":"1bad","type":"text","target":"variable"}]`},
+		{"select no options", `[{"name":"voice","type":"select","target":"pbConfig"}]`},
+		{"unknown type", `[{"name":"x","type":"color","target":"variable"}]`},
+		{"unknown target", `[{"name":"x","type":"text","target":"secret"}]`},
+		{"multiselect non-pbConfig", `[{"name":"themes","type":"multiselect","target":"variable","options":[{"value":"a"}]}]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := &cycleRejectingWorkflows{t: t} // Create must NOT be called
+			h := createWorkflowHandler(stubProjects{orgID: "o1"}, ws, nil)
+			body := `{"name":"wf1","inputsSchema":` + tc.schema + `}`
+			req := httptest.NewRequest("POST", "/api/projects/p1/workflows", strings.NewReader(body))
+			req.SetPathValue("id", "p1")
+			rr := httptest.NewRecorder()
+			h(rr, req)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("invalid inputs_schema should 400, got %d: %s", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+// TestCreateWorkflowAcceptsValidInputsSchema verifies a legal schema persists
+// (passed through to the store), and an empty/absent schema also passes.
+func TestCreateWorkflowAcceptsValidInputsSchema(t *testing.T) {
+	ws := &stubWorkflows{}
+	h := createWorkflowHandler(stubProjects{orgID: "o1"}, ws, nil)
+	schema := `[{"name":"heroName","type":"text","target":"variable","required":true}]`
+	body := `{"name":"wf1","inputsSchema":` + schema + `}`
+	req := httptest.NewRequest("POST", "/api/projects/p1/workflows", strings.NewReader(body))
+	req.SetPathValue("id", "p1")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("valid schema should 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !sameJSONBytes(ws.createIn.inputsSchema, json.RawMessage(schema)) {
+		t.Fatalf("store did not receive inputs_schema: %q", ws.createIn.inputsSchema)
+	}
+}
+
+func TestUpdateWorkflowRejectsInvalidInputsSchema(t *testing.T) {
+	ws := &cycleRejectingWorkflows{t: t} // Update must NOT be called
+	h := updateWorkflowHandler(stubProjects{orgID: "o1"}, ws, nil)
+	body := `{"name":"wf1","inputsSchema":[{"name":"x","type":"select","target":"variable"}]}`
+	req := httptest.NewRequest("PUT", "/api/projects/p1/workflows/w1", strings.NewReader(body))
+	req.SetPathValue("id", "p1")
+	req.SetPathValue("wfId", "w1")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("invalid inputs_schema update should 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func sameJSONBytes(a, b json.RawMessage) bool {
+	var av, bv any
+	if json.Unmarshal(a, &av) != nil || json.Unmarshal(b, &bv) != nil {
+		return false
+	}
+	ab, _ := json.Marshal(av)
+	bb, _ := json.Marshal(bv)
+	return string(ab) == string(bb)
 }
 
 func TestRunWorkflowHandlerNotFound(t *testing.T) {
@@ -172,7 +250,7 @@ type cycleRejectingWorkflows struct {
 	t *testing.T
 }
 
-func (s *cycleRejectingWorkflows) Create(_ context.Context, _, _ string, _ json.RawMessage) (workflows.Workflow, error) {
+func (s *cycleRejectingWorkflows) Create(_ context.Context, _, _ string, _, _ json.RawMessage) (workflows.Workflow, error) {
 	s.t.Fatal("Create must not be called when the graph is invalid")
 	return workflows.Workflow{}, nil
 }
@@ -182,7 +260,7 @@ func (s *cycleRejectingWorkflows) Get(_ context.Context, _, id string) (workflow
 func (s *cycleRejectingWorkflows) ListByProject(_ context.Context, _ string) ([]workflows.Workflow, error) {
 	return nil, nil
 }
-func (s *cycleRejectingWorkflows) Update(_ context.Context, _, id, name string, nodes json.RawMessage) (workflows.Workflow, error) {
+func (s *cycleRejectingWorkflows) Update(_ context.Context, _, id, name string, nodes, inputsSchema json.RawMessage) (workflows.Workflow, error) {
 	s.t.Fatal("Update must not be called when the graph is invalid")
 	return workflows.Workflow{}, nil
 }
@@ -243,9 +321,161 @@ func TestRunWorkflowHandlerRefusesCustomNodes(t *testing.T) {
 	}
 }
 
-func (rp *recordingPlanner) PlanCustom(_ context.Context, _, workflowID string, _ planner.Brief, _ []planner.WorkflowNode, _ map[string]planner.ResolvedType) (planner.Result, error) {
+func (rp *recordingPlanner) PlanCustom(_ context.Context, _, workflowID string, b planner.Brief, _ []planner.WorkflowNode, _ map[string]planner.ResolvedType, runInputs json.RawMessage) (planner.Result, error) {
 	rp.gotWorkflowID = workflowID
+	rp.gotBrief = b
+	rp.gotRunInputs = runInputs
 	return planner.Result{PlanID: "pl", Valid: true, ReadyTodos: []planner.ReadyTodo{{ID: "t1", Type: "script"}}}, nil
+}
+
+// scriptNode is the standard single valid node used across run tests.
+const scriptNode = `[{"id":"n1","type":"script","promptId":"","dependsOn":[]}]`
+
+// TestRunWorkflowAppliesInputs: a legal body with a brief-target field and a
+// variable-target field → PlanCustom receives the overridden brief and a
+// {values,schema} run_inputs snapshot carrying both submitted values.
+func TestRunWorkflowAppliesInputs(t *testing.T) {
+	schema := `[{"name":"heroBrief","type":"text","target":"brief"},{"name":"heroName","type":"text","target":"variable"}]`
+	ws := &stubWorkflows{got: workflows.Workflow{
+		Name:         "wf",
+		Nodes:        json.RawMessage(scriptNode),
+		InputsSchema: json.RawMessage(schema),
+	}}
+	rp := &recordingPlanner{}
+	h := runWorkflowHandler(stubProjects{orgID: "o1"}, ws, rp, stubAppender{}, &stubCost{count: 0}, 100, nil)
+	body := `{"inputs":{"heroBrief":"勇敢的小熊","heroName":"阿力"}}`
+	req := httptest.NewRequest("POST", "/api/projects/p1/workflows/wfX/run", strings.NewReader(body))
+	req.SetPathValue("id", "p1")
+	req.SetPathValue("wfId", "wfX")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("run-with-inputs should 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if rp.gotBrief.Brief != "勇敢的小熊" {
+		t.Fatalf("brief override not applied: got %q", rp.gotBrief.Brief)
+	}
+	// run_inputs snapshot must carry both submitted values + the schema snapshot.
+	var snap struct {
+		Values map[string]json.RawMessage `json:"values"`
+		Schema json.RawMessage            `json:"schema"`
+	}
+	if err := json.Unmarshal(rp.gotRunInputs, &snap); err != nil {
+		t.Fatalf("runInputs not valid json: %v (%s)", err, rp.gotRunInputs)
+	}
+	if _, ok := snap.Values["heroBrief"]; !ok {
+		t.Fatalf("runInputs.values missing heroBrief: %s", rp.gotRunInputs)
+	}
+	if _, ok := snap.Values["heroName"]; !ok {
+		t.Fatalf("runInputs.values missing heroName: %s", rp.gotRunInputs)
+	}
+	if !sameJSONBytes(snap.Schema, json.RawMessage(schema)) {
+		t.Fatalf("runInputs.schema snapshot mismatch: %s", snap.Schema)
+	}
+}
+
+// TestRunWorkflowRejectsInvalidInputs: a required field missing → 400, and
+// neither planner_started (event) nor PlanCustom fires (validation precedes
+// all side effects, so the project never hangs in "planning").
+func TestRunWorkflowRejectsInvalidInputs(t *testing.T) {
+	schema := `[{"name":"heroName","type":"text","target":"variable","required":true}]`
+	ws := &stubWorkflows{got: workflows.Workflow{
+		Name:         "wf",
+		Nodes:        json.RawMessage(scriptNode),
+		InputsSchema: json.RawMessage(schema),
+	}}
+	rp := &recordingPlanner{}
+	ev := &trackingAppender{}
+	h := runWorkflowHandler(stubProjects{orgID: "o1"}, ws, rp, ev, &stubCost{count: 0}, 100, nil)
+	req := httptest.NewRequest("POST", "/api/projects/p1/workflows/wfX/run", strings.NewReader(`{"inputs":{}}`))
+	req.SetPathValue("id", "p1")
+	req.SetPathValue("wfId", "wfX")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("invalid inputs should 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if ev.count != 0 {
+		t.Fatalf("planner_started must not fire on invalid inputs (got %d Append calls)", ev.count)
+	}
+	if rp.gotWorkflowID != "" {
+		t.Fatalf("PlanCustom must not be called on invalid inputs")
+	}
+}
+
+// TestRunWorkflowEnumOutOfRange: a select value outside its options → 400.
+func TestRunWorkflowEnumOutOfRange(t *testing.T) {
+	schema := `[{"name":"tone","type":"select","target":"style","options":[{"value":"warm"}]}]`
+	ws := &stubWorkflows{got: workflows.Workflow{
+		Name:         "wf",
+		Nodes:        json.RawMessage(scriptNode),
+		InputsSchema: json.RawMessage(schema),
+	}}
+	ev := &trackingAppender{}
+	h := runWorkflowHandler(stubProjects{orgID: "o1"}, ws, &recordingPlanner{}, ev, &stubCost{count: 0}, 100, nil)
+	req := httptest.NewRequest("POST", "/api/projects/p1/workflows/wfX/run", strings.NewReader(`{"inputs":{"tone":"cold"}}`))
+	req.SetPathValue("id", "p1")
+	req.SetPathValue("wfId", "wfX")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("enum-out-of-range should 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if ev.count != 0 {
+		t.Fatalf("planner_started must not fire on invalid inputs (got %d)", ev.count)
+	}
+}
+
+// TestRunWorkflowBodyTooLarge: a body over the 64KB read cap → 400 at the
+// MaxBytesReader read layer (never reaches Validate/planner).
+func TestRunWorkflowBodyTooLarge(t *testing.T) {
+	ws := &stubWorkflows{got: workflows.Workflow{
+		Name:  "wf",
+		Nodes: json.RawMessage(scriptNode),
+	}}
+	ev := &trackingAppender{}
+	huge := strings.Repeat("x", 70*1024)
+	body := `{"inputs":{"x":"` + huge + `"}}`
+	h := runWorkflowHandler(stubProjects{orgID: "o1"}, ws, &recordingPlanner{}, ev, &stubCost{count: 0}, 100, nil)
+	req := httptest.NewRequest("POST", "/api/projects/p1/workflows/wfX/run", strings.NewReader(body))
+	req.SetPathValue("id", "p1")
+	req.SetPathValue("wfId", "wfX")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("oversized body should 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if ev.count != 0 {
+		t.Fatalf("planner_started must not fire on oversized body (got %d)", ev.count)
+	}
+}
+
+// TestRunWorkflowEmptyBodyNoRegression: no body (today's behavior) → run
+// proceeds; PlanCustom receives an empty {values,schema} snapshot.
+func TestRunWorkflowEmptyBodyNoRegression(t *testing.T) {
+	ws := &stubWorkflows{got: workflows.Workflow{
+		Name:  "wf",
+		Nodes: json.RawMessage(scriptNode),
+	}}
+	rp := &recordingPlanner{}
+	h := runWorkflowHandler(stubProjects{orgID: "o1"}, ws, rp, stubAppender{}, &stubCost{count: 0}, 100, nil)
+	req := httptest.NewRequest("POST", "/api/projects/p1/workflows/wfX/run", nil)
+	req.SetPathValue("id", "p1")
+	req.SetPathValue("wfId", "wfX")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("empty-body run should 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var snap struct {
+		Values map[string]json.RawMessage `json:"values"`
+	}
+	if err := json.Unmarshal(rp.gotRunInputs, &snap); err != nil {
+		t.Fatalf("runInputs not valid json: %v (%s)", err, rp.gotRunInputs)
+	}
+	if len(snap.Values) != 0 {
+		t.Fatalf("empty body should yield empty values, got %s", rp.gotRunInputs)
+	}
 }
 
 // TestCreateWorkflowRejectsRegistryOnlyOverlay (W1 create) [DB]: a node overlay
