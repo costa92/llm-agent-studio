@@ -488,6 +488,13 @@ func (m *fakeChatModel) Generate(_ context.Context, req llm.Request) (llm.Respon
 	sys := req.SystemPrompt
 	var text string
 	switch {
+	case strings.Contains(sys, "planner"):
+		// 必须最先匹配：planner 系统提示（plannerSystemPrompt）本身含 "script" 与
+		// "storyboard" 等词，若排在 storyboard 分支之后会被其抢先命中 → planner 收到
+		// 分镜 JSON → ParseGraph 失败 → 每次运行 fallback_used=true，UI 恒弹「Planner
+		// 输出畸形，已回落默认管线」。规划图本身就含 script→storyboard，下游 worker
+		// 在 storyboard 完成后按 shot 自动派生 asset todos（asset 不在规划图里）。
+		text = `{"nodes":[{"id":"s","type":"script","dependsOn":[]},{"id":"b","type":"storyboard","dependsOn":["s"]}]}`
 	case strings.Contains(sys, "儿童绘本作家"):
 		// 绘本脚本提示是中文（agents.pictureBookSystemPrompt），且 JSON 契约比标准
 		// 脚本多了 characterSheet 字段——必须先于英文 "screenwriter" 分支匹配，否则
@@ -509,8 +516,6 @@ func (m *fakeChatModel) Generate(_ context.Context, req llm.Request) (llm.Respon
 			`{"shotNo":5,"camera":"wide","scene":"结尾","action":"大家快乐地回家","prompt":"卡通风格，伙伴们在夕阳下挥手","duration":3}]}`
 	case strings.Contains(sys, "storyboard"):
 		text = `{"shots":[{"shotNo":1,"camera":"wide","scene":"studio","action":"open","prompt":"a placeholder shot","duration":3}]}`
-	case strings.Contains(sys, "planner"):
-		text = `{"nodes":[{"id":"s","type":"script","dependsOn":[]},{"id":"b","type":"storyboard","dependsOn":["s"]}]}`
 	default:
 		// ReviewAgent + anything else: a neutral advisory verdict.
 		text = `{"score":80,"flags":[],"note":"fake-mode placeholder"}`
