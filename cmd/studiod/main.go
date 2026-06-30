@@ -488,8 +488,25 @@ func (m *fakeChatModel) Generate(_ context.Context, req llm.Request) (llm.Respon
 	sys := req.SystemPrompt
 	var text string
 	switch {
+	case strings.Contains(sys, "儿童绘本作家"):
+		// 绘本脚本提示是中文（agents.pictureBookSystemPrompt），且 JSON 契约比标准
+		// 脚本多了 characterSheet 字段——必须先于英文 "screenwriter" 分支匹配，否则
+		// 落到 default 的评审 JSON，ScriptAgent 拿不到 title/scenes 而失败，导致绘本
+		// 在无 key 的 dev/demo 栈里永远生成不出来（脚本阶段 failed）。
+		text = `{"title":"假数据绘本","logline":"无密钥 demo 占位绘本","characterSheet":"主角：小兔子 / 主色：米白 / 服饰：蓝色背带裤 / 特征：长耳朵","scenes":[{"heading":"第一页","description":"小兔子在清晨醒来","dialogue":"新的一天开始啦"},{"heading":"第二页","description":"小兔子走进森林","dialogue":"去探险吧"},{"heading":"第三页","description":"小兔子遇到好朋友","dialogue":"我们一起玩"},{"heading":"第四页","description":"大家快乐地回家","dialogue":"今天真开心"}]}`
 	case strings.Contains(sys, "screenwriter"):
 		text = `{"title":"Fake Demo","logline":"a keyless demo","scenes":[{"heading":"INT. STUDIO","description":"a placeholder scene","dialogue":"hello"}]}`
+	case strings.Contains(sys, "儿童绘本分镜师"):
+		// 绘本分镜提示同样是中文（agents.pictureBookStoryboardSystemPrompt），不含英文
+		// "storyboard" 标记——必须单独匹配，否则落到 default 而「no shots produced」。
+		// 产出封面（action 留空）+ 3 内容页 + 结尾页，让无 key 的 dev/demo 绘本能跑到
+		// 可成书阈值（contentCount=3 → 需 2 张已接受插图即 bookReady）。
+		text = `{"shots":[` +
+			`{"shotNo":1,"camera":"wide","scene":"封面","action":"","prompt":"卡通风格，小兔子站在森林入口，米白主色，蓝色背带裤","duration":3},` +
+			`{"shotNo":2,"camera":"medium","scene":"清晨","action":"小兔子在清晨醒来","prompt":"卡通风格，小兔子在床上伸懒腰","duration":3},` +
+			`{"shotNo":3,"camera":"wide","scene":"森林","action":"小兔子走进森林","prompt":"卡通风格，小兔子走在森林小路上","duration":3},` +
+			`{"shotNo":4,"camera":"medium","scene":"相遇","action":"小兔子遇到好朋友","prompt":"卡通风格，小兔子和小熊握手","duration":3},` +
+			`{"shotNo":5,"camera":"wide","scene":"结尾","action":"大家快乐地回家","prompt":"卡通风格，伙伴们在夕阳下挥手","duration":3}]}`
 	case strings.Contains(sys, "storyboard"):
 		text = `{"shots":[{"shotNo":1,"camera":"wide","scene":"studio","action":"open","prompt":"a placeholder shot","duration":3}]}`
 	case strings.Contains(sys, "planner"):
