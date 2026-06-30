@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useCallback, useMemo, useState } from "react"
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -52,20 +52,22 @@ import { useQueryClient } from "@tanstack/react-query"
 import { toReactFlow, type RFNode, type RFEdge, type StudioNodeData } from "./canvasModel"
 import { overlayRunStatus } from "./runOverlay"
 import {
-  buildAssetFanout,
+  buildRunGroups,
   type AssetKind,
   type ParentAnchor,
-  type AssetRunNodeData,
+  type GroupCell,
 } from "./runFanout"
 import { resolveSelection, type RunSelection } from "./resolveSelection"
 import { ItemInspector } from "./ItemInspector"
 import { WorkflowNode } from "./WorkflowNode"
-import { AssetRunNode } from "./AssetRunNode"
+import { GroupNode, type GroupRunNodeData } from "./GroupNode"
+import { RunMatrix } from "./RunMatrix"
 import { StudioEdge } from "./StudioEdge"
 import { NODE_COLOR } from "./nodeColor"
+import type { Node as RFNodeBase } from "@xyflow/react"
 
 const GRID = 16
-const nodeTypes = { studio: WorkflowNode, assetRun: AssetRunNode }
+const nodeTypes = { studio: WorkflowNode, groupRun: GroupNode }
 const edgeTypes = { studio: StudioEdge }
 
 // SseConnState → SseIndicator 可视态（与 WorkbenchPage CONN_TO_STATUS 一致）。
@@ -112,10 +114,23 @@ function RunCanvasInner({
   const run = useRun(projectId)
   const cancel = useCancel(projectId)
 
-  // 选中态：点节点 → 看工件（剧本/分镜抽屉 或 右栏资产预览）。
+  // 选中态：点节点 → 看工件（剧本/分镜抽屉 或 右栏资产预览 或大功能容器 Run Matrix）。
   const [selection, setSelection] = useState<RunSelection>(null)
   // 素材画廊开合。
   const [galleryOpen, setGalleryOpen] = useState(false)
+  // 大功能容器折叠/展开（视图态，按画布节点 id）。绝不回写 dependsOn。
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
+  const onToggleGroup = useCallback((nodeId: string) => {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev)
+      if (next.has(nodeId)) next.delete(nodeId)
+      else next.add(nodeId)
+      return next
+    })
+  }, [])
+  const onSelectCell = useCallback((nodeId: string, cell: GroupCell) => {
+    setSelection({ kind: "group", groupId: nodeId, selectedTodoId: cell.todoId })
+  }, [])
 
   // 抽屉数据 gated 拉取：非该类型时传 "" 不发请求（与 RunWorkbenchPage 一致）。
   const scriptQuery = useScript(
@@ -131,29 +146,58 @@ function RunCanvasInner({
   // 该 run 项目资产：供画廊提示词元信息（按 assetId）。无 runId 时传 "" 不发请求。
   const projectAssetsQuery = useProjectAssets(runId ? projectId : "", undefined, runId)
 
+  // 权威工作流状态（加载中回落 draft 草态）。useMemo 稳定化：未加载时 `??` 兜底对象
+  // 每帧新建会令下游 overlay/runGroups memo 每帧失效，故记忆化。
+  const wfState: ProjectState = useMemo(
+    () =>
+      stateQuery.data ?? {
+        projectId,
+        version: 0,
+        status: "draft",
+        runStatus: "idle",
+        stages: [],
+        pips: [],
+        assets: { total: 0, done: 0, pending: 0 },
+        nodes: [],
+        edges: [],
+        isCustom: false,
+      },
+    [stateQuery.data, projectId],
+  )
+
+  // overlay map：画布节点 id → run 状态（点节点解析选中态、画布注入 data.run 共用）。
+  const overlay = useMemo(() => overlayRunStatus(nodes, wfState), [nodes, wfState])
+
+  // 大功能容器分组：已命中 run 的 storyboard → 逐页 cell + 状态计数（Map<画布节点 id, RunGroup>）。
+  const runGroups = useMemo(() => {
+    const parents: ParentAnchor[] = nodes
+      .filter((n) => n.type === "storyboard")
+      .map((n) => ({ todoId: overlay.get(n.id)?.todoId, canvasNodeId: n.id }))
+      .filter((p): p is ParentAnchor => p.todoId != null)
+    const assetKindById = new Map<string, AssetKind>()
+    for (const a of projectAssetsQuery.data ?? []) {
+      assetKindById.set(a.id, (a.type as AssetKind) ?? "unknown")
+    }
+    return buildRunGroups(wfState, parents, assetKindById)
+  }, [nodes, overlay, wfState, projectAssetsQuery.data])
+
   // 选中资产详情（hooks 规则：early return 前无条件调用）。
-  // 用 stateQuery 的 pips 算回落 latestAssetId 得完整 previewAssetId；
+  // 用 stateQuery 的 pips 算回落 latestAssetId；选中大功能容器某页（image）则用该页 assetId。
   // useAsset 内部 enabled: id !== "" 防护空串不发请求。
   const latestAssetIdEarly = [...(stateQuery.data?.pips ?? [])]
     .reverse()
     .find((p) => p.status === "done" && p.assetId)?.assetId
+  const selectedGroupCellEarly =
+    selection?.kind === "group" && selection.selectedTodoId
+      ? runGroups
+          .get(selection.groupId)
+          ?.cells.find((c) => c.todoId === selection.selectedTodoId)
+      : undefined
   const previewAssetIdEarly =
-    selection?.kind === "asset" ? selection.assetId : latestAssetIdEarly
+    selection?.kind === "asset"
+      ? selection.assetId
+      : (selectedGroupCellEarly?.assetId ?? latestAssetIdEarly)
   const previewDetailQuery = useAsset(previewAssetIdEarly ?? "")
-
-  // 权威工作流状态（加载中回落 draft 草态）。
-  const wfState: ProjectState = stateQuery.data ?? {
-    projectId,
-    version: 0,
-    status: "draft",
-    runStatus: "idle",
-    stages: [],
-    pips: [],
-    assets: { total: 0, done: 0, pending: 0 },
-    nodes: [],
-    edges: [],
-    isCustom: false,
-  }
 
   // SSE：回放 → 续接实时；驱动 live/conn 指示器与事件日志。state 帧写回缓存使画布实时刷新。
   const { log, conn } = useProductionTimeline({
@@ -167,37 +211,41 @@ function RunCanvasInner({
   })
   const live = wfState.runStatus !== "done" && !!runId
 
-  // overlay map：画布节点 id → run 状态（点节点解析选中态、画布注入 data.run 共用）。
-  const overlay = useMemo(() => overlayRunStatus(nodes, wfState), [nodes, wfState])
-
   // 运行 rfNodes：从已保存节点（自存 position）建，按 overlay 注入 data.run；
-  // 再把 storyboard 扇出的逐页 asset todo 展开成父分镜下方的独立子节点（运行态可视化，additive）。
+  // 有逐页扇出资产的 storyboard → 渲成可折叠大功能容器（groupRun），取代旧的平铺子节点。
+  // 运行态可视化不产扇出边、不回写 dependsOn——容器内子卡是 HTML 网格（见 GroupNode）。
   const { rfNodes, rfEdges } = useMemo(() => {
     const { nodes: rn, edges: re } = toReactFlow(nodes)
-    const withRun: RFNode[] = rn.map((n) => ({
-      ...n,
-      data: { ...n.data, run: overlay.get(n.id) },
-    }))
-    // 父锚点：已命中 run 的 storyboard 节点（有 todoId → 已运行；pending 分镜不画该批）。
-    const parents: ParentAnchor[] = withRun
-      .filter((n) => n.data.node.type === "storyboard" && n.data.run?.todoId)
-      .map((n) => ({
-        todoId: n.data.run!.todoId!,
-        canvasNodeId: n.id,
-        x: n.position.x,
-        y: n.position.y,
-      }))
-    // assetId → kind（image/audio/video）：从该 run 项目资产建。
-    const assetKindById = new Map<string, AssetKind>()
-    for (const a of projectAssetsQuery.data ?? []) {
-      assetKindById.set(a.id, (a.type as AssetKind) ?? "unknown")
-    }
-    const fan = buildAssetFanout(wfState, parents, assetKindById)
-    return {
-      rfNodes: [...withRun, ...fan.nodes],
-      rfEdges: [...(re as RFEdge[]), ...fan.edges],
-    }
-  }, [nodes, overlay, wfState, projectAssetsQuery.data])
+    const mapped: RFNodeBase[] = rn.map((n) => {
+      const withRun: RFNode = { ...n, data: { ...n.data, run: overlay.get(n.id) } }
+      const g = runGroups.get(n.id)
+      if (g && n.data.node.type === "storyboard") {
+        const data: GroupRunNodeData = {
+          ...withRun.data,
+          cells: g.cells,
+          counts: g.counts,
+          expanded: expandedGroups.has(n.id),
+          selectedTodoId:
+            selection?.kind === "group" && selection.groupId === n.id
+              ? selection.selectedTodoId
+              : undefined,
+          onToggle: onToggleGroup,
+          onSelectCell,
+        }
+        return { ...withRun, type: "groupRun", data }
+      }
+      return withRun
+    })
+    return { rfNodes: mapped, rfEdges: re as RFEdge[] }
+  }, [
+    nodes,
+    overlay,
+    runGroups,
+    expandedGroups,
+    selection,
+    onToggleGroup,
+    onSelectCell,
+  ])
 
   // 点节点（运行模式只读）：按 overlay 命中项 + 节点类型解析选中态。
   // 未命中（pending/未匹配）节点点击无操作。
@@ -341,10 +389,10 @@ function RunCanvasInner({
           elementsSelectable
           deleteKeyCode={null}
           onNodeClick={(_, node) => {
-            // asset 扇出子节点：有 assetId → 复用右栏资产面板；无（生成中）→ 不选中。
-            if (node.type === "assetRun") {
-              const d = node.data as AssetRunNodeData
-              if (d.assetId) setSelection({ kind: "asset", assetId: d.assetId })
+            // 大功能容器：点容器主体（非 header/子卡，二者已 stopPropagation）→ 选中该组，
+            // 右栏渲 Run Matrix（不预选某页）。
+            if (node.type === "groupRun") {
+              setSelection({ kind: "group", groupId: node.id })
               return
             }
             handleSelectNode(node.id)
@@ -356,8 +404,7 @@ function RunCanvasInner({
           <Controls showInteractive={false} />
           <MiniMap
             nodeColor={(n) => {
-              // asset 子节点无 data.node，单独取色避免 nodeColor 读 undefined 崩溃。
-              if (n.type === "assetRun") return "var(--asset)"
+              // studio 与 groupRun 节点都带 data.node（groupRun 复用 storyboard 节点），统一取色。
               return (
                 NODE_COLOR[(n as Node<StudioNodeData>).data.node.type] ??
                 "var(--line)"
@@ -379,9 +426,24 @@ function RunCanvasInner({
         <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
           选中工件
         </h4>
-        {/* P5d：选中节点有 items → per-item inspector（逐条 json/text + 二进制 chip）。
-            items 缺省（老后端 / 标量节点）或空 → 回落今天的标量面板（下方分支），不破布局。 */}
-        {selection?.items && selection.items.length > 0 ? (
+        {/* 选中大功能容器 → Run Matrix（逐页状态格 + 选中页产物）。取代 storyboard 旧 ItemInspector。
+            P5d：其余选中态有 items → per-item inspector；items 缺省/空 → 回落标量面板。 */}
+        {selection?.kind === "group" ? (
+          <RunMatrix
+            group={runGroups.get(selection.groupId)}
+            selectedTodoId={selection.selectedTodoId}
+            onSelectCell={(cell) =>
+              setSelection({
+                kind: "group",
+                groupId: selection.groupId,
+                selectedTodoId: cell.todoId,
+              })
+            }
+            org={org}
+            isAdmin={isAdmin}
+            assetDetail={previewDetailQuery.data}
+          />
+        ) : selection?.items && selection.items.length > 0 ? (
           <ItemInspector items={selection.items} />
         ) : selection?.kind === "custom" ? (
           selection.outputFormat === "http-status" ? (
