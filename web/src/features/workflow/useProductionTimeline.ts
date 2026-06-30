@@ -52,6 +52,10 @@ export interface UseProductionTimelineArgs extends TimelineDeps {
   planId?: string
   // 后端权威 state 帧到达时回调（容器经 setQueryData 写缓存）。
   onState?: (s: ProjectState) => void
+  // 回放批次到达（一次性，全部历史帧）。计时层据此取 seq 水位线 baseline。
+  onReplay?: (frames: SseFrame[]) => void
+  // 每个 SSE 帧到达（含服务端 after=0 回放与实时，计时层按 seq 水位线过滤）。
+  onFrame?: (frame: SseFrame) => void
 }
 
 export interface ProductionTimeline {
@@ -87,18 +91,24 @@ export function useProductionTimeline({
   sseClient = fetchEventSource,
   planId,
   onState,
+  onReplay,
+  onFrame,
 }: UseProductionTimelineArgs): ProductionTimeline {
   const [log, dispatch] = useReducer(logReducer, [])
   const [conn, setConn] = useState<SseConnState>("idle")
   const [replayed, setReplayed] = useState(false)
   // 避免对已卸载组件 setState。
   const aliveRef = useRef(true)
-  // onState 走 ref，避免其引用变化重起整条流。
+  // 回调走 ref，避免引用变化重起整条流。
   const onStateRef = useRef(onState)
-  // onStateRef 仅在异步 SSE 回调里读取（提交后才可能有帧），故写入放进无依赖 effect
+  const onReplayRef = useRef(onReplay)
+  const onFrameRef = useRef(onFrame)
+  // ref 仅在异步 SSE 回调里读取（提交后才可能有帧），故写入放进无依赖 effect
   // （每次提交后运行）以满足 react-hooks/refs；读取点为异步，行为与 render 期赋值等价。
   useEffect(() => {
     onStateRef.current = onState
+    onReplayRef.current = onReplay
+    onFrameRef.current = onFrame
   })
 
   useEffect(() => {
@@ -126,15 +136,20 @@ export function useProductionTimeline({
       if (!terminal) setConn("reconnecting")
 
       // ── 1) 回放历史事件（累积日志）──
+      let replayFrames: SseFrame[] = []
       try {
         const events = await fetchAllEvents(projectId, planId)
         if (cancelled) return
-        dispatch({ type: "replayed", frames: events.map(toFrame) })
+        replayFrames = events.map(toFrame)
+        dispatch({ type: "replayed", frames: replayFrames })
       } catch {
         // 回放失败不阻断：实时流仍会从 after=0 全量回放（服务端语义）。
       } finally {
         if (!cancelled) setReplayed(true)
       }
+      // onReplay 在 try/finally 之外透出：consumer 错误正常冒泡，
+      // 不会被回放的网络错误 catch 伪装成网络失败而静默吞掉。
+      if (!cancelled && replayFrames.length > 0) onReplayRef.current?.(replayFrames)
 
       // ── 2) 完成态：只回放不开流 ──
       if (terminal || accessToken == null || accessToken === "") {
@@ -149,11 +164,17 @@ export function useProductionTimeline({
           accessToken,
           {
             onEvent: (frame) => {
-              if (!cancelled) dispatch({ type: "frame", frame })
+              if (!cancelled) {
+                dispatch({ type: "frame", frame })
+                try { onFrameRef.current?.(frame) } catch { /* consumer 错误不得拖垮流 */ }
+              }
             },
             onMessage: (frame) => {
               // message 兜底帧也进日志，不改节点态。
-              if (!cancelled) dispatch({ type: "frame", frame })
+              if (!cancelled) {
+                dispatch({ type: "frame", frame })
+                try { onFrameRef.current?.(frame) } catch { /* consumer 错误不得拖垮流 */ }
+              }
             },
             onState: (raw) => {
               if (!cancelled) onStateRef.current?.(raw as ProjectState)

@@ -2,15 +2,14 @@ import { describe, expect, it } from "vitest"
 import { render, screen } from "@testing-library/react"
 import { ReactFlowProvider, Position, type NodeProps } from "@xyflow/react"
 import { WorkflowNode, type StudioRFNode } from "./WorkflowNode"
+import type { StudioNodeData } from "./canvasModel"
 
-// 最小 NodeProps 夹具：WorkflowNode 只读 data.node，其余字段给默认值满足类型。
-function makeProps(
-  node: StudioRFNode["data"]["node"],
-  run?: StudioRFNode["data"]["run"],
-): NodeProps<StudioRFNode> {
+// 最小 NodeProps 夹具：接受完整 StudioNodeData（含 timing/highlightFailed），
+// 其余 NodeProps 字段给默认值满足类型。
+function makeProps(data: StudioNodeData): NodeProps<StudioRFNode> {
   return {
-    id: node.id,
-    data: { node, run },
+    id: data.node.id,
+    data,
     type: "studio",
     selected: false,
     isConnectable: true,
@@ -29,16 +28,23 @@ function makeProps(
   } as unknown as NodeProps<StudioRFNode>
 }
 
+// 直接渲染 WorkflowNode（包 ReactFlowProvider 满足 useReactFlow/NodeToolbar），
+// 绕过 jsdom 下 ReactFlow 不渲染自定义节点的限制。
+function renderNode(data: StudioNodeData) {
+  return render(
+    <ReactFlowProvider>
+      <WorkflowNode {...makeProps(data)} />
+    </ReactFlowProvider>,
+  )
+}
+
 describe("WorkflowNode", () => {
   it("renders the id label and the Chinese type label", () => {
     render(
       <ReactFlowProvider>
         <WorkflowNode
           {...makeProps({
-            id: "script-1",
-            type: "script",
-            promptId: "",
-            dependsOn: [],
+            node: { id: "script-1", type: "script", promptId: "", dependsOn: [] },
           })}
         />
       </ReactFlowProvider>,
@@ -52,10 +58,7 @@ describe("WorkflowNode", () => {
       <ReactFlowProvider>
         <WorkflowNode
           {...makeProps({
-            id: "script-1",
-            type: "script",
-            promptId: "",
-            dependsOn: [],
+            node: { id: "script-1", type: "script", promptId: "", dependsOn: [] },
           })}
         />
       </ReactFlowProvider>,
@@ -72,10 +75,10 @@ describe("WorkflowNode", () => {
       const { container } = render(
         <ReactFlowProvider>
           <WorkflowNode
-            {...makeProps(
-              { id: "script-1", type: "script", promptId: "", dependsOn: [] },
-              { status, todoId: "uuidA" },
-            )}
+            {...makeProps({
+              node: { id: "script-1", type: "script", promptId: "", dependsOn: [] },
+              run: { status, todoId: "uuidA" },
+            })}
           />
         </ReactFlowProvider>,
       )
@@ -91,4 +94,29 @@ describe("WorkflowNode", () => {
       ).toBeNull()
     },
   )
+})
+
+const baseNode = { id: "n1", type: "asset", promptId: "", dependsOn: [] }
+
+describe("WorkflowNode 耗时 chip / 失败红环", () => {
+  it("有 timing 时显示格式化耗时", () => {
+    renderNode({
+      node: baseNode,
+      run: { status: "done", todoId: "t1" },
+      timing: { startedAt: 0, finishedAt: 3400, elapsedMs: 3400 },
+    })
+    expect(screen.getByText("3.4s")).toBeInTheDocument()
+  })
+  it("无 timing 时不显示耗时 chip", () => {
+    const { container } = renderNode({ node: baseNode, run: { status: "done", todoId: "t1" } })
+    expect(container.querySelector('[data-slot="canvas-node-timing"]')).toBeNull()
+  })
+  it("highlightFailed 且 failed 时加红环标记", () => {
+    const { container } = renderNode({
+      node: baseNode,
+      run: { status: "failed", todoId: "t1" },
+      highlightFailed: true,
+    })
+    expect(container.querySelector('[data-failed-highlight="true"]')).toBeInTheDocument()
+  })
 })

@@ -10,6 +10,7 @@ import { nodeDisplay } from "./nodeColor"
 import type { StudioNodeData } from "./canvasModel"
 import type { RunNodeStatus } from "./runOverlay"
 import { useCanvasActions } from "./CanvasActionsContext"
+import { formatDuration } from "@/features/workflow/useNodeTiming"
 
 // ReactFlow 自定义节点。编辑视图：圆角卡片 + 左侧 agent 语义色条 + 选中工具条。
 // 运行视图（data.run 存在）：叠加该 run 的执行状态指示器（复用 GraphView 视觉语言：
@@ -27,12 +28,32 @@ export function WorkflowNode({ id, data, selected }: NodeProps<StudioRFNode>) {
   const isRunMode = run != null
   const runStatus = run?.status
 
+  // 运行态拓扑增强：实时耗时 chip + 失败高亮红环。
+  const timing = data.timing
+  const isFailed = runStatus === "failed"
+  const failedHighlight = data.highlightFailed === true && isFailed
+
   return (
     <div
       data-slot="canvas-node"
       data-status={isRunMode ? (runStatus ?? "pending") : undefined}
-      className="group relative flex items-center gap-2.5 rounded-lg border border-line bg-bg-surface px-3 py-2 shadow-sm min-w-[140px]"
+      data-failed-highlight={failedHighlight ? "true" : undefined}
+      className={cn(
+        "group relative flex items-center gap-2.5 rounded-lg border border-line bg-bg-surface px-3 py-2 shadow-sm min-w-[140px]",
+        failedHighlight && "ring-2 ring-danger",
+      )}
     >
+      {/* 运行态耗时 chip：右上角绝对定位，不挤压两行文案。running 跳秒 aria-hidden。
+          耗时是运行态专属概念，编辑态不显（与 +快加按钮的 !isRunMode 守卫风格一致）。 */}
+      {isRunMode && timing && (
+        <span
+          data-slot="canvas-node-timing"
+          aria-hidden={timing.finishedAt === undefined ? true : undefined}
+          className="absolute -top-2 -right-2 rounded bg-bg-raised px-1 font-mono text-[10px] tabular-nums text-text-2 shadow-sm"
+        >
+          {formatDuration(timing.elapsedMs)}
+        </span>
+      )}
       {/* 选中时浮出工具条：复制 / 删除。仅编辑模式（运行模式只读，隐藏工具条）。
           NodeToolbar portal 到 flow viewport，必须在 <ReactFlow> 内（CanvasInner 满足）。 */}
       {!isRunMode && (

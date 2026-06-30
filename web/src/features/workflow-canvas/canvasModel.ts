@@ -1,51 +1,32 @@
 import type { Node, Edge } from "@xyflow/react"
-import { layerize } from "@/lib/graphLayout"
-import type { GraphNode, GraphEdge } from "@/lib/projectState"
+import { autoLayout } from "@/lib/autoLayout"
 import type { Prompt, WorkflowNode } from "@/lib/types"
 import type { RunNodeStatus } from "./runOverlay"
 import { isCustomType, nodeDisplay } from "./nodeColor"
+import type { NodeTiming } from "@/features/workflow/useNodeTiming"
 
 // 纯模型适配层（无 React）：把 studio 工作流 DAG（WorkflowNode[]）转成 ReactFlow
-// 的 nodes/edges。节点缺省 position 时用 layerize 分层种子坐标兜底。
-// 复用 lib/graphLayout 的拓扑分层 + lib/projectState 的 GraphEdge{from,to} 形状。
+// 的 nodes/edges。节点缺省 position 时用 autoLayout 分层种子坐标兜底。
 
 // 自定义 studio 节点的 data 形状：透传原始 WorkflowNode 供节点组件渲染。
 // run 可选：仅运行模式注入（见 runOverlay.overlayRunStatus）；存在时节点渲染运行态指示器。
 export interface StudioNodeData {
   node: WorkflowNode
   run?: RunNodeStatus
+  // 运行态拓扑增强：实时耗时（仅实时观测到的节点有值）+ 失败高亮开关。
+  timing?: NodeTiming
+  highlightFailed?: boolean
   [key: string]: unknown
 }
 
 export type RFNode = Node<StudioNodeData, "studio">
 export type RFEdge = Edge
 
-// 种子布局：节点无显式 position 时的兜底坐标。
-// 构造 throwaway GraphEdge{from: n.id, to: dep}（from 依赖 to，对齐 layerize 语义），
-// 调 layerize 分层；layer i 内第 j 个节点 → {x: j*240, y: i*140}（自顶向下）。
+// 种子布局：节点无显式 position 时的兜底坐标（TB，等价历史实现，委托 autoLayout）。
 export function seedPositions(
   nodes: WorkflowNode[],
 ): Map<string, { x: number; y: number }> {
-  const graphNodes: GraphNode[] = nodes.map((n) => ({
-    id: n.id,
-    label: n.id,
-    type: n.type,
-    status: "pending",
-  }))
-  const edges: GraphEdge[] = []
-  for (const n of nodes) {
-    for (const dep of n.dependsOn) {
-      edges.push({ from: n.id, to: dep })
-    }
-  }
-  const layers = layerize(graphNodes, edges)
-  const out = new Map<string, { x: number; y: number }>()
-  layers.forEach((layer, layerIndex) => {
-    layer.forEach((gn, indexWithinLayer) => {
-      out.set(gn.id, { x: indexWithinLayer * 240, y: layerIndex * 140 })
-    })
-  })
-  return out
+  return autoLayout(nodes, "TB")
 }
 
 // 主转换：每个 WorkflowNode → RFNode（type="studio"，data.node 透传原节点）；

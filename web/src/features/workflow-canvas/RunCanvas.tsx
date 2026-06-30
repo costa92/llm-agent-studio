@@ -1,10 +1,11 @@
-import { useCallback, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   ReactFlow,
   ReactFlowProvider,
   Background,
   Controls,
   MiniMap,
+  useReactFlow,
   type Node,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
@@ -12,7 +13,7 @@ import { useNavigate } from "@tanstack/react-router"
 import { toast } from "sonner"
 import "./canvasTheme.css"
 import type { ProjectStatus, WorkflowNode as WorkflowNodeType } from "@/lib/types"
-import type { ProjectState } from "@/lib/projectState"
+import type { ProjectState, GraphNodeStatus } from "@/lib/projectState"
 import { Badge } from "@/components/studio/Badge"
 import { Button } from "@/components/studio/Button"
 import { SseIndicator, type SseStatus } from "@/components/studio/SseIndicator"
@@ -49,7 +50,7 @@ import {
   type SseConnState,
 } from "@/features/workflow/useProductionTimeline"
 import { useQueryClient } from "@tanstack/react-query"
-import { toReactFlow, type RFNode, type RFEdge, type StudioNodeData } from "./canvasModel"
+import { toReactFlow, type RFEdge, type StudioNodeData } from "./canvasModel"
 import { overlayRunStatus } from "./runOverlay"
 import {
   buildRunGroups,
@@ -65,6 +66,13 @@ import { RunMatrix } from "./RunMatrix"
 import { RunEdge } from "./RunEdge"
 import { markActiveEdges } from "./runEdges"
 import { NODE_COLOR } from "./nodeColor"
+import { autoLayout } from "@/lib/autoLayout"
+import { useNodeTiming } from "@/features/workflow/useNodeTiming"
+import { useTopologySettings } from "./useTopologySettings"
+import { TopologySettingsPanel } from "./TopologySettingsPanel"
+// 边活动判定改用已合的 runEdges.markActiveEdges（与 #127 的 computeEdgeActive 等价）；
+// 仅保留节点可见性 computeNodeVisibility（focus/hideCompleted）。
+import { computeNodeVisibility } from "./topologyUtils"
 import type { Node as RFNodeBase } from "@xyflow/react"
 
 const GRID = 16
@@ -120,8 +128,6 @@ function RunCanvasInner({
   const [selection, setSelection] = useState<RunSelection>(null)
   // 素材画廊开合。
   const [galleryOpen, setGalleryOpen] = useState(false)
-  // 顶栏「流动效果」开关：关则活动边不渲流动粒子（仍静态显示拓扑）。
-  const [flowEnabled, setFlowEnabled] = useState(true)
   // 大功能容器折叠/展开（视图态，按画布节点 id）。绝不回写 dependsOn。
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   const onToggleGroup = useCallback((nodeId: string) => {
@@ -135,6 +141,10 @@ function RunCanvasInner({
   const onSelectCell = useCallback((nodeId: string, cell: GroupCell) => {
     setSelection({ kind: "group", groupId: nodeId, selectedTodoId: cell.todoId })
   }, [])
+
+  const { settings, update } = useTopologySettings(projectId)
+  const timing = useNodeTiming(runId ?? "")
+  const { fitView } = useReactFlow()
 
   // 抽屉数据 gated 拉取：非该类型时传 "" 不发请求（与 RunWorkbenchPage 一致）。
   const scriptQuery = useScript(
@@ -212,20 +222,47 @@ function RunCanvasInner({
     fetchAllEvents,
     planId: runId,
     onState: (s) => qc.setQueryData(["project-state", projectId, runId ?? ""], s),
+    onReplay: timing.onReplay,
+    onFrame: timing.onFrame,
   })
   const live = wfState.runStatus !== "done" && !!runId
 
-  // 运行 rfNodes：从已保存节点（自存 position）建，按 overlay 注入 data.run；
-  // 有逐页扇出资产的 storyboard → 渲成可折叠大功能容器（groupRun），取代旧的平铺子节点。
-  // 运行态可视化不产扇出边、不回写 dependsOn——容器内子卡是 HTML 网格（见 GroupNode）。
-  const { rfNodes, rfEdges } = useMemo(() => {
+  const autoPos = useMemo(
+    () => (settings.layout === "saved" ? null : autoLayout(nodes, settings.layout)),
+    [nodes, settings.layout],
+  )
+
+  // 运行 rfNodes（融合 #136/#137 与 #127）：从已保存节点（自存 position / autoLayout 坐标）建，
+  // 按 overlay 注入 data.run；有逐页扇出资产的 storyboard → 渲成可折叠大功能容器（groupRun）；
+  // 同时叠加 #127 的 visibility（hidden/dim）+ timing chip + autoLayout 坐标。
+  // 边的 active（流动粒子）走已合的 markActiveEdges（受设置面板 flowAnimation 控，见下 rfEdges）。
+  const { rfNodes, baseEdges, hiddenIds, dimIds, visibleCount } = useMemo(() => {
     const { nodes: rn, edges: re } = toReactFlow(nodes)
+    // 逻辑 hidden/dim id 集合（不回读 style，避免与其它 opacity 用途串扰）。
+    const hidden = new Set<string>()
+    const dim = new Set<string>()
     const mapped: RFNodeBase[] = rn.map((n) => {
-      const withRun: RFNode = { ...n, data: { ...n.data, run: overlay.get(n.id) } }
+      const run = overlay.get(n.id)
+      const status: GraphNodeStatus = run?.status ?? "pending"
+      const vis = computeNodeVisibility(status, settings)
+      if (vis.hidden) hidden.add(n.id)
+      if (vis.dimmed) dim.add(n.id)
+      const t =
+        settings.showTiming && run?.todoId
+          ? timing.timingByTodoId.get(run.todoId)
+          : undefined
+      const position = autoPos?.get(n.id) ?? n.position
+      const style = vis.dimmed ? { ...n.style, opacity: 0.35 } : n.style
+      const baseData = {
+        ...n.data,
+        run,
+        timing: t,
+        highlightFailed: settings.focus === "failed",
+      }
       const g = runGroups.get(n.id)
       if (g && n.data.node.type === "storyboard") {
         const data: GroupRunNodeData = {
-          ...withRun.data,
+          ...baseData,
           cells: g.cells,
           counts: g.counts,
           expanded: expandedGroups.has(n.id),
@@ -236,11 +273,17 @@ function RunCanvasInner({
           onToggle: onToggleGroup,
           onSelectCell,
         }
-        return { ...withRun, type: "groupRun", data }
+        return { ...n, position, hidden: vis.hidden, style, type: "groupRun", data }
       }
-      return withRun
+      return { ...n, position, hidden: vis.hidden, style, data: baseData }
     })
-    return { rfNodes: mapped, rfEdges: re as RFEdge[] }
+    return {
+      rfNodes: mapped,
+      baseEdges: re as RFEdge[],
+      hiddenIds: hidden,
+      dimIds: dim,
+      visibleCount: mapped.length - hidden.size,
+    }
   }, [
     nodes,
     overlay,
@@ -249,13 +292,33 @@ function RunCanvasInner({
     selection,
     onToggleGroup,
     onSelectCell,
+    settings,
+    timing.timingByTodoId,
+    autoPos,
   ])
 
-  // 活动边标记（上游 done & 下游 running → 流动粒子）。顶栏关流动则全部静态。
-  const flowEdges = useMemo(
-    () => markActiveEdges(rfEdges, overlay, flowEnabled),
-    [rfEdges, overlay, flowEnabled],
-  )
+  // 活动边（markActiveEdges + RunEdge 粒子）受设置面板 flowAnimation 控；
+  // 再叠加节点可见性导致的边 hidden/dim。
+  const rfEdges = useMemo(() => {
+    const active = markActiveEdges(baseEdges, overlay, settings.flowAnimation)
+    return active.map((e) => {
+      const edgeHidden = hiddenIds.has(e.source) || hiddenIds.has(e.target)
+      const edgeDim = dimIds.has(e.source) || dimIds.has(e.target)
+      return {
+        ...e,
+        hidden: edgeHidden,
+        style: edgeDim ? { ...e.style, opacity: 0.35 } : e.style,
+      }
+    })
+  }, [baseEdges, overlay, settings.flowAnimation, hiddenIds, dimIds])
+
+  // 布局变更且 fitOnUpdate 时命令式 fitView。
+  useEffect(() => {
+    if (settings.layout !== "saved" && settings.fitOnUpdate) {
+      const h = requestAnimationFrame(() => fitView({ duration: 200 }))
+      return () => cancelAnimationFrame(h)
+    }
+  }, [settings.layout, settings.fitOnUpdate, fitView])
 
   // 点节点（运行模式只读）：按 overlay 命中项 + 节点类型解析选中态。
   // 未命中（pending/未匹配）节点点击无操作。
@@ -391,7 +454,7 @@ function RunCanvasInner({
       <div className="workflow-canvas relative flex-1">
         <ReactFlow
           nodes={rfNodes}
-          edges={flowEdges}
+          edges={rfEdges}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           nodesDraggable={false}
@@ -427,6 +490,20 @@ function RunCanvasInner({
             <p className="rounded-md border border-line bg-bg-surface/80 px-4 py-2 text-center text-[12.5px] text-text-3">
               该工作流暂无节点
             </p>
+          </div>
+        )}
+        {rfNodes.length > 0 && visibleCount === 0 && (
+          <div className="pointer-events-none absolute inset-0 grid place-items-center">
+            <div className="pointer-events-auto flex flex-col items-center gap-2 rounded-md border border-line bg-bg-surface/90 px-4 py-3 text-center shadow-sm">
+              <p className="text-[12.5px] text-text-3">当前过滤隐藏了所有节点</p>
+              <button
+                type="button"
+                onClick={() => update({ hideCompleted: false, focus: "none" })}
+                className="rounded border border-line bg-bg-raised px-2 py-1 text-[12px] text-text-1 hover:bg-bg-surface hover:text-text-1"
+              >
+                清除过滤
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -486,22 +563,10 @@ function RunCanvasInner({
       {/* 运行顶栏控制：徽标 / SSE / 去审核 / 运行控制——挂在主区右上浮层，与编辑顶栏区分。 */}
       <div className="pointer-events-none absolute right-[280px] top-[56px] z-10 flex items-center gap-2">
         <div className="pointer-events-auto flex items-center gap-2 rounded-md border border-line bg-bg-surface/90 px-3 py-1.5 shadow-sm">
+          {/* 流动效果开关已并入 TopologySettingsPanel（settings.flowAnimation），不再单列。 */}
+          <TopologySettingsPanel settings={settings} update={update} />
           {badge}
           {live && <SseIndicator status={CONN_TO_STATUS[conn]} />}
-          {/* 流动效果开关：控制活动边（上游 done & 下游 running）是否渲流动粒子。 */}
-          <button
-            type="button"
-            data-slot="flow-toggle"
-            aria-pressed={flowEnabled}
-            onClick={() => setFlowEnabled((v) => !v)}
-            title="流动效果（活动边动画）"
-            className={
-              "rounded px-2 py-1 text-[12px] transition-colors " +
-              (flowEnabled ? "text-amber" : "text-text-3 hover:text-text-1")
-            }
-          >
-            流动效果{flowEnabled ? " · 开" : " · 关"}
-          </button>
           {doneAssetIds.length > 0 && (
             <Button variant="ghost" onClick={() => setGalleryOpen(true)}>
               查看全部素材 ({doneAssetIds.length})

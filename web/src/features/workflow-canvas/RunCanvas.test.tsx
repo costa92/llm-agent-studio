@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { fireEvent, render, screen } from "@testing-library/react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { RunCanvas, SuppressedBodyPanel, parseHttpStatus } from "./RunCanvas"
+import { computeNodeVisibility } from "./topologyUtils"
+import { DEFAULT_TOPOLOGY_SETTINGS } from "./useTopologySettings"
 import type { WorkflowNode } from "@/lib/types"
 import type { ProjectState } from "@/lib/projectState"
 
@@ -266,6 +268,31 @@ describe("SuppressedBodyPanel (http-status output)", () => {
   })
 })
 
+// #127：节点可见性纯函数（focus 聚焦 / hideCompleted 隐藏已完成）。
+// 注：边 active 判定改用已合的 runEdges.markActiveEdges（其自带测试），故 #127 的
+// computeEdgeActive 测试随该函数一并退役。
+describe("RunCanvas computeNodeVisibility（focus / hideCompleted）", () => {
+  it("隐藏已完成：done→hidden", () => {
+    const v = computeNodeVisibility("done", { ...DEFAULT_TOPOLOGY_SETTINGS, hideCompleted: true })
+    expect(v.hidden).toBe(true)
+  })
+  it("聚焦失败：非 failed→dim，failed→不 dim", () => {
+    const s = { ...DEFAULT_TOPOLOGY_SETTINGS, focus: "failed" as const }
+    expect(computeNodeVisibility("running", s).dimmed).toBe(true)
+    expect(computeNodeVisibility("failed", s).dimmed).toBe(false)
+  })
+  it("聚焦进行中：非 running→dim", () => {
+    const s = { ...DEFAULT_TOPOLOGY_SETTINGS, focus: "running" as const }
+    expect(computeNodeVisibility("done", s).dimmed).toBe(true)
+    expect(computeNodeVisibility("running", s).dimmed).toBe(false)
+  })
+  it("聚焦失败时 blocked 也 dim（非 failed）", () => {
+    const s = { ...DEFAULT_TOPOLOGY_SETTINGS, focus: "failed" as const }
+    expect(computeNodeVisibility("blocked", s).dimmed).toBe(true)
+    expect(computeNodeVisibility("blocked", s).hidden).toBe(false)
+  })
+})
+
 // PR-3：有逐页扇出资产的 storyboard → 渲成可折叠大功能容器；选中 → 右栏 Run Matrix。
 describe("RunCanvas group container + Run Matrix (PR-3)", () => {
   // storyboard 扇出 2 个 asset todo（边 from=asset, to=storyboard todoId="rn-board"）。
@@ -305,21 +332,5 @@ describe("RunCanvas group container + Run Matrix (PR-3)", () => {
     expect(screen.getByText(/1\/2 完成/)).toBeInTheDocument()
     // 矩阵每页一格。
     expect(container.querySelectorAll('[data-slot="run-matrix-cell"]').length).toBe(2)
-  })
-})
-
-// PR-1：顶栏「流动效果」开关（活动边流动粒子的接线 = markActiveEdges → flowEdges → RunEdge，
-// 粒子渲染本身由 runEdges.test + RunEdge.test 单测覆盖；ReactFlow 边渲染依赖节点测量、在
-// jsdom 不可靠，故集成层只验证开关这种确定性 DOM）。
-describe("RunCanvas flow toggle (PR-1)", () => {
-  it("默认开（aria-pressed=true），点击切换为关", () => {
-    currentState = RUNNING_STATE
-    renderRunTo()
-    const toggle = screen.getByRole("button", { name: /流动效果/ })
-    expect(toggle.getAttribute("aria-pressed")).toBe("true")
-    expect(toggle).toHaveTextContent(/开/)
-    fireEvent.click(toggle)
-    expect(toggle.getAttribute("aria-pressed")).toBe("false")
-    expect(toggle).toHaveTextContent(/关/)
   })
 })
