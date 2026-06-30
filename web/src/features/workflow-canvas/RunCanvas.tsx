@@ -51,14 +51,21 @@ import {
 import { useQueryClient } from "@tanstack/react-query"
 import { toReactFlow, type RFNode, type RFEdge, type StudioNodeData } from "./canvasModel"
 import { overlayRunStatus } from "./runOverlay"
+import {
+  buildAssetFanout,
+  type AssetKind,
+  type ParentAnchor,
+  type AssetRunNodeData,
+} from "./runFanout"
 import { resolveSelection, type RunSelection } from "./resolveSelection"
 import { ItemInspector } from "./ItemInspector"
 import { WorkflowNode } from "./WorkflowNode"
+import { AssetRunNode } from "./AssetRunNode"
 import { StudioEdge } from "./StudioEdge"
 import { NODE_COLOR } from "./nodeColor"
 
 const GRID = 16
-const nodeTypes = { studio: WorkflowNode }
+const nodeTypes = { studio: WorkflowNode, assetRun: AssetRunNode }
 const edgeTypes = { studio: StudioEdge }
 
 // SseConnState → SseIndicator 可视态（与 WorkbenchPage CONN_TO_STATUS 一致）。
@@ -163,15 +170,34 @@ function RunCanvasInner({
   // overlay map：画布节点 id → run 状态（点节点解析选中态、画布注入 data.run 共用）。
   const overlay = useMemo(() => overlayRunStatus(nodes, wfState), [nodes, wfState])
 
-  // 运行 rfNodes：从已保存节点（自存 position）建，按 overlay 注入 data.run。
+  // 运行 rfNodes：从已保存节点（自存 position）建，按 overlay 注入 data.run；
+  // 再把 storyboard 扇出的逐页 asset todo 展开成父分镜下方的独立子节点（运行态可视化，additive）。
   const { rfNodes, rfEdges } = useMemo(() => {
     const { nodes: rn, edges: re } = toReactFlow(nodes)
     const withRun: RFNode[] = rn.map((n) => ({
       ...n,
       data: { ...n.data, run: overlay.get(n.id) },
     }))
-    return { rfNodes: withRun, rfEdges: re as RFEdge[] }
-  }, [nodes, overlay])
+    // 父锚点：已命中 run 的 storyboard 节点（有 todoId → 已运行；pending 分镜不画该批）。
+    const parents: ParentAnchor[] = withRun
+      .filter((n) => n.data.node.type === "storyboard" && n.data.run?.todoId)
+      .map((n) => ({
+        todoId: n.data.run!.todoId!,
+        canvasNodeId: n.id,
+        x: n.position.x,
+        y: n.position.y,
+      }))
+    // assetId → kind（image/audio/video）：从该 run 项目资产建。
+    const assetKindById = new Map<string, AssetKind>()
+    for (const a of projectAssetsQuery.data ?? []) {
+      assetKindById.set(a.id, (a.type as AssetKind) ?? "unknown")
+    }
+    const fan = buildAssetFanout(wfState, parents, assetKindById)
+    return {
+      rfNodes: [...withRun, ...fan.nodes],
+      rfEdges: [...(re as RFEdge[]), ...fan.edges],
+    }
+  }, [nodes, overlay, wfState, projectAssetsQuery.data])
 
   // 点节点（运行模式只读）：按 overlay 命中项 + 节点类型解析选中态。
   // 未命中（pending/未匹配）节点点击无操作。
@@ -314,17 +340,29 @@ function RunCanvasInner({
           nodesConnectable={false}
           elementsSelectable
           deleteKeyCode={null}
-          onNodeClick={(_, node) => handleSelectNode(node.id)}
+          onNodeClick={(_, node) => {
+            // asset 扇出子节点：有 assetId → 复用右栏资产面板；无（生成中）→ 不选中。
+            if (node.type === "assetRun") {
+              const d = node.data as AssetRunNodeData
+              if (d.assetId) setSelection({ kind: "asset", assetId: d.assetId })
+              return
+            }
+            handleSelectNode(node.id)
+          }}
           fitView
           proOptions={{ hideAttribution: false }}
         >
           <Background gap={GRID} />
           <Controls showInteractive={false} />
           <MiniMap
-            nodeColor={(n) =>
-              NODE_COLOR[(n as Node<StudioNodeData>).data.node.type] ??
-              "var(--line)"
-            }
+            nodeColor={(n) => {
+              // asset 子节点无 data.node，单独取色避免 nodeColor 读 undefined 崩溃。
+              if (n.type === "assetRun") return "var(--asset)"
+              return (
+                NODE_COLOR[(n as Node<StudioNodeData>).data.node.type] ??
+                "var(--line)"
+              )
+            }}
           />
         </ReactFlow>
         {rfNodes.length === 0 && (
