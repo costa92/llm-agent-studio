@@ -307,3 +307,19 @@ describe("RunCanvas group container + Run Matrix (PR-3)", () => {
     expect(container.querySelectorAll('[data-slot="run-matrix-cell"]').length).toBe(2)
   })
 })
+
+// PR-1：顶栏「流动效果」开关（活动边流动粒子的接线 = markActiveEdges → flowEdges → RunEdge，
+// 粒子渲染本身由 runEdges.test + RunEdge.test 单测覆盖；ReactFlow 边渲染依赖节点测量、在
+// jsdom 不可靠，故集成层只验证开关这种确定性 DOM）。
+describe("RunCanvas flow toggle (PR-1)", () => {
+  it("默认开（aria-pressed=true），点击切换为关", () => {
+    currentState = RUNNING_STATE
+    renderRunTo()
+    const toggle = screen.getByRole("button", { name: /流动效果/ })
+    expect(toggle.getAttribute("aria-pressed")).toBe("true")
+    expect(toggle).toHaveTextContent(/开/)
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute("aria-pressed")).toBe("false")
+    expect(toggle).toHaveTextContent(/关/)
+  })
+})
