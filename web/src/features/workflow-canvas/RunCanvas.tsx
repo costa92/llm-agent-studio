@@ -54,9 +54,9 @@ import { toReactFlow, type RFEdge, type StudioNodeData } from "./canvasModel"
 import { overlayRunStatus } from "./runOverlay"
 import {
   buildRunGroups,
-  type AssetKind,
+  type AssetMeta,
   type ParentAnchor,
-  type GroupCell,
+  type RunPage,
 } from "./runFanout"
 import { resolveSelection, type RunSelection } from "./resolveSelection"
 import { ItemInspector } from "./ItemInspector"
@@ -138,8 +138,8 @@ function RunCanvasInner({
       return next
     })
   }, [])
-  const onSelectCell = useCallback((nodeId: string, cell: GroupCell) => {
-    setSelection({ kind: "group", groupId: nodeId, selectedTodoId: cell.todoId })
+  const onSelectPage = useCallback((nodeId: string, page: RunPage) => {
+    setSelection({ kind: "group", groupId: nodeId, selectedPageKey: page.key })
   }, [])
 
   const { settings, update } = useTopologySettings(projectId)
@@ -188,11 +188,11 @@ function RunCanvasInner({
       .filter((n) => n.type === "storyboard")
       .map((n) => ({ todoId: overlay.get(n.id)?.todoId, canvasNodeId: n.id }))
       .filter((p): p is ParentAnchor => p.todoId != null)
-    const assetKindById = new Map<string, AssetKind>()
+    const assetMetaById = new Map<string, AssetMeta>()
     for (const a of projectAssetsQuery.data ?? []) {
-      assetKindById.set(a.id, (a.type as AssetKind) ?? "unknown")
+      assetMetaById.set(a.id, { kind: (a.type as AssetMeta["kind"]) ?? "unknown", shotId: a.shotId })
     }
-    return buildRunGroups(wfState, parents, assetKindById)
+    return buildRunGroups(wfState, parents, assetMetaById)
   }, [nodes, overlay, wfState, projectAssetsQuery.data])
 
   // 选中资产详情（hooks 规则：early return 前无条件调用）。
@@ -201,16 +201,16 @@ function RunCanvasInner({
   const latestAssetIdEarly = [...(stateQuery.data?.pips ?? [])]
     .reverse()
     .find((p) => p.status === "done" && p.assetId)?.assetId
-  const selectedGroupCellEarly =
-    selection?.kind === "group" && selection.selectedTodoId
+  const selectedGroupPageEarly =
+    selection?.kind === "group" && selection.selectedPageKey
       ? runGroups
           .get(selection.groupId)
-          ?.cells.find((c) => c.todoId === selection.selectedTodoId)
+          ?.pages.find((p) => p.key === selection.selectedPageKey)
       : undefined
   const previewAssetIdEarly =
     selection?.kind === "asset"
       ? selection.assetId
-      : (selectedGroupCellEarly?.assetId ?? latestAssetIdEarly)
+      : (selectedGroupPageEarly?.image?.assetId ?? latestAssetIdEarly)
   const previewDetailQuery = useAsset(previewAssetIdEarly ?? "")
 
   // SSE：回放 → 续接实时；驱动 live/conn 指示器与事件日志。state 帧写回缓存使画布实时刷新。
@@ -263,15 +263,15 @@ function RunCanvasInner({
       if (g && n.data.node.type === "storyboard") {
         const data: GroupRunNodeData = {
           ...baseData,
-          cells: g.cells,
+          pages: g.pages,
           counts: g.counts,
           expanded: expandedGroups.has(n.id),
-          selectedTodoId:
+          selectedPageKey:
             selection?.kind === "group" && selection.groupId === n.id
-              ? selection.selectedTodoId
+              ? selection.selectedPageKey
               : undefined,
           onToggle: onToggleGroup,
-          onSelectCell,
+          onSelectPage,
         }
         return { ...n, position, hidden: vis.hidden, style, type: "groupRun", data }
       }
@@ -291,7 +291,7 @@ function RunCanvasInner({
     expandedGroups,
     selection,
     onToggleGroup,
-    onSelectCell,
+    onSelectPage,
     settings,
     timing.timingByTodoId,
     autoPos,
@@ -518,12 +518,12 @@ function RunCanvasInner({
         {selection?.kind === "group" ? (
           <RunMatrix
             group={runGroups.get(selection.groupId)}
-            selectedTodoId={selection.selectedTodoId}
-            onSelectCell={(cell) =>
+            selectedPageKey={selection.selectedPageKey}
+            onSelectPage={(page) =>
               setSelection({
                 kind: "group",
                 groupId: selection.groupId,
-                selectedTodoId: cell.todoId,
+                selectedPageKey: page.key,
               })
             }
             org={org}

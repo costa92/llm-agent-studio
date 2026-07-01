@@ -17,9 +17,9 @@ export type RunSelection =
       items?: InspectorItem[]
     }
   // 选中大功能容器（有逐页扇出资产的 storyboard）→ 右栏渲 Run Matrix。
-  // selectedTodoId：在矩阵里点选的某一页（高亮 + 下方渲该页产物）。
+  // selectedPageKey：在矩阵里点选的某一页 key（高亮 + 下方渲该页图+音产物）。
   // 注：resolveSelection() 自身不产 group（分组在 RunCanvas.onNodeClick 里设）。
-  | { kind: "group"; groupId: string; selectedTodoId?: string }
+  | { kind: "group"; groupId: string; selectedPageKey?: string }
   | null
 
 // 纯函数：节点类型 + overlay map 命中项 → 选中态。
