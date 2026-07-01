@@ -8,9 +8,9 @@ import { ChevronDown } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { nodeDisplay } from "./nodeColor"
 import { STATUS_VAR } from "./statusColor"
-import { RunCell } from "./RunCell"
+import { RunPageCard } from "./RunPageCard"
+import { pageCells, type RunPage, type GroupCounts } from "./runFanout"
 import type { StudioNodeData } from "./canvasModel"
-import type { GroupCell, GroupCounts } from "./runFanout"
 
 // 运行态画布的「大功能容器」节点（type="groupRun"）：一个有逐页扇出资产的 storyboard
 // 渲成可折叠容器，取代旧的 6×N 平铺独立子节点。
@@ -19,22 +19,24 @@ import type { GroupCell, GroupCounts } from "./runFanout"
 // 折叠/展开是「视图态」（RunCanvas 本地 state），绝不回写 dependsOn。
 
 export interface GroupRunNodeData extends StudioNodeData {
-  cells: GroupCell[]
+  pages: RunPage[]
   counts: GroupCounts
   expanded: boolean
-  // 当前在 Run Matrix 选中的页（高亮对应子卡）。
-  selectedTodoId?: string
+  // 当前在 Run Matrix 选中的页 key（高亮对应页卡）。
+  selectedPageKey?: string
   // 折叠/展开（header 点击，stopPropagation 不触发整体选中）。
   onToggle: (nodeId: string) => void
-  // 子卡点击 → 路由到 Run Matrix 选中该页。
-  onSelectCell: (nodeId: string, cell: GroupCell) => void
+  // 页卡点击 → 路由到 Run Matrix 选中该页。
+  onSelectPage: (nodeId: string, page: RunPage) => void
 }
 
 export type GroupRunRFNode = Node<GroupRunNodeData, "groupRun">
 
 export function GroupNode({ id, data }: NodeProps<GroupRunRFNode>) {
   const { label } = nodeDisplay(data.node)
-  const { cells, counts, expanded } = data
+  const { pages, counts, expanded } = data
+  // 状态区间条：逐资产格（图/音各一格），展平自各页。
+  const barCells = pages.flatMap(pageCells)
 
   return (
     <div
@@ -77,12 +79,12 @@ export function GroupNode({ id, data }: NodeProps<GroupRunRFNode>) {
         />
       </button>
 
-      {/* 状态区间条：每页一格，按状态着色（done 绿 / running 琥珀 / failed 红 / pending 线色）。 */}
+      {/* 状态区间条：逐资产格一段（图/音各一格），按状态着色（done 绿 / running 琥珀 / failed 红 / pending 线色）。 */}
       <div
         data-slot="group-run-bar"
         className="flex h-1.5 gap-px overflow-hidden rounded-full"
       >
-        {cells.map((c) => (
+        {barCells.map((c) => (
           <span
             key={c.todoId}
             aria-hidden
@@ -93,18 +95,18 @@ export function GroupNode({ id, data }: NodeProps<GroupRunRFNode>) {
         ))}
       </div>
 
-      {/* 展开：逐页子卡网格。 */}
+      {/* 展开：逐页卡片（每页 配图 + 配音 并排）。 */}
       {expanded && (
         <div
           data-slot="group-run-grid"
-          className="grid grid-cols-3 gap-1.5 pt-1"
+          className="flex flex-col gap-1.5 pt-1"
         >
-          {cells.map((c) => (
-            <RunCell
-              key={c.todoId}
-              cell={c}
-              selected={c.todoId === data.selectedTodoId}
-              onSelect={() => data.onSelectCell(id, c)}
+          {pages.map((p) => (
+            <RunPageCard
+              key={p.key}
+              page={p}
+              selected={p.key === data.selectedPageKey}
+              onSelect={() => data.onSelectPage(id, p)}
             />
           ))}
         </div>
