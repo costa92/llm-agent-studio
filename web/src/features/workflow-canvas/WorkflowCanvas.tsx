@@ -60,6 +60,7 @@ import { NodeTypePicker } from "./NodeTypePicker"
 import { CanvasActionsProvider } from "./CanvasActionsContext"
 import { HelperLines } from "./HelperLines"
 import { NodePalette, PALETTE_DND_TYPE, PALETTE_DND_TYPEID } from "./NodePalette"
+import { NodeManagerModal } from "./NodeManagerModal"
 import { PropertiesPanel } from "./PropertiesPanel"
 import { InputsSchemaPanel } from "./InputsSchemaPanel"
 import { useNodeTypes, useNodeTypesExprChannel } from "./api"
@@ -225,6 +226,8 @@ function CanvasInner({
   // （type:"llm"/"http"/"script" + 空 typeId 会绕过 S-1 危险参数过滤链）。
   const [quickCreate, setQuickCreate] = useState<NodeKind | null>(null)
   const [quickSubmitting, setQuickSubmitting] = useState(false)
+  // 节点管理模态（系统节点只读目录 + 用户自定义节点 CRUD），由节点面板「节点管理」入口打开。
+  const [nodeManagerOpen, setNodeManagerOpen] = useState(false)
   const [quickSubmitError, setQuickSubmitError] = useState<string | null>(null)
   const createTypedType = useCreateCustomNodeType(org)
   // http secret-bearing 类型守卫：密钥名（「插入密钥」下拉 + 判定）+ admin 角色（前端镜像，后端权威）。
@@ -1047,6 +1050,7 @@ function CanvasInner({
           onQuickCreate={(kind) => { setQuickSubmitError(null); setQuickCreate(kind) }}
           onAddCustomType={() => setTypeDialog({ mode: "create" })}
           onEditCustomType={(type) => { const c = customTypes.find((x) => x.type === type); if (c) setTypeDialog({ mode: "edit", type, initial: { label: c.label, color: c.color } }) }}
+          onOpenManager={() => setNodeManagerOpen(true)}
         />
         <div
           className="workflow-canvas relative flex-1"
@@ -1170,6 +1174,12 @@ function CanvasInner({
               onOpenChange={(open) => { if (!open) { setQuickCreate(null); setQuickSubmitError(null) } }}
             />
           )}
+          {/* 节点管理模态：系统节点只读目录 + 用户自定义节点 CRUD（复用路由页逻辑）。 */}
+          <NodeManagerModal
+            open={nodeManagerOpen}
+            onOpenChange={setNodeManagerOpen}
+            org={org}
+          />
         </div>
         {rightPanel === "inputs" ? (
           <InputsSchemaPanel schema={inputsSchema} onChange={setInputsSchema} />

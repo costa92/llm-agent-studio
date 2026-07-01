@@ -1,46 +1,54 @@
 import type { CustomNodeType } from "@/lib/types"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Button } from "@/components/studio/Button"
 import { TypeDialog } from "./TypeDialog"
 import { useCustomNodeTypeCrud } from "./useCustomNodeTypeCrud"
-import {
-  CrudResourcePage,
-  DataView,
-  ConfirmDialog,
-} from "../common/crud"
+import { DataView, ConfirmDialog } from "../common/crud"
 
-// ─── CustomNodeTypeManager ─────────────────────────────────────────────────────
-// 组织级自定义节点类型管理页：列表 + 新建/编辑 Dialog + 删除确认 + 409 (in-use) 错误提示。
-// 路由：/orgs/{org}/custom-node-types（admin-only，AdminGate 在路由层）。
-// CRUD 逻辑抽到 useCustomNodeTypeCrud，与节点管理模态的自定义 tab 共享。
+// 节点管理模态「用户自定义节点」tab：组织级自定义节点类型的紧凑 CRUD 面板。
+// 与路由页 CustomNodeTypeManager 共享 useCustomNodeTypeCrud 逻辑，只是外壳更紧凑
+// （工具条 hint + 右侧「新建」，无全页标题/padding），适配 Dialog 内嵌。
 
-export interface CustomNodeTypeManagerProps {
+export interface CustomNodeTypesPanelProps {
   org: string
 }
 
-export function CustomNodeTypeManager({ org }: CustomNodeTypeManagerProps) {
+export function CustomNodeTypesPanel({ org }: CustomNodeTypesPanelProps) {
   const { query, crud, secretNames, modelOptions, isAdmin, editTarget, dialogInitial, handleDialogSubmit } =
     useCustomNodeTypeCrud(org)
+  const items = query.data ?? []
 
   return (
-    <>
-      <CrudResourcePage
-        title="自定义节点类型"
-        description="管理组织级 LLM 自定义节点类型，在工作流中以 custom: 节点引用；删除前需移除所有引用节点。"
-        createLabel="新建类型"
-        onCreate={crud.openCreate}
-        isLoading={query.isLoading}
-        isError={query.isError}
-        onRetry={() => void query.refetch()}
-        isEmpty={(query.data ?? []).length === 0}
-        emptyHint="暂无自定义节点类型，点击「新建类型」开始。"
-      >
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-3">
+        <span className="text-[12px] text-text-3">
+          组织自定义节点 · 可增删改（kind ∈ llm / http / script）。
+        </span>
+        <Button variant="amber" className="ml-auto px-3 py-1.5 text-[12px]" onClick={crud.openCreate}>
+          新建自定义节点
+        </Button>
+      </div>
+
+      {query.isError ? (
+        <div className="flex flex-col items-center gap-3 py-8 text-center">
+          <p className="text-text-2">加载失败</p>
+          <Button variant="ghost" className="px-3 py-1.5 text-[12px]" onClick={() => void query.refetch()}>重试</Button>
+        </div>
+      ) : query.isLoading ? (
+        <div className="flex flex-col gap-2">
+          {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-10 rounded-lg" />)}
+        </div>
+      ) : items.length === 0 ? (
+        <p className="py-8 text-center text-[13px] text-text-3">暂无自定义节点类型，点击「新建自定义节点」开始。</p>
+      ) : (
         <DataView
           layout="table"
-          items={query.data ?? []}
+          items={items}
           getId={(ct) => ct.id}
           columns={[
             {
               key: "label",
-              header: "名称",
+              header: "节点",
               cell: (ct: CustomNodeType) => (
                 <span className="flex items-center gap-2">
                   <span
@@ -51,15 +59,15 @@ export function CustomNodeTypeManager({ org }: CustomNodeTypeManagerProps) {
                 </span>
               ),
             },
+            { key: "kind", header: "KIND", cell: (ct: CustomNodeType) => ct.kind },
             { key: "slug", header: "Slug", className: "font-mono text-[12px] text-text-2", cell: (ct: CustomNodeType) => ct.slug },
-            { key: "kind", header: "类型", cell: (ct: CustomNodeType) => ct.kind },
           ]}
           rowActions={[
             { key: "edit", label: "编辑", onClick: crud.openEdit },
             { key: "delete", label: "删除", variant: "destructive" as const, onClick: crud.requestDelete },
           ]}
         />
-      </CrudResourcePage>
+      )}
 
       {/* 新建/编辑对话框 — key 变化时强制重新挂载，清除内部 useState(initial) 陈旧值。 */}
       {crud.dialog !== null && (
@@ -89,6 +97,6 @@ export function CustomNodeTypeManager({ org }: CustomNodeTypeManagerProps) {
         onConfirm={crud.confirmDelete}
         onCancel={crud.cancelDelete}
       />
-    </>
+    </div>
   )
 }

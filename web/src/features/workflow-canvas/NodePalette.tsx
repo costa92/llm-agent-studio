@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react"
+import { LayoutGrid } from "lucide-react"
 import { NODE_COLOR } from "./nodeColor"
 import { useBuiltinNodeTypes } from "@/features/builtin-node-types/api"
 
@@ -42,9 +43,11 @@ export interface NodePaletteProps {
   onQuickCreate?: (kind: QuickCreateKind) => void
   onAddCustomType?: () => void
   onEditCustomType?: (type: string) => void
+  // 打开「节点管理」模态（系统节点只读目录 + 用户自定义节点 CRUD）。
+  onOpenManager?: () => void
 }
 
-export function NodePalette({ onStandardPipeline, onAutoTidy, customTypes, onQuickCreate, onAddCustomType, onEditCustomType }: NodePaletteProps) {
+export function NodePalette({ onStandardPipeline, onAutoTidy, customTypes, onQuickCreate, onAddCustomType, onEditCustomType, onOpenManager }: NodePaletteProps) {
   const { data: builtins = [] } = useBuiltinNodeTypes()
   // 搜索过滤（系统节点按 label/type/职责描述；自定义节点按 label/type），纯派生（禁 effect setState）。
   const [query, setQuery] = useState("")
@@ -85,6 +88,20 @@ export function NodePalette({ onStandardPipeline, onAutoTidy, customTypes, onQui
         aria-label="搜索节点"
         className="h-7 rounded-md border border-line bg-bg-base px-2 text-[12px] text-text-1 placeholder:text-text-3 focus:border-amber focus:outline-none"
       />
+
+      {/* 节点管理入口：打开模态查看系统节点只读目录 + 管理用户自定义节点。 */}
+      {onOpenManager && (
+        <button
+          type="button"
+          data-slot="palette-manage"
+          onClick={onOpenManager}
+          className="flex items-center justify-center gap-1.5 rounded-md border border-line bg-bg-base px-2.5 py-1.5 text-[12px] text-text-2 hover:border-text-3 hover:text-text-1"
+          title="打开节点管理（系统节点目录 + 自定义节点增删改）"
+        >
+          <LayoutGrid className="h-3.5 w-3.5" />
+          节点管理
+        </button>
+      )}
 
       {/* 系统节点：后端目录数据驱动，含一句话职责（description）。一个节点做一件事。 */}
       <section className="flex flex-col gap-2">
