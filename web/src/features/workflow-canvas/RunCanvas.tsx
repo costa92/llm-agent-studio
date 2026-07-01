@@ -76,6 +76,15 @@ import { computeNodeVisibility } from "./topologyUtils"
 import type { Node as RFNodeBase } from "@xyflow/react"
 
 const GRID = 16
+// 运行态 minimap 节点尺寸兜底：RunCanvas 挂载时其画布容器可能尚未定尺（run 数据加载中），
+// ReactFlow 的节点测量落在测量竞态里 → node.measured 恒为空。MiniMap 的 nodeHasDimensions
+// 门控要求 measured/width/initialWidth 至少其一存在，否则该节点一个方块都不画（PR-7 的
+// 状态着色因此在运行态完全看不见）。给节点补 initialWidth/initialHeight 兜底——它们仅在
+// measured 缺失时用于 minimap 取尺，绝不覆盖画布上的真实测量尺寸（见 @xyflow
+// getNodeDimensions: measured ?? width ?? initialWidth）。studio 节点用近似常量；groupRun
+// 折叠约 96、展开随页数估高。
+const MINIMAP_STUDIO_W = 180
+const MINIMAP_STUDIO_H = 64
 const nodeTypes = { studio: WorkflowNode, groupRun: GroupNode }
 // 运行态用只读 RunEdge（活动边渲流动粒子）；不复用编辑态 StudioEdge 的 +/× 控制簇。
 const edgeTypes = { studio: RunEdge }
@@ -273,9 +282,28 @@ function RunCanvasInner({
           onToggle: onToggleGroup,
           onSelectPage,
         }
-        return { ...n, position, hidden: vis.hidden, style, type: "groupRun", data }
+        const expanded = data.expanded
+        return {
+          ...n,
+          position,
+          hidden: vis.hidden,
+          style,
+          type: "groupRun",
+          data,
+          // minimap 尺寸兜底（见 MINIMAP_STUDIO_* 注释）。groupRun 折叠 ~96、展开随页数估高。
+          initialWidth: expanded ? 360 : 280,
+          initialHeight: expanded ? 72 + g.pages.length * 96 : 96,
+        }
       }
-      return { ...n, position, hidden: vis.hidden, style, data: baseData }
+      return {
+        ...n,
+        position,
+        hidden: vis.hidden,
+        style,
+        data: baseData,
+        initialWidth: MINIMAP_STUDIO_W,
+        initialHeight: MINIMAP_STUDIO_H,
+      }
     })
     return {
       rfNodes: mapped,

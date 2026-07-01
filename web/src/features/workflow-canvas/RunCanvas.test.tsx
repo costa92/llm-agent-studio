@@ -333,4 +333,13 @@ describe("RunCanvas group container + Run Matrix (PR-3)", () => {
     // 矩阵每页一格。
     expect(container.querySelectorAll('[data-slot="run-matrix-cell"]').length).toBe(2)
   })
+
+  // 回归守卫（PR-7 minimap 状态色可见性）：jsdom 与运行态容器测量竞态一样「不测量节点」，
+  // 若运行节点无 initialWidth/height，MiniMap 的 nodeHasDimensions 门控会把每个判为无尺寸 →
+  // 一个方块都不画 → 状态着色完全看不见。补了 initialWidth/height 兜底后 minimap 应渲出节点。
+  it("运行态 minimap 渲染节点方块（initialWidth 兜底测量竞态，否则 nodeHasDimensions 门控 0 节点）", () => {
+    currentState = FANOUT_STATE
+    const { container } = renderRunTo()
+    expect(container.querySelectorAll(".react-flow__minimap-node").length).toBeGreaterThan(0)
+  })
 })
