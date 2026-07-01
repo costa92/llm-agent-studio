@@ -249,22 +249,6 @@ export function useRegenerateAsset(): UseMutationResult<
   })
 }
 
-// 编辑旁白重配音：POST /api/assets/{id}/narration（admin）。body {text}。
-//   → {newAssetId, todoId, status}。空 text → 400。
-export function useEditNarration(): UseMutationResult<
-  RegenerateResponse,
-  Error,
-  { assetId: string; text: string }
-> {
-  return useMutation({
-    mutationFn: ({ assetId, text }) =>
-      apiJSON<RegenerateResponse>(`/api/assets/${assetId}/narration`, {
-        method: "POST",
-        body: JSON.stringify({ text }),
-      }),
-  })
-}
-
 export interface Plan {
   id: string
   projectId: string

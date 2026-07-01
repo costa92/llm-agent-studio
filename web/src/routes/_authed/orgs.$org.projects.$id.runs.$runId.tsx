@@ -16,22 +16,14 @@ import { SelectedAssetPanel } from "@/features/workflow/SelectedAssetPanel"
 import { ScriptView } from "@/features/workflow/ScriptView"
 import { StoryboardView } from "@/features/workflow/StoryboardView"
 import { AssetGalleryModal } from "@/features/workflow/AssetGalleryModal"
-import { PictureBookReader } from "@/features/workflow/PictureBookReader"
-import { ExportDialog } from "@/features/workflow/ExportDialog"
-import { assemblePages, isBookReady } from "@/features/workflow/pictureBookPages"
 import { Button } from "@/components/studio/Button"
 import {
   fetchAllEvents,
-  useCancel,
   useProject,
   useProjectState,
-  useProjectAssets,
-  useRun,
   useScript,
   useShots,
   usePlans,
-  useRegenerateAsset,
-  useEditNarration,
 } from "@/features/workflow/api"
 import { useAsset } from "@/features/review/api"
 import { useRole } from "@/app/rbac"
@@ -100,17 +92,7 @@ function RunWorkbenchPage() {
   const [selection, setSelection] = useState<Selection>(null)
   // 素材画廊抽屉开合。
   const [galleryOpen, setGalleryOpen] = useState(false)
-  // 绘本阅读器开合（仅 picturebook 项目）。
-  const [readerOpen, setReaderOpen] = useState(false)
-  // 绘本成书导出对话框开合（仅成书就绪后可用）。
-  const [exportOpen, setExportOpen] = useState(false)
 
-  // 绘本阅读器数据：仅 picturebook 项目拉取该 run 的分镜 + 项目资产（按 shotId 配对成页）。
-  const isPictureBook = project?.kind === "picturebook"
-  const bookShotsQuery = useShots(isPictureBook ? id : "", runId)
-  const bookAssetsQuery = useProjectAssets(isPictureBook ? id : "", undefined, runId)
-  const regenAsset = useRegenerateAsset()
-  const editNarration = useEditNarration()
   // 抽屉数据 gated 拉取（DAG 节点携带 todoId 时按节点级工件拉取；默认轨道不带 todoId）
   const scriptQuery = useScript(
     selection?.kind === "script" ? id : "",
@@ -124,11 +106,7 @@ function RunWorkbenchPage() {
   )
 
   // run 返回的 fallbackUsed 常驻 WarnStrip。
-  const [fallbackUsed, setFallbackUsed] = useState(false)
-  const showFallback = fallbackUsed || (plan?.fallbackUsed ?? false) || (project?.fallbackUsed ?? false)
-
-  const run = useRun(id)
-  const cancel = useCancel(id)
+  const showFallback = (plan?.fallbackUsed ?? false) || (project?.fallbackUsed ?? false)
 
   // 权威工作流状态（REST 拉取 + SSE state 帧覆盖缓存）。
   const qc = useQueryClient()
@@ -196,81 +174,6 @@ function RunWorkbenchPage() {
     isCustom: false,
   }
 
-  // 只能对最新的/且是运行态的进行操作
-  const isLatestPlan = !!(plansQuery.data && plansQuery.data.length > 0 && plansQuery.data[0].id === runId)
-  const canRun = isLatestPlan
-  const canCancel = isLatestPlan && (wfState.status === "running" || wfState.status === "planning")
-
-  async function handleRun() {
-    try {
-      const res = await run.mutateAsync(undefined)
-      setFallbackUsed(res.fallbackUsed)
-      if (res.fallbackUsed) {
-        toast.warning("Planner 输出畸形，已回落默认管线")
-      } else {
-        toast.success("已开始运行")
-      }
-      void navigate({
-        to: "/orgs/$org/projects/$id/runs/$runId",
-        params: { org, id, runId: res.planId },
-      })
-    } catch (err) {
-      const status = (err as { status?: number }).status
-      if (status === 429) {
-        toast.error("配额已用尽，请稍后再试")
-        return
-      }
-      toast.error("运行失败", {
-        action: {
-          label: "去配置模型",
-          onClick: () =>
-            void navigate({ to: "/orgs/$org/model-configs", params: { org } }),
-        },
-      })
-    }
-  }
-
-  async function handleCancel() {
-    try {
-      await cancel.mutateAsync()
-      toast.success("已取消运行")
-      void plansQuery.refetch()
-    } catch {
-      toast.error("取消失败")
-    }
-  }
-
-  // 绘本单页重生成插图：用该页 prompt 重生成插图资产，成功后刷新 state/assets。
-  async function handleRegenIllustration(page: {
-    illustrationAssetId?: string
-    prompt?: string
-  }) {
-    if (!page.illustrationAssetId) return
-    try {
-      await regenAsset.mutateAsync({ assetId: page.illustrationAssetId, prompt: page.prompt })
-      toast.success("已开始重新生成插图")
-      void bookAssetsQuery.refetch()
-      void stateQuery.refetch()
-    } catch (err) {
-      const status = (err as { status?: number }).status
-      toast.error(status === 429 ? "配额已用尽，请稍后再试" : "重新生成失败")
-    }
-  }
-
-  // 绘本编辑旁白：用新文本重配音频资产，成功后刷新 assets。
-  async function handleEditNarration(page: { audioAssetId?: string }, newText: string) {
-    if (!page.audioAssetId || !newText.trim()) return
-    try {
-      await editNarration.mutateAsync({ assetId: page.audioAssetId, text: newText })
-      toast.success("已开始重新配音")
-      void bookAssetsQuery.refetch()
-      void stateQuery.refetch()
-    } catch (err) {
-      const status = (err as { status?: number }).status
-      toast.error(status === 429 ? "配额已用尽，请稍后再试" : "重新配音失败")
-    }
-  }
-
   const latestAssetId = [...wfState.pips]
     .reverse()
     .find((p) => p.status === "done" && p.assetId)?.assetId
@@ -280,22 +183,6 @@ function RunWorkbenchPage() {
     .map((p) => p.assetId as string)
   const previewAssetId =
     selection?.kind === "asset" ? selection.assetId : latestAssetId
-
-  // 绘本：组装页序列 + 成书判定 + 灯箱提示词元信息（按 assetId）。
-  const bookShots = bookShotsQuery.data ?? []
-  const bookAssets = bookAssetsQuery.data ?? []
-  const bookTitle = project.name || "绘本"
-  const bookPages = isPictureBook
-    ? assemblePages({ shots: bookShots, assets: bookAssets, title: bookTitle })
-    : []
-  const bookReady = isPictureBook && isBookReady(bookShots, bookAssets)
-  // 相册灯箱提示词：done 资产的 prompt/provider/model（绘本/标准均可用）。
-  const assetMeta: Record<string, { prompt?: string; provider?: string; model?: string }> = {}
-  for (const a of bookAssets) {
-    if (a.status === "done") {
-      assetMeta[a.id] = { prompt: a.prompt, provider: a.provider, model: a.model }
-    }
-  }
 
   function handleSelectStage(stageId: StageId) {
     // 按该阶段对应的 todo 精确取产物：plan 内可能有多个 script/storyboard todo
@@ -355,23 +242,11 @@ function RunWorkbenchPage() {
   )
 
   const galleryTrigger =
-    doneAssetIds.length > 0 || bookReady ? (
+    doneAssetIds.length > 0 ? (
       <div className="flex flex-wrap items-center gap-2">
-        {bookReady && (
-          <Button variant="amber" onClick={() => setReaderOpen(true)}>
-            📖 阅读绘本
-          </Button>
-        )}
-        {bookReady && (
-          <Button variant="amber" onClick={() => setExportOpen(true)}>
-            📥 导出成书
-          </Button>
-        )}
-        {doneAssetIds.length > 0 && (
-          <Button variant="ghost" onClick={() => setGalleryOpen(true)}>
-            查看全部素材 ({doneAssetIds.length})
-          </Button>
-        )}
+        <Button variant="ghost" onClick={() => setGalleryOpen(true)}>
+          查看全部素材 ({doneAssetIds.length})
+        </Button>
       </div>
     ) : undefined
 
@@ -428,11 +303,11 @@ function RunWorkbenchPage() {
       conn={conn}
       live={isLive}
       fallbackUsed={showFallback || undefined}
-      canRun={canRun}
-      canCancel={canCancel}
-      onRun={handleRun}
-      onCancel={handleCancel}
-      isRunning={run.isPending || cancel.isPending}
+      canRun={false}
+      canCancel={false}
+      onRun={() => {}}
+      onCancel={() => {}}
+      isRunning={false}
       preview={
         previewAssetId ? (
           <SelectedAssetPanel
@@ -452,28 +327,9 @@ function RunWorkbenchPage() {
           {drawer}
           <AssetGalleryModal
             assetIds={doneAssetIds}
-            metaById={assetMeta}
             open={galleryOpen}
             onOpenChange={setGalleryOpen}
           />
-          {isPictureBook && (
-            <PictureBookReader
-              pages={bookPages}
-              open={readerOpen}
-              onOpenChange={setReaderOpen}
-              onRegenIllustration={handleRegenIllustration}
-              onEditNarration={handleEditNarration}
-            />
-          )}
-          {/* 成书导出对话框：planId 传当前查看的 runId，使导出匹配该 plan。 */}
-          {isPictureBook && (
-            <ExportDialog
-              projectId={id}
-              planId={runId}
-              open={exportOpen}
-              onClose={() => setExportOpen(false)}
-            />
-          )}
         </>
       }
       onOpenReview={() =>

@@ -23,12 +23,11 @@ import { ProjectFields } from "./ProjectFields"
 import {
   createProjectFormSchema,
   defaultsFor,
-  serializePbConfig,
   type ProjectFormValues,
 } from "./ProjectFields.schema"
 
-// 表单值 → CreateProjectInput。空模型不带（= 后端无 override）；
-// 绘本带 kind + JSON.stringify(pbConfig)（绝不传对象——曾因此 400）；标准不带 kind/pbConfig。
+// 表单值 → CreateProjectInput。空模型不带（= 后端无 override）。项目工作流化后
+// 不再区分类型：创建即普通（工作流）项目，不带 kind/pbConfig。
 function toCreateInput(values: ProjectFormValues): CreateProjectInput {
   return {
     name: values.name,
@@ -44,9 +43,6 @@ function toCreateInput(values: ProjectFormValues): CreateProjectInput {
       : {}),
     ...(values.storageConfigId
       ? { storageConfigId: values.storageConfigId }
-      : {}),
-    ...(values.kind === "picturebook"
-      ? { kind: "picturebook" as const, pictureBookConfig: serializePbConfig(values.pbConfig) }
       : {}),
   }
 }

@@ -9,7 +9,6 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { cn } from "@/lib/utils"
 import type {
   ModelConfig,
   Project,
@@ -17,7 +16,6 @@ import type {
   Style,
 } from "@/lib/types"
 import { MODE_LABELS } from "@/features/storage/StorageConfigPage"
-import { PictureBookConfigForm } from "./PictureBookConfigForm"
 import {
   CONTENT_TYPES,
   TARGET_PLATFORMS,
@@ -56,13 +54,10 @@ export function ProjectFields({
   const {
     register,
     control,
-    watch,
-    setValue,
     formState: { errors },
   } = useFormContext<ProjectFormValues>()
 
   const pre = (s: string) => `${fieldIdPrefix}-${s}`
-  const kind = watch("kind")
 
   // Edit 风格补项：项目当前风格若不在 styles 列表，补一项避免回显丢失。
   const hasCurrentStyle =
@@ -93,45 +88,6 @@ export function ProjectFields({
           <p className="text-[12px] text-danger">{errors.brief.message}</p>
         )}
       </div>
-
-      {/* 项目类型：标准 / 儿童绘本。选绘本展开 PictureBookConfigForm。 */}
-      <div className="flex flex-col gap-1.5 sm:col-span-2">
-        <Label>项目类型</Label>
-        <div className="flex gap-2">
-          {(
-            [
-              { v: "standard", label: "标准" },
-              { v: "picturebook", label: "儿童绘本" },
-            ] as const
-          ).map((opt) => (
-            <button
-              key={opt.v}
-              type="button"
-              onClick={() => setValue("kind", opt.v, { shouldValidate: false })}
-              className={cn(
-                "rounded-md border px-4 py-[7px] text-[13px] font-medium transition-colors",
-                kind === opt.v
-                  ? "border-amber bg-amber text-primary-foreground"
-                  : "border-line text-text-2 hover:border-text-3 hover:text-text-1",
-              )}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {kind === "picturebook" && (
-        <div className="sm:col-span-2">
-          <Controller
-            control={control}
-            name="pbConfig"
-            render={({ field }) => (
-              <PictureBookConfigForm value={field.value} onChange={field.onChange} />
-            )}
-          />
-        </div>
-      )}
 
       <div className="flex flex-col gap-1.5">
         <Label htmlFor={pre("contentType")}>内容类型</Label>

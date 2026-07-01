@@ -22,7 +22,6 @@ import { ProjectFields } from "./ProjectFields"
 import {
   projectFormSchema,
   defaultsFor,
-  serializePbConfig,
   type ProjectFormValues,
 } from "./ProjectFields.schema"
 
@@ -45,8 +44,7 @@ export interface EditProjectFormProps {
     imageProvider: string
     imageModel: string
     storageConfigId: string
-    kind: "standard" | "picturebook"
-    pictureBookConfig: string
+    kind: string
   }) => Promise<Project>
   onSuccess?: (project: Project) => void
 }
@@ -82,10 +80,8 @@ export function EditProjectForm({
         imageProvider: values.imageProvider,
         imageModel: values.imageModel,
         storageConfigId: values.storageConfigId,
-        kind: values.kind,
-        // 标准项目不带绘本配置（发空串）；绘本项目序列化当前配置（绝不传对象）。
-        pictureBookConfig:
-          values.kind === "picturebook" ? serializePbConfig(values.pbConfig) : "",
+        // 项目工作流化后类型固定：回传现有 kind（缺省 custom），编辑不改类型。
+        kind: project.kind ?? "custom",
       })
       onSuccess?.(updated)
     } catch {

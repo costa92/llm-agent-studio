@@ -7,7 +7,6 @@ import { Badge } from "@/components/studio/Badge"
 import { Button } from "@/components/studio/Button"
 import {
   useProject,
-  useRun,
   usePlans,
 } from "@/features/workflow/api"
 import { ProjectRunsTable } from "@/features/workflow/ProjectRunsTable"
@@ -21,8 +20,6 @@ import { useOrgTextModels, useOrgImageModels } from "@/features/cost/api"
 import { useStorageConfigs } from "@/features/storage/api"
 import { EditProjectDialog } from "@/features/projects/EditProjectDialog"
 import { RunInputsDialog } from "@/features/workflow/RunInputsDialog"
-import { pictureBookRunSchema } from "@/features/projects/pbRunSchema"
-import { parsePbConfig } from "@/features/projects/ProjectFields.schema"
 import { statusLabel, statusVariant } from "@/features/projects/status"
 import type { InputField, ProjectStatus, Workflow } from "@/lib/types"
 
@@ -38,12 +35,8 @@ function RunsListPage() {
 
   const plansQuery = usePlans(id)
 
-  const run = useRun(id)
-
-  const [isRunning, setIsRunning] = useState(false)
-
-  // 运行期输入弹窗：run 触发处若有 schema（工作流 inputsSchema / 绘本派生）则先弹表单，
-  // 填完再 run；无 schema 直接 run（零回归）。把「填完后做什么」装进 submit 闭包。
+  // 运行期输入弹窗：工作流 inputsSchema 非空则先弹表单，填完再 run；
+  // 无 schema 直接 run（零回归）。把「填完后做什么」装进 submit 闭包。
   const [runDialog, setRunDialog] = useState<{
     schema: InputField[]
     title: string
@@ -114,52 +107,6 @@ function RunsListPage() {
     }
   }
 
-  // 标准/绘本 run 入口：绘本 → 用 pbConfig 枚举 + 当前 picturebook_config 派生 schema（与后端
-  // PictureBookSchema 对称）弹表单，预填全字段；标准 → 直接跑（零回归）。
-  function handleStartGeneration() {
-    if (project?.kind === "picturebook") {
-      const cfg = parsePbConfig(project.pictureBookConfig)
-      setRunDialog({
-        schema: pictureBookRunSchema(cfg),
-        title: "运行绘本（可临时调整本次参数）",
-        submit: (inputs) => doStartGeneration(inputs),
-      })
-      return
-    }
-    void doStartGeneration()
-  }
-
-  async function doStartGeneration(inputs?: Record<string, unknown>) {
-    try {
-      setIsRunning(true)
-      const res = await run.mutateAsync(inputs)
-      if (res.fallbackUsed) {
-        toast.warning("Planner 输出畸形，已回落默认管线")
-      } else {
-        toast.success("已开始运行")
-      }
-      void navigate({
-        to: "/orgs/$org/projects/$id/runs/$runId",
-        params: { org, id, runId: res.planId },
-      })
-    } catch (err) {
-      const status = (err as { status?: number }).status
-      if (status === 429) {
-        toast.error("配额已用尽，请稍后再试")
-        return
-      }
-      toast.error("运行失败", {
-        action: {
-          label: "去配置模型",
-          onClick: () =>
-            void navigate({ to: "/orgs/$org/model-configs", params: { org } }),
-        },
-      })
-    } finally {
-      setIsRunning(false)
-    }
-  }
-
   if (projectQuery.isLoading || plansQuery.isLoading) {
     return (
       <div className="p-6 space-y-4">
@@ -227,13 +174,6 @@ function RunsListPage() {
             />
           </p>
         </div>
-        <Button
-          variant="amber"
-          onClick={handleStartGeneration}
-          disabled={isRunning || run.isPending}
-        >
-          {isRunning || run.isPending ? "正在初始化..." : "开始新生成"}
-        </Button>
       </header>
 
       {/* 工作流 section：一个项目可有多条 DAG 工作流，各自独立运行。 */}
@@ -402,7 +342,7 @@ function RunsListPage() {
         </div>
       </div>
 
-      {/* 运行期输入表单：工作流 inputsSchema 非空 / 绘本项目时弹出，填完再发起 run。
+      {/* 运行期输入表单：工作流 inputsSchema 非空时弹出，填完再发起 run。
           条件挂载 → 每次打开都以最新 schema 重置内部表单态（无 reset effect）。 */}
       {runDialog && (
         <RunInputsDialog
@@ -412,7 +352,7 @@ function RunsListPage() {
           }}
           title={runDialog.title}
           schema={runDialog.schema}
-          submitting={run.isPending || runWorkflow.isPending}
+          submitting={runWorkflow.isPending}
           onSubmit={async (inputs) => {
             await runDialog.submit(inputs)
             setRunDialog(null)

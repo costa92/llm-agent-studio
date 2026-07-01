@@ -21,8 +21,7 @@ export type UpdateProjectFields = {
   imageProvider: string
   imageModel: string
   storageConfigId: string
-  kind: "standard" | "picturebook"
-  pictureBookConfig: string
+  kind: string
 }
 
 export interface ProjectListViewProps {
