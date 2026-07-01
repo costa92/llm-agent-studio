@@ -10,6 +10,7 @@ import {
   useRun,
   usePlans,
 } from "@/features/workflow/api"
+import { ProjectRunsTable } from "@/features/workflow/ProjectRunsTable"
 import { useUpdateProject, usePromptStyles } from "@/features/projects/api"
 import {
   useWorkflows,
@@ -36,7 +37,6 @@ function RunsListPage() {
   const project = projectQuery.data
 
   const plansQuery = usePlans(id)
-  const plans = plansQuery.data || []
 
   const run = useRun(id)
 
@@ -381,85 +381,23 @@ function RunsListPage() {
         {/* Right column: Run history list */}
         <div className="lg:col-span-2">
           <section className="bg-bg-surface border border-line rounded-xl p-5 shadow-sm min-h-[400px] flex flex-col">
-            <h3 className="text-xs font-semibold tracking-wider text-text-3 uppercase mb-4">生成记录 / 运行历史</h3>
-            
-            {plansQuery.isError ? (
-              <div className="flex-1 flex flex-col items-center justify-center gap-3 text-center p-8">
-                <p className="text-sm text-text-2">生成记录加载失败</p>
-                <Button variant="ghost" onClick={() => void plansQuery.refetch()}>
-                  重试
-                </Button>
-              </div>
-            ) : plans.length === 0 ? (
-              <div className="flex-1 flex flex-col items-center justify-center text-center p-8">
-                <div aria-hidden className="w-16 h-16 bg-bg-surface border border-line rounded-full flex items-center justify-center mb-4 text-text-3">
-                  📋
-                </div>
-                <p className="text-sm text-text-2 mb-2 font-semibold">暂无生成记录</p>
-                <p className="text-xs text-text-3 max-w-xs mb-4">
-                  该项目尚未开始任何生成任务。点击右上角“开始新生成”按钮以启动制片管线。
-                </p>
-              </div>
-            ) : (
-              <div className="flex-1 overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="border-b border-line text-xs text-text-3">
-                      <th className="pb-3 font-semibold">序号</th>
-                      <th className="pb-3 font-semibold">生成记录 ID</th>
-                      <th className="pb-3 font-semibold">运行状态</th>
-                      <th className="pb-3 font-semibold">管线回落</th>
-                      <th className="pb-3 font-semibold">启动时间</th>
-                      <th className="pb-3 font-semibold text-right">操作</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {plans.map((plan, index) => {
-                      const runNum = plans.length - index
-                      
-                      return (
-                        <tr key={plan.id} className="border-b border-line/50 hover:bg-bg-surface/30 transition-colors text-sm text-text-1">
-                          <td className="py-3 font-semibold">#{runNum}</td>
-                          <td className="py-3 font-mono text-xs text-text-2 truncate max-w-[120px]" title={plan.id}>
-                            {plan.id}
-                          </td>
-                          <td className="py-3">
-                            <Badge variant={statusVariant(plan.status as ProjectStatus)}>
-                              {statusLabel(plan.status as ProjectStatus)}
-                            </Badge>
-                          </td>
-                          <td className="py-3">
-                            {plan.fallbackUsed ? (
-                              <Badge variant="rejected">
-                                <span aria-hidden>⚠️</span> 已回落
-                              </Badge>
-                            ) : (
-                              <span className="text-text-3 text-xs">-</span>
-                            )}
-                          </td>
-                          <td className="py-3 text-xs text-text-2">
-                            {new Date(plan.createdAt).toLocaleString()}
-                          </td>
-                          <td className="py-3 text-right">
-                            <Button
-                              variant="ghost"
-                              onClick={() => {
-                                void navigate({
-                                  to: "/orgs/$org/projects/$id/runs/$runId",
-                                  params: { org, id, runId: plan.id },
-                                })
-                              }}
-                            >
-                              进入工作台 →
-                            </Button>
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xs font-semibold tracking-wider text-text-3 uppercase">生成记录 / 运行历史</h3>
+              <button
+                type="button"
+                onClick={() =>
+                  void navigate({
+                    to: "/orgs/$org/projects/$id/runs",
+                    params: { org, id },
+                  })
+                }
+                className="text-[12px] text-text-3 hover:text-text-1"
+              >
+                查看全部运行 →
+              </button>
+            </div>
+
+            <ProjectRunsTable projectId={id} org={org} />
           </section>
         </div>
       </div>
