@@ -317,42 +317,6 @@ func regenerateHandler(rv ReviewPort, lib AssetLibrary, cs CostStore, quota int)
 	}
 }
 
-// narrationHandler (POST /api/assets/{id}/narration): admin (same gate as
-// regenerate). Body = {"text": "..."}: edits the page's narration (shots.action)
-// and re-runs TTS, versioning the audio asset. Empty text → 400 (no data touched).
-func narrationHandler(rv ReviewPort, lib AssetLibrary, cs CostStore, quota int) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
-		var req struct {
-			Text string `json:"text"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Text == "" {
-			http.Error(w, "bad request: text required", http.StatusBadRequest)
-			return
-		}
-		orgID, err := lib.OrgIDForAsset(r.Context(), id)
-		if err == nil {
-			if over, qerr := quotaExceeded(r.Context(), cs, quota, orgID); qerr != nil {
-				http.Error(w, qerr.Error(), http.StatusInternalServerError)
-				return
-			} else if over {
-				http.Error(w, "generation quota exceeded for org", http.StatusTooManyRequests)
-				return
-			}
-		}
-		newAssetID, todoID, err := rv.RegenerateNarration(r.Context(), id, req.Text)
-		if err != nil {
-			if errors.Is(err, errReviewConflict) {
-				http.Error(w, "asset not pending_acceptance", http.StatusConflict)
-				return
-			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"newAssetId": newAssetID, "todoId": todoID, "status": "generating"})
-	}
-}
-
 // libraryHandler (GET /api/orgs/{org}/assets): viewer+. Keyset-paginated search.
 func libraryHandler(lib AssetLibrary) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

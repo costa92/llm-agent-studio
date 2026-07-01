@@ -3,7 +3,7 @@ import { toast } from "sonner"
 import { ChevronDown, ChevronRight, Copy } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-// 提示词面板（绘本阅读器/相册灯箱）：默认折叠的「查看提示词」按钮，展开后只读展示
+// 提示词面板（相册灯箱）：默认折叠的「查看提示词」按钮，展开后只读展示
 //   插图 prompt / 旁白文本 / 模型·音色，并提供「复制」（写插图 prompt 到剪贴板 + toast）。
 export interface PromptPanelProps {
   illustrationPrompt?: string

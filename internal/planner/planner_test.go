@@ -37,65 +37,6 @@ func newPlanner(t *testing.T, model llm.ChatModel) (*Planner, *storage.Storage, 
 	return New(model, todos.New(st.GORM()), st.GORM()), st, projID
 }
 
-func TestPlanValidGraph(t *testing.T) {
-	model := llm.NewScriptedLLM(llm.WithResponses(llm.Response{
-		Text: `{"nodes":[{"id":"s","type":"script","dependsOn":[]},{"id":"b","type":"storyboard","dependsOn":["s"]}]}`,
-	}))
-	p, st, projID := newPlanner(t, model)
-	ctx := context.Background()
-	res, err := p.Plan(ctx, projID, Brief{Brief: "make an ad", Style: "realistic"}, nil)
-	if err != nil {
-		t.Fatalf("plan: %v", err)
-	}
-	if !res.Valid || res.FallbackUsed {
-		t.Fatalf("want valid plan, got %+v", res)
-	}
-	var n int
-	_ = st.Pool().QueryRow(ctx, `SELECT count(*) FROM todos WHERE project_id=$1`, projID).Scan(&n)
-	if n != 2 {
-		t.Fatalf("want 2 todos, got %d", n)
-	}
-	// Exactly the dep-free script node is initially ready (run handler emits
-	// todo_ready for it).
-	if len(res.ReadyTodos) != 1 || res.ReadyTodos[0].Type != "script" {
-		t.Fatalf("want 1 ready script todo, got %+v", res.ReadyTodos)
-	}
-}
-
-func TestPlanWithUsesPassedModel(t *testing.T) {
-	// Bound model would FALL BACK (refusal); the passed model returns a valid graph.
-	bound := llm.NewScriptedLLM(llm.WithResponses(llm.Response{Text: "I refuse to plan."}))
-	routed := llm.NewScriptedLLM(llm.WithResponses(llm.Response{
-		Text: `{"nodes":[{"id":"s","type":"script","dependsOn":[]},{"id":"b","type":"storyboard","dependsOn":["s"]}]}`,
-	}))
-	p, _, projID := newPlanner(t, bound)
-	res, err := p.PlanWith(context.Background(), projID, routed, Brief{Brief: "ad"}, nil)
-	if err != nil {
-		t.Fatalf("planWith: %v", err)
-	}
-	if !res.Valid || res.FallbackUsed {
-		t.Fatalf("PlanWith ignored the passed model: %+v", res)
-	}
-}
-
-func TestPlanFallbackOnMalformed(t *testing.T) {
-	model := llm.NewScriptedLLM(llm.WithResponses(llm.Response{Text: "I refuse to plan."}))
-	p, st, projID := newPlanner(t, model)
-	ctx := context.Background()
-	res, err := p.Plan(ctx, projID, Brief{Brief: "make an ad"}, nil)
-	if err != nil {
-		t.Fatalf("plan: %v", err)
-	}
-	if !res.FallbackUsed || res.Valid {
-		t.Fatalf("want fallback, got %+v", res)
-	}
-	var n int
-	_ = st.Pool().QueryRow(ctx, `SELECT count(*) FROM todos WHERE project_id=$1`, projID).Scan(&n)
-	if n != 2 { // default pipeline = script + storyboard
-		t.Fatalf("want 2 fallback todos, got %d", n)
-	}
-}
-
 func TestValidateCustomGraph(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -625,8 +566,7 @@ func TestWorkflowNodeParametersRoundTrip(t *testing.T) {
 
 // TestPlanRunInputs verifies the run-time inputs snapshot lands in
 // plans.run_inputs: a non-nil JSON is stored verbatim, and a nil snapshot
-// defaults to '{}' (never NULL) — for both the LLM path (PlanWith) and the
-// custom-workflow path (PlanCustom).
+// defaults to '{}' (never NULL) — for the custom-workflow path (PlanCustom).
 func TestPlanRunInputs(t *testing.T) {
 	model := llm.NewScriptedLLM(llm.WithResponses(llm.Response{
 		Text: `{"nodes":[{"id":"s","type":"script","dependsOn":[]}]}`,
@@ -644,31 +584,7 @@ func TestPlanRunInputs(t *testing.T) {
 	}
 
 	ri := json.RawMessage(`{"values":{"x":"1"}}`)
-
-	// PlanWith stores the snapshot.
-	res, err := p.PlanWith(ctx, projID, model, Brief{Brief: "ad"}, ri)
-	if err != nil {
-		t.Fatalf("PlanWith: %v", err)
-	}
 	var got string
-	if err := st.Pool().QueryRow(ctx, `SELECT run_inputs FROM plans WHERE id=$1`, res.PlanID).Scan(&got); err != nil {
-		t.Fatalf("query run_inputs: %v", err)
-	}
-	if compact(got) != `{"values":{"x":"1"}}` {
-		t.Fatalf("PlanWith run_inputs=%q want %q", got, `{"values":{"x":"1"}}`)
-	}
-
-	// PlanWith with nil → '{}' (not NULL).
-	resNil, err := p.PlanWith(ctx, projID, model, Brief{Brief: "ad"}, nil)
-	if err != nil {
-		t.Fatalf("PlanWith nil: %v", err)
-	}
-	if err := st.Pool().QueryRow(ctx, `SELECT run_inputs FROM plans WHERE id=$1`, resNil.PlanID).Scan(&got); err != nil {
-		t.Fatalf("query nil run_inputs: %v", err)
-	}
-	if got != `{}` {
-		t.Fatalf("PlanWith nil run_inputs=%q want '{}'", got)
-	}
 
 	// PlanCustom stores the snapshot.
 	nodes := []WorkflowNode{{ID: "node-script", Type: "script", DependsOn: []string{}}}

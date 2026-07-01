@@ -3,10 +3,7 @@ import {
   projectFormSchema,
   createProjectFormSchema,
   defaultsFor,
-  serializePbConfig,
-  parsePbConfig,
 } from "./ProjectFields.schema"
-import { emptyPictureBookConfig } from "./pbConfig"
 
 describe("projectFormSchema", () => {
   const base = {
@@ -21,8 +18,6 @@ describe("projectFormSchema", () => {
     imageProvider: "",
     imageModel: "",
     storageConfigId: "",
-    kind: "standard" as const,
-    pbConfig: emptyPictureBookConfig,
   }
 
   it("name 必填", () => {
@@ -52,7 +47,6 @@ describe("projectFormSchema", () => {
         contentType: "短视频",
         targetPlatform: "抖音",
         style: "写实",
-        kind: "standard",
       }),
     )
     expect(r.success).toBe(true)
@@ -69,73 +63,30 @@ describe("projectFormSchema", () => {
     }
   })
 
-  it("standard 模式合法", () => {
+  it("合法表单通过校验", () => {
     const r = projectFormSchema.safeParse(base)
-    expect(r.success).toBe(true)
-  })
-
-  it("picturebook 模式不要求选年龄段——空年龄段仍通过（复刻现状零前端校验）", () => {
-    const r = projectFormSchema.safeParse({
-      ...base,
-      kind: "picturebook",
-      pbConfig: { ...emptyPictureBookConfig, ageBand: "" },
-    })
     expect(r.success).toBe(true)
   })
 })
 
 describe("defaultsFor", () => {
-  it("无 initial 时给空表单默认（standard + 空 pbConfig）", () => {
+  it("无 initial 时给空表单默认", () => {
     const d = defaultsFor()
-    expect(d.kind).toBe("standard")
     expect(d.name).toBe("")
     expect(d.brief).toBe("")
-    expect(d.pbConfig).toEqual(emptyPictureBookConfig)
   })
 
-  it("有 initial 时回填（含 picturebook + 解析 pictureBookConfig 字符串）", () => {
+  it("有 initial 时回填基本字段", () => {
     const d = defaultsFor({
       name: "旧名",
       description: "旧需求",
       contentType: "广告片",
       targetPlatform: "B 站",
       style: "动画",
-      kind: "picturebook",
-      pictureBookConfig: JSON.stringify({
-        ...emptyPictureBookConfig,
-        ageBand: "0-3",
-        pageCount: 8,
-      }),
     })
     expect(d.name).toBe("旧名")
     expect(d.description).toBe("旧需求")
-    expect(d.kind).toBe("picturebook")
-    expect(d.pbConfig.ageBand).toBe("0-3")
-    expect(d.pbConfig.pageCount).toBe(8)
-  })
-
-  it("pictureBookConfig 非法 JSON 回退空配置", () => {
-    const d = defaultsFor({ pictureBookConfig: "{bad" })
-    expect(d.pbConfig).toEqual(emptyPictureBookConfig)
-  })
-})
-
-describe("serializePbConfig", () => {
-  it("round-trip：JSON.parse(serializePbConfig(parsePbConfig(s))) 等于解析结果", () => {
-    const raw = JSON.stringify({
-      ...emptyPictureBookConfig,
-      ageBand: "3-6",
-      bookType: "narrative",
-      pageCount: 16,
-      themes: ["friendship", "courage"],
-    })
-    const parsed = parsePbConfig(raw)
-    expect(JSON.parse(serializePbConfig(parsed))).toEqual(parsed)
-  })
-
-  it("与现状 JSON.stringify(pbConfig) 等价", () => {
-    expect(serializePbConfig(emptyPictureBookConfig)).toBe(
-      JSON.stringify(emptyPictureBookConfig),
-    )
+    expect(d.contentType).toBe("广告片")
+    expect(d.style).toBe("动画")
   })
 })

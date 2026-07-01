@@ -94,32 +94,28 @@ func TestCreateGetListProject(t *testing.T) {
 	}
 }
 
-// TestProjectKindAndPBConfigRoundTrip: kind + picturebook_config 经 Create 写入，
-// 经 Get 读回（绘本项目）。
-func TestProjectKindAndPBConfigRoundTrip(t *testing.T) {
+// TestProjectKindRoundTrip: kind 经 Create 写入，经 Get 读回。绘本/standard 管线
+// 已移除；kind 仅剩 'custom'。
+func TestProjectKindRoundTrip(t *testing.T) {
 	s, _ := newStore(t)
 	ctx := context.Background()
-	orgID := "org_pb_" + uniqueSuffix()
+	orgID := "org_kind_" + uniqueSuffix()
 	p, err := s.Create(ctx, CreateInput{
-		OrgID: orgID, Name: "PB", CreatedBy: "u",
-		Kind:              "picturebook",
-		PictureBookConfig: `{"ageBand":"3-6","bookType":"narrative"}`,
+		OrgID: orgID, Name: "Custom", CreatedBy: "u",
+		Kind: "custom",
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if p.Kind != "picturebook" {
-		t.Fatalf("create Kind=%q want picturebook", p.Kind)
+	if p.Kind != "custom" {
+		t.Fatalf("create Kind=%q want custom", p.Kind)
 	}
 	got, err := s.Get(ctx, p.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Kind != "picturebook" {
-		t.Fatalf("get Kind=%q want picturebook", got.Kind)
-	}
-	if got.PictureBookConfig == "" {
-		t.Fatalf("get PictureBookConfig empty, want persisted JSON")
+	if got.Kind != "custom" {
+		t.Fatalf("get Kind=%q want custom", got.Kind)
 	}
 }
 

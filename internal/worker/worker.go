@@ -68,9 +68,8 @@ type Config struct {
 	Script           *studioagents.ScriptAgent
 	Storyboard       *studioagents.StoryboardAgent
 	Asset            *studioagents.AssetAgent
-	Review           *studioagents.ReviewAgent     // nil → prescreen disabled
-	Narration        *studioagents.NarrationSafety // 绘本旁白安全校验；nil → 不校验（放行 audio）
-	Storage          *storagerouter.Router         // per-org → global → 内置 localfs 默认 的对象存储路由
+	Review           *studioagents.ReviewAgent // nil → prescreen disabled
+	Storage          *storagerouter.Router     // per-org → global → 内置 localfs 默认 的对象存储路由
 	Assets           *assets.Store
 	Cost             *cost.Store
 	Models           *models.Store           // resolve org default provider+model; nil → registry default
@@ -452,21 +451,8 @@ func (w *Worker) runScript(ctx context.Context, c claimed) (string, error) {
 		Brief: in.Brief, ContentType: in.ContentType, Platform: in.TargetPlatform, Style: in.Style,
 		SystemPrompt: in.SystemPrompt,
 	}
-	// 绘本项目透传绘本参数：ScriptAgent 走面向儿童的故事 prompt 并额外产出
-	// characterSheet。整段 ScriptOutput（含 characterSheet）随后被序列化进
-	// content_json，所以 storyboard 端解析该 JSON 即可回灌 characterSheet——无需
-	// 在此单独挑字段存。
-	isPB, cfg, err := w.pictureBookConfig(ctx, c)
-	if err != nil {
-		return "", err
-	}
-	if isPB {
-		scriptIn.PictureBook = true
-		scriptIn.PBAgeBand = cfg.AgeBand
-		scriptIn.PBBookType = cfg.BookType
-		scriptIn.PBThemes = cfg.Themes
-	}
 	var out studioagents.ScriptOutput
+	var err error
 	if m, ok := w.routedChatModel(ctx, c.projectID); ok {
 		out, err = w.cfg.Script.RunWith(ctx, m, scriptIn)
 	} else {
@@ -486,117 +472,6 @@ func (w *Worker) runScript(ctx context.Context, c claimed) (string, error) {
 		return "", err
 	}
 	return "script:" + scriptID, nil
-}
-
-// pictureBookConfig reads the project's kind + picturebook_config and reports
-// whether this is a 绘本 project plus its parsed config. A non-绘本 project (or a
-// missing/empty config) yields (false, zero, nil). A DB error is fatal to the
-// caller (the绘本 data flow depends on it); a config PARSE error degrades to
-// (false, zero, nil) so a malformed config can't wedge a standard run.
-//
-// 本 run 覆盖：解析出基线 cfg 后，按 c.todoID 反查本 run 的 plans.run_inputs，把
-// target=="pbConfig" 项叠加到 cfg（仅内存，projects 表全程只读）。这是绘本运行期
-// 覆盖的唯一改点——5 个绘本消费点自动拿到合并后的 cfg。
-func (w *Worker) pictureBookConfig(ctx context.Context, c claimed) (bool, project.PictureBookConfig, error) {
-	var kind, raw string
-	if err := w.cfg.DB.WithContext(ctx).Raw(
-		`SELECT kind, picturebook_config FROM projects WHERE id=$1`, c.projectID).Row().Scan(&kind, &raw); err != nil {
-		return false, project.PictureBookConfig{}, fmt.Errorf("worker: load project kind: %w", err)
-	}
-	if kind != "picturebook" {
-		return false, project.PictureBookConfig{}, nil
-	}
-	cfg, perr := project.ParsePictureBookConfig(raw)
-	if perr != nil {
-		w.cfg.Logger.Warn("worker: parse picturebook_config failed; treating as non-绘本",
-			"project", c.projectID, "err", perr)
-		return false, project.PictureBookConfig{}, nil
-	}
-	return true, w.applyPBOverride(ctx, c, cfg), nil
-}
-
-// applyPBOverride reverse-looks-up THIS todo's run-time inputs (plans.run_inputs),
-// JOIN-scoped to the project (defense-in-depth), and overlays the target=="pbConfig"
-// fields onto the baseline cfg. Old plans (run_inputs='{}'), no pbConfig override, or
-// any lookup/parse error degrade to the baseline cfg (safe fallback, no error). The
-// snapshot was already validated at run-handler time; re-running runinputs.Validate
-// here is cheap defense-in-depth and the single source of truth for stringify.
-func (w *Worker) applyPBOverride(ctx context.Context, c claimed, cfg project.PictureBookConfig) project.PictureBookConfig {
-	var raw []byte
-	if err := w.cfg.DB.WithContext(ctx).Raw(
-		`SELECT p.run_inputs FROM plans p JOIN todos t ON t.plan_id = p.id WHERE t.id = $1 AND t.project_id = $2`,
-		c.todoID, c.projectID).Row().Scan(&raw); err != nil {
-		return cfg
-	}
-	if len(raw) == 0 {
-		return cfg
-	}
-	var ri struct {
-		Values map[string]json.RawMessage `json:"values"`
-		Schema []runinputs.Field          `json:"schema"`
-	}
-	if err := json.Unmarshal(raw, &ri); err != nil {
-		return cfg
-	}
-	res, err := runinputs.Validate(ri.Schema, ri.Values)
-	if err != nil || len(res.PBOverride) == 0 {
-		return cfg
-	}
-	return overlayPBConfig(cfg, res.PBOverride)
-}
-
-// clampTargetPages maps an overlaid pageCount to the storyboard agent's target-pages
-// soft constraint, clamped to [4,24]. 0 (unset) passes through as 0 = no constraint
-// (today's behavior — the LLM decides page count). Out-of-range values clamp to the
-// nearest bound.
-func clampTargetPages(pageCount int) int {
-	switch {
-	case pageCount <= 0:
-		return 0
-	case pageCount < 4:
-		return 4
-	case pageCount > 24:
-		return 24
-	default:
-		return pageCount
-	}
-}
-
-// overlayPBConfig applies the pbConfig override layer onto the baseline cfg. The
-// override is a complete-field-set snapshot (front-end submits all fields), so each
-// present key replaces the corresponding cfg field. Malformed individual values are
-// skipped (the snapshot was validated at submit time; this is belt-and-suspenders).
-//
-// PageCount feeds the storyboard agent's PBTargetPages (via clampTargetPages in
-// runStoryboard) as a soft "约 N 页" constraint — the LLM still decides the actual
-// page count, same as PBMaxWordsPerSpread.
-func overlayPBConfig(cfg project.PictureBookConfig, ov map[string]json.RawMessage) project.PictureBookConfig {
-	applyStr := func(key string, dst *string) {
-		if r, ok := ov[key]; ok {
-			var s string
-			if json.Unmarshal(r, &s) == nil {
-				*dst = s
-			}
-		}
-	}
-	applyStr("voice", &cfg.Voice)
-	applyStr("ageBand", &cfg.AgeBand)
-	applyStr("bookType", &cfg.BookType)
-	applyStr("illustrationStyle", &cfg.IllustrationStyle)
-	applyStr("narrationStyle", &cfg.NarrationStyle)
-	if r, ok := ov["themes"]; ok {
-		var arr []string
-		if json.Unmarshal(r, &arr) == nil {
-			cfg.Themes = arr
-		}
-	}
-	if r, ok := ov["pageCount"]; ok {
-		var n int
-		if json.Unmarshal(r, &n) == nil {
-			cfg.PageCount = n
-		}
-	}
-	return cfg
 }
 
 // runStoryboard reads the latest script for the project, runs the
@@ -646,25 +521,8 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 		ScriptJSON: string(contentJSON), Style: projectStyle,
 		SystemPrompt: storyboardInputJSON.SystemPrompt,
 	}
-	// 绘本项目透传绘本分镜参数 + 回灌 characterSheet。characterSheet 来源：上游
-	// script 的整段 ScriptOutput 已序列化进 content_json（即 ScriptJSON），从中解析
-	// 出 characterSheet 写回 storyboard 输入，保证跨页插图主角一致。
-	isPB, pbCfg, err := w.pictureBookConfig(ctx, c)
-	if err != nil {
-		return "", err
-	}
-	if isPB {
-		var sc struct {
-			CharacterSheet string `json:"characterSheet"`
-		}
-		_ = json.Unmarshal(contentJSON, &sc)
-		storyboardIn.PictureBook = true
-		storyboardIn.PBMaxWordsPerSpread = pbCfg.MaxWordsPerSpread()
-		storyboardIn.PBIllustrationStyle = pbCfg.IllustrationStyle
-		storyboardIn.PBCharacterSheet = sc.CharacterSheet
-		storyboardIn.PBTargetPages = clampTargetPages(pbCfg.PageCount)
-	}
 	var out studioagents.StoryboardOutput
+	var err error
 	if m, ok := w.routedChatModel(ctx, c.projectID); ok {
 		out, err = w.cfg.Storyboard.RunWith(ctx, m, storyboardIn)
 	} else {
@@ -717,32 +575,6 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 				"kind": "image", "duration": sh.Duration,
 			})
 			assetSpecs = append(assetSpecs, todos.DynamicSpec{Type: "asset", InputJSON: input})
-			// 绘本分支：每页除插图外，若该页有旁白（Action 非空，封面/wordless 页为空），
-			// 追加一个 audio asset todo，prompt 取该页旁白、voice 取项目配置。封面页与
-			// 无字页的 Action 为空，自然只产出 image——无需特判。
-			if isPB && strings.TrimSpace(sh.Action) != "" {
-				// 旁白文本安全校验：明确判定 unsafe 时跳过该页 audio（image 仍照常出），
-				// 不阻断整本。降级策略：Narration 未注入或 LLM 调用出错时不拦截（放行
-				// audio）——保守起见，避免外部故障导致整本绘本无声；只在明确 unsafe 时拦。
-				if w.cfg.Narration != nil {
-					v, cerr := w.cfg.Narration.Check(ctx, sh.Action, pbCfg.AgeBand)
-					switch {
-					case cerr != nil:
-						w.cfg.Logger.Warn("worker: narration safety check failed; allowing audio (fail-open)",
-							"project", c.projectID, "shot", shotID, "err", cerr)
-					case !v.Safe && strings.TrimSpace(v.Reason) != "":
-						_, _ = w.cfg.Events.Append(ctx, c.projectID, "narration_blocked", c.todoID,
-							map[string]any{"shotId": shotID, "reason": v.Reason})
-						w.cfg.Logger.Info("worker: narration blocked by safety check; skipping audio for page",
-							"project", c.projectID, "shot", shotID, "reason", v.Reason)
-						continue
-					}
-				}
-				audioInput, _ := json.Marshal(map[string]any{
-					"shotId": shotID, "shotPrompt": sh.Action, "kind": "audio", "voice": pbCfg.Voice,
-				})
-				assetSpecs = append(assetSpecs, todos.DynamicSpec{Type: "asset", InputJSON: audioInput})
-			}
 		}
 		// planID for the dynamic todos: read it off the storyboard todo so the asset
 		// todos share the same plan lineage.

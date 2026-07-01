@@ -448,10 +448,11 @@ var m16Migrations = []string{
 	`UPDATE storage_configs SET name=mode WHERE name=''`,
 }
 
-// m17Migrations: 儿童绘本——projects 加 kind('standard'/'picturebook') + picturebook_config(生成参数 JSON,见 project.PictureBookConfig)。
+// m17Migrations: projects 加 kind 列。历史上还加过 picturebook_config，但绘本管线
+// 已移除——该列的 ADD 从这条无条件 DDL 中删除，并由版本化步骤 m23 DROP，避免每次
+// 启动被 IF NOT EXISTS 重新加回。kind 列保留（现存值经 m23 收敛为 'custom'）。
 var m17Migrations = []string{
 	`ALTER TABLE projects ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'standard'`,
-	`ALTER TABLE projects ADD COLUMN IF NOT EXISTS picturebook_config TEXT NOT NULL DEFAULT ''`,
 }
 
 // m18Migrations 建 custom_node_types (组织级 typed 自定义节点注册表) + node_outputs
@@ -537,6 +538,7 @@ func (s *Storage) goSteps() []migrationStep {
 	return []migrationStep{
 		{version: "m21", run: m21AddItemsColumn},
 		{version: "m22", run: m22CreateExportJobs},
+		{version: "m23", run: m23RemovePicturebookStandard},
 	}
 }
 
@@ -626,6 +628,26 @@ func m22CreateExportJobs(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx,
 		`CREATE INDEX IF NOT EXISTS export_jobs_project_idx ON export_jobs (project_id)`); err != nil {
 		return fmt.Errorf("create export_jobs_project_idx: %w", err)
+	}
+	return nil
+}
+
+// m23RemovePicturebookStandard retires the built-in picturebook + standard
+// (LLM auto-planner) content pipelines: existing projects of those kinds collapse
+// to the custom-workflow kind, the picturebook_config column is dropped, and the
+// export_jobs queue (created by m22) is dropped. The projects.kind column itself
+// is kept (now only 'custom'). Idempotent (UPDATE is a no-op once converged; both
+// DROPs use IF EXISTS).
+func m23RemovePicturebookStandard(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx,
+		`UPDATE projects SET kind='custom' WHERE kind IN ('picturebook','standard')`); err != nil {
+		return fmt.Errorf("converge project kinds: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DROP TABLE IF EXISTS export_jobs`); err != nil {
+		return fmt.Errorf("drop export_jobs: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `ALTER TABLE projects DROP COLUMN IF EXISTS picturebook_config`); err != nil {
+		return fmt.Errorf("drop picturebook_config: %w", err)
 	}
 	return nil
 }

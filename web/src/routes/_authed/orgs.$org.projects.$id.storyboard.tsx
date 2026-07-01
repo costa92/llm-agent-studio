@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router"
 import { useShots, useProjectAssets } from "@/features/workflow/api"
-import { imageAssetIdByShotId } from "@/features/workflow/pictureBookPages"
+import { imageAssetIdByShotId } from "@/features/workflow/storyboardAssets"
 import { StoryboardView } from "@/features/workflow/StoryboardView"
 
 // T10：分镜栅格。GET /api/projects/{id}/shots → {items}。

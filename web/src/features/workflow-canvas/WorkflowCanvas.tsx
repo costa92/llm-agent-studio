@@ -73,10 +73,6 @@ import { useCustomNodeTypes, useCreateCustomNodeType } from "@/features/custom-n
 import { TypeDialog } from "@/features/custom-node-types/TypeDialog"
 import { type FormDraft, type NodeKind } from "@/features/custom-node-types/typeDraft"
 import { useOrgSecrets } from "@/features/org-secrets/api"
-import { useProject } from "@/features/workflow/api"
-import { useUpdateProject } from "@/features/projects/api"
-import { parsePbConfig, serializePbConfig } from "@/features/projects/ProjectFields.schema"
-import type { PictureBookConfig } from "@/lib/types"
 import { useOrgTextModels } from "@/features/cost/api"
 import { useRole } from "@/app/rbac"
 import type {
@@ -322,45 +318,6 @@ function CanvasInner({
   // P5：ExprChannel 能力旗标（同一 /node-types 响应），用于 capability-gate 字段选择器。
   const exprChannel = useNodeTypesExprChannel(org)
 
-  // 绘本参数（PR-2, Option A）：绘本项目的 script 节点在属性面板可配 年龄/故事类型/主题/
-  // 画风/页数/旁白/音色。配置存项目行 picturebook_config（worker 运行期读取），非 node.parameters
-  // （内置节点 parameters 运行期是死的）。draft 即时反映 + 防抖整字段 PUT（useUpdateProject 不支持局部更新）。
-  const projectQuery = useProject(projectId)
-  const updateProject = useUpdateProject(org)
-  const pbCommitted = useMemo(
-    () => parsePbConfig(projectQuery.data?.pictureBookConfig),
-    [projectQuery.data?.pictureBookConfig],
-  )
-  const [pbDraft, setPbDraft] = useState<PictureBookConfig | null>(null)
-  const pbSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const onPbChange = useCallback(
-    (next: PictureBookConfig) => {
-      setPbDraft(next)
-      if (pbSaveTimer.current) clearTimeout(pbSaveTimer.current)
-      // 防抖 600ms：表单每次改动发整份新值，避免逐键 PUT。
-      pbSaveTimer.current = setTimeout(() => {
-        const p = projectQuery.data
-        if (!p) return
-        // useUpdateProject 要整份字段（不支持局部更新）——回显当前项目其余字段，仅换 pbConfig。
-        updateProject.mutate({
-          id: p.id,
-          name: p.name,
-          description: p.description,
-          contentType: p.contentType,
-          targetPlatform: p.targetPlatform,
-          style: p.style,
-          plannerProvider: p.plannerProvider ?? "",
-          plannerModel: p.plannerModel ?? "",
-          imageProvider: p.imageProvider ?? "",
-          imageModel: p.imageModel ?? "",
-          storageConfigId: p.storageConfigId ?? "",
-          kind: p.kind ?? "standard",
-          pictureBookConfig: serializePbConfig(next),
-        })
-      }, 600)
-    },
-    [projectQuery.data, updateProject],
-  )
   const nodeDesc = selected
     ? nodeTypeDescs.find((d) => d.type === selected.type)
     : undefined
@@ -1232,11 +1189,6 @@ function CanvasInner({
           }
           exprChannel={exprChannel}
           description={nodeDesc}
-          pictureBook={
-            projectQuery.data?.kind === "picturebook"
-              ? { config: pbDraft ?? pbCommitted, onChange: onPbChange }
-              : undefined
-          }
           onEditType={
             selected && isCustomType(selected.type)
               ? () => {

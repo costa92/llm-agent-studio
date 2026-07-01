@@ -10,7 +10,6 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "e2e:smoke": "node ../e2e/smoke-routes.mjs",
-    "e2e:picturebook": "node ../e2e/case-picturebook.mjs",
     "e2e:music": "node ../e2e/case-music-workflow.mjs"
   },
   "dependencies": {

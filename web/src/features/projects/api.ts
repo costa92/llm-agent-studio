@@ -65,8 +65,7 @@ export function useUpdateProject(
     imageProvider: string
     imageModel: string
     storageConfigId: string
-    kind: "standard" | "picturebook"
-    pictureBookConfig: string
+    kind: string
   }
 > {
   const queryClient = useQueryClient()
