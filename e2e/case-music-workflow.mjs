@@ -16,14 +16,16 @@
 //   E2E_SMOKE_ONLY=1  node e2e/case-music-workflow.mjs   # register + create + run-trigger (202)
 //   (neither set)     node e2e/case-music-workflow.mjs   # skip notice, exit 0
 //
-// EXPECTED_IMAGES (default 6) sets the asserted storyboard fan-out image count.
+// MIN_IMAGES (default 1) sets the MINIMUM asserted storyboard fan-out image count.
+// The exact count is LLM-determined (one image per generated shot), so this is a
+// lower bound, not an equality check. The load-bearing assertion is "0 audio".
 
 import { loadConfig, apiLogin, pollState } from "./lib/session.mjs"
 
 const cfg = loadConfig()
 const FULL = process.env.E2E_FULL === "1"
 const SMOKE_ONLY = process.env.E2E_SMOKE_ONLY === "1"
-const EXPECTED_IMAGES = Number(process.env.EXPECTED_IMAGES || "6")
+const MIN_IMAGES = Number(process.env.MIN_IMAGES || "1")
 
 if (!FULL && !SMOKE_ONLY) {
   console.log(
@@ -142,12 +144,14 @@ async function main() {
       `expected NO audio in a custom storyboard fan-out, found ${audio.length}`,
     )
   }
-  if (images.length !== EXPECTED_IMAGES) {
+  // Shot count is LLM-determined, so assert a lower bound rather than an exact
+  // count — the storyboard fan-out must produce at least one image.
+  if (images.length < MIN_IMAGES) {
     throw new Error(
-      `expected ${EXPECTED_IMAGES} image assets (set EXPECTED_IMAGES to override), found ${images.length}`,
+      `expected at least ${MIN_IMAGES} image asset(s) from the storyboard fan-out (set MIN_IMAGES to override), found ${images.length}`,
     )
   }
-  console.log(`[music] ✓ ${images.length} image assets, 0 audio (documented behavior)`)
+  console.log(`[music] ✓ ${images.length} image assets (≥${MIN_IMAGES}), 0 audio (documented behavior)`)
   console.log("[music] OK")
 }
 
