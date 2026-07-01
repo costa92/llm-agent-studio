@@ -63,6 +63,7 @@ import { ItemInspector } from "./ItemInspector"
 import { WorkflowNode } from "./WorkflowNode"
 import { GroupNode, type GroupRunNodeData } from "./GroupNode"
 import { RunMatrix } from "./RunMatrix"
+import { RunPreview } from "./RunPreview"
 import { RunEdge } from "./RunEdge"
 import { markActiveEdges } from "./runEdges"
 import { minimapStatusColor } from "./statusColor"
@@ -137,6 +138,8 @@ function RunCanvasInner({
   const [selection, setSelection] = useState<RunSelection>(null)
   // 素材画廊开合。
   const [galleryOpen, setGalleryOpen] = useState(false)
+  // 成品预览（全屏图文/歌词）开合。
+  const [previewOpen, setPreviewOpen] = useState(false)
   // 大功能容器折叠/展开（视图态，按画布节点 id）。绝不回写 dependsOn。
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   const onToggleGroup = useCallback((nodeId: string) => {
@@ -431,6 +434,12 @@ function RunCanvasInner({
     }
   }
 
+  // 成品预览门控：有已生成素材，或有自定义节点文本产物（歌词/故事）时可预览。
+  const hasCustomText = wfState.nodes.some(
+    (n) => n.type.startsWith("custom:") && !!n.output,
+  )
+  const canPreview = doneAssetIds.length > 0 || hasCustomText
+
   // 抽屉：选中 script/storyboard 时打开 Sheet 看工件。
   const drawerKind =
     selection?.kind === "script" || selection?.kind === "storyboard"
@@ -606,6 +615,11 @@ function RunCanvasInner({
               查看全部素材 ({doneAssetIds.length})
             </Button>
           )}
+          {canPreview && (
+            <Button variant="ghost" onClick={() => setPreviewOpen(true)}>
+              成品预览
+            </Button>
+          )}
           {readyForReview && (
             <Button
               variant="ghost"
@@ -669,6 +683,17 @@ function RunCanvasInner({
         open={galleryOpen}
         onOpenChange={setGalleryOpen}
       />
+
+      {/* 成品预览：top-bar「成品预览」打开。全屏图文/歌词，按内容启发式选模式。 */}
+      {runId && (
+        <RunPreview
+          open={previewOpen}
+          onOpenChange={setPreviewOpen}
+          projectId={projectId}
+          planId={runId}
+          nodes={wfState.nodes}
+        />
+      )}
     </div>
   )
 }
