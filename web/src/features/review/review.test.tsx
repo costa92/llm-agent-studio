@@ -299,6 +299,12 @@ describe("ReviewBoardView", () => {
     useResolvedAssetUrlMock.mockReturnValue({ url: null, loading: false })
   })
 
+  // 音频卡在网格里可直接试听（懒加载「试听」按钮），无需先打开抽屉。
+  it("renders a 试听 control for an audio asset card in the grid", () => {
+    render(<ReviewBoardView {...baseProps({ queue: [makeAsset({ id: "aud1", type: "audio" })] })} />)
+    expect(screen.getByRole("button", { name: "试听" })).toBeInTheDocument()
+  })
+
   // T7：退回必须显式确认——点退回不直接触发 onReject，先开确认弹窗；
   //   确认才触发一次，取消零次。
   it("reject requires explicit confirmation: opens a dialog, fires onReject only on confirm", async () => {

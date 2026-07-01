@@ -134,14 +134,24 @@ describe("LibraryView", () => {
     expect(onFilterChange).toHaveBeenCalledWith({ status: "accepted" })
   })
 
-  it("disables video/audio type chips (二期) so they cannot be selected", () => {
-    render(<LibraryView {...baseProps()} />)
-    const video = screen.getByRole("button", { name: /视频/ })
+  it("keeps the video type chip disabled (二期) but audio is now selectable", async () => {
+    const onFilterChange = vi.fn()
+    const user = userEvent.setup()
+    render(<LibraryView {...baseProps({ onFilterChange })} />)
+    // 视频仍二期禁用。
+    expect(screen.getByRole("button", { name: /视频/ })).toBeDisabled()
+    // 音频已启用（无「· 二期」后缀）→ 可点选，下发 type=audio。
     const audio = screen.getByRole("button", { name: /音频/ })
-    expect(video).toBeDisabled()
-    expect(audio).toBeDisabled()
+    expect(audio).not.toBeDisabled()
+    await user.click(audio)
+    expect(onFilterChange).toHaveBeenCalledWith({ type: "audio" })
     // 图片可选。
     expect(screen.getByRole("button", { name: "图片" })).not.toBeDisabled()
+  })
+
+  it("renders a 试听 control for an audio asset card in the grid", () => {
+    render(<LibraryView {...baseProps({ assets: [makeAsset({ id: "aud1", type: "audio" })] })} />)
+    expect(screen.getByRole("button", { name: "试听" })).toBeInTheDocument()
   })
 
   it("renders version lineage in the detail drawer", () => {

@@ -28,7 +28,7 @@ export function buildLibraryQuery(filter: LibraryFilter, limit?: number): string
   return params.toString()
 }
 
-// 资产类型选项（store.go a.type）。图片一期可筛；视频/音频二期（生成后端驱动）。
+// 资产类型选项（store.go a.type）。图片/音频可筛；视频二期（生成后端驱动）。
 export interface TypeOption {
   value: Asset["type"]
   label: string
@@ -38,7 +38,7 @@ export interface TypeOption {
 export const TYPE_OPTIONS: TypeOption[] = [
   { value: "image", label: "图片" },
   { value: "video", label: "视频", disabled: true },
-  { value: "audio", label: "音频", disabled: true },
+  { value: "audio", label: "音频", disabled: false },
 ]
 
 // 状态过滤选项（asset.status：accepted/pending_acceptance/rejected —— 见 review.go / worker.go）。
