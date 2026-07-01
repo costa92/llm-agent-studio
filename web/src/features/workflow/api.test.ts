@@ -8,6 +8,7 @@ import {
   fetchScript,
   useCancel,
   useCreateExport,
+  useLyricsAudio,
   useRun,
 } from "./api"
 import { setAccessToken } from "@/lib/apiClient"
@@ -164,6 +165,26 @@ describe("useRun (POST /run)", () => {
     expect(JSON.parse(String(body))).toEqual({
       inputs: { voice: "warm", pageCount: 12 },
     })
+  })
+})
+
+describe("useLyricsAudio (POST /lyrics-audio)", () => {
+  it("posts {planId,text} and returns audioAssetId", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ audioAssetId: "audio-1" }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    const { wrapper } = setup()
+    const { result } = renderHook(() => useLyricsAudio(), { wrapper })
+    result.current.mutate({ projectId: "p1", planId: "plan3", text: "第一句\n第二句" })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe("/api/projects/p1/lyrics-audio")
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    expect(init.method).toBe("POST")
+    expect(JSON.parse(String(init.body))).toEqual({ planId: "plan3", text: "第一句\n第二句" })
+    expect(result.current.data?.audioAssetId).toBe("audio-1")
   })
 })
 
