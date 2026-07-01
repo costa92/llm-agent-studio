@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
-import { ChevronLeft, ChevronRight, Loader2, Play } from "lucide-react"
+import { ChevronLeft, ChevronRight, Download, Loader2, Play } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -11,6 +11,7 @@ import type { GraphNode } from "@/lib/projectState"
 import { useShots, useProjectAssets, useLyricsAudio } from "@/features/workflow/api"
 import { AssetThumb } from "@/features/workflow/AssetThumb"
 import { AssetAudio } from "@/features/workflow/AssetAudio"
+import { ExportDialog } from "@/features/workflow/ExportDialog"
 import {
   classifyPreviewMode,
   extractStoryDoc,
@@ -71,30 +72,47 @@ export function RunPreview({
   const doc = extractStoryDoc(nodes)
   const pages = pairPages(shotsQuery.data ?? [], assetsQuery.data ?? [])
 
+  // 导出作品对话框（PDF/EPUB/ZIP）——与阅读/音乐切换并列在头部。
+  const [exportOpen, setExportOpen] = useState(false)
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex h-[92vh] max-h-[92vh] w-full max-w-[min(96vw,1080px)] flex-col gap-4 bg-bg-surface sm:max-w-[min(96vw,1080px)]">
         <DialogHeader className="flex-row items-center justify-between pr-8">
           <DialogTitle>成品预览</DialogTitle>
-          {/* 模式切换：启发式默认，用户可覆盖。 */}
-          <div className="flex items-center gap-1 rounded-md border border-line bg-bg-base p-0.5">
-            {(["reader", "music"] as const).map((m) => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => setMode(m)}
-                aria-pressed={activeMode === m}
-                className={
-                  activeMode === m
-                    ? "rounded px-2.5 py-1 text-[12px] text-primary-foreground bg-amber"
-                    : "rounded px-2.5 py-1 text-[12px] text-text-2 hover:text-text-1"
-                }
-              >
-                {m === "reader" ? "阅读" : "音乐"}
-              </button>
-            ))}
+          <div className="flex items-center gap-2">
+            {/* 导出作品：打开格式选择对话框。 */}
+            <Button variant="ghost" onClick={() => setExportOpen(true)}>
+              <Download className="mr-1 h-4 w-4" />
+              导出
+            </Button>
+            {/* 模式切换：启发式默认，用户可覆盖。 */}
+            <div className="flex items-center gap-1 rounded-md border border-line bg-bg-base p-0.5">
+              {(["reader", "music"] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setMode(m)}
+                  aria-pressed={activeMode === m}
+                  className={
+                    activeMode === m
+                      ? "rounded px-2.5 py-1 text-[12px] text-primary-foreground bg-amber"
+                      : "rounded px-2.5 py-1 text-[12px] text-text-2 hover:text-text-1"
+                  }
+                >
+                  {m === "reader" ? "阅读" : "音乐"}
+                </button>
+              ))}
+            </div>
           </div>
         </DialogHeader>
+
+        <ExportDialog
+          projectId={projectId}
+          planId={planId}
+          open={exportOpen}
+          onClose={() => setExportOpen(false)}
+        />
 
         {activeMode === "music" ? (
           <MusicView

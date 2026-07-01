@@ -59,6 +59,10 @@ type Deps struct {
 	CustomNodeType CustomNodeTypeStore // org-scoped typed custom node registry; nil in focused unit tests
 	OrgSecret      OrgSecretStore      // org-scoped named-secret registry (roleAdmin); nil in focused unit tests
 
+	// 工作流作品导出 (PDF/EPUB/ZIP). nil → 整组导出路由不挂载 (focused unit tests skip)。
+	Exports    ExportsStore   // export_jobs 队列读写 (satisfied by *exports.Store)
+	ExportBook ExportBookData // 可导出判定输入 (satisfied by *exports.BookData)
+
 	// ExprChannel mirrors config.ExprChannel: surfaced read-only on GET
 	// /api/orgs/{org}/node-types so the canvas can capability-gate field-level
 	// varBindings (B/P5). Default false (zero value = OFF, matches the env default).
@@ -99,6 +103,23 @@ func assetScope(lib AssetLibrary) authzhttp.ScopeFromRequest {
 func projectScope(lookup orgLookup) authzhttp.ScopeFromRequest {
 	return func(r *http.Request) (string, string) {
 		orgID, err := lookup.OrgIDForProject(r.Context(), r.PathValue("id"))
+		if err != nil {
+			return "", ""
+		}
+		return orgID, ""
+	}
+}
+
+// exportScope resolves (orgID, scopeID="") for the export-content route
+// (/api/exports/{id}/content): the path carries the jobId, not a project id, so we
+// go job → project → org. Missing job / lookup failure → ("","") → RoleNone → 403.
+func exportScope(lookup orgLookup, store ExportsStore) authzhttp.ScopeFromRequest {
+	return func(r *http.Request) (string, string) {
+		job, err := store.Get(r.Context(), r.PathValue("id"))
+		if err != nil {
+			return "", ""
+		}
+		orgID, err := lookup.OrgIDForProject(r.Context(), job.ProjectID)
 		if err != nil {
 			return "", ""
 		}
@@ -190,6 +211,18 @@ func NewMux(d Deps) *http.ServeMux {
 		// Synchronous lyrics read-aloud TTS (music RunPreview transport). Reuses the
 		// cover generator/asset/blob ports; resolves the org's audio model.
 		mux.Handle("POST /api/projects/{id}/lyrics-audio", proj(roleEditor, lyricsAudioHandler(d.Projects, d.CoverAssets, d.CoverGen, d.BlobRouter, d.Cost, d.GenQuota)))
+	}
+
+	// 工作流作品导出 (PDF/EPUB/ZIP). 项目级三端点走 projScope；产物下载走 exportScope
+	// (job→project→org)。整组在 Exports 未注入时跳过 (focused tests omit it)。
+	if d.Exports != nil {
+		export := func(min authzrole.Role, h http.HandlerFunc) http.Handler {
+			return scoped(min, exportScope(d.Projects, d.Exports), h)
+		}
+		mux.Handle("POST /api/projects/{id}/exports", proj(roleEditor, createExportHandler(d.Projects, d.Exports, d.ExportBook)))
+		mux.Handle("GET /api/projects/{id}/exports", proj(roleViewer, listExportsHandler(d.Exports)))
+		mux.Handle("GET /api/projects/{id}/exports/{jobId}", proj(roleViewer, getExportHandler(d.Exports)))
+		mux.Handle("GET /api/exports/{id}/content", export(roleViewer, exportContentHandler(d.Exports, d.BlobRouter, d.Projects)))
 	}
 
 	asset := func(min authzrole.Role, h http.HandlerFunc) http.Handler {
