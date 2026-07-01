@@ -35,6 +35,10 @@ vi.mock("@/features/workflow/api", () => ({
   useShots: (...a: unknown[]) => useShotsMock(...(a as [])),
   useProjectAssets: (...a: unknown[]) => useProjectAssetsMock(...(a as [])),
   useLyricsAudio: () => useLyricsAudioMock(),
+  // ExportDialog（头部「导出」按钮渲染）从同一模块导入这两个 hook；
+  // 关闭态也会运行，故 mock 成惰性桩，避免真实 react-query 依赖。
+  useCreateExport: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useExportJob: () => ({ data: undefined }),
 }))
 
 beforeEach(() => {

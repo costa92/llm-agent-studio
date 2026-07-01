@@ -539,6 +539,7 @@ func (s *Storage) goSteps() []migrationStep {
 		{version: "m21", run: m21AddItemsColumn},
 		{version: "m22", run: m22CreateExportJobs},
 		{version: "m23", run: m23RemovePicturebookStandard},
+		{version: "m24", run: m24CreateExportJobs},
 	}
 }
 
@@ -648,6 +649,45 @@ func m23RemovePicturebookStandard(ctx context.Context, tx pgx.Tx) error {
 	}
 	if _, err := tx.Exec(ctx, `ALTER TABLE projects DROP COLUMN IF EXISTS picturebook_config`); err != nil {
 		return fmt.Errorf("drop picturebook_config: %w", err)
+	}
+	return nil
+}
+
+// m24CreateExportJobs re-creates the export_jobs queue table for the restored
+// workflow 作品导出 (PDF/EPUB/ZIP) feature. The chain m22-create → m23-drop →
+// m24-recreate is intentional: m23 retired the picturebook-coupled export queue,
+// and this forward step re-establishes the same table for the workflow-only
+// export path (do NOT edit m23 to keep the table — versioned migrations are
+// append-only). DDL is byte-identical to m22 (INDEPENDENT async claim/lease/
+// reaper queue, two indexes) and fully idempotent (CREATE ... IF NOT EXISTS).
+func m24CreateExportJobs(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS export_jobs (
+			id                TEXT PRIMARY KEY,
+			project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+			plan_id           TEXT NOT NULL DEFAULT '',
+			format            TEXT NOT NULL,
+			status            TEXT NOT NULL DEFAULT 'pending',
+			blob_key          TEXT NOT NULL DEFAULT '',
+			storage_config_id TEXT NOT NULL DEFAULT '',
+			size_bytes        BIGINT NOT NULL DEFAULT 0,
+			error             TEXT NOT NULL DEFAULT '',
+			attempts          INT NOT NULL DEFAULT 0,
+			locked_by         TEXT NOT NULL DEFAULT '',
+			locked_until      TIMESTAMPTZ,
+			next_run_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+			created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`); err != nil {
+		return fmt.Errorf("create export_jobs: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`CREATE INDEX IF NOT EXISTS export_jobs_claim_idx ON export_jobs (status, next_run_at)`); err != nil {
+		return fmt.Errorf("create export_jobs_claim_idx: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`CREATE INDEX IF NOT EXISTS export_jobs_project_idx ON export_jobs (project_id)`); err != nil {
+		return fmt.Errorf("create export_jobs_project_idx: %w", err)
 	}
 	return nil
 }
