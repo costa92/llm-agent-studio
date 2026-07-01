@@ -392,4 +392,41 @@ describe("StoryboardView", () => {
     expect(screen.getByText("guofeng, dusk teahouse")).toBeInTheDocument()
     expect(screen.getByText("#2")).toBeInTheDocument()
   })
+
+  it("renders an illustration thumbnail for mapped shots when illustrationByShotId is provided", () => {
+    // fetch 永不 resolve → AssetThumb 停在自持加载态占位（"加载中…"），
+    // 无需真实解析 blob src，稳定断言插图确实渲染。
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})))
+    const shots: Shot[] = [
+      { id: "s1", shotNo: 1, action: "茶馆内黄昏", prompt: "guofeng" },
+      { id: "s2", shotNo: 2, action: "茶汤特写", prompt: "close up tea" },
+    ]
+    render(
+      <StoryboardView
+        shots={shots}
+        isLoading={false}
+        isError={false}
+        illustrationByShotId={{ s1: "img1" }}
+      />,
+    )
+    // 仅 s1 有映射 → 恰好一个 AssetThumb（加载态占位）。
+    expect(screen.getAllByText("加载中…")).toHaveLength(1)
+    vi.unstubAllGlobals()
+  })
+
+  it("renders no illustration when illustrationByShotId is absent (guards drawer callers)", () => {
+    // 运行抽屉两处调用点不传 illustrationByShotId → 零图片、零 fetch，纯文本渲染。
+    const fetchSpy = vi.fn(() => new Promise<Response>(() => {}))
+    vi.stubGlobal("fetch", fetchSpy)
+    const shots: Shot[] = [
+      { id: "s1", shotNo: 1, action: "茶馆内黄昏", prompt: "guofeng" },
+    ]
+    const { container } = render(
+      <StoryboardView shots={shots} isLoading={false} isError={false} />,
+    )
+    expect(screen.queryByText("加载中…")).not.toBeInTheDocument()
+    expect(container.querySelector("img")).toBeNull()
+    expect(fetchSpy).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
 })
