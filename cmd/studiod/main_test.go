@@ -230,12 +230,11 @@ func TestEndToEndTextPipeline(t *testing.T) {
 	if dsn == "" {
 		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run the studio e2e")
 	}
-	// Script order consumed by the single ScriptedLLM cursor:
-	//   1) planner → valid graph (script→storyboard)
-	//   2) script agent → script JSON
-	//   3) storyboard agent → shots JSON
+	// Script order consumed by the single ScriptedLLM cursor (no planner response:
+	// #149 removed the auto-planner; the workflows-API custom path bypasses it):
+	//   1) script agent → script JSON
+	//   2) storyboard agent → shots JSON
 	srv, done := newHarness(t, dsn,
-		llm.Response{Text: `{"nodes":[{"id":"s","type":"script","dependsOn":[]},{"id":"b","type":"storyboard","dependsOn":["s"]}]}`},
 		llm.Response{Text: `{"title":"Coffee","logline":"a cup","scenes":[{"heading":"INT. CAFE","description":"steam","dialogue":"hi"}]}`},
 		llm.Response{Text: `{"shots":[{"shotNo":1,"camera":"wide","scene":"cafe","action":"open","prompt":"a cafe","duration":3}]}`},
 	)
@@ -293,13 +292,14 @@ func TestEndToEndTextPipeline(t *testing.T) {
 		t.Fatalf("no project id: %v", body)
 	}
 
-	// 4. Run (kicks planner + enqueues todos).
-	code, body = do("POST", "/api/projects/"+projID+"/run", token, "")
+	// 4. Create a builtin script→storyboard workflow and run it (enqueues todos).
+	wfID := createBuiltinWorkflow(t, do, token, projID)
+	code, body = do("POST", "/api/projects/"+projID+"/workflows/"+wfID+"/run", token, "")
 	if code != http.StatusAccepted {
 		t.Fatalf("run code=%d body=%v", code, body)
 	}
 	if v, _ := body["valid"].(bool); !v {
-		t.Fatalf("planner not valid: %v", body)
+		t.Fatalf("run not valid: %v", body)
 	}
 
 	// 5+6. Poll the events timeline until the terminal run_done arrives (the
@@ -357,76 +357,6 @@ func TestEndToEndTextPipeline(t *testing.T) {
 	}
 }
 
-func TestEndToEndMalformedPlanFallback(t *testing.T) {
-	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
-	if dsn == "" {
-		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run the studio e2e")
-	}
-	// Planner returns garbage → fallback default pipeline (script→storyboard).
-	// Then script + storyboard agents get valid JSON (cursor positions 2,3).
-	srv, done := newHarness(t, dsn,
-		llm.Response{Text: "I cannot produce a plan."},
-		llm.Response{Text: `{"title":"X","logline":"y","scenes":[{"heading":"INT","description":"d","dialogue":""}]}`},
-		llm.Response{Text: `{"shots":[{"shotNo":1,"camera":"wide","scene":"s","action":"a","prompt":"p","duration":2}]}`},
-	)
-	defer done()
-	seedUser(t, dsn, "fb@studio.com")
-
-	client := srv.Client()
-	do := func(method, path, bearer, body string) (int, map[string]any) {
-		req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
-		if body != "" {
-			req.Header.Set("Content-Type", "application/json")
-		}
-		if bearer != "" {
-			req.Header.Set("Authorization", "Bearer "+bearer)
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			t.Fatalf("%s %s: %v", method, path, err)
-		}
-		defer resp.Body.Close()
-		raw, _ := io.ReadAll(resp.Body)
-		var m map[string]any
-		_ = json.Unmarshal(raw, &m)
-		if m == nil {
-			m = map[string]any{"_raw": string(raw)}
-		}
-		return resp.StatusCode, m
-	}
-
-	_, lb := do("POST", "/api/auth/login", "", `{"Email":"fb@studio.com","Password":"pw"}`)
-	token, _ := lb["access_token"].(string)
-	_, ob := do("POST", "/api/orgs", token, `{"name":"FB Co"}`)
-	orgID, _ := ob["id"].(string)
-	_, pb := do("POST", "/api/orgs/"+orgID+"/projects", token, `{"name":"P","brief":"b"}`)
-	projID, _ := pb["id"].(string)
-
-	code, body := do("POST", "/api/projects/"+projID+"/run", token, "")
-	if code != http.StatusAccepted {
-		t.Fatalf("run code=%d body=%v", code, body)
-	}
-	if fb, _ := body["fallbackUsed"].(bool); !fb {
-		t.Fatalf("want fallbackUsed=true, got %v", body)
-	}
-	// Fallback pipeline still produces script + shots.
-	ok := false
-	for i := 0; i < 100; i++ {
-		sc, _ := do("GET", "/api/projects/"+projID+"/script", token, "")
-		shCode, shBody := do("GET", "/api/projects/"+projID+"/shots", token, "")
-		if sc == http.StatusOK && shCode == http.StatusOK {
-			if items, _ := shBody["items"].([]any); len(items) >= 1 {
-				ok = true
-				break
-			}
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	if !ok {
-		t.Fatalf("fallback pipeline produced no artifacts")
-	}
-}
-
 // newImageHarness builds a server with BOTH a scripted LLM (planner/script/
 // storyboard) and a fake looping MediaGenerator (every asset todo gets canned
 // bytes). Workers=1 keeps the scripted-LLM cursor deterministic.
@@ -460,9 +390,9 @@ func TestEndToEndImagePipeline(t *testing.T) {
 	if dsn == "" {
 		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run the studio image e2e")
 	}
-	// Scripted LLM cursor: planner(valid script→storyboard) → script → storyboard(2 shots).
+	// Scripted LLM cursor: script → storyboard(2 shots). No planner response
+	// (#149 removed the auto-planner; the workflows-API custom path bypasses it).
 	srv, done := newImageHarness(t, dsn,
-		llm.Response{Text: `{"nodes":[{"id":"s","type":"script","dependsOn":[]},{"id":"b","type":"storyboard","dependsOn":["s"]}]}`},
 		llm.Response{Text: `{"title":"Tea","logline":"x","scenes":[{"heading":"INT","description":"d","dialogue":""}]}`},
 		llm.Response{Text: `{"shots":[{"shotNo":1,"camera":"wide","scene":"s1","action":"a","prompt":"shot1","duration":2},{"shotNo":2,"camera":"close","scene":"s2","action":"b","prompt":"shot2","duration":2}]}`},
 	)
@@ -500,7 +430,8 @@ func TestEndToEndImagePipeline(t *testing.T) {
 		`{"name":"Tea Ad","brief":"a tea ad","contentType":"ad","targetPlatform":"web","style":"国风"}`)
 	projID, _ := pb["id"].(string)
 
-	code, body := do("POST", "/api/projects/"+projID+"/run", token, "")
+	wfID := createBuiltinWorkflow(t, do, token, projID)
+	code, body := do("POST", "/api/projects/"+projID+"/workflows/"+wfID+"/run", token, "")
 	if code != http.StatusAccepted {
 		t.Fatalf("run code=%d body=%v", code, body)
 	}
@@ -576,8 +507,9 @@ func TestEndToEndRegenerateLineage(t *testing.T) {
 		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run the studio regenerate e2e")
 	}
 	// One shot → one pending asset; regenerate it → v2 child + new pending asset.
+	// Scripted LLM cursor: script → storyboard(1 shot). No planner response
+	// (#149 removed the auto-planner; the workflows-API custom path bypasses it).
 	srv, done := newImageHarness(t, dsn,
-		llm.Response{Text: `{"nodes":[{"id":"s","type":"script","dependsOn":[]},{"id":"b","type":"storyboard","dependsOn":["s"]}]}`},
 		llm.Response{Text: `{"title":"T","logline":"x","scenes":[{"heading":"INT","description":"d","dialogue":""}]}`},
 		llm.Response{Text: `{"shots":[{"shotNo":1,"camera":"wide","scene":"s1","action":"a","prompt":"only-shot","duration":2}]}`},
 	)
@@ -612,7 +544,8 @@ func TestEndToEndRegenerateLineage(t *testing.T) {
 	orgID, _ := ob["id"].(string)
 	_, pb := do("POST", "/api/orgs/"+orgID+"/projects", token, `{"name":"P","brief":"b","style":"国风"}`)
 	projID, _ := pb["id"].(string)
-	_, _ = do("POST", "/api/projects/"+projID+"/run", token, "")
+	wfID := createBuiltinWorkflow(t, do, token, projID)
+	_, _ = do("POST", "/api/projects/"+projID+"/workflows/"+wfID+"/run", token, "")
 
 	var v1ID string
 	for i := 0; i < 150; i++ {
@@ -720,11 +653,32 @@ func setupOrgProject(t *testing.T, do func(string, string, string, string) (int,
 	return token, orgID, projID
 }
 
+// createBuiltinWorkflow creates a builtin script→storyboard workflow on the
+// project and returns its id. #149 removed the auto-planner /projects/{id}/run
+// path (it now 400s); the workflows-API custom path is the surviving trigger for
+// the script→storyboard pipeline the e2e suite exercises. The graph mirrors the
+// old default pipeline, so the worker still runs script→storyboard→asset — only
+// the trigger (and the dropped planner LLM response) moved.
+func createBuiltinWorkflow(t *testing.T, do func(string, string, string, string) (int, map[string]any), token, projID string) string {
+	t.Helper()
+	const wfNodes = `[{"id":"node-script","type":"script","dependsOn":[]},{"id":"node-storyboard","type":"storyboard","dependsOn":["node-script"]}]`
+	wfCode, wfb := do("POST", "/api/projects/"+projID+"/workflows", token, `{"name":"e2e-flow","nodes":`+wfNodes+`}`)
+	if wfCode != http.StatusOK {
+		t.Fatalf("create workflow code=%d body=%v", wfCode, wfb)
+	}
+	wfID, _ := wfb["id"].(string)
+	if wfID == "" {
+		t.Fatalf("no workflow id in response: %v", wfb)
+	}
+	return wfID
+}
+
 // m3PipelineResponses is the canonical 1-shot pipeline script for the M3 e2e:
-// planner(valid) → script → storyboard(1 shot) → review(prescreen, score 87).
+// script → storyboard(1 shot) → review(prescreen, score 87). No planner
+// response: #149 removed the auto-planner; these runs go through the
+// workflows-API custom path (script→storyboard graph), which bypasses the planner.
 func m3PipelineResponses() []llm.Response {
 	return []llm.Response{
-		{Text: `{"nodes":[{"id":"s","type":"script","dependsOn":[]},{"id":"b","type":"storyboard","dependsOn":["s"]}]}`},
 		{Text: `{"title":"Tea","logline":"x","scenes":[{"heading":"INT","description":"d","dialogue":""}]}`},
 		{Text: `{"shots":[{"shotNo":1,"camera":"wide","scene":"s1","action":"a","prompt":"shot1","duration":2}]}`},
 		{Text: `{"score":87,"flags":["minor_blur"],"note":"prompt-consistent"}`},
@@ -773,7 +727,8 @@ func TestEndToEndModelRoutingTakesEffect(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("model-config code=%d body=%v", code, mc)
 	}
-	if code, body := do("POST", "/api/projects/"+projID+"/run", token, ""); code != http.StatusAccepted {
+	wfID := createBuiltinWorkflow(t, do, token, projID)
+	if code, body := do("POST", "/api/projects/"+projID+"/workflows/"+wfID+"/run", token, ""); code != http.StatusAccepted {
 		t.Fatalf("run code=%d body=%v", code, body)
 	}
 	assetID := pollAssetWithStatus(do, token, projID, "pending_acceptance")
@@ -812,7 +767,8 @@ func TestEndToEndFakeModeKeylessPipeline(t *testing.T) {
 	do := newDoer(t, srv)
 	token, _, projID := setupOrgProject(t, do, "fake@studio.com", "国风")
 
-	if code, body := do("POST", "/api/projects/"+projID+"/run", token, ""); code != http.StatusAccepted {
+	wfID := createBuiltinWorkflow(t, do, token, projID)
+	if code, body := do("POST", "/api/projects/"+projID+"/workflows/"+wfID+"/run", token, ""); code != http.StatusAccepted {
 		t.Fatalf("run code=%d body=%v", code, body)
 	}
 	assetID := pollAssetWithStatus(do, token, projID, "pending_acceptance")
@@ -915,7 +871,8 @@ func TestEndToEndCancelTerminalStatesAssets(t *testing.T) {
 	defer done()
 	do := newDoer(t, srv)
 	token, _, projID := setupOrgProject(t, do, "cancel@studio.com", "")
-	if code, body := do("POST", "/api/projects/"+projID+"/run", token, ""); code != http.StatusAccepted {
+	wfID := createBuiltinWorkflow(t, do, token, projID)
+	if code, body := do("POST", "/api/projects/"+projID+"/workflows/"+wfID+"/run", token, ""); code != http.StatusAccepted {
 		t.Fatalf("run code=%d body=%v", code, body)
 	}
 	// Wait until the asset is in-flight ('generating', frozen inside gatedGen).
@@ -958,7 +915,8 @@ func TestEndToEndPrescreenScoreSurfaces(t *testing.T) {
 	defer done()
 	do := newDoer(t, srv)
 	token, _, projID := setupOrgProject(t, do, "prescreen@studio.com", "")
-	if code, body := do("POST", "/api/projects/"+projID+"/run", token, ""); code != http.StatusAccepted {
+	wfID := createBuiltinWorkflow(t, do, token, projID)
+	if code, body := do("POST", "/api/projects/"+projID+"/workflows/"+wfID+"/run", token, ""); code != http.StatusAccepted {
 		t.Fatalf("run code=%d body=%v", code, body)
 	}
 	assetID := pollAssetWithStatus(do, token, projID, "pending_acceptance")
@@ -997,8 +955,9 @@ func TestEndToEndGenerationQuota429(t *testing.T) {
 	defer done()
 	do := newDoer(t, srv)
 	token, orgID, projID := setupOrgProject(t, do, "quota@studio.com", "")
+	wfID := createBuiltinWorkflow(t, do, token, projID)
 	// First run passes (0 generations so far) and records 1 generation.
-	if code, body := do("POST", "/api/projects/"+projID+"/run", token, ""); code != http.StatusAccepted {
+	if code, body := do("POST", "/api/projects/"+projID+"/workflows/"+wfID+"/run", token, ""); code != http.StatusAccepted {
 		t.Fatalf("first run code=%d body=%v", code, body)
 	}
 	if id := pollAssetWithStatus(do, token, projID, "pending_acceptance"); id == "" {
@@ -1019,7 +978,7 @@ func TestEndToEndGenerationQuota429(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	// Second run: the org is at quota (1/1 in the rolling window) → 429.
-	code, body := do("POST", "/api/projects/"+projID+"/run", token, "")
+	code, body := do("POST", "/api/projects/"+projID+"/workflows/"+wfID+"/run", token, "")
 	if code != http.StatusTooManyRequests {
 		t.Fatalf("over-quota run should 429, got %d body=%v", code, body)
 	}
@@ -1078,9 +1037,10 @@ func TestEndToEndFakeAsyncVideoSubmitPoll(t *testing.T) {
 		Bytes: []byte("D"), MimeType: "image/png", Provider: "default", Model: "d", ImageCount: 1,
 	})
 	// One shot, duration 6 → DurationSeconds=6 → 6 * 500000 micros/sec = 3000000.
+	// Scripted LLM cursor: script → storyboard(1 shot). No planner response
+	// (#149 removed the auto-planner; the workflows-API custom path bypasses it).
 	srv, done := newHarnessWith(t, dsn, defGen,
 		map[string]string{"REVIEW_PRESCREEN": "false", "POLL_BACKOFF": "50ms", "MAX_POLL_BACKOFF": "200ms"},
-		llm.Response{Text: `{"nodes":[{"id":"s","type":"script","dependsOn":[]},{"id":"b","type":"storyboard","dependsOn":["s"]}]}`},
 		llm.Response{Text: `{"title":"V","logline":"x","scenes":[{"heading":"INT","description":"d","dialogue":""}]}`},
 		llm.Response{Text: `{"shots":[{"shotNo":1,"camera":"wide","scene":"s1","action":"a","prompt":"a city flythrough","duration":6}]}`},
 	)
@@ -1094,7 +1054,8 @@ func TestEndToEndFakeAsyncVideoSubmitPoll(t *testing.T) {
 		`{"kind":"image","provider":"fake","model":"fake-video-async","enabled":true,"isDefault":true}`); code != http.StatusOK {
 		t.Fatalf("model-config code=%d body=%v", code, mc)
 	}
-	if code, body := do("POST", "/api/projects/"+projID+"/run", token, ""); code != http.StatusAccepted {
+	wfID := createBuiltinWorkflow(t, do, token, projID)
+	if code, body := do("POST", "/api/projects/"+projID+"/workflows/"+wfID+"/run", token, ""); code != http.StatusAccepted {
 		t.Fatalf("run code=%d body=%v", code, body)
 	}
 
