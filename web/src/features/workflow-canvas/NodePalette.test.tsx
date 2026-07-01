@@ -135,3 +135,19 @@ describe("NodePalette search + grouping (PR-5)", () => {
     expect(screen.getByText("无匹配系统节点")).toBeInTheDocument()
   })
 })
+
+// PR-6：节点管理入口。
+describe("NodePalette 节点管理入口 (PR-6)", () => {
+  it("提供 onOpenManager 时渲染「节点管理」按钮并回调", async () => {
+    const onOpenManager = vi.fn()
+    const user = userEvent.setup()
+    renderPalette({ onOpenManager })
+    await user.click(screen.getByRole("button", { name: /节点管理/ }))
+    expect(onOpenManager).toHaveBeenCalledTimes(1)
+  })
+
+  it("未提供 onOpenManager → 不渲染「节点管理」按钮", () => {
+    renderPalette()
+    expect(screen.queryByRole("button", { name: /节点管理/ })).toBeNull()
+  })
+})
