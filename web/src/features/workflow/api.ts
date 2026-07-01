@@ -249,6 +249,23 @@ export function useRegenerateAsset(): UseMutationResult<
   })
 }
 
+// 朗读歌词 TTS：POST /api/projects/{id}/lyrics-audio（editor+）。body {planId,text}。
+//   同步合成一段歌词旁白，落一个 accepted 'lyrics-audio' 音频资产 → {audioAssetId}。
+//   400 text 为空 / org 未配音频模型；404 项目不存在。供音乐成品预览的 transport 用。
+export function useLyricsAudio(): UseMutationResult<
+  { audioAssetId: string },
+  Error,
+  { projectId: string; planId: string; text: string }
+> {
+  return useMutation({
+    mutationFn: ({ projectId, planId, text }) =>
+      apiJSON<{ audioAssetId: string }>(`/api/projects/${projectId}/lyrics-audio`, {
+        method: "POST",
+        body: JSON.stringify({ planId, text }),
+      }),
+  })
+}
+
 export interface Plan {
   id: string
   projectId: string

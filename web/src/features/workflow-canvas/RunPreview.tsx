@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
-import { ChevronLeft, ChevronRight, Play } from "lucide-react"
+import { ChevronLeft, ChevronRight, Loader2, Play } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -8,8 +8,9 @@ import {
 } from "@/components/ui/dialog"
 import { Button } from "@/components/studio/Button"
 import type { GraphNode } from "@/lib/projectState"
-import { useShots, useProjectAssets } from "@/features/workflow/api"
+import { useShots, useProjectAssets, useLyricsAudio } from "@/features/workflow/api"
 import { AssetThumb } from "@/features/workflow/AssetThumb"
+import { AssetAudio } from "@/features/workflow/AssetAudio"
 import {
   classifyPreviewMode,
   extractStoryDoc,
@@ -96,7 +97,13 @@ export function RunPreview({
         </DialogHeader>
 
         {activeMode === "music" ? (
-          <MusicView doc={doc} pages={pages} audioAssetId={audioAssetId} />
+          <MusicView
+            doc={doc}
+            pages={pages}
+            projectId={projectId}
+            planId={planId}
+            audioAssetId={audioAssetId}
+          />
         ) : (
           <ReaderView doc={doc} pages={pages} />
         )}
@@ -207,18 +214,27 @@ function ReaderView({ doc, pages }: { doc: StoryDoc | null; pages: PreviewPage[]
   )
 }
 
-// 音乐模式：专辑布局——大封面 + 标题/情绪 + 可滚动歌词 + transport bar（本期禁用占位）。
+// 音乐模式：专辑布局——大封面 + 标题/情绪 + 可滚动歌词 + transport bar（朗读歌词 TTS）。
 function MusicView({
   doc,
   pages,
+  projectId,
+  planId,
   audioAssetId,
 }: {
   doc: StoryDoc | null
   pages: PreviewPage[]
+  projectId: string
+  planId: string
   audioAssetId?: string
 }) {
   const cover = pages.find((p) => p.imageAssetId)?.imageAssetId
   const lines = (doc?.lyrics ?? "").split("\n")
+
+  // 朗读歌词：点播放 → 同步合成 TTS 音频资产 → 就地挂 <AssetAudio>。
+  //   已有 audioAssetId（Phase 2 预留缝 / 上次生成）→ 直接播；否则按需生成。
+  const [audioId, setAudioId] = useState(audioAssetId)
+  const gen = useLyricsAudio()
 
   return (
     <div className="flex min-h-0 flex-1 gap-6" data-slot="music-view">
@@ -269,25 +285,44 @@ function MusicView({
           )}
         </div>
 
-        {/* Transport bar：本期为禁用占位。Phase 2 在此接线真实 TTS 播放器
-            （<AssetAudio>/<AudioCard>），用上面预留的 audioAssetId prop。 */}
+        {/* Transport bar：朗读歌词 TTS。未生成 → 播放键触发同步合成；生成中显示进度；
+            成功后就地挂 <AssetAudio> 走受控字节播放。 */}
         <div
           data-slot="transport-bar"
-          // Phase 2 缝：audioAssetId 就绪与否记在 data 属性上，后续接线时替换本占位。
-          data-audio-ready={audioAssetId ? "true" : "false"}
+          data-audio-ready={audioId ? "true" : "false"}
           className="flex items-center gap-3 rounded-lg border border-line bg-bg-surface px-4 py-2.5"
         >
-          <button
-            type="button"
-            disabled
-            title="朗读歌词 (即将支持)"
-            aria-label="朗读歌词 (即将支持)"
-            className="grid h-9 w-9 place-items-center rounded-full bg-amber/60 text-primary-foreground opacity-50"
-          >
-            <Play className="h-4 w-4" />
-          </button>
-          <span className="text-[12px] text-text-3">朗读歌词 (即将支持)</span>
-          {/* TODO(phase-2): 用 audioAssetId 接 <AssetAudio>/<AudioCard> 走真实 TTS 播放。 */}
+          {audioId ? (
+            <AssetAudio assetId={audioId} className="w-full" />
+          ) : gen.isPending ? (
+            <>
+              <span className="grid h-9 w-9 place-items-center rounded-full bg-amber/60 text-primary-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+              </span>
+              <span className="text-[12px] text-text-3">生成朗读中…</span>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                disabled={!doc?.lyrics}
+                title="朗读歌词"
+                aria-label="朗读歌词"
+                onClick={() =>
+                  gen.mutate(
+                    { projectId, planId, text: doc?.lyrics ?? "" },
+                    { onSuccess: (r) => setAudioId(r.audioAssetId) },
+                  )
+                }
+                className="grid h-9 w-9 place-items-center rounded-full bg-amber text-primary-foreground disabled:opacity-50"
+              >
+                <Play className="h-4 w-4" />
+              </button>
+              <span className="text-[12px] text-text-3">
+                {gen.isError ? "朗读生成失败，重试" : "朗读歌词"}
+              </span>
+            </>
+          )}
         </div>
       </div>
     </div>

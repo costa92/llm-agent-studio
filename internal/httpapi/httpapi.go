@@ -187,6 +187,9 @@ func NewMux(d Deps) *http.ServeMux {
 		mux.Handle("POST /api/projects/{id}/cover/upload", proj(roleEditor, coverUploadHandler(d.Projects, d.CoverAssets, d.BlobRouter)))
 		mux.Handle("PUT /api/projects/{id}/cover", proj(roleEditor, coverSetHandler(d.Projects, d.AssetLibrary)))
 		mux.Handle("GET /api/projects/{id}/cover/options", proj(roleViewer, coverOptionsHandler(d.Projects, d.AssetLibrary)))
+		// Synchronous lyrics read-aloud TTS (music RunPreview transport). Reuses the
+		// cover generator/asset/blob ports; resolves the org's audio model.
+		mux.Handle("POST /api/projects/{id}/lyrics-audio", proj(roleEditor, lyricsAudioHandler(d.Projects, d.CoverAssets, d.CoverGen, d.BlobRouter, d.Cost, d.GenQuota)))
 	}
 
 	asset := func(min authzrole.Role, h http.HandlerFunc) http.Handler {
