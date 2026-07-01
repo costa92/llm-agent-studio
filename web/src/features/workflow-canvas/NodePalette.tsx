@@ -1,3 +1,4 @@
+import { useMemo, useState } from "react"
 import { NODE_COLOR } from "./nodeColor"
 import { useBuiltinNodeTypes } from "@/features/builtin-node-types/api"
 
@@ -45,13 +46,52 @@ export interface NodePaletteProps {
 
 export function NodePalette({ onStandardPipeline, onAutoTidy, customTypes, onQuickCreate, onAddCustomType, onEditCustomType }: NodePaletteProps) {
   const { data: builtins = [] } = useBuiltinNodeTypes()
+  // 搜索过滤（系统节点按 label/type/职责描述；自定义节点按 label/type），纯派生（禁 effect setState）。
+  const [query, setQuery] = useState("")
+  const q = query.trim().toLowerCase()
+  const filteredBuiltins = useMemo(
+    () =>
+      q
+        ? builtins.filter(
+            (b) =>
+              b.label.toLowerCase().includes(q) ||
+              b.type.toLowerCase().includes(q) ||
+              (b.description ?? "").toLowerCase().includes(q),
+          )
+        : builtins,
+    [builtins, q],
+  )
+  const filteredCustom = useMemo(() => {
+    const list = customTypes ?? []
+    return q
+      ? list.filter(
+          (c) => c.label.toLowerCase().includes(q) || c.type.toLowerCase().includes(q),
+        )
+      : list
+  }, [customTypes, q])
+  const hasCustom = (customTypes?.length ?? 0) > 0
+
   return (
-    <aside className="flex w-44 shrink-0 flex-col gap-3 border-r border-line bg-bg-surface p-3">
+    <aside className="flex w-48 shrink-0 flex-col gap-3 overflow-y-auto border-r border-line bg-bg-surface p-3">
       <h4 className="text-[11px] font-semibold uppercase tracking-wider text-text-3">
         节点
       </h4>
-      <div className="flex flex-col gap-2">
-        {builtins.map((b) => (
+      <input
+        type="search"
+        data-slot="palette-search"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="搜索节点…"
+        aria-label="搜索节点"
+        className="h-7 rounded-md border border-line bg-bg-base px-2 text-[12px] text-text-1 placeholder:text-text-3 focus:border-amber focus:outline-none"
+      />
+
+      {/* 系统节点：后端目录数据驱动，含一句话职责（description）。一个节点做一件事。 */}
+      <section className="flex flex-col gap-2">
+        <h5 className="text-[10px] font-semibold uppercase tracking-wider text-text-3">
+          系统节点
+        </h5>
+        {filteredBuiltins.map((b) => (
           <div
             key={b.type}
             data-slot="palette-chip"
@@ -60,55 +100,77 @@ export function NodePalette({ onStandardPipeline, onAutoTidy, customTypes, onQui
               e.dataTransfer.setData(PALETTE_DND_TYPE, b.type)
               e.dataTransfer.effectAllowed = "move"
             }}
-            className="flex cursor-grab items-center gap-2 rounded-md border border-line bg-bg-base px-2.5 py-1.5 hover:border-text-3 active:cursor-grabbing"
-            title="拖入画布添加"
+            className="flex cursor-grab items-start gap-2 rounded-md border border-line bg-bg-base px-2.5 py-1.5 hover:border-text-3 active:cursor-grabbing"
+            title={b.description || "拖入画布添加"}
           >
             <span
               aria-hidden
-              className="h-2.5 w-2.5 rounded-full"
+              className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full"
               style={{ backgroundColor: NODE_COLOR[b.type] }}
             />
-            <span className="text-[12px] text-text-1">{b.label}</span>
+            <div className="flex min-w-0 flex-col">
+              <span className="text-[12px] text-text-1">{b.label}</span>
+              {b.description && (
+                <span className="line-clamp-2 text-[10.5px] leading-snug text-text-3">
+                  {b.description}
+                </span>
+              )}
+            </div>
           </div>
         ))}
-        {(customTypes ?? []).map((c) => (
-          <div
-            key={c.typeId ?? c.type}
-            data-slot="palette-chip-custom"
-            data-typeid={c.typeId}
-            draggable
-            onDragStart={(e) => {
-              e.dataTransfer.setData(PALETTE_DND_TYPE, c.type)
-              if (c.typeId) {
-                e.dataTransfer.setData(PALETTE_DND_TYPEID, c.typeId)
-              }
-              e.dataTransfer.effectAllowed = "move"
-            }}
-            className="group flex cursor-grab items-center gap-2 rounded-md border border-line bg-bg-base px-2.5 py-1.5 hover:border-text-3 active:cursor-grabbing"
-            title="拖入画布添加"
-          >
-            <span aria-hidden className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: c.color }} />
-            <span className="flex-1 text-[12px] text-text-1">{c.label}</span>
-            {c.typeId && (
-              <span
-                aria-label="typed"
-                className="rounded bg-amber/20 px-1 text-[10px] font-medium text-amber"
-              >
-                T
-              </span>
-            )}
-            {!c.typeId && onEditCustomType && (
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); onEditCustomType(c.type) }}
-                className="text-[11px] text-text-3 opacity-0 group-hover:opacity-100 hover:text-text-1"
-              >
-                编辑
-              </button>
-            )}
-          </div>
-        ))}
-      </div>
+        {q && filteredBuiltins.length === 0 && (
+          <p className="px-1 text-[11px] text-text-3">无匹配系统节点</p>
+        )}
+      </section>
+
+      {/* 用户自定义节点：org 注册表 typed 节点（带 T）+ 画布注释草图。一句话职责暂无（自定义类型未存描述）。 */}
+      {hasCustom && (
+        <section className="flex flex-col gap-2">
+          <h5 className="text-[10px] font-semibold uppercase tracking-wider text-text-3">
+            用户自定义节点
+          </h5>
+          {filteredCustom.map((c) => (
+            <div
+              key={c.typeId ?? c.type}
+              data-slot="palette-chip-custom"
+              data-typeid={c.typeId}
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.setData(PALETTE_DND_TYPE, c.type)
+                if (c.typeId) {
+                  e.dataTransfer.setData(PALETTE_DND_TYPEID, c.typeId)
+                }
+                e.dataTransfer.effectAllowed = "move"
+              }}
+              className="group flex cursor-grab items-center gap-2 rounded-md border border-line bg-bg-base px-2.5 py-1.5 hover:border-text-3 active:cursor-grabbing"
+              title="拖入画布添加"
+            >
+              <span aria-hidden className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: c.color }} />
+              <span className="flex-1 truncate text-[12px] text-text-1">{c.label}</span>
+              {c.typeId && (
+                <span
+                  aria-label="typed"
+                  className="rounded bg-amber/20 px-1 text-[10px] font-medium text-amber"
+                >
+                  T
+                </span>
+              )}
+              {!c.typeId && onEditCustomType && (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); onEditCustomType(c.type) }}
+                  className="text-[11px] text-text-3 opacity-0 group-hover:opacity-100 hover:text-text-1"
+                >
+                  编辑
+                </button>
+              )}
+            </div>
+          ))}
+          {q && filteredCustom.length === 0 && (
+            <p className="px-1 text-[11px] text-text-3">无匹配自定义节点</p>
+          )}
+        </section>
+      )}
 
       {/* 可运行类型：快建 LLM / HTTP / 脚本(Starlark) 类型。打开类型化创建对话框预置
           kind，保存后经注册表生成带 typeId 的可拖拽 chip（可运行）。与下方「注释」区分。 */}

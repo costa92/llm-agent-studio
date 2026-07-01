@@ -37,6 +37,7 @@ import {
   toStudioNodes,
   directUpstreamIds,
   addNodeAt,
+  nextNodeId,
   reconnectEdge,
   duplicateNode,
   insertNodeOnEdge,
@@ -382,9 +383,12 @@ function CanvasInner({
       const display = displayBase
         ? { ...displayBase, ...(droppedTypeId ? { typeId: droppedTypeId } : {}) }
         : undefined
-      setRfNodes((nds) => addNodeAt(nds as RFNode[], type, pos, prompts, undefined, display))
+      // 落点即配置：用确定的新 id 建节点，落地后选中它 → 属性面板自动打开该节点的参数配置。
+      const newId = nextNodeId(getNodes() as RFNode[])
+      setRfNodes((nds) => addNodeAt(nds as RFNode[], type, pos, prompts, newId, display))
+      setSelectedId(newId)
     },
-    [screenToFlowPosition, setRfNodes, prompts, takeSnapshot, customTypes],
+    [screenToFlowPosition, setRfNodes, prompts, takeSnapshot, customTypes, getNodes],
   )
 
   // ── 连线（带环路守卫） ───────────────────────────────────
