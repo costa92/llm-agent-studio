@@ -143,16 +143,6 @@ func checkAcyclic(g Graph) error {
 	return nil
 }
 
-// DefaultPipeline is the fallback graph (spec §7.1): script → storyboard.
-// M1 stops at storyboard (asset is M2); the default pipeline is intentionally
-// the two text stages M1 can actually run.
-func DefaultPipeline() Graph {
-	return Graph{Nodes: []Node{
-		{ID: "script-1", Type: "script", DependsOn: nil},
-		{ID: "storyboard-1", Type: "storyboard", DependsOn: []string{"script-1"}},
-	}}
-}
-
 // extractObject mirrors internal/agents.extractJSONObject; duplicated (not
 // imported) so the planner package has no dependency on agents (spec §5 single
 // responsibility). Strips ```json fences + surrounding prose, returns the first

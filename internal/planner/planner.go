@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"regexp"
 
-	coreagents "github.com/costa92/llm-agent"
 	"github.com/costa92/llm-agent-contract/llm"
 	"gorm.io/gorm"
 
@@ -41,18 +40,17 @@ type ReadyTodo struct {
 	Type string
 }
 
-// Planner turns a brief into a persisted todo graph via one LLM call.
+// Planner turns a custom workflow graph into a persisted todo graph. The LLM
+// auto-planner (Plan/PlanWith) was removed; only PlanCustom remains. model is
+// retained on the struct (set by New) for signature stability but is no longer
+// read by any planning path.
 type Planner struct {
-	model llm.ChatModel // bound default for Plan; PlanWith routes per-org (BYOK)
+	model llm.ChatModel // retained for New's signature; unused since the auto-planner was removed
 	todos *todos.Store
 	db    *gorm.DB
 }
 
-const plannerSystemPrompt = `You are a content-production planner. Given a brief, output a todo graph as a JSON object with EXACTLY this shape and nothing else:
-{"nodes":[{"id":string,"type":string,"dependsOn":[string]}]}
-Allowed node types: "script", "storyboard". The graph MUST contain a "script" node, must be acyclic, and "storyboard" should depend on "script". Output ONLY the JSON object.`
-
-// New builds a Planner over the bound default model (used by Plan).
+// New builds a Planner. model is retained for signature stability but unused.
 func New(model llm.ChatModel, todoStore *todos.Store, db *gorm.DB) *Planner {
 	return &Planner{model: model, todos: todoStore, db: db}
 }
@@ -61,91 +59,6 @@ func newID() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
-}
-
-// Plan asks the LLM for a graph, validates it, and persists plans + todos. On
-// a malformed/invalid plan it falls back to the default pipeline (spec §7.1)
-// and records fallback_used=true. The plans row stores the raw LLM text. Uses
-// the bound default model; PlanWith routes per-org (BYOK).
-func (p *Planner) Plan(ctx context.Context, projectID string, b Brief, runInputs json.RawMessage) (Result, error) {
-	return p.PlanWith(ctx, projectID, p.model, b, runInputs)
-}
-
-// PlanWith is Plan with an explicit chat model (BYOK 模型路由): the run handler
-// resolves the org's text model through the ModelRouter and passes it here.
-// runInputs is the run-time inputs snapshot ({values, schema}); nil/empty stores '{}'.
-func (p *Planner) PlanWith(ctx context.Context, projectID string, model llm.ChatModel, b Brief, runInputs json.RawMessage) (Result, error) {
-	agent := coreagents.NewSimpleAgent(model, coreagents.SimpleOptions{
-		Name: "planner", SystemPrompt: plannerSystemPrompt,
-	})
-	planID := newID()
-	prompt := fmt.Sprintf("Brief: %s\nContent type: %s\nTarget platform: %s\nStyle: %s",
-		b.Brief, b.ContentType, b.TargetPlatform, b.Style)
-
-	rawText := ""
-	valid := false
-	fallback := false
-	graph := DefaultPipeline()
-
-	res, err := agent.Run(ctx, prompt)
-	if err != nil {
-		// LLM failed → fallback (still produce a runnable pipeline).
-		fallback = true
-		rawText = fmt.Sprintf("agent error: %v", err)
-	} else {
-		rawText = res.Answer
-		g, perr := ParseGraph(res.Answer)
-		if perr == nil && Validate(g) == nil {
-			graph = g
-			valid = true
-		} else {
-			fallback = true
-		}
-	}
-
-	// Persist the plan row (raw text stored as a JSON string for auditing).
-	rawJSON, _ := json.Marshal(rawText)
-	if len(runInputs) == 0 {
-		runInputs = []byte("{}") // run_inputs is NOT NULL DEFAULT '{}'
-	}
-	if err := p.db.WithContext(ctx).Exec(
-		`INSERT INTO plans (id, project_id, status, raw_plan_json, valid, fallback_used, run_inputs)
-		 VALUES ($1,$2,'created',$3,$4,$5,$6)`,
-		planID, projectID, rawJSON, valid, fallback, []byte(runInputs)).Error; err != nil {
-		return Result{}, fmt.Errorf("planner: insert plan: %w", err)
-	}
-
-	// Map the graph to todo specs. The script node carries the brief as input;
-	// downstream nodes get an empty input (the worker fills it from upstream
-	// artifacts at dispatch time).
-	specs := make([]todos.NodeSpec, 0, len(graph.Nodes))
-	for _, n := range graph.Nodes {
-		var input []byte
-		if n.Type == "script" {
-			input, _ = json.Marshal(map[string]string{
-				"brief": b.Brief, "contentType": b.ContentType,
-				"targetPlatform": b.TargetPlatform, "style": b.Style,
-			})
-		} else {
-			input = []byte(`{}`)
-		}
-		specs = append(specs, todos.NodeSpec{
-			LocalID: n.ID, Type: n.Type, DependsOn: n.DependsOn, InputJSON: input,
-		})
-	}
-	idMap, err := p.todos.CreateGraph(ctx, projectID, planID, specs)
-	if err != nil {
-		return Result{}, fmt.Errorf("planner: create todo graph: %w", err)
-	}
-	// Collect the nodes created 'ready' (no dependencies) so the run handler can
-	// emit todo_ready for them — CreateGraph starts dep-free nodes in 'ready'.
-	var ready []ReadyTodo
-	for _, n := range graph.Nodes {
-		if len(n.DependsOn) == 0 {
-			ready = append(ready, ReadyTodo{ID: idMap[n.ID], Type: n.Type})
-		}
-	}
-	return Result{PlanID: planID, Valid: valid, FallbackUsed: fallback, ReadyTodos: ready}, nil
 }
 
 // WorkflowNode defines a node in a custom agent workflow.

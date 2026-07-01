@@ -152,9 +152,20 @@ type stubAppender struct{}
 
 func (stubAppender) Append(_ context.Context, _, _, _ string, _ any) (int64, error) { return 1, nil }
 
+// quotaTestProject is a runnable custom-workflow project so the run reaches the
+// quota gate (a non-custom project 400s before quota now — the picturebook/standard
+// pipelines were removed).
+func quotaTestProject() project.Project {
+	nodes, _ := json.Marshal([]planner.WorkflowNode{{ID: "s1", Type: "script"}})
+	return project.Project{
+		ID: "p1", OrgID: "o1", Status: "draft",
+		CustomWorkflowEnabled: true, WorkflowNodes: json.RawMessage(nodes),
+	}
+}
+
 func TestRunHandler429WhenQuotaExhausted(t *testing.T) {
 	cs := &stubCost{count: 5} // org already used 5 generations in the window
-	h := runHandler(stubProjects{orgID: "o1"}, stubPlanner{}, stubAppender{}, cs, 5, nil, nil)
+	h := runHandler(fixedProjectStore{p: quotaTestProject()}, stubPlanner{}, stubAppender{}, cs, 5, nil, nil)
 	req := httptest.NewRequest("POST", "/api/projects/p1/run", nil)
 	req.SetPathValue("id", "p1")
 	rr := httptest.NewRecorder()
@@ -166,7 +177,7 @@ func TestRunHandler429WhenQuotaExhausted(t *testing.T) {
 
 func TestRunHandlerPassesUnderQuota(t *testing.T) {
 	cs := &stubCost{count: 4}
-	h := runHandler(stubProjects{orgID: "o1"}, stubPlanner{}, stubAppender{}, cs, 5, nil, nil)
+	h := runHandler(fixedProjectStore{p: quotaTestProject()}, stubPlanner{}, stubAppender{}, cs, 5, nil, nil)
 	req := httptest.NewRequest("POST", "/api/projects/p1/run", nil)
 	req.SetPathValue("id", "p1")
 	rr := httptest.NewRecorder()
@@ -178,7 +189,7 @@ func TestRunHandlerPassesUnderQuota(t *testing.T) {
 
 func TestRunHandlerQuotaZeroDisabled(t *testing.T) {
 	cs := &stubCost{count: 1000}
-	h := runHandler(stubProjects{orgID: "o1"}, stubPlanner{}, stubAppender{}, cs, 0, nil, nil)
+	h := runHandler(fixedProjectStore{p: quotaTestProject()}, stubPlanner{}, stubAppender{}, cs, 0, nil, nil)
 	req := httptest.NewRequest("POST", "/api/projects/p1/run", nil)
 	req.SetPathValue("id", "p1")
 	rr := httptest.NewRecorder()

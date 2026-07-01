@@ -151,18 +151,7 @@ func (s stubReview) Regenerate(_ context.Context, _, _ string) (string, string, 
 	return "newAsset", "newTodo", nil
 }
 
-// narrationCalled records whether RegenerateNarration ran (and with what text),
-// so the handler test can assert the body's text reached the service.
-type recordingReview struct {
-	stubReview
-	calledText string
-}
-
-func (s *recordingReview) RegenerateNarration(_ context.Context, _, text string) (string, string, error) {
-	s.calledText = text
-	return "newAudio", "newTodo", nil
-}
-
+// stubReview still satisfies ReviewPort's (now dead) RegenerateNarration method.
 func (s stubReview) RegenerateNarration(_ context.Context, _, _ string) (string, string, error) {
 	return "newAudio", "newTodo", nil
 }
@@ -176,35 +165,6 @@ func (stubAssetLib) OrgIDForAsset(_ context.Context, _ string) (string, error) {
 	return "", errors.New("no org")
 }
 
-func TestNarrationHandlerOK(t *testing.T) {
-	rv := &recordingReview{}
-	h := narrationHandler(rv, stubAssetLib{}, nil, 0)
-	req := httptest.NewRequest("POST", "/api/assets/abc/narration", strings.NewReader(`{"text":"新旁白"}`))
-	req.SetPathValue("id", "abc")
-	rec := httptest.NewRecorder()
-	h(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("want 200, got %d (%s)", rec.Code, rec.Body.String())
-	}
-	if rv.calledText != "新旁白" {
-		t.Fatalf("want RegenerateNarration called with 新旁白, got %q", rv.calledText)
-	}
-}
-
-func TestNarrationHandlerEmptyText400(t *testing.T) {
-	rv := &recordingReview{}
-	h := narrationHandler(rv, stubAssetLib{}, nil, 0)
-	req := httptest.NewRequest("POST", "/api/assets/abc/narration", strings.NewReader(`{"text":""}`))
-	req.SetPathValue("id", "abc")
-	rec := httptest.NewRecorder()
-	h(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("want 400, got %d", rec.Code)
-	}
-	if rv.calledText != "" {
-		t.Fatalf("RegenerateNarration must not be called on empty text")
-	}
-}
 
 func TestAcceptHandler409OnConflict(t *testing.T) {
 	h := acceptHandler(stubReview{conflict: true})

@@ -80,17 +80,3 @@ func TestValidateAcceptsAssetType(t *testing.T) {
 		t.Fatalf("asset type should be whitelisted in M2: %v", err)
 	}
 }
-
-func TestDefaultPipelineIsValid(t *testing.T) {
-	g := DefaultPipeline()
-	if err := Validate(g); err != nil {
-		t.Fatalf("default pipeline invalid: %v", err)
-	}
-	// must be script → storyboard
-	if g.Nodes[0].Type != "script" || g.Nodes[1].Type != "storyboard" {
-		t.Fatalf("default pipeline wrong shape: %+v", g)
-	}
-	if len(g.Nodes[1].DependsOn) != 1 || g.Nodes[1].DependsOn[0] != g.Nodes[0].ID {
-		t.Fatalf("storyboard must depend on script: %+v", g)
-	}
-}
