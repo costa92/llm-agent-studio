@@ -8,7 +8,10 @@
     "build": "tsr generate && tsc -b && vite build",
     "test": "tsr generate && vitest run",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "e2e:smoke": "node ../e2e/smoke-routes.mjs",
+    "e2e:picturebook": "node ../e2e/case-picturebook.mjs",
+    "e2e:music": "node ../e2e/case-music-workflow.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.4.0",
@@ -49,6 +52,7 @@
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.6.0",
     "jsdom": "^29.1.1",
+    "playwright-core": "^1.61.1",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.59.2",
     "vite": "^8.0.12",
