@@ -13,21 +13,33 @@ export interface AssemblePagesArgs {
   title?: string
 }
 
+// 按 shotId 归集某类型的 accepted 资产：同一页同类型可能多版本，取最新（version 最大）。
+//   accepted-only、忽略其它类型；同版本保留先到者（与原 assemblePages 语义一致）。
+function latestAcceptedByShot(assets: ProjectAsset[], type: string): Map<string, ProjectAsset> {
+  const byShot = new Map<string, ProjectAsset>()
+  for (const a of assets) {
+    if (a.status !== "accepted" || !a.shotId || a.type !== type) continue
+    const prev = byShot.get(a.shotId)
+    if (!prev || (a.version ?? 0) > (prev.version ?? 0)) byShot.set(a.shotId, a)
+  }
+  return byShot
+}
+
+// shotId → 该页最新 accepted image 资产 id 的映射（accepted-only，最新 version 胜，忽略 audio）。
+//   分镜栅格据此把插图叠加到对应 shot 卡片，与 assemblePages 的插图配对逻辑同源。
+export function imageAssetIdByShotId(assets: ProjectAsset[]): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [shotId, asset] of latestAcceptedByShot(assets, "image")) {
+    out[shotId] = asset.id
+  }
+  return out
+}
+
 export function assemblePages({ shots, assets, title }: AssemblePagesArgs): PicturePage[] {
   if (shots.length === 0) return []
 
-  // 按 shotId 归集 accepted 资产：同一页同类型可能多版本，取最新（version 最大）。
-  const pickLatest = (a: ProjectAsset, b: ProjectAsset) =>
-    (b.version ?? 0) - (a.version ?? 0)
-  const imageByShot = new Map<string, ProjectAsset>()
-  const audioByShot = new Map<string, ProjectAsset>()
-  for (const a of assets) {
-    if (a.status !== "accepted" || !a.shotId) continue
-    const map = a.type === "audio" ? audioByShot : a.type === "image" ? imageByShot : null
-    if (!map) continue
-    const prev = map.get(a.shotId)
-    if (!prev || pickLatest(a, prev) < 0) map.set(a.shotId, a)
-  }
+  const imageByShot = latestAcceptedByShot(assets, "image")
+  const audioByShot = latestAcceptedByShot(assets, "audio")
 
   const last = shots.length - 1
   return shots.map((shot, i) => {

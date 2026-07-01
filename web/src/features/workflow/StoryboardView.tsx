@@ -1,16 +1,25 @@
 import { Skeleton } from "@/components/ui/skeleton"
+import { AssetThumb } from "./AssetThumb"
 import type { Shot } from "./api"
 
 export interface StoryboardViewProps {
   shots: Shot[] | undefined
   isLoading: boolean
   isError: boolean
+  // 可选：shot.id → 插图 assetId 映射。传入时在对应卡片顶部叠加缩略图；
+  // 不传（如运行抽屉，无资产列表）则纯文本渲染，与旧行为完全一致。
+  illustrationByShotId?: Record<string, string>
 }
 
 // 分镜栅格：auto-fill minmax(168px,1fr)——按容器宽自适应列数（抽屉窄时减列、宽时增列，
 // 列宽拉伸填满不留右侧空白）。每格 shot 编号 + 镜头 + 描述 + prompt 摘要。
 // 真实形态见 internal/agents/storyboard.go（shotNo/camera/scene/action/prompt/duration）。
-export function StoryboardView({ shots, isLoading, isError }: StoryboardViewProps) {
+export function StoryboardView({
+  shots,
+  isLoading,
+  isError,
+  illustrationByShotId,
+}: StoryboardViewProps) {
   if (isLoading) {
     return (
       <div className="grid grid-cols-[repeat(auto-fill,minmax(168px,1fr))] gap-3.5 p-5">
@@ -37,11 +46,16 @@ export function StoryboardView({ shots, isLoading, isError }: StoryboardViewProp
 
   return (
     <div className="grid grid-cols-[repeat(auto-fill,minmax(168px,1fr))] gap-3.5 p-5">
-      {shots.map((shot, i) => (
+      {shots.map((shot, i) => {
+        const illustrationAssetId = shot.id ? illustrationByShotId?.[shot.id] : undefined
+        return (
         <div
           key={shot.shotNo ?? i}
           className="flex flex-col gap-2 rounded-[10px] border border-line bg-bg-surface p-3.5"
         >
+          {illustrationAssetId && (
+            <AssetThumb assetId={illustrationAssetId} className="aspect-video w-full" />
+          )}
           <div className="flex items-center justify-between gap-2">
             <span className="font-mono text-[14px] font-semibold text-board">
               #{shot.shotNo ?? i + 1}
@@ -59,7 +73,8 @@ export function StoryboardView({ shots, isLoading, isError }: StoryboardViewProp
             </p>
           )}
         </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
