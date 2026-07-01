@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "e2e:smoke": "node ../e2e/smoke-routes.mjs",
-    "e2e:music": "node ../e2e/case-music-workflow.mjs"
+    "e2e:music": "node ../e2e/case-music-workflow.mjs",
+    "e2e:childrens-story": "node ../e2e/case-childrens-story-workflow.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.4.0",
