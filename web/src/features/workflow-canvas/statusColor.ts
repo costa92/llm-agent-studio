@@ -11,6 +11,12 @@ export const STATUS_VAR: Record<GraphNodeStatus, string> = {
   blocked: "var(--line)",
 }
 
+// 运行态 minimap 节点色：按 run 状态着色（done 绿 / running 琥珀 / failed 红 / pending·blocked 线灰）。
+// 对齐原型 minimap「导航 · 按状态着色」。运行态每节点都有 overlay 状态；理论兜底 undefined → 当 pending（灰）。
+export function minimapStatusColor(status: GraphNodeStatus | undefined): string {
+  return STATUS_VAR[status ?? "pending"]
+}
+
 // 运行状态 → 中文标签（图例 / tooltip）。
 export const STATUS_LABEL: Record<GraphNodeStatus, string> = {
   done: "完成",

@@ -65,7 +65,7 @@ import { GroupNode, type GroupRunNodeData } from "./GroupNode"
 import { RunMatrix } from "./RunMatrix"
 import { RunEdge } from "./RunEdge"
 import { markActiveEdges } from "./runEdges"
-import { NODE_COLOR } from "./nodeColor"
+import { minimapStatusColor } from "./statusColor"
 import { autoLayout } from "@/lib/autoLayout"
 import { useNodeTiming } from "@/features/workflow/useNodeTiming"
 import { useTopologySettings } from "./useTopologySettings"
@@ -475,14 +475,20 @@ function RunCanvasInner({
         >
           <Background gap={GRID} />
           <Controls showInteractive={false} />
+          {/* 运行态 minimap：按 run 状态着色（导航 · 按状态着色）。studio 与 groupRun 节点
+              都带 data.run（overlay 注入），统一取状态色；失败节点加 danger 描边强调。 */}
           <MiniMap
-            nodeColor={(n) => {
-              // studio 与 groupRun 节点都带 data.node（groupRun 复用 storyboard 节点），统一取色。
-              return (
-                NODE_COLOR[(n as Node<StudioNodeData>).data.node.type] ??
-                "var(--line)"
-              )
-            }}
+            pannable
+            zoomable
+            nodeColor={(n) =>
+              minimapStatusColor((n as Node<StudioNodeData>).data.run?.status)
+            }
+            nodeStrokeColor={(n) =>
+              (n as Node<StudioNodeData>).data.run?.status === "failed"
+                ? "var(--danger)"
+                : "transparent"
+            }
+            nodeStrokeWidth={3}
           />
         </ReactFlow>
         {rfNodes.length === 0 && (
