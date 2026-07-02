@@ -1,13 +1,36 @@
 # e2e — 端到端用例回放
 
-llm-agent-studio 的 e2e 测试骨架，回放已在真实栈上验证通过的展示用例：
+llm-agent-studio 的 e2e 测试骨架，回放已在真实栈上验证通过的展示用例。
 
-- **音乐创作**（自定义节点工作流 / n8n 画布）：`case-music-workflow.mjs`
-- **儿童故事**（自定义节点工作流 / n8n 画布）：`case-childrens-story-workflow.mjs`
+所有展示用例都是**同一种图结构**——一个 LLM 节点 → 一个 script 节点（变量绑定 LLM 输出的某个字段）→ storyboard 扇出（只出图、无音频）。因此它们**数据驱动**：共享 runner 在 `lib/showcaseCase.mjs`，各场景的差异（label / 提示词 / 节点 id / 绑定字段 / 主题）是纯数据，登记在 `lib/scenarios.mjs`。
 
-外加一个便宜、默认可跑的 **UI 路由冒烟**：`smoke-routes.mjs`。
+已登记的场景（slug）：
+
+| slug | 场景 | 命名入口 / 通用入口 |
+|---|---|---|
+| `music` | 音乐创作 | `case-music-workflow.mjs`（`pnpm e2e:music`） |
+| `childrens-story` | 儿童故事 | `case-childrens-story-workflow.mjs`（`pnpm e2e:childrens-story`） |
+| `science` | 科普知识短片 | `CASE=science node case-showcase.mjs`（`pnpm e2e:science`） |
+| `ad` | 品牌广告分镜 | `CASE=ad node case-showcase.mjs`（`pnpm e2e:ad`） |
+| `poem` | 古诗词配图 | `CASE=poem node case-showcase.mjs`（`pnpm e2e:poem`） |
+| `travel` | 旅行手绘游记 | `CASE=travel node case-showcase.mjs`（`pnpm e2e:travel`） |
+
+`music` / `childrens-story` 另有各自的命名入口脚本（向后兼容），内部都只是薄薄地调用共享 runner。**新增场景**只需在 `lib/scenarios.mjs` 加一条数据，用 `CASE=<slug> node e2e/case-showcase.mjs` 即可跑，无需再写脚本。
+
+外加三个工具：
+
+- **UI 路由冒烟** `smoke-routes.mjs`（便宜、默认可跑）。
+- **成品呈现层回放** `presentation-sweep.mjs`（`pnpm e2e:preview`）——浏览器验证 RunPreview（成品预览）
+  的阅读/音乐模式渲染；`PREVIEW_FULL=1` 再追加朗读歌词 TTS + 导出。详见下文「成品呈现层回放」。
+- **有界并发用例驱动** `run-cases.mjs`（`pnpm e2e:cases`）——把多个场景经共享 runner 并发跑，
+  `CASES=<slug,…>` 选场景、`CONCURRENCY=N`（或 `--concurrency=N`）控并发，门控透传 `E2E_FULL` /
+  `E2E_SMOKE_ONLY`。详见下文「批量用例」。
 
 字段名逐字取自 Go 处理器（见 `studio-flow-cookbook` §2/§3/附录）。
+
+> 开发后端（studiod）的一键重启（编译 → 按精确 PID 杀旧 → 真实模型模式拉起 → 登录 200 健康门）见仓库根
+> `scripts/dev-restart.sh`；运行手册细节在该脚本头部注释里（含为何必须带 `STUDIO_EXPR_CHANNEL=1`、
+> 为何只按精确 PID 杀进程）。
 
 ## 前置条件
 
@@ -69,9 +92,14 @@ E2E_SMOKE_ONLY=1 E2E_ORG=<org> node e2e/case-music-workflow.mjs
 E2E_FULL=1 E2E_ORG=<org> node e2e/case-childrens-story-workflow.mjs
 # 同样支持 E2E_SMOKE_ONLY=1 只跑到 create+run-trigger(202)
 E2E_SMOKE_ONLY=1 E2E_ORG=<org> node e2e/case-childrens-story-workflow.mjs
+
+# 其他场景走通用 runner，用 CASE=<slug> 选场景（science/ad/poem/travel …）
+E2E_FULL=1 CASE=science E2E_ORG=<org> node e2e/case-showcase.mjs
+E2E_SMOKE_ONLY=1 CASE=ad E2E_ORG=<org> node e2e/case-showcase.mjs
 ```
 
-也可用 `web/package.json` 里的封装脚本：`pnpm e2e:smoke` / `pnpm e2e:music` / `pnpm e2e:childrens-story`。
+也可用 `web/package.json` 里的封装脚本：`pnpm e2e:smoke` / `pnpm e2e:music` /
+`pnpm e2e:childrens-story` / `pnpm e2e:science` / `pnpm e2e:ad` / `pnpm e2e:poem` / `pnpm e2e:travel`。
 
 ## 用例做了什么
 
@@ -89,6 +117,34 @@ project/workflow id（没有就带提示跳过）。断言：未重定向到 `/l
 **自定义节点工作流**。注册 `kind=llm` 自定义节点类型（儿童故事作家，输出 JSON `{title,story,moral,coverPrompt}`）
 → 创建 `kind=custom` 项目 → 创建工作流（story → script → storyboard 扇出）→ run{inputs:{theme}} →
 轮询到 done → 断言产出图片资产、且 **无音频资产**。无音频同样是**载重断言**：非绘本 storyboard 扇出只产图片。
+
+### `case-showcase.mjs`（`CASE=<slug>` + `E2E_FULL=1`，**真实付费生成**）
+通用 runner：按 `CASE=<slug>` 从 `lib/scenarios.mjs` 取一个场景，跑与上面两例**完全一致**的流程
+（注册 kind=llm 节点类型 → 建 custom 项目 → 建 `llm→script→storyboard` 工作流 → run → 轮询 done →
+断言出图、0 音频）。已登记 `science`（科普讲师）/ `ad`（广告文案）/ `poem`（诗画解读）/ `travel`（游记作者）
+四个场景，各自的差异只是提示词与主题。新增场景 = 在 `lib/scenarios.mjs` 加一条数据。
+
+### `presentation-sweep.mjs`（`pnpm e2e:preview`，默认只读渲染，`PREVIEW_FULL=1` 才付费）
+成品呈现层浏览器回放。表单登录后，通过 API 发现名含「音乐」与「儿童故事」且带工作流的两个展示项目
+（不写死——项目会轮换），进画布运行视图（`?wf=<wf>&mode=run`）打开「成品预览」Dialog：
+- **阅读模式**（故事项目）：断言封面（真实标题 + 故事正文，非占位）+ 逐页配图翻页。
+- **音乐模式**（音乐项目）：断言封面 + 标题 + 情绪 + 滚动歌词 + transport bar（`[data-slot="transport-bar"]`）。
+- **`PREVIEW_FULL=1` 追加**（会真实写资产/花钱）：点「朗读歌词」→ 断言 `<audio>` 拿到 `blob:` src 且
+  `readyState>0`（真实 minimax TTS，~10-30s）；点「导出」→ ExportDialog（PDF/EPUB/ZIP）→「开始导出」→
+  断言到达可下载态。默认（不设 `PREVIEW_FULL`）只做便宜的只读渲染断言。
+
+### `run-cases.mjs`（`pnpm e2e:cases`，有界并发用例驱动）
+把 `lib/scenarios.mjs` 的多个场景经共享 runner `runShowcaseCase` 并发跑，最多 N 个在飞。只做调度 + 汇总，
+不改场景语义——`E2E_FULL` / `E2E_SMOKE_ONLY` 门控原样透传（都不设时每个场景各自打印跳过并算 OK）。
+
+```bash
+# 只跑到 create+run-trigger(202)（便宜的结构校验），并发 2
+E2E_SMOKE_ONLY=1 CASES=science,ad CONCURRENCY=2 node e2e/run-cases.mjs
+# 全部场景，并发 3，真实付费生成
+E2E_FULL=1 --concurrency=3 node e2e/run-cases.mjs   # 或用 CONCURRENCY=3
+```
+`CASES`（默认全部 `SCENARIO_SLUGS`）逗号分隔选场景；并发数 `--concurrency=N` 优先于 `CONCURRENCY`，默认 2。
+结尾打印每个用例 OK/FAIL 汇总，任一失败则退出码非零。
 
 ## 注意
 
