@@ -3,6 +3,7 @@ import { createFileRoute, useNavigate, Navigate } from "@tanstack/react-router"
 import { useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { getAccessToken } from "@/lib/apiClient"
+import { useSmartBack } from "@/lib/useSmartBack"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   Sheet,
@@ -73,6 +74,10 @@ type Selection =
 function RunWorkbenchPage() {
   const { org, id, runId } = Route.useParams()
   const navigate = useNavigate()
+  // 顶栏返回：后退到打开工作台之前的那一页（运行列表 / 项目页），无历史时兜底回项目页。
+  const goBack = useSmartBack(() => {
+    void navigate({ to: "/orgs/$org/projects/$id", params: { org, id } })
+  })
   const projectQuery = useProject(id)
   const project = projectQuery.data
 
@@ -339,9 +344,7 @@ function RunWorkbenchPage() {
           search: { project: project.id },
         })
       }
-      onBack={() =>
-        navigate({ to: "/orgs/$org/projects/$id", params: { org, id } })
-      }
+      onBack={goBack}
     />
   )
 }
