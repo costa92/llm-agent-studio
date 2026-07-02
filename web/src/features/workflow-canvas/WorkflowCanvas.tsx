@@ -102,7 +102,8 @@ export interface WorkflowCanvasProps {
   inputsSchema?: InputField[]
   prompts?: Prompt[]
   basics?: BasicPrompt[]
-  // 返回项目页（顶栏「返回」）。由路由层注入，画布本身不持有路由知识。
+  // 顶栏「← 返回」：后退到打开画布之前的那一页（由路由层注入 smart-back，
+  // 画布本身不持有路由知识）。
   onBack?: () => void
   // 新建成功后导航到 ?wf=<newId>（由路由注入）。
   onCreated?: (workflowId: string) => void
@@ -913,7 +914,7 @@ function CanvasInner({
             onClick={onBack}
             className="text-[12px] text-text-3 hover:text-text-1"
           >
-            ← 返回项目
+            ← 返回
           </button>
           <span className="text-[12px] text-text-3">/</span>
           {isCreate ? (
@@ -1225,7 +1226,7 @@ function RunShell({
             onClick={onBack}
             className="text-[12px] text-text-3 hover:text-text-1"
           >
-            ← 返回项目
+            ← 返回
           </button>
           <span className="text-[12px] text-text-3">/</span>
           <h1 className="text-[14px] font-semibold text-text-1">{workflowName}</h1>
