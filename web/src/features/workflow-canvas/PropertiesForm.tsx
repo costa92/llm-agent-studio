@@ -101,6 +101,9 @@ function renderWidget(
     case "number":
       return (
         <Input id={id} aria-label={p.label} type="number"
+          // 数字字段同样渲染占位（此前遗漏，temperature 等可选数字空值时像坏掉的空框）。
+          // 后端目录未给 temperature 占位，前端兜底「如 0.7」与组织级 LlmParamForm 一致。
+          placeholder={p.placeholder ?? (p.name === "temperature" ? "如 0.7" : undefined)}
           value={(cur as number | string) ?? ""}
           onChange={(e) => patch(p.name, e.target.value === "" ? undefined : parseFloat(e.target.value))}
           className="text-[13px]" />

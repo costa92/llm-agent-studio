@@ -4,7 +4,6 @@ import {
   ReactFlowProvider,
   Background,
   Controls,
-  MiniMap,
   useNodesState,
   useEdgesState,
   useReactFlow,
@@ -49,7 +48,6 @@ import {
   collectCustomTypes,
   applyTypeDisplay,
   hasUnboundCustomNode,
-  type StudioNodeData,
   type RFNode,
   type RFEdge,
 } from "./canvasModel"
@@ -64,7 +62,7 @@ import { NodeManagerModal } from "./NodeManagerModal"
 import { PropertiesPanel } from "./PropertiesPanel"
 import { InputsSchemaPanel } from "./InputsSchemaPanel"
 import { useNodeTypes, useNodeTypesExprChannel } from "./api"
-import { NODE_COLOR, isCustomType, slugify, descTypeFor } from "./nodeColor"
+import { isCustomType, slugify, descTypeFor } from "./nodeColor"
 import { RunCanvas } from "./RunCanvas"
 import { ModeToggle } from "./ModeToggle"
 import { CanvasContextMenu, type ContextMenuItem } from "./CanvasContextMenu"
@@ -943,26 +941,34 @@ function CanvasInner({
           )}
         </div>
         <div className="flex items-center gap-2">
-          {/* 右栏切换：节点属性 / 工作流输入（设计期输入 schema 编辑器）。 */}
-          <div className="flex overflow-hidden rounded-md border border-line text-[12px]">
+          {/* 右栏切换：节点属性 / 工作流输入（设计期输入 schema 编辑器）。
+              与 ModeToggle 同款段控形态（内嵌容器 p-0.5 + rounded 段）保持一致；
+              作为次级切换用中性高亮（bg-bg-surface），区别于 ModeToggle 的 amber 主切换。 */}
+          <div
+            role="group"
+            aria-label="右栏视图"
+            className="inline-flex items-center rounded-md border border-line bg-bg-base p-0.5 text-[12px]"
+          >
             <button
               type="button"
+              aria-pressed={rightPanel === "props"}
               onClick={() => setRightPanel("props")}
               className={
                 rightPanel === "props"
-                  ? "bg-bg-base px-2.5 py-1 text-text-1"
-                  : "px-2.5 py-1 text-text-3 hover:text-text-1"
+                  ? "rounded bg-bg-surface px-2.5 py-1 font-medium text-text-1 shadow-sm"
+                  : "rounded px-2.5 py-1 text-text-3 transition-colors hover:text-text-1"
               }
             >
               节点属性
             </button>
             <button
               type="button"
+              aria-pressed={rightPanel === "inputs"}
               onClick={() => setRightPanel("inputs")}
               className={
                 rightPanel === "inputs"
-                  ? "bg-bg-base px-2.5 py-1 text-text-1"
-                  : "px-2.5 py-1 text-text-3 hover:text-text-1"
+                  ? "rounded bg-bg-surface px-2.5 py-1 font-medium text-text-1 shadow-sm"
+                  : "rounded px-2.5 py-1 text-text-3 transition-colors hover:text-text-1"
               }
             >
               工作流输入
@@ -1067,12 +1073,9 @@ function CanvasInner({
             >
               <Background gap={GRID} />
               <Controls />
-              <MiniMap
-                nodeColor={(n) =>
-                  NODE_COLOR[(n as Node<StudioNodeData>).data.node.type] ??
-                  "var(--line)"
-                }
-              />
+              {/* 编辑画布不挂 MiniMap：工作流节点少、画布夹在两侧面板间较窄，
+                  默认右下角 minimap 会压住节点、被右侧属性面板裁切。运行画布保留
+                  minimap（承载 run 状态着色）。 */}
             </ReactFlow>
             {/* 对齐辅助线覆盖层（C3）：读视口 transform 在屏幕空间画引导线。 */}
             <HelperLines {...helperLines} />

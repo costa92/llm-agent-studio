@@ -54,7 +54,7 @@ function renderPanel(node: WorkflowNode | null, extra: Partial<Parameters<typeof
 describe("PropertiesPanel", () => {
   it("shows empty hint when nothing is selected", () => {
     renderPanel(null)
-    expect(screen.getByText("选择一个节点查看属性")).toBeInTheDocument()
+    expect(screen.getByText("未选择节点")).toBeInTheDocument()
   })
 
   it("custom sentinel sets promptText path and clears promptId on edit", async () => {

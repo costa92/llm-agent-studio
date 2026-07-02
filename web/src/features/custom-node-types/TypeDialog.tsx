@@ -93,7 +93,7 @@ export function TypeDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+      <DialogContent className="flex max-h-[90vh] max-w-lg flex-col overflow-hidden">
         <DialogHeader>
           <DialogTitle>{mode === "create" ? "新建自定义节点类型" : "编辑自定义节点类型"}</DialogTitle>
           <DialogDescription>
@@ -103,7 +103,10 @@ export function TypeDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4 mt-2">
+        {/* 主体可滚动 + 底部按钮 sticky：内容超高时表单区滚动，创建/取消 常驻可见
+            （原先整个 DialogContent 滚动，提交按钮会被推到折叠线下看不到）。 */}
+        <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
+          <div className="mt-2 flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
           {/* 标签 */}
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="cnt-label" className="text-[13px] font-medium text-text-1">
@@ -201,7 +204,8 @@ export function TypeDialog({
             </p>
           )}
 
-          <DialogFooter>
+          </div>
+          <DialogFooter className="mt-3 shrink-0 border-t border-line pt-3">
             <UiButton type="button" variant="outline" onClick={() => onOpenChange(false)}>
               取消
             </UiButton>
