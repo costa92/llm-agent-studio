@@ -11,7 +11,13 @@
     "preview": "vite preview",
     "e2e:smoke": "node ../e2e/smoke-routes.mjs",
     "e2e:music": "node ../e2e/case-music-workflow.mjs",
-    "e2e:childrens-story": "node ../e2e/case-childrens-story-workflow.mjs"
+    "e2e:childrens-story": "node ../e2e/case-childrens-story-workflow.mjs",
+    "e2e:science": "CASE=science node ../e2e/case-showcase.mjs",
+    "e2e:ad": "CASE=ad node ../e2e/case-showcase.mjs",
+    "e2e:poem": "CASE=poem node ../e2e/case-showcase.mjs",
+    "e2e:travel": "CASE=travel node ../e2e/case-showcase.mjs",
+    "e2e:preview": "node ../e2e/presentation-sweep.mjs",
+    "e2e:cases": "node ../e2e/run-cases.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.4.0",
