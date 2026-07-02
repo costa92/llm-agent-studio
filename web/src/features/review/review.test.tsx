@@ -370,6 +370,140 @@ describe("ReviewBoardView", () => {
   })
 })
 
+// ── 项目名解析（chip 显示项目名而非 hex id，解析不到回退 id）───────────────
+describe("ReviewBoardView project-name chip", () => {
+  it("prefers projectName over the raw id in the filter chip", () => {
+    render(
+      <ReviewBoardView
+        {...baseProps({ projectFilter: "proj-hex", projectName: "我的项目" })}
+      />,
+    )
+    expect(screen.getByText(/正在筛选项目：我的项目/)).toBeInTheDocument()
+  })
+
+  it("falls back to the project id when projectName is unresolved", () => {
+    render(<ReviewBoardView {...baseProps({ projectFilter: "proj-hex" })} />)
+    expect(screen.getByText(/正在筛选项目：proj-hex/)).toBeInTheDocument()
+  })
+})
+
+// ── 审完闭环空态 CTA（注入回调 → 按钮；org 级无回调 → 纯文案）─────────────
+describe("ReviewBoardView empty-state close-loop CTAs", () => {
+  it("shows 返回作品 / 看成品预览 CTAs when callbacks are provided", async () => {
+    const onBackToWork = vi.fn()
+    const onOpenPreview = vi.fn()
+    const user = userEvent.setup()
+    render(
+      <ReviewBoardView
+        {...baseProps({
+          queue: [],
+          projectName: "我的绘本",
+          onBackToWork,
+          onOpenPreview,
+        })}
+      />,
+    )
+    await user.click(screen.getByRole("button", { name: /返回作品《我的绘本》/ }))
+    expect(onBackToWork).toHaveBeenCalledTimes(1)
+    await user.click(screen.getByRole("button", { name: "看成品预览" }))
+    expect(onOpenPreview).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps the empty state as plain text when no close-loop callbacks (org-wide)", () => {
+    render(<ReviewBoardView {...baseProps({ queue: [] })} />)
+    expect(screen.getByText("所有素材都处理完了")).toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: /返回作品/ }),
+    ).not.toBeInTheDocument()
+  })
+})
+
+// ── 分镜分组（变体 A 队列形态）+ 批量采纳（前端串行，onAcceptMany 启用）─────
+describe("ReviewBoardView shot grouping + batch accept", () => {
+  it("groups the queue by shot and 采纳本分镜 accepts that group in queue order", async () => {
+    const onAcceptMany = vi.fn()
+    const user = userEvent.setup()
+    render(
+      <ReviewBoardView
+        {...baseProps({
+          queue: [
+            makeAsset({ id: "a1", shotId: "shotA" }),
+            makeAsset({ id: "a2", shotId: "shotB" }),
+            makeAsset({ id: "a3", shotId: "shotA" }),
+          ],
+          onAcceptMany,
+        })}
+      />,
+    )
+    // 首次出现次序：shotA=分镜1，shotB=分镜2。
+    expect(screen.getByText("分镜 1")).toBeInTheDocument()
+    expect(screen.getByText("分镜 2")).toBeInTheDocument()
+    const shotButtons = screen.getAllByRole("button", { name: "采纳本分镜" })
+    expect(shotButtons).toHaveLength(2)
+    // 分镜 1 = shotA = a1 + a3（保持队列顺序）。
+    await user.click(shotButtons[0])
+    expect(onAcceptMany).toHaveBeenCalledWith(["a1", "a3"])
+  })
+
+  it("renders a flat grid (no shot headers) when all shotId are empty", () => {
+    render(
+      <ReviewBoardView
+        {...baseProps({ queue: [makeAsset({ id: "a1", shotId: "" })] })}
+      />,
+    )
+    expect(screen.queryByText(/分镜 /)).not.toBeInTheDocument()
+  })
+
+  it("has no batch UI / checkboxes when onAcceptMany is absent", () => {
+    render(<ReviewBoardView {...baseProps({ queue: [makeAsset({ shotId: "" })] })} />)
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: /采纳全部待审/ }),
+    ).not.toBeInTheDocument()
+  })
+
+  it("accepts checked assets via 采纳选中 and clears the checkbox set", async () => {
+    const onAcceptMany = vi.fn()
+    const user = userEvent.setup()
+    render(
+      <ReviewBoardView
+        {...baseProps({
+          queue: [
+            makeAsset({ id: "a1", shotId: "" }),
+            makeAsset({ id: "a2", shotId: "" }),
+          ],
+          onAcceptMany,
+        })}
+      />,
+    )
+    const checks = screen.getAllByRole("checkbox")
+    await user.click(checks[0])
+    expect(screen.getByText("已选 1")).toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: /采纳选中\(1\)/ }))
+    expect(onAcceptMany).toHaveBeenCalledWith(["a1"])
+    // 采纳后勾选集清空。
+    expect(screen.getByText("已选 0")).toBeInTheDocument()
+  })
+
+  it("采纳全部待审 accepts the whole queue in order", async () => {
+    const onAcceptMany = vi.fn()
+    const user = userEvent.setup()
+    render(
+      <ReviewBoardView
+        {...baseProps({
+          queue: [
+            makeAsset({ id: "a1", shotId: "" }),
+            makeAsset({ id: "a2", shotId: "" }),
+          ],
+          onAcceptMany,
+        })}
+      />,
+    )
+    await user.click(screen.getByRole("button", { name: /采纳全部待审\(2\)/ }))
+    expect(onAcceptMany).toHaveBeenCalledWith(["a1", "a2"])
+  })
+})
+
 // ── 审核路由 AdminGate（与成本/模型配置一致：路由级 admin 门禁）───────────
 // 路由 orgs.$org.review 现把 ReviewBoardView 包进 AdminGate；此处复现该组合，
 // 断言非 admin 见门禁文案而非看板，admin 见看板。
