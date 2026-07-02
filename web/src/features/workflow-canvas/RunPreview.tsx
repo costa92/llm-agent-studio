@@ -8,7 +8,12 @@ import {
 } from "@/components/ui/dialog"
 import { Button } from "@/components/studio/Button"
 import type { GraphNode } from "@/lib/projectState"
-import { useShots, useProjectAssets, useLyricsAudio } from "@/features/workflow/api"
+import {
+  useShots,
+  useProjectAssets,
+  useLyricsAudio,
+  useProject,
+} from "@/features/workflow/api"
 import { AssetThumb } from "@/features/workflow/AssetThumb"
 import { AssetAudio } from "@/features/workflow/AssetAudio"
 import { ExportDialog } from "@/features/workflow/ExportDialog"
@@ -69,8 +74,12 @@ export function RunPreview({
   // 成品数据：仅在打开时拉取（关闭传 "" 不发请求）。
   const shotsQuery = useShots(open ? projectId : "", planId)
   const assetsQuery = useProjectAssets(open ? projectId : "", undefined, planId)
+  const projectQuery = useProject(open ? projectId : "")
   const doc = extractStoryDoc(nodes)
   const pages = pairPages(shotsQuery.data ?? [], assetsQuery.data ?? [])
+  // 专属封面：project.coverAssetId（不在 /state、不在 /assets 列表里，须单独拉项目）。
+  // 空串/纯空白 → undefined，回退借用首分镜图（reader 借用时须把该镜排除出内容页，防重复）。
+  const dedicatedCover = projectQuery.data?.coverAssetId?.trim() || undefined
 
   // 导出作品对话框（PDF/EPUB/ZIP）——与阅读/音乐切换并列在头部。
   const [exportOpen, setExportOpen] = useState(false)
@@ -118,22 +127,36 @@ export function RunPreview({
           <MusicView
             doc={doc}
             pages={pages}
+            dedicatedCover={dedicatedCover}
             projectId={projectId}
             planId={planId}
             audioAssetId={audioAssetId}
           />
         ) : (
-          <ReaderView doc={doc} pages={pages} />
+          <ReaderView doc={doc} pages={pages} dedicatedCover={dedicatedCover} />
         )}
       </DialogContent>
     </Dialog>
   )
 }
 
-// 阅读模式：intro 页（标题 + story/概述 + 首图）→ 每分镜一页（大图 object-contain + 文案）。
-function ReaderView({ doc, pages }: { doc: StoryDoc | null; pages: PreviewPage[] }) {
-  // intro 页 index 0，其后每 shot 一页。
-  const total = pages.length + 1
+// 阅读模式：intro 页（标题 + story/概述 + 封面）→ 每分镜一页（大图 object-contain + 文案）。
+function ReaderView({
+  doc,
+  pages,
+  dedicatedCover,
+}: {
+  doc: StoryDoc | null
+  pages: PreviewPage[]
+  dedicatedCover?: string
+}) {
+  // 封面：优先专属封面；无则借用首分镜图。借用时首镜须排除出内容页，
+  // 否则封面与内容第 1 页会显示同一张图（"封面与分镜图重复" bug）。
+  const coverImage = dedicatedCover ?? pages[0]?.imageAssetId
+  const contentPages = dedicatedCover ? pages : pages.slice(1)
+
+  // intro 页 index 0，其后每张内容页一页。
+  const total = contentPages.length + 1
   const [index, setIndex] = useState(0)
   const clamp = useCallback((i: number) => Math.max(0, Math.min(total - 1, i)), [total])
   const next = useCallback(() => setIndex((i) => clamp(i + 1)), [clamp])
@@ -150,8 +173,7 @@ function ReaderView({ doc, pages }: { doc: StoryDoc | null; pages: PreviewPage[]
   }, [prev, next])
 
   const isIntro = index === 0
-  const page = isIntro ? undefined : pages[index - 1]
-  const firstImage = pages.find((p) => p.imageAssetId)?.imageAssetId
+  const page = isIntro ? undefined : contentPages[index - 1]
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3" data-slot="reader-view">
@@ -169,9 +191,9 @@ function ReaderView({ doc, pages }: { doc: StoryDoc | null; pages: PreviewPage[]
 
         {isIntro ? (
           <div className="flex max-h-full flex-col items-center gap-4 overflow-y-auto py-2 text-center">
-            {firstImage && (
+            {coverImage && (
               <AssetThumb
-                assetId={firstImage}
+                assetId={coverImage}
                 alt={doc?.title ?? "封面"}
                 className="max-h-[46vh] w-auto border-0 object-contain"
               />
@@ -236,17 +258,20 @@ function ReaderView({ doc, pages }: { doc: StoryDoc | null; pages: PreviewPage[]
 function MusicView({
   doc,
   pages,
+  dedicatedCover,
   projectId,
   planId,
   audioAssetId,
 }: {
   doc: StoryDoc | null
   pages: PreviewPage[]
+  dedicatedCover?: string
   projectId: string
   planId: string
   audioAssetId?: string
 }) {
-  const cover = pages.find((p) => p.imageAssetId)?.imageAssetId
+  // 封面：优先专属封面，无则借用首分镜图（单张展示、无翻页，不会视觉重复）。
+  const cover = dedicatedCover ?? pages[0]?.imageAssetId
   const lines = (doc?.lyrics ?? "").split("\n")
 
   // 朗读歌词：点播放 → 同步合成 TTS 音频资产 → 就地挂 <AssetAudio>。

@@ -42,6 +42,7 @@ vi.mock("@/features/workflow/api", () => ({
   useScript: vi.fn(() => ({ data: null, isLoading: false, isError: false })),
   useShots: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
   useProjectAssets: vi.fn(() => ({ data: [] })),
+  useProject: vi.fn(() => ({ data: undefined })),
   fetchAllEvents: vi.fn(async () => []),
 }))
 
