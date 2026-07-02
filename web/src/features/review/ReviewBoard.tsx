@@ -26,6 +26,8 @@ export interface ReviewBoardProps {
   // 审完闭环 CTA（空态时）：返回作品 / 看成品预览（Stage2 抽屉注入；路由侧可暂不传）。
   onBackToWork?: () => void
   onOpenPreview?: () => void
+  // 变体 A（run 内融合抽屉）：详情内联为右栏双栏布局，透传给 View。
+  inlineDetail?: boolean
 }
 
 export function ReviewBoard({
@@ -36,6 +38,7 @@ export function ReviewBoard({
   onClearProjectFilter,
   onBackToWork,
   onOpenPreview,
+  inlineDetail,
 }: ReviewBoardProps) {
   const role = useRole(org)
   const { isAdmin } = role
@@ -108,6 +111,9 @@ export function ReviewBoard({
     } else {
       toast.success(`已采纳 ${ok} 张`)
     }
+    // 批量采纳后清选中态：被采纳的资产已离队，避免 inline 右栏残留已采纳资产的详情
+    //（与单张采纳成功后 onSelect(null) 行为一致）。
+    onSelect(null)
   }
 
   return (
@@ -130,6 +136,7 @@ export function ReviewBoard({
       onAcceptMany={(ids) => void handleAcceptMany(ids)}
       onBackToWork={onBackToWork}
       onOpenPreview={onOpenPreview}
+      inlineDetail={inlineDetail}
       actionPending={accept.isPending || reject.isPending || regenerate.isPending}
     />
   )

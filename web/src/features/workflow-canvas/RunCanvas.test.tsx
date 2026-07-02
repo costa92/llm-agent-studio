@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { fireEvent, render, screen } from "@testing-library/react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
+import { toast } from "sonner"
 import { RunCanvas, SuppressedBodyPanel, parseHttpStatus } from "./RunCanvas"
 import { computeNodeVisibility } from "./topologyUtils"
 import { DEFAULT_TOPOLOGY_SETTINGS } from "./useTopologySettings"
@@ -50,8 +51,23 @@ vi.mock("@/features/workflow/useProductionTimeline", () => ({
   useProductionTimeline: vi.fn(() => ({ log: [], conn: "connected" })),
 }))
 
+// review/api：RunCanvas 直用 useAsset；打开融合审核抽屉后 ReviewBoard 用队列 + HITL mutation。
 vi.mock("@/features/review/api", () => ({
   useAsset: vi.fn(() => ({ data: undefined })),
+  useReviewQueue: vi.fn(() => ({ data: [], isLoading: false, isError: false, refetch: vi.fn() })),
+  useAccept: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false })),
+  useReject: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false })),
+  useRegenerate: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false })),
+}))
+
+// 融合审核抽屉里的 ReviewBoard 会解析项目名。
+vi.mock("@/features/projects/api", () => ({
+  useProjects: vi.fn(() => ({ data: [] })),
+}))
+
+// toast：断言完成上升沿召唤只弹一次。
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
 }))
 
 vi.mock("@/app/rbac", () => ({
@@ -342,5 +358,71 @@ describe("RunCanvas group container + Run Matrix (PR-3)", () => {
     currentState = FANOUT_STATE
     const { container } = renderRunTo()
     expect(container.querySelectorAll(".react-flow__minimap-node").length).toBeGreaterThan(0)
+  })
+})
+
+// 变体 A：run 内融合审核——生成完成上升沿召唤（toast/banner/主 CTA 提升）+ 就地开抽屉。
+describe("RunCanvas completion summons in-run review (variant A)", () => {
+  const DONE_STATE: ProjectState = {
+    ...RUNNING_STATE,
+    status: "review",
+    runStatus: "done",
+    assets: { total: 1, done: 1, pending: 1 },
+  }
+
+  function renderWith(state: ProjectState) {
+    currentState = state
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const view = render(
+      <QueryClientProvider client={qc}>
+        <RunCanvas projectId="p1" org="acme" runId="run1" nodes={WF_NODES} onSelectRun={vi.fn()} />
+      </QueryClientProvider>,
+    )
+    return { ...view, qc }
+  }
+
+  function rerenderWith(
+    rerender: ReturnType<typeof render>["rerender"],
+    qc: QueryClient,
+    state: ProjectState,
+  ) {
+    currentState = state
+    rerender(
+      <QueryClientProvider client={qc}>
+        <RunCanvas projectId="p1" org="acme" runId="run1" nodes={WF_NODES} onSelectRun={vi.fn()} />
+      </QueryClientProvider>,
+    )
+  }
+
+  it("does NOT fire on mount when the run is already done (SSE replay case)", () => {
+    renderWith(DONE_STATE)
+    expect(toast.success).not.toHaveBeenCalled()
+  })
+
+  it("fires the summon toast once on running→done + shows banner + elevates the CTA", () => {
+    const { rerender, qc } = renderWith(RUNNING_STATE)
+    // 运行中：无完成 banner、未召唤。
+    expect(screen.queryByText(/本次生成完成/)).toBeNull()
+    expect(toast.success).not.toHaveBeenCalled()
+
+    // 翻到 done（上升沿）。
+    rerenderWith(rerender, qc, DONE_STATE)
+    // 召唤 toast 只弹一次，带「开始审核」动作。
+    expect(toast.success).toHaveBeenCalledTimes(1)
+    expect(toast.success).toHaveBeenCalledWith(
+      "生成完成 · 1 张待审",
+      expect.objectContaining({ action: expect.objectContaining({ label: "开始审核" }) }),
+    )
+    // 完成 banner 出现 + 主 CTA 提升为「开始审核」（banner + 浮层）。
+    expect(screen.getByText(/本次生成完成 · 1 张待审/)).toBeInTheDocument()
+    expect(screen.getAllByRole("button", { name: "开始审核" }).length).toBeGreaterThanOrEqual(1)
+  })
+
+  it("clicking 开始审核 opens the in-run review drawer (Dialog with the fused board)", async () => {
+    const { rerender, qc } = renderWith(RUNNING_STATE)
+    rerenderWith(rerender, qc, DONE_STATE)
+    fireEvent.click(screen.getAllByRole("button", { name: "开始审核" })[0])
+    // 抽屉内融合审核容器渲染（空队列 → 空态文案），证明就地开抽屉而非跳走。
+    expect(await screen.findByText("没有待审资产")).toBeInTheDocument()
   })
 })

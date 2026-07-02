@@ -50,6 +50,9 @@ export interface ReviewBoardViewProps {
   onOpenPreview?: () => void
   // 任一 HITL 动作进行中 → 禁用三动作按钮 + 键盘流，防双击触发 409。
   actionPending?: boolean
+  // 变体 A（run 内融合抽屉）：详情内联为右栏双栏布局，不再用 overlay Sheet。
+  //   缺省 false = 路由整页宿主的现状（详情走 Sheet），路由行为不受影响。
+  inlineDetail?: boolean
 }
 
 // 审核看板：左过滤无（M5 简化为类型/状态固定 pending image）+ AssetCard 网格；
@@ -75,6 +78,7 @@ export function ReviewBoardView({
   onBackToWork,
   onOpenPreview,
   actionPending = false,
+  inlineDetail = false,
 }: ReviewBoardViewProps) {
   // 改 Prompt 重生成的编辑态（[E] 打开）。
   const [editing, setEditing] = useState(false)
@@ -207,8 +211,40 @@ export function ReviewBoardView({
     )
   }
 
-  return (
-    <div className="flex h-full flex-col p-6">
+  // 详情正文：加载中 / 未加载出 Skeleton，否则 ReviewDrawerBody。
+  //   Sheet 模式（overlay）与 inline 双栏共用，避免重复装配 ReviewDrawerBody props。
+  function renderDetail() {
+    if (detailLoading || detail == null) {
+      return (
+        <div className="p-6">
+          <Skeleton className="aspect-square w-full rounded-[10px]" />
+        </div>
+      )
+    }
+    return (
+      <ReviewDrawerBody
+        detail={detail}
+        isAdmin={isAdmin}
+        editing={editing}
+        draftPrompt={draftPrompt}
+        actionPending={actionPending}
+        onDraftChange={setDraftPrompt}
+        onStartEdit={() => {
+          setDraftPrompt(detail.asset.prompt)
+          setEditing(true)
+        }}
+        onCancelEdit={() => setEditing(false)}
+        onAccept={() => onAccept(detail.asset.id)}
+        // T7：退回先开确认弹窗，不直接提交。
+        onReject={() => setRejectTarget(detail.asset.id)}
+        onRegenerate={() => onRegenerate(detail.asset.id, draftPrompt)}
+      />
+    )
+  }
+
+  // 队列区（header + 分镜分组/网格 + 批量条）：Sheet 与 inline 两种宿主共用。
+  const queueContent = (
+    <>
       <header className="mb-5 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <h1 className="font-heading text-[22px] font-bold text-text-1">审核看板</h1>
@@ -309,6 +345,54 @@ export function ReviewBoardView({
           </Button>
         </div>
       )}
+    </>
+  )
+
+  // T7：退回确认弹窗（Sheet / inline 两种宿主共用；owner 推翻可撤销 toast，改显式确认，
+  //   消除静默退回陷阱）。仅「确认退回」才调 onReject；「取消」零副作用（无 un-reject 端点）。
+  const rejectDialog = (
+    <ConfirmRejectDialog
+      open={rejectTarget != null}
+      onOpenChange={(open) => {
+        if (!open) setRejectTarget(null)
+      }}
+      onConfirm={() => {
+        const id = rejectTarget
+        setRejectTarget(null)
+        if (id) onReject(id)
+      }}
+    />
+  )
+
+  // 变体 A：inline 双栏——左队列（可滚）+ 右内联详情（未选时占位），不再挂 overlay Sheet，
+  //   规避「运行抽屉 Dialog 内再叠 Sheet」的嵌套模态。
+  if (inlineDetail) {
+    return (
+      <div className="flex h-full min-h-0">
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-6">
+          {queueContent}
+        </div>
+        <aside className="flex w-[520px] shrink-0 flex-col overflow-y-auto border-l border-line bg-bg-surface">
+          {selectedId == null ? (
+            <div className="flex flex-1 flex-col items-center justify-center gap-1.5 py-16 text-center">
+              <p className="text-[13px] text-text-2">选择左侧资产查看详情</p>
+              <p className="text-[12px] text-text-3">
+                {isAdmin ? "选中后可按 A 采纳 R 退回 E 重生成" : "点击资产查看详情"}
+              </p>
+            </div>
+          ) : (
+            renderDetail()
+          )}
+        </aside>
+        {rejectDialog}
+      </div>
+    )
+  }
+
+  // 默认宿主（路由整页）：详情走 overlay Sheet（?asset= 控制开合），行为不变。
+  return (
+    <div className="flex h-full flex-col p-6">
+      {queueContent}
 
       {/* 审核详情 Drawer（?asset= 控制开合）。 */}
       <Sheet
@@ -321,45 +405,11 @@ export function ReviewBoardView({
           {/* Radix 要求 DialogContent/SheetContent 必带 Title 供屏幕阅读器；详情正文
               自带可视标题，这里用 sr-only 满足无障碍约束（同 LibraryPage 筛选抽屉）。 */}
           <SheetTitle className="sr-only">审核详情</SheetTitle>
-          {detailLoading || detail == null ? (
-            <div className="p-6">
-              <Skeleton className="aspect-square w-full rounded-[10px]" />
-            </div>
-          ) : (
-            <ReviewDrawerBody
-              detail={detail}
-              isAdmin={isAdmin}
-              editing={editing}
-              draftPrompt={draftPrompt}
-              actionPending={actionPending}
-              onDraftChange={setDraftPrompt}
-              onStartEdit={() => {
-                setDraftPrompt(detail.asset.prompt)
-                setEditing(true)
-              }}
-              onCancelEdit={() => setEditing(false)}
-              onAccept={() => onAccept(detail.asset.id)}
-              // T7：退回先开确认弹窗，不直接提交。
-              onReject={() => setRejectTarget(detail.asset.id)}
-              onRegenerate={() => onRegenerate(detail.asset.id, draftPrompt)}
-            />
-          )}
+          {renderDetail()}
         </SheetContent>
       </Sheet>
 
-      {/* T7：退回确认弹窗（共享组件；owner 推翻可撤销 toast，改显式确认，消除静默退回陷阱）。
-          仅「确认退回」才调 onReject；「取消」零副作用。后端无 un-reject 端点，故确认即终态。 */}
-      <ConfirmRejectDialog
-        open={rejectTarget != null}
-        onOpenChange={(open) => {
-          if (!open) setRejectTarget(null)
-        }}
-        onConfirm={() => {
-          const id = rejectTarget
-          setRejectTarget(null)
-          if (id) onReject(id)
-        }}
-      />
+      {rejectDialog}
     </div>
   )
 }

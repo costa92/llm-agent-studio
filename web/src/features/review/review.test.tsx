@@ -387,6 +387,42 @@ describe("ReviewBoardView project-name chip", () => {
   })
 })
 
+// ── 变体 A：inline 双栏模式（run 内融合抽屉）──────────────────────────────
+// inlineDetail 时详情内联为右栏，不再走 overlay Sheet（规避运行抽屉 Dialog 内叠 Sheet
+// 的嵌套模态）；未选时右栏出占位。默认（Sheet）行为须不变。
+describe("ReviewBoardView inline dual-column (variant A)", () => {
+  it("unselected: shows the right-rail placeholder and no Sheet overlay", () => {
+    render(<ReviewBoardView {...baseProps({ inlineDetail: true, selectedId: null })} />)
+    expect(screen.getByText("选择左侧资产查看详情")).toBeInTheDocument()
+    // inline 模式不挂 Sheet（无 overlay 抽屉）。
+    expect(document.querySelector('[data-slot="sheet-content"]')).toBeNull()
+  })
+
+  it("selected: renders the detail inline (not via a Sheet portal)", () => {
+    render(
+      <ReviewBoardView
+        {...baseProps({ inlineDetail: true, selectedId: "as1", detail: makeDetail() })}
+      />,
+    )
+    // 详情正文就地渲染（KV provider·model + 血缘 v1）。
+    expect(screen.getByText("openai · gpt-image-1")).toBeInTheDocument()
+    expect(screen.getByText("v1")).toBeInTheDocument()
+    // 关键：inline 详情不落在 Sheet portal 里，占位也已让位。
+    expect(document.querySelector('[data-slot="sheet-content"]')).toBeNull()
+    expect(screen.queryByText("选择左侧资产查看详情")).not.toBeInTheDocument()
+  })
+
+  it("default (non-inline) still routes the detail through the Sheet overlay", () => {
+    render(
+      <ReviewBoardView
+        {...baseProps({ selectedId: "as1", detail: makeDetail() })}
+      />,
+    )
+    // 默认宿主行为不变：详情走 Radix Sheet（portal 到 body）。
+    expect(document.querySelector('[data-slot="sheet-content"]')).not.toBeNull()
+  })
+})
+
 // ── 审完闭环空态 CTA（注入回调 → 按钮；org 级无回调 → 纯文案）─────────────
 describe("ReviewBoardView empty-state close-loop CTAs", () => {
   it("shows 返回作品 / 看成品预览 CTAs when callbacks are provided", async () => {
