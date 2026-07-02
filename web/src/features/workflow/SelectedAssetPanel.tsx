@@ -1,3 +1,4 @@
+import { useState } from "react"
 import { toast } from "sonner"
 import { useQueryClient } from "@tanstack/react-query"
 import { Button } from "@/components/studio/Button"
@@ -6,6 +7,7 @@ import { AssetThumb } from "./AssetThumb"
 import { AssetPreviewActions } from "./AssetPreviewActions"
 import { useAccept, useReject } from "@/features/review/api"
 import { hitlErrorMessage } from "@/features/review/hitlError"
+import { ConfirmRejectDialog } from "@/features/review/ConfirmRejectDialog"
 import type { AssetDetail } from "@/lib/types"
 
 export interface SelectedAssetPanelProps {
@@ -27,6 +29,8 @@ export function SelectedAssetPanel({ org, assetId, isAdmin, detail, className }:
   const qc = useQueryClient()
   const asset = detail?.asset
   const isPending = asset?.status === "pending_acceptance"
+  // 退回确认弹窗开合（与审核台一致：就地退回须显式确认，消除无确认退回的不一致）。
+  const [confirmReject, setConfirmReject] = useState(false)
 
   function onAccept() {
     accept.mutate(assetId, {
@@ -65,11 +69,21 @@ export function SelectedAssetPanel({ org, assetId, isAdmin, detail, className }:
       {isPending && isAdmin ? (
         <div className="flex gap-2">
           <Button variant="amber" className="flex-1" onClick={onAccept} disabled={busy}>采纳</Button>
-          <Button variant="ghost" className="flex-1" onClick={onReject} disabled={busy}>拒绝</Button>
+          {/* 退回先开确认弹窗，确认才真正 reject（与审核台一致）。 */}
+          <Button variant="ghost" className="flex-1" onClick={() => setConfirmReject(true)} disabled={busy}>拒绝</Button>
         </div>
       ) : (
         <AssetPreviewActions assetId={assetId} className="flex gap-2" />
       )}
+
+      <ConfirmRejectDialog
+        open={confirmReject}
+        onOpenChange={setConfirmReject}
+        onConfirm={() => {
+          setConfirmReject(false)
+          onReject()
+        }}
+      />
     </div>
   )
 }

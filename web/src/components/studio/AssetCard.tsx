@@ -13,8 +13,14 @@ export interface AssetCardProps {
   type?: string
   // 角标（如 version vtag / shot 编号）。
   caption?: string
+  // 详情高亮态（当前打开抽屉的资产）。与批量勾选（checked）互相独立。
   selected?: boolean
   onSelect?: () => void
+  // 批量勾选：selectable 时在卡角叠加复选框（用于审核台批量采纳）；
+  // checked=勾选态，onToggleCheck=切换。语义独立于 selected/onSelect。
+  selectable?: boolean
+  checked?: boolean
+  onToggleCheck?: () => void
   className?: string
 }
 
@@ -25,6 +31,9 @@ export function AssetCard({
   caption,
   selected,
   onSelect,
+  selectable,
+  checked,
+  onToggleCheck,
   className,
 }: AssetCardProps) {
   const isImage = type == null || type === "image"
@@ -57,28 +66,24 @@ export function AssetCard({
 
   // audio 卡内含 <button>「试听」+ <audio controls>，不能嵌在原生 <button> 内（无效嵌套）。
   //   故 audio 路径外层改用 div[role=button] + 键盘可达（Enter/Space），行为等价于原 <button>。
-  if (isAudio) {
-    return (
-      <div
-        role="button"
-        tabIndex={0}
-        data-slot="asset-card"
-        data-selected={selected ? "" : undefined}
-        onClick={onSelect}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault()
-            onSelect?.()
-          }
-        }}
-        className={outerClass}
-      >
-        {inner}
-      </div>
-    )
-  }
-
-  return (
+  const card = isAudio ? (
+    <div
+      role="button"
+      tabIndex={0}
+      data-slot="asset-card"
+      data-selected={selected ? "" : undefined}
+      onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault()
+          onSelect?.()
+        }
+      }}
+      className={outerClass}
+    >
+      {inner}
+    </div>
+  ) : (
     <button
       type="button"
       data-slot="asset-card"
@@ -88,5 +93,23 @@ export function AssetCard({
     >
       {inner}
     </button>
+  )
+
+  if (!selectable) return card
+
+  // 批量勾选复选框：作为卡片的兄弟节点绝对定位在左上角（不嵌进 <button>，避免无效嵌套），
+  //   点击只切换勾选、不触发详情选中。
+  return (
+    <div className="relative">
+      {card}
+      <input
+        type="checkbox"
+        aria-label={checked ? "取消选择该资产" : "选择该资产"}
+        checked={checked ?? false}
+        onChange={onToggleCheck}
+        onClick={(e) => e.stopPropagation()}
+        className="absolute left-2 top-2 z-10 size-4 cursor-pointer accent-amber"
+      />
+    </div>
   )
 }

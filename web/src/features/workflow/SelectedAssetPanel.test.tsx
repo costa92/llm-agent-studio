@@ -74,7 +74,7 @@ describe("SelectedAssetPanel", () => {
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith("已采纳"))
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["asset", "as1"] })
   })
-  it("calls reject hook, toasts, and refreshes asset detail on success", async () => {
+  it("reject requires explicit confirmation before calling the hook", async () => {
     const { apiJSON } = await import("@/lib/apiClient")
     ;(apiJSON as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "as1", status: "rejected" })
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -85,9 +85,22 @@ describe("SelectedAssetPanel", () => {
         <SelectedAssetPanel org="acme" assetId="as1" isAdmin detail={detail()} />
       </QueryClientProvider>,
     )
+    // 点「拒绝」只开确认弹窗，尚未调用 reject。
     await user.click(screen.getByRole("button", { name: /拒绝/ }))
+    expect(apiJSON).not.toHaveBeenCalledWith("/api/assets/as1/reject", { method: "POST" })
+    // 确认后才真正提交。
+    await user.click(screen.getByRole("button", { name: "确认退回" }))
     expect(apiJSON).toHaveBeenCalledWith("/api/assets/as1/reject", { method: "POST" })
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith("已退回"))
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["asset", "as1"] })
+  })
+
+  it("canceling the reject confirmation is a no-op", async () => {
+    const { apiJSON } = await import("@/lib/apiClient")
+    const user = userEvent.setup()
+    wrap(<SelectedAssetPanel org="acme" assetId="as1" isAdmin detail={detail()} />)
+    await user.click(screen.getByRole("button", { name: /拒绝/ }))
+    await user.click(screen.getByRole("button", { name: "取消" }))
+    expect(apiJSON).not.toHaveBeenCalledWith("/api/assets/as1/reject", { method: "POST" })
   })
 })

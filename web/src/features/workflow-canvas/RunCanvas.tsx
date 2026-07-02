@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -24,6 +24,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { EventLog } from "@/components/studio/EventLog"
 import { getAccessToken } from "@/lib/apiClient"
 import { statusLabel, statusVariant } from "@/features/projects/status"
@@ -39,6 +40,7 @@ import {
   type Plan,
 } from "@/features/workflow/api"
 import { useAsset } from "@/features/review/api"
+import { ReviewBoard } from "@/features/review/ReviewBoard"
 import { useRole } from "@/app/rbac"
 import { ScriptView } from "@/features/workflow/ScriptView"
 import { StoryboardView } from "@/features/workflow/StoryboardView"
@@ -140,6 +142,9 @@ function RunCanvasInner({
   const [galleryOpen, setGalleryOpen] = useState(false)
   // 成品预览（全屏图文/歌词）开合。
   const [previewOpen, setPreviewOpen] = useState(false)
+  // 变体 A：run 内融合审核抽屉（全屏 Dialog）开合 + 抽屉内选中资产（本地态，与画布选中独立）。
+  const [reviewOpen, setReviewOpen] = useState(false)
+  const [reviewSelectedId, setReviewSelectedId] = useState<string | null>(null)
   // 大功能容器折叠/展开（视图态，按画布节点 id）。绝不回写 dependsOn。
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   const onToggleGroup = useCallback((nodeId: string) => {
@@ -416,6 +421,26 @@ function RunCanvasInner({
     <Badge variant={statusVariant(status)}>{statusLabel(status)}</Badge>
   )
 
+  // 完成上升沿召唤：runStatus 从「非 done」跃到「done」（且非失败/取消）时弹一次 toast，
+  //   带「开始审核」动作就地开抽屉。SSE 回放历史帧结束时 prev 已是 done，不会误触发。
+  const prevRunStatus = useRef(runStatus)
+  useEffect(() => {
+    const was = prevRunStatus.current
+    prevRunStatus.current = runStatus
+    if (
+      was !== "done" &&
+      runStatus === "done" &&
+      status !== "failed" &&
+      status !== "canceled"
+    ) {
+      toast.success(`生成完成 · ${wfState.assets.pending} 张待审`, {
+        action: { label: "开始审核", onClick: () => setReviewOpen(true) },
+        duration: 8000,
+      })
+    }
+    // wfState.assets.pending 仅取快照读数，不入依赖（避免 pending 变动重弹）。
+  }, [runStatus, status]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // 资产预览：选中资产则看选中，否则回落最近一个 done 且有 assetId 的 pip。
   const latestAssetId = [...wfState.pips]
     .reverse()
@@ -489,6 +514,20 @@ function RunCanvasInner({
 
       {/* 中：只读画布。点节点 → 选中工件。 */}
       <div className="workflow-canvas relative flex-1">
+        {/* 完成 banner：生成完成且抽屉未开时常驻细条，画布顶居中；pointer-events 只落在细条本身，
+            不遮挡画布拖拽/缩放。点「开始审核」就地开融合抽屉。 */}
+        {readyForReview && !reviewOpen && (
+          <div className="pointer-events-none absolute left-1/2 top-4 z-10 -translate-x-1/2">
+            <div className="pointer-events-auto flex items-center gap-3 rounded-full border border-line bg-bg-surface px-4 py-2 shadow-sm">
+              <span className="text-[12.5px] text-text-1">
+                ✓ 本次生成完成 · {wfState.assets.pending} 张待审
+              </span>
+              <Button variant="amber" onClick={() => setReviewOpen(true)}>
+                开始审核
+              </Button>
+            </div>
+          </div>
+        )}
         <ReactFlow
           nodes={rfNodes}
           edges={rfEdges}
@@ -620,18 +659,10 @@ function RunCanvasInner({
               成品预览
             </Button>
           )}
+          {/* 完成态审核不再跳走：就地开融合抽屉，提升为 amber 主按钮（org 级审核台有自己入口）。 */}
           {readyForReview && (
-            <Button
-              variant="ghost"
-              onClick={() =>
-                navigate({
-                  to: "/orgs/$org/review",
-                  params: { org },
-                  search: { project: projectId },
-                })
-              }
-            >
-              去审核 →
+            <Button variant="amber" onClick={() => setReviewOpen(true)}>
+              开始审核
             </Button>
           )}
           {canCancel && (
@@ -639,7 +670,12 @@ function RunCanvasInner({
               取消
             </Button>
           )}
-          <Button variant="amber" onClick={handleRun} disabled={isRunning}>
+          {/* 完成态时「重新运行」降级为次要动作，让「开始审核」当主 CTA；非完成态维持 amber。 */}
+          <Button
+            variant={readyForReview ? "ghost" : "amber"}
+            onClick={handleRun}
+            disabled={isRunning}
+          >
             {runStatus === "idle" ? "运行" : "重新运行"}
           </Button>
         </div>
@@ -694,6 +730,34 @@ function RunCanvasInner({
           nodes={wfState.nodes}
         />
       )}
+
+      {/* 变体 A：run 内融合审核抽屉（全屏 Dialog）。生成完成不跳走，就地审「刚生成这批」，
+          复用 org 级审核容器 + inline 双栏（队列左 / 详情右）。选中态用本地 reviewSelectedId，
+          与画布选中独立；关抽屉时重置。ReviewBoard 内部 useRole 决定 isAdmin（非 admin 只读）。 */}
+      <Dialog
+        open={reviewOpen}
+        onOpenChange={(open) => {
+          setReviewOpen(open)
+          if (!open) setReviewSelectedId(null)
+        }}
+      >
+        <DialogContent className="flex h-[92vh] max-h-[92vh] w-full max-w-[min(96vw,1080px)] flex-col gap-0 overflow-hidden bg-bg-surface p-0 sm:max-w-[min(96vw,1080px)]">
+          {/* Radix a11y：DialogContent 必带 Title；审核详情自带可视标题，这里 sr-only。 */}
+          <DialogTitle className="sr-only">审核</DialogTitle>
+          <ReviewBoard
+            org={org}
+            projectFilter={projectId}
+            inlineDetail
+            selectedId={reviewSelectedId}
+            onSelect={setReviewSelectedId}
+            onBackToWork={() => setReviewOpen(false)}
+            onOpenPreview={() => {
+              setReviewOpen(false)
+              setPreviewOpen(true)
+            }}
+          />
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
