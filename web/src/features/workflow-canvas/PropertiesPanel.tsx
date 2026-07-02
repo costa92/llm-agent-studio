@@ -174,8 +174,11 @@ export function PropertiesPanel({
         <h4 className="text-[11px] font-semibold uppercase tracking-wider text-text-3">
           属性
         </h4>
-        <div className="flex flex-1 items-center justify-center text-center">
-          <p className="text-[12px] text-text-3">选择一个节点查看属性</p>
+        <div className="flex flex-1 flex-col items-center justify-center gap-1.5 px-4 text-center">
+          <p className="text-[13px] text-text-2">未选择节点</p>
+          <p className="text-[12px] leading-relaxed text-text-3">
+            点击画布中的节点，在此查看并编辑它的配置
+          </p>
         </div>
       </aside>
     )
@@ -223,7 +226,7 @@ export function PropertiesPanel({
   }
 
   return (
-    <aside className="flex w-64 shrink-0 flex-col gap-3 overflow-y-auto border-l border-line bg-bg-surface p-3">
+    <aside className="flex w-64 shrink-0 flex-col gap-3 overflow-y-auto border-l border-line bg-bg-surface p-3 pb-6">
       <h4 className="text-[11px] font-semibold uppercase tracking-wider text-text-3">
         属性
       </h4>
