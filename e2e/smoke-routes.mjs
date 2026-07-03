@@ -62,8 +62,6 @@ async function projectRoutes(session, org) {
 
   routes.push(
     [`/orgs/${org}/projects/${pid}`, "project overview"],
-    [`/orgs/${org}/projects/${pid}/script`, "generated script"],
-    [`/orgs/${org}/projects/${pid}/storyboard`, "storyboard"],
     [`/orgs/${org}/projects/${pid}/runs`, "runs list"],
   )
   if (wf) {
