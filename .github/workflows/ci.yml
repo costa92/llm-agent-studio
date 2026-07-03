@@ -1,0 +1,100 @@
+# llm-agent-studio CI：Go（带真 PG 的防假绿测试）+ Web（typecheck/vitest/build）。
+#
+# 背景：45/121 个 Go 测试文件是 DB-gated 的——没有 LLM_AGENT_STUDIO_PG_URL 就
+# t.Skipf，包括全部 TestEndToEnd 和跨租户安全回归。所以 go job 必须：
+#   1. 起一个真实的 postgres:16 service，建 fresh database；
+#   2. 用 -v 跑 make test-db，让 skip 消息出现在输出里；
+#   3. 断言输出中没有 "set LLM_AGENT_STUDIO_PG_URL" 的 skip 提示——
+#      一旦出现，说明 DB 测试被静默跳过（假绿），直接 fail。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: vet + build
+        run: make vet build
+
+      - name: create fresh test database
+        # DB 测试要求 fresh database：并行迁移有 race、脏库会撞 transient 唯一索引，
+        # 所以不复用 service 自带的 postgres 库，单独建一个。
+        run: |
+          PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE studio_ci;'
+
+      - name: test (full, DB-backed)
+        env:
+          LLM_AGENT_STUDIO_PG_URL: postgres://postgres:postgres@127.0.0.1:5432/studio_ci?sslmode=disable
+        run: |
+          make test-db GOTESTFLAGS=-v 2>&1 | tee /tmp/go-test.log
+          exit "${PIPESTATUS[0]}"
+
+      - name: assert no DB-gated test was skipped (anti-fake-green)
+        # 所有 DB-gated 测试的 skip 消息统一是 "set LLM_AGENT_STUDIO_PG_URL to run ..."。
+        # 上一步用 -v 跑，skip 一定会打印出来；这里 grep 到即 fail。
+        run: |
+          if grep -n 'set LLM_AGENT_STUDIO_PG_URL' /tmp/go-test.log; then
+            echo '::error::DB-gated tests were skipped despite LLM_AGENT_STUDIO_PG_URL being set — fake green detected.'
+            exit 1
+          fi
+          echo 'OK: no DB-gated skips found.'
+
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # web/pnpm-lock.yaml 是 lockfileVersion 9（pnpm >= 9）；package.json 无
+      # packageManager 字段，这里显式钉 pnpm 10 / node 22（与本地开发环境一致）。
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: install
+        run: make web-install
+
+      - name: test (vitest)
+        run: make web-test
+
+      - name: build (tsc -b + vite build)
+        # package.json 的 build 已含 tsc -b，typecheck 并入此步。
+        run: make web-build
+
+      - name: lint (non-blocking)
+        # 全量 lint 有预存红（9 个历史 error：react-refresh/only-export-components、
+        # set-state-in-effect、refs-during-render、no-unused-vars 等，见 PR 说明）。
+        # 清零前不进 blocking 路径，仅供观察增量。
+        continue-on-error: true
+        run: make web-lint
