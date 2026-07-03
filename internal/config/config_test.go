@@ -102,8 +102,17 @@ func TestLoadExprFlags(t *testing.T) {
 	if !cfg.ExprChannel {
 		t.Fatalf("ExprChannel must default ON after P3e flip, got %v", cfg.ExprChannel)
 	}
-	// STUDIO_EXPR_CHANNEL=0 is the REVERSIBLE kill-switch (revert to legacy resolver).
-	cfg, err = LoadFromLookup(base(map[string]string{"STUDIO_EXPR_CHANNEL": "0"}))
+	// STUDIO_EXPR_CHANNEL=0 is the REVERSIBLE kill-switch (revert to legacy
+	// resolver). Since the items PR-B flip it must be thrown TOGETHER with
+	// STUDIO_ITEMS_CANONICAL=0 — items canonical (now default ON) structurally
+	// depends on the expr channel, so expr=0 alone is a load error (fail-closed).
+	if _, err = LoadFromLookup(base(map[string]string{"STUDIO_EXPR_CHANNEL": "0"})); err == nil {
+		t.Fatalf("STUDIO_EXPR_CHANNEL=0 alone must fail config.Load (items canonical defaults ON)")
+	}
+	cfg, err = LoadFromLookup(base(map[string]string{
+		"STUDIO_EXPR_CHANNEL":    "0",
+		"STUDIO_ITEMS_CANONICAL": "0",
+	}))
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -126,17 +135,17 @@ func TestLoadExprFlags(t *testing.T) {
 	if !cfg.ExprChannel {
 		t.Fatalf("STUDIO_EXPR_CHANNEL=1 should enable ExprChannel")
 	}
-	// ItemsCanonical (items cut-over PR-A) defaults OFF until the PR-B soak.
-	if cfg.ItemsCanonical {
-		t.Fatalf("ItemsCanonical must default off, got %v", cfg.ItemsCanonical)
+	// ItemsCanonical (items cut-over PR-B flip) defaults ON; =0 is the
+	// reversible kill-switch back to the legacy input reads.
+	if !cfg.ItemsCanonical {
+		t.Fatalf("ItemsCanonical must default ON after the PR-B flip, got %v", cfg.ItemsCanonical)
 	}
-	// STUDIO_ITEMS_CANONICAL=1 enables the items canonical input channel.
-	cfg, err = LoadFromLookup(base(map[string]string{"STUDIO_ITEMS_CANONICAL": "1"}))
+	cfg, err = LoadFromLookup(base(map[string]string{"STUDIO_ITEMS_CANONICAL": "0"}))
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if !cfg.ItemsCanonical {
-		t.Fatalf("STUDIO_ITEMS_CANONICAL=1 should set ItemsCanonical")
+	if cfg.ItemsCanonical {
+		t.Fatalf("STUDIO_ITEMS_CANONICAL=0 should disable ItemsCanonical (kill-switch)")
 	}
 	// Fail-closed combination (spec items-cutover §3): items canonical structurally
 	// depends on the expr channel; =1 with the expr kill-switch thrown must ERROR,

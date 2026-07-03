@@ -95,7 +95,7 @@ type Config struct {
 
 	ExprChannel bool // P3d: when true, custom-node {{name}} values resolve via the expr engine ($node, project-scoped, fail-closed) instead of the un-scoped resolveVariables/resolveOutputText path. substituteVars interpolation + secret pre-pass + {status}/SSRF guards UNCHANGED. Default ON (STUDIO_EXPR_CHANNEL=0 reverts to legacy).
 
-	ItemsCanonical bool // items cut-over PR-A (docs/specs/items-cutover.md §3): when true, runStoryboard/runPrescreen resolve upstream inputs via the per-dep items channel (loadInputsByDep, project-scoped, fail-closed) instead of the legacy depends_on/output_ref JOIN reads; custom kinds are forced onto the expr channel (items canonical structurally implies it — config.Load already fail-closes the =1/expr-off combination). Default OFF (STUDIO_ITEMS_CANONICAL=1 enables).
+	ItemsCanonical bool // items cut-over PR-A (docs/specs/items-cutover.md §3): when true, runStoryboard/runPrescreen resolve upstream inputs via the per-dep items channel (loadInputsByDep, project-scoped, fail-closed) instead of the legacy depends_on/output_ref JOIN reads; custom kinds are forced onto the expr channel (items canonical structurally implies it — config.Load already fail-closes the on/expr-off combination). Default ON (STUDIO_ITEMS_CANONICAL=0 reverts to legacy).
 
 	// M4 async engine knobs (spec §5.6/§9.4).
 	MaxConcurrentVideo int // global video submit-admission + fetch cap; 0 = unlimited
