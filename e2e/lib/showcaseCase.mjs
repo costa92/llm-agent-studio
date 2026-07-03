@@ -24,6 +24,11 @@ import { loadConfig, apiLogin, pollState } from "./session.mjs"
 //   E2E_SMOKE_ONLY=1  register + create + run-trigger (202) only
 //   (neither set)     print a skip notice and exit 0
 //   MIN_IMAGES        lower bound on storyboard fan-out image count (default 1)
+//
+// Returns a context object `{ session, cfg, projectId, workflowId, planId }`
+// (undefined in skip mode; planId only when the run was triggered) so composed
+// cases (e.g. case-hitl-review.mjs) can keep driving the SAME project after the
+// generation completes.
 export async function runShowcaseCase(def) {
   const cfg = loadConfig()
   const FULL = process.env.E2E_FULL === "1"
@@ -123,7 +128,7 @@ export async function runShowcaseCase(def) {
 
   if (SMOKE_ONLY) {
     console.log(`[${tag}] SMOKE_ONLY — stopping after run-trigger. OK`)
-    return
+    return { session, cfg, projectId: pid, workflowId: wf, planId: run.planId }
   }
 
   // 5) poll until done
@@ -153,6 +158,7 @@ export async function runShowcaseCase(def) {
   }
   console.log(`[${tag}] ✓ ${images.length} image assets (≥${MIN_IMAGES}), 0 audio (documented behavior)`)
   console.log(`[${tag}] OK`)
+  return { session, cfg, projectId: pid, workflowId: wf, planId: run.planId }
 }
 
 // runShowcaseCaseMain is the thin entrypoint wrapper: run and translate a

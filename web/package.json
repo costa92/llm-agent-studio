@@ -17,7 +17,9 @@
     "e2e:poem": "CASE=poem node ../e2e/case-showcase.mjs",
     "e2e:travel": "CASE=travel node ../e2e/case-showcase.mjs",
     "e2e:preview": "node ../e2e/presentation-sweep.mjs",
-    "e2e:cases": "node ../e2e/run-cases.mjs"
+    "e2e:cases": "node ../e2e/run-cases.mjs",
+    "e2e:hitl": "node ../e2e/case-hitl-review.mjs",
+    "e2e:cross-tenant": "node ../e2e/case-cross-tenant.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.4.0",
