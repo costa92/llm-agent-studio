@@ -27,9 +27,11 @@ type stubCost struct {
 	recentErr  error
 	count      int
 	recorded   []cost.Generation
+	planCost   cost.PlanCost
 
-	gotFrom, gotTo time.Time
-	gotCursor      string
+	gotFrom, gotTo          time.Time
+	gotCursor               string
+	gotProjectID, gotPlanID string
 }
 
 func (s *stubCost) Record(_ context.Context, g cost.Generation) error {
@@ -54,6 +56,56 @@ func (s *stubCost) RecentByOrg(_ context.Context, _ string, _ int, cursor string
 }
 func (s *stubCost) CountByOrgSince(_ context.Context, _ string, _ time.Time) (int, error) {
 	return s.count, nil
+}
+func (s *stubCost) ByPlan(_ context.Context, projectID, planID string) (cost.PlanCost, error) {
+	s.gotProjectID, s.gotPlanID = projectID, planID
+	return s.planCost, nil
+}
+
+func TestPlanCostHandler(t *testing.T) {
+	cs := &stubCost{planCost: cost.PlanCost{
+		Aggregate:  cost.Aggregate{Generations: 3, Tokens: 900, ImageCount: 2, CostMicros: 11600},
+		KindCounts: map[string]int{"chat": 1, "image": 2},
+		Todos: []cost.TodoCost{{
+			TodoID: "t1", TodoType: "script", Kind: "chat", Provider: "openai", Model: "gpt",
+			Aggregate: cost.Aggregate{Generations: 1, Tokens: 800, CostMicros: 1600},
+		}},
+	}}
+	h := planCostHandler(cs)
+	req := httptest.NewRequest("GET", "/api/projects/p1/plans/plan-1/cost", nil)
+	req.SetPathValue("id", "p1")
+	req.SetPathValue("planId", "plan-1")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if cs.gotProjectID != "p1" || cs.gotPlanID != "plan-1" {
+		t.Fatalf("path values not forwarded: %q %q", cs.gotProjectID, cs.gotPlanID)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{`"costMicros":11600`, `"kindCounts":{"chat":1,"image":2}`, `"todoId":"t1"`, `"todoType":"script"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body missing %s: %s", want, body)
+		}
+	}
+}
+
+// TestPlanCostHandlerEmptyRun: run 无账本行 → 零总计 + 空数组（非 null），前端空态依赖它。
+func TestPlanCostHandlerEmptyRun(t *testing.T) {
+	cs := &stubCost{planCost: cost.PlanCost{KindCounts: map[string]int{}, Todos: []cost.TodoCost{}}}
+	h := planCostHandler(cs)
+	req := httptest.NewRequest("GET", "/api/projects/p1/plans/plan-x/cost", nil)
+	req.SetPathValue("id", "p1")
+	req.SetPathValue("planId", "plan-x")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"todos":[]`) {
+		t.Fatalf("empty run must serialize todos as []: %s", rr.Body.String())
+	}
 }
 
 func TestOrgCostHandlerParsesRange(t *testing.T) {

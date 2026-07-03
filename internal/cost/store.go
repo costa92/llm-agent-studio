@@ -98,6 +98,64 @@ func (s *Store) ByOrg(ctx context.Context, orgID string) (Aggregate, error) {
 	return a, nil
 }
 
+// TodoCost is one per-todo (node) breakdown row of a run's ledger. A todo may
+// span multiple (kind, provider, model) combos (e.g. regenerate with another
+// model) — each combo is its own row, mirroring the grouped query.
+type TodoCost struct {
+	TodoID   string `json:"todoId"`
+	TodoType string `json:"todoType"`
+	Kind     string `json:"kind"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	Aggregate
+}
+
+// PlanCost is one run's (plan's) cost rollup: total + per-kind generation
+// counts + per-todo breakdown (UI 运行视图成本汇总).
+type PlanCost struct {
+	Aggregate
+	KindCounts map[string]int `json:"kindCounts"`
+	Todos      []TodoCost     `json:"todos"`
+}
+
+// ByPlan aggregates one run's ledger via the generations→todos join
+// (generations carries todo_id, todos carries plan_id). The project_id filter
+// keeps the lookup inside the caller's project (org isolation rides on the
+// project-scoped route). Rows with an empty todo_id (cover gen / lyrics TTS) don't
+// belong to a run and drop out of the join naturally. No ledger rows → zero
+// totals with an empty (non-nil) breakdown.
+func (s *Store) ByPlan(ctx context.Context, projectID, planID string) (PlanCost, error) {
+	rows, err := s.db.WithContext(ctx).Raw(`
+		SELECT g.todo_id, t.type, g.kind, g.provider, g.model,
+		       count(*), COALESCE(sum(g.tokens),0), COALESCE(sum(g.image_count),0), COALESCE(sum(g.cost_micros),0)
+		FROM generations g JOIN todos t ON g.todo_id = t.id
+		WHERE g.project_id=$1 AND t.plan_id=$2
+		GROUP BY g.todo_id, t.type, g.kind, g.provider, g.model
+		ORDER BY min(g.created_at), g.todo_id`, projectID, planID).Rows()
+	if err != nil {
+		return PlanCost{}, fmt.Errorf("cost: by plan: %w", err)
+	}
+	defer rows.Close()
+	pc := PlanCost{KindCounts: map[string]int{}, Todos: make([]TodoCost, 0)}
+	for rows.Next() {
+		var tc TodoCost
+		if err := rows.Scan(&tc.TodoID, &tc.TodoType, &tc.Kind, &tc.Provider, &tc.Model,
+			&tc.Generations, &tc.Tokens, &tc.ImageCount, &tc.CostMicros); err != nil {
+			return PlanCost{}, err
+		}
+		pc.Generations += tc.Generations
+		pc.Tokens += tc.Tokens
+		pc.ImageCount += tc.ImageCount
+		pc.CostMicros += tc.CostMicros
+		pc.KindCounts[tc.Kind] += tc.Generations
+		pc.Todos = append(pc.Todos, tc)
+	}
+	if err := rows.Err(); err != nil {
+		return PlanCost{}, err
+	}
+	return pc, nil
+}
+
 // Price is one pricing row: unit prices for a provider+model (spec §15 M3
 // 成本中心; seeded by the m3 migration, ops-tunable via SQL).
 type Price struct {

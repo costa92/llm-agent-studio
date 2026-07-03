@@ -79,6 +79,7 @@ type CostStore interface {
 	ByOrgBetween(ctx context.Context, orgID string, from, to time.Time) (cost.Aggregate, error)
 	ByProjectBetween(ctx context.Context, projectID string, from, to time.Time) (cost.Aggregate, error)
 	PerProjectByOrg(ctx context.Context, orgID string, from, to time.Time) ([]cost.ProjectAggregate, error)
+	ByPlan(ctx context.Context, projectID, planID string) (cost.PlanCost, error)
 	RecentByOrg(ctx context.Context, orgID string, limit int, cursor string) ([]cost.LedgerEntry, string, error)
 	CountByOrgSince(ctx context.Context, orgID string, since time.Time) (int, error)
 }
@@ -626,6 +627,20 @@ func orgCostProjectsHandler(cs CostStore) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
+// planCostHandler (GET /api/projects/{id}/plans/{planId}/cost): admin.
+// 一次 run 的 token/成本汇总 + 按 todo（节点）分解。org 隔离由 project scope 中间件
+// 保证；ByPlan 的 project_id 过滤再兜住跨项目 planId 猜测（只会得到零报表）。
+func planCostHandler(cs CostStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		pc, err := cs.ByPlan(r.Context(), r.PathValue("id"), r.PathValue("planId"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, pc)
 	}
 }
 

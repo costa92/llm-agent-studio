@@ -70,6 +70,13 @@ export function nodeDisplay(node: {
   }
 }
 
+// todo/节点类型 → 展示名（运行成本分解等列表场景）：内置查 TYPE_LABEL；
+// custom:<slug> 去前缀（区分不同自定义类型，不像 nodeDisplay 统一坍缩成「自定义」）；未知原样。
+export function todoTypeLabel(type: string): string {
+  if (isCustomType(type)) return type.slice(CUSTOM_PREFIX.length)
+  return TYPE_LABEL[type] ?? type
+}
+
 // 显示名 → custom slug：小写、空白转 -、去非法字符（保留中日韩）；空则 "type"。
 export function slugify(label: string): string {
   const s = label

@@ -289,6 +289,46 @@ export function usePlans(projectId: string): UseQueryResult<Plan[]> {
   })
 }
 
+// 一次 run 的成本汇总（cost.PlanCost）：总计 + 按 kind 生成次数 + 按 todo（节点）分解。
+// costMicros 单位与成本中心一致（货币 × 1e6，前端用 features/cost/format 换算）。
+export interface PlanCostTodo {
+  todoId: string
+  todoType: string
+  kind: string
+  provider: string
+  model: string
+  generations: number
+  tokens: number
+  imageCount: number
+  costMicros: number
+}
+
+export interface PlanCost {
+  generations: number
+  tokens: number
+  imageCount: number
+  costMicros: number
+  kindCounts: Record<string, number>
+  todos: PlanCostTodo[]
+}
+
+// GET /api/projects/{id}/plans/{planId}/cost → PlanCost（admin，成本资源族门槛）。
+// run 无账本行 → 零总计 + todos:[]（前端渲空态）。live=true（run 进行中）时轮询刷新，
+// 新账本行随 worker 执行陆续落库。
+export function usePlanCost(
+  projectId: string,
+  planId: string,
+  live = false,
+): UseQueryResult<PlanCost> {
+  return useQuery({
+    queryKey: ["plan-cost", projectId, planId],
+    queryFn: () =>
+      apiJSON<PlanCost>(`/api/projects/${projectId}/plans/${planId}/cost`),
+    enabled: projectId !== "" && planId !== "",
+    refetchInterval: live ? 5000 : false,
+  })
+}
+
 // 绘本成书导出：导出格式与异步任务（后端 T1-T5）。
 export type ExportFormat = "pdf" | "epub" | "zip"
 
