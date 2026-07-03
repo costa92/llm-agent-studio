@@ -147,7 +147,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Project, error) {
 	}
 	kind := in.Kind
 	if kind == "" {
-		kind = "standard"
+		kind = "custom" // workflow-only 转型后唯一的项目类型（m23 已收敛存量）
 	}
 	p := Project{
 		ID: newID(), OrgID: in.OrgID, Name: in.Name, Description: in.Brief,

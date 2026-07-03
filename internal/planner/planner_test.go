@@ -8,13 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/costa92/llm-agent-contract/llm"
-
 	"github.com/costa92/llm-agent-studio/internal/storage"
 	"github.com/costa92/llm-agent-studio/internal/todos"
 )
 
-func newPlanner(t *testing.T, model llm.ChatModel) (*Planner, *storage.Storage, string) {
+func newPlanner(t *testing.T) (*Planner, *storage.Storage, string) {
 	t.Helper()
 	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
 	if dsn == "" {
@@ -34,7 +32,7 @@ func newPlanner(t *testing.T, model llm.ChatModel) (*Planner, *storage.Storage, 
 		`INSERT INTO projects (id, org_id, name, created_by) VALUES ($1,'o','n','u')`, projID); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
-	return New(model, todos.New(st.GORM()), st.GORM()), st, projID
+	return New(todos.New(st.GORM()), st.GORM()), st, projID
 }
 
 func TestValidateCustomGraph(t *testing.T) {
@@ -157,7 +155,7 @@ func TestValidateCustomGraph_Exported(t *testing.T) {
 }
 
 func TestPlanCustom(t *testing.T) {
-	p, st, projID := newPlanner(t, nil)
+	p, st, projID := newPlanner(t)
 	ctx := context.Background()
 
 	// 1. Seed a prompt in the prompts table
@@ -233,7 +231,7 @@ func TestPlanCustom(t *testing.T) {
 // TestPlanCustomBuiltinPrompt: a node referencing a built-in preset id
 // ("builtin:…") resolves its systemPrompt from code, with NO prompts table row.
 func TestPlanCustomBuiltinPrompt(t *testing.T) {
-	p, st, projID := newPlanner(t, nil)
+	p, st, projID := newPlanner(t)
 	ctx := context.Background()
 
 	nodes := []WorkflowNode{{ID: "node-script", Type: "script", PromptID: "builtin:script-basic"}}
@@ -265,7 +263,7 @@ func TestHasUnboundCustomNode(t *testing.T) {
 // TestPlanCustomInlinePromptText: an inline PromptText on a node is used directly
 // as systemPrompt and takes precedence over PromptID (no DB/builtin lookup).
 func TestPlanCustomInlinePromptText(t *testing.T) {
-	p, st, projID := newPlanner(t, nil)
+	p, st, projID := newPlanner(t)
 	ctx := context.Background()
 
 	// PromptText set AND a (would-be-erroring) PromptID → PromptText wins, and the
@@ -293,7 +291,7 @@ func TestPlanCustomInlinePromptText(t *testing.T) {
 // bindings rewritten from local node ids to todo ids (two-pass) and the final
 // input_json has sourceTodoId with NO sourceNodeId key.
 func TestPlanCustom_TypedVariableRewrite(t *testing.T) {
-	p, st, projID := newPlanner(t, nil)
+	p, st, projID := newPlanner(t)
 	ctx := context.Background()
 
 	// Seed a workflow.
@@ -379,7 +377,7 @@ func TestPlanCustom_TypedVariableRewrite(t *testing.T) {
 // (alongside the rewritten sourceTodoId), while a sibling binding WITHOUT a
 // sourceField produces NO sourceField key (omitempty parity with today). DB-backed.
 func TestPlanCustom_SourceFieldPassthrough(t *testing.T) {
-	p, st, projID := newPlanner(t, nil)
+	p, st, projID := newPlanner(t)
 	ctx := context.Background()
 
 	regParams, _ := json.Marshal(map[string]interface{}{
@@ -444,7 +442,7 @@ func TestPlanCustom_SourceFieldPassthrough(t *testing.T) {
 // TestPlanCustom_VariableNotInDependsOn: a typed node whose VarBindings reference
 // a node NOT in DependsOn must be rejected with an error containing "must be in dependsOn".
 func TestPlanCustom_VariableNotInDependsOn(t *testing.T) {
-	p, _, projID := newPlanner(t, nil)
+	p, _, projID := newPlanner(t)
 	ctx := context.Background()
 
 	regParams, _ := json.Marshal(map[string]interface{}{
@@ -568,10 +566,7 @@ func TestWorkflowNodeParametersRoundTrip(t *testing.T) {
 // plans.run_inputs: a non-nil JSON is stored verbatim, and a nil snapshot
 // defaults to '{}' (never NULL) — for the custom-workflow path (PlanCustom).
 func TestPlanRunInputs(t *testing.T) {
-	model := llm.NewScriptedLLM(llm.WithResponses(llm.Response{
-		Text: `{"nodes":[{"id":"s","type":"script","dependsOn":[]}]}`,
-	}))
-	p, st, projID := newPlanner(t, model)
+	p, st, projID := newPlanner(t)
 	ctx := context.Background()
 
 	// JSONB reformats on storage (adds whitespace); compare compacted forms.

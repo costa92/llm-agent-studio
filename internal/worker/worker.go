@@ -84,7 +84,7 @@ type Config struct {
 
 	ExprParity bool // P2b parity probe: recompute {{name}} via the expr engine and compare to substituteVars; logs only metadata, never feeds downstream. default false.
 
-	ExprChannel bool // P3d: when true, custom-node {{name}} values resolve via the expr engine ($node, project-scoped, fail-closed) instead of the un-scoped resolveVariables/resolveOutputText path. substituteVars interpolation + secret pre-pass + {status}/SSRF guards UNCHANGED. Default false. Reversible.
+	ExprChannel bool // P3d: when true, custom-node {{name}} values resolve via the expr engine ($node, project-scoped, fail-closed) instead of the un-scoped resolveVariables/resolveOutputText path. substituteVars interpolation + secret pre-pass + {status}/SSRF guards UNCHANGED. Default ON (STUDIO_EXPR_CHANNEL=0 reverts to legacy).
 
 	// M4 async engine knobs (spec §5.6/§9.4).
 	MaxConcurrentVideo int // global video submit-admission + fetch cap; 0 = unlimited

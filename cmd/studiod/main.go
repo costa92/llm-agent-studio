@@ -150,7 +150,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	customNodeTypeStore := customnodetype.New(st.GORM())
 	todoStore := todos.New(st.GORM())
 	eventStore := events.New(st.GORM())
-	plannerSvc := planner.New(model, todoStore, st.GORM())
+	plannerSvc := planner.New(todoStore, st.GORM())
 	scriptAgent := studioagents.NewScriptAgent(model)
 	storyboardAgent := studioagents.NewStoryboardAgent(model)
 
@@ -321,7 +321,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 			BaseBackoff:              cfg.WorkerBackoff,
 			CallTimeout:              cfg.WorkerCallTimeout,
 			ExprParity:               cfg.ExprParity,  // P3: $node shadow probe (default off)
-			ExprChannel:              cfg.ExprChannel, // P3: expr live value channel (default off; reversible flip)
+			ExprChannel:              cfg.ExprChannel, // P3: expr live value channel (default ON; STUDIO_EXPR_CHANNEL=0 reverts to legacy)
 			Tracer:                   tp.Tracer("studio.worker"),
 		})
 		wg.Add(1)

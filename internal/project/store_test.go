@@ -117,6 +117,24 @@ func TestProjectKindRoundTrip(t *testing.T) {
 	if got.Kind != "custom" {
 		t.Fatalf("get Kind=%q want custom", got.Kind)
 	}
+
+	// Kind 缺省时默认写 'custom'（前端创建项目不传 kind，走的正是这条路径）。
+	def, err := s.Create(ctx, CreateInput{
+		OrgID: orgID, Name: "Default", CreatedBy: "u",
+	})
+	if err != nil {
+		t.Fatalf("create default: %v", err)
+	}
+	if def.Kind != "custom" {
+		t.Fatalf("default Kind=%q want custom", def.Kind)
+	}
+	gotDef, err := s.Get(ctx, def.ID)
+	if err != nil {
+		t.Fatalf("get default: %v", err)
+	}
+	if gotDef.Kind != "custom" {
+		t.Fatalf("get default Kind=%q want custom", gotDef.Kind)
+	}
 }
 
 // M5.1: Update 改 planner_provider/planner_model，其他字段不动；找不到 id → 404。
