@@ -58,6 +58,7 @@ type Deps struct {
 	GenQuota       int                 // rolling-24h per-org generation quota; 0 = unlimited
 	CustomNodeType CustomNodeTypeStore // org-scoped typed custom node registry; nil in focused unit tests
 	OrgSecret      OrgSecretStore      // org-scoped named-secret registry (roleAdmin); nil in focused unit tests
+	AlertSettings  AlertSettingsStore  // org-scoped run 失败邮件告警配置 (roleAdmin); nil in focused unit tests
 
 	// 工作流作品导出 (PDF/EPUB/ZIP). nil → 整组导出路由不挂载 (focused unit tests skip)。
 	Exports    ExportsStore   // export_jobs 队列读写 (satisfied by *exports.Store)
@@ -285,6 +286,11 @@ func NewMux(d Deps) *http.ServeMux {
 		mux.Handle("POST /api/orgs/{org}/secrets", scoped(roleAdmin, orgScope, createOrgSecretHandler(d.OrgSecret)))
 		mux.Handle("PUT /api/orgs/{org}/secrets/{name}", scoped(roleAdmin, orgScope, updateOrgSecretHandler(d.OrgSecret)))
 		mux.Handle("DELETE /api/orgs/{org}/secrets/{name}", scoped(roleAdmin, orgScope, deleteOrgSecretHandler(d.OrgSecret)))
+	}
+	// Org run 失败邮件告警配置 (org-scoped, roleAdmin — 与其余 org 设置端点族同门禁)。
+	if d.AlertSettings != nil {
+		mux.Handle("GET /api/orgs/{org}/alert-settings", scoped(roleAdmin, orgScope, getAlertSettingsHandler(d.AlertSettings)))
+		mux.Handle("PUT /api/orgs/{org}/alert-settings", scoped(roleAdmin, orgScope, putAlertSettingsHandler(d.AlertSettings)))
 	}
 	// Org 成员管理 (org-scoped). 列出对任意 org 成员开放 (viewer)；增删改角色限 org_admin (admin).
 	mux.Handle("GET /api/orgs/{org}/members", scoped(roleViewer, orgScope, listMembersHandler(d.Members)))

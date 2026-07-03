@@ -28,6 +28,17 @@ func testStorage() *storagerouter.Router {
 	return storagerouter.New(storagerouter.Config{Default: blob.NewFake()})
 }
 
+// stubAlerts records RunFailed calls (run 失败告警触发点断言用)。
+type stubAlerts struct {
+	calls []stubAlertCall
+}
+
+type stubAlertCall struct{ projectID, todoID, nodeType, errMsg string }
+
+func (s *stubAlerts) RunFailed(projectID, todoID, nodeType, errMsg string) {
+	s.calls = append(s.calls, stubAlertCall{projectID, todoID, nodeType, errMsg})
+}
+
 func TestWorkerRunsScriptThenStoryboard(t *testing.T) {
 	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
 	if dsn == "" {
@@ -69,6 +80,7 @@ func TestWorkerRunsScriptThenStoryboard(t *testing.T) {
 	fakeGen := generate.NewFakeLooping(generate.GenResult{
 		Bytes: []byte("FAKEPNG"), MimeType: "image/png", Provider: "fake", Model: "fake-img", ImageCount: 1,
 	})
+	alerts := &stubAlerts{}
 	w := New(Config{
 		DB:       assetTestGorm(t),
 		Todos:      todoStore,
@@ -80,6 +92,7 @@ func TestWorkerRunsScriptThenStoryboard(t *testing.T) {
 		Storage:    testStorage(),
 		Assets:     assets.New(assetTestGorm(t)),
 		Cost:       cost.New(assetTestGorm(t)),
+		Alerts:     alerts,
 		WorkerID:   "test-0",
 	})
 	// Drain the queue deterministically (no sleeps).
@@ -122,6 +135,10 @@ func TestWorkerRunsScriptThenStoryboard(t *testing.T) {
 	_ = pool.QueryRow(ctx, `SELECT count(*) FROM assets WHERE project_id=$1 AND status='pending_acceptance'`, projID).Scan(&nPending)
 	if nPending != 1 {
 		t.Fatalf("want 1 pending_acceptance asset, got %d", nPending)
+	}
+	// 成功的 run 绝不触发失败告警。
+	if len(alerts.calls) != 0 {
+		t.Fatalf("successful run must not notify, got %d RunFailed calls: %+v", len(alerts.calls), alerts.calls)
 	}
 }
 
@@ -178,9 +195,11 @@ func TestWorkerFailsTodoOnAgentError(t *testing.T) {
 		llm.Response{Text: "no json"}, llm.Response{Text: "no json"},
 		llm.Response{Text: "no json"}, llm.Response{Text: "no json"},
 	))
+	alerts := &stubAlerts{}
 	w := New(Config{
 		DB: assetTestGorm(t), Todos: todoStore, Projects: projStore, Events: events.New(assetTestGorm(t)),
 		Script: studioagents.NewScriptAgent(scriptModel), Storyboard: studioagents.NewStoryboardAgent(bad),
+		Alerts:   alerts,
 		WorkerID: "test-1", MaxAttempts: 2, BaseBackoff: 0,
 	})
 	for i := 0; i < 20; i++ {
@@ -231,6 +250,14 @@ func TestWorkerFailsTodoOnAgentError(t *testing.T) {
 	}
 	if _, ok := m["error"]; !ok {
 		t.Fatalf("todo_failed payload missing 'error' field: %s", failPayload)
+	}
+	// 终态失败恰好触发一次 run 失败告警（重试中的失败不触发；一次 run 只发一封的
+	// 去重在 alerts.Notifier 内按 planID 收口，这里断言 worker 侧的触发点语义）。
+	if len(alerts.calls) != 1 {
+		t.Fatalf("want exactly 1 RunFailed call on terminal failure, got %d: %+v", len(alerts.calls), alerts.calls)
+	}
+	if c := alerts.calls[0]; c.projectID != projID || c.todoID != ids["b"] || c.nodeType != "storyboard" || c.errMsg == "" {
+		t.Fatalf("unexpected RunFailed call: %+v", c)
 	}
 	// With a terminal failure present, the project status resolves to 'failed'
 	// rather than wedging in 'running'.

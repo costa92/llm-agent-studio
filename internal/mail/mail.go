@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"mime"
 	"net/smtp"
 	"os"
 	"path/filepath"
@@ -49,6 +50,17 @@ func New(resolver MailConfigResolver, env EnvConfig, logger *slog.Logger, worksp
 }
 
 func (c *Client) SendVerificationCode(ctx context.Context, email, code string) error {
+	subject := "AI Studio Verification Code"
+	body := fmt.Sprintf("Your email verification code is: %s\n\nIt is valid for 15 minutes.", code)
+	c.logger.Info("mail: sending verification email", "email", email, "code", code)
+	return c.Send(ctx, email, subject, body)
+}
+
+// Send delivers a generic plain-text email: it resolves SMTP settings (DB
+// preferred, env fallback), always writes the dev mock file, and sends via
+// SMTP when enabled/configured. Used by the verification-code path above and
+// the run-failure alert notifier.
+func (c *Client) Send(ctx context.Context, email, subject, body string) error {
 	// 1. Resolve configuration (DB preferred, fall back to Env)
 	host := c.env.SMTPHost
 	port := c.env.SMTPPort
@@ -71,16 +83,15 @@ func (c *Client) SendVerificationCode(ctx context.Context, email, code string) e
 		}
 	}
 
-	subject := "AI Studio Verification Code"
-	body := fmt.Sprintf("Your email verification code is: %s\n\nIt is valid for 15 minutes.", code)
+	// Q-encode the subject so non-ASCII (中文告警标题) survives the SMTP header;
+	// pure-ASCII subjects pass through unchanged.
 	msg := []byte("To: " + email + "\r\n" +
 		"From: " + from + "\r\n" +
-		"Subject: " + subject + "\r\n" +
+		"Subject: " + mime.QEncoding.Encode("utf-8", subject) + "\r\n" +
 		"Content-Type: text/plain; charset=UTF-8\r\n\r\n" +
 		body)
 
 	// 2. Always log and write to local file for development audit
-	c.logger.Info("mail: sending verification email", "email", email, "code", code)
 	if err := c.writeMockMail(email, subject, body); err != nil {
 		c.logger.Error("mail: failed to write mock email file", "err", err)
 	}

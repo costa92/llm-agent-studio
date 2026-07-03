@@ -59,6 +59,14 @@ type ClaimedTodo struct {
 // TaskExecutor is a function type for executing a claimed todo.
 type TaskExecutor func(ctx context.Context, todo ClaimedTodo) (outputRef string, err error)
 
+// RunFailureNotifier reports a TERMINAL todo failure (attempts exhausted → the
+// run is doomed) so an org-level alert can go out. Implementations MUST be
+// fire-and-forget (satisfied by *alerts.Notifier): the worker calls this inline
+// on its execution path and must never block on mail delivery.
+type RunFailureNotifier interface {
+	RunFailed(projectID, todoID, nodeType, errMsg string)
+}
+
 // Config configures a Worker.
 type Config struct {
 	DB               *gorm.DB
@@ -78,6 +86,7 @@ type Config struct {
 	Secrets          SecretResolver          // org-scoped named-secret resolver for http custom nodes; nil → secret-bearing http nodes fail opaquely
 	HTTPFetcher      HTTPDoer                // SSRF-safe outbound for http custom nodes; nil → http nodes fail opaquely
 	CustomExecutors  map[string]TaskExecutor // custom executors registered for task types
+	Alerts           RunFailureNotifier      // run 失败邮件告警（fire-and-forget）; nil → disabled
 	WorkerID         string
 	GenQuota         int // rolling-24h per-org generation quota; 0 = unlimited (backstop for fan-out)
 	MaxConcurrentGen int // global concurrent asset-todo cap; 0 = unlimited
@@ -904,6 +913,11 @@ func (w *Worker) fail(ctx context.Context, c claimed, cause error) {
 		if _, err := w.cfg.Projects.RefreshStatus(ctx, c.projectID); err != nil {
 			w.cfg.Logger.Warn("worker: refresh status failed", "project", c.projectID, "err", err)
 		}
+		// Run 失败告警：终态失败即注定整个 run 以 failed 收场（MarkFailed 已级联取消
+		// 后继）。通知是 fire-and-forget，一次 run 只发一封由 notifier 按 planID 去重。
+		if w.cfg.Alerts != nil {
+			w.cfg.Alerts.RunFailed(c.projectID, c.todoID, c.typ, msg)
+		}
 		// A terminal failure can be the LAST todo to reach a terminal state (e.g. a
 		// run where earlier todos succeeded and the final one exhausted attempts).
 		// MarkFailed cancels dependents, so allDone may now be satisfied — emit
@@ -1336,6 +1350,10 @@ func (w *Worker) pollAsync(ctx, cctx context.Context, c claimed, asset assets.As
 		_, _ = w.cfg.Events.Append(cctx, c.projectID, "todo_failed", c.todoID, map[string]any{"type": c.typ, "error": reason})
 		if _, err := w.cfg.Projects.RefreshStatus(cctx, c.projectID); err == nil && w.allDone(cctx, c.projectID) {
 			_, _, _ = w.cfg.Events.AppendRunDone(cctx, c.projectID)
+		}
+		// Run 失败告警（async 终态与 fail() 的同步终态是仅有的两个 MarkFailed 收口）。
+		if w.cfg.Alerts != nil {
+			w.cfg.Alerts.RunFailed(c.projectID, c.todoID, c.typ, reason)
 		}
 		return "", errRescheduled // todo already terminal; process must NOT MarkDone
 	}

@@ -99,6 +99,11 @@ type Config struct {
 	// 的，注册时再 top-up (见 studiosvc.Register)。每项已 trim + 转小写以匹配落库形态。
 	PlatformAdminEmails []string
 
+	// PublicURL 是控制台对外可达的 base URL（env STUDIO_PUBLIC_URL，如
+	// https://studio.example.com）。目前仅用于 run 失败告警邮件里的控制台链接；
+	// 留空则邮件不带链接（既有部署无外链约定，纯文本定位信息足够）。
+	PublicURL string
+
 	// SMTP settings for email verification
 	SMTPHost string
 	SMTPPort int
@@ -173,6 +178,8 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		WebDir:       get("WEB_DIR", ""),
 
 		PlatformAdminEmails: splitEmails(get("PLATFORM_ADMIN_EMAILS", "")),
+
+		PublicURL: get("STUDIO_PUBLIC_URL", ""),
 
 		SMTPHost: get("SMTP_HOST", ""),
 		SMTPPort: intOf("SMTP_PORT", get("SMTP_PORT", "587"), &errs),

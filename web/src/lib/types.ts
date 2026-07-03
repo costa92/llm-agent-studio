@@ -577,6 +577,14 @@ export interface UpsertMailConfigInput {
   enabled: boolean
 }
 
+// org 级 run 失败邮件告警配置（GET/PUT /api/orgs/{org}/alert-settings，roleAdmin）。
+// 未配置的 org 返回零值默认（enabled=false, email=""）。
+export interface AlertSettings {
+  orgId: string
+  email: string
+  enabled: boolean
+}
+
 // 平台监控 / 数据健康（平台超级管理员专属，/api/platform/health/*）。
 
 // 系统层面健康快照：DB 连通/延迟、积压 todo、最近事件时间、worker 活性。

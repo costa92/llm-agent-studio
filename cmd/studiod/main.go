@@ -28,6 +28,7 @@ import (
 	volcengineprovider "github.com/costa92/llm-agent-providers/volcengine"
 
 	studioagents "github.com/costa92/llm-agent-studio/internal/agents"
+	"github.com/costa92/llm-agent-studio/internal/alerts"
 	"github.com/costa92/llm-agent-studio/internal/assets"
 	"github.com/costa92/llm-agent-studio/internal/blob"
 	blobgithub "github.com/costa92/llm-agent-studio/internal/blob/github"
@@ -213,6 +214,16 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	wd, _ := os.Getwd()
 	mailClient := mail.New(mailConfigStore, envMailCfg, nil, wd)
 
+	// Run 失败邮件告警：org 级配置 + 通知器（一次 run 一封、org 级限频、异步发信，
+	// 邮件路径绝不阻塞 worker）。内存限频/去重 = 单实例部署假设（见 alerts.Notifier）。
+	alertStore := alerts.NewStore(st.GORM())
+	alertNotifier := alerts.NewNotifier(alerts.NotifierConfig{
+		DB:         st.GORM(),
+		Settings:   alertStore,
+		Mailer:     mailClient,
+		ConsoleURL: cfg.PublicURL,
+	})
+
 	// StorageRouter (Phase 3): per-org → global → 内置 localfs 默认 的对象存储路由。
 	// storageStore 复用 BYOK 同一把加密 box 解密 secret。buildStorageStore 复用 main 里
 	// 既有的 adapter 构造器 (绝不重实现 adapter)。零 storage_config 行时 ResolveForOrg
@@ -304,6 +315,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 			Models: modelStore, Registry: registry, Router: router,
 			Secrets:                  orgSecretStore,
 			HTTPFetcher:              httpFetcher,
+			Alerts:                   alertNotifier,
 			WorkerID:                 fmt.Sprintf("studiod-%d", i),
 			GenQuota:                 cfg.OrgDailyGenQuota,
 			MaxConcurrentGen:         cfg.MaxConcurrentGen,
@@ -408,6 +420,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		StorageConfig:  storageStore,
 		CustomNodeType: customNodeTypeStore,
 		OrgSecret:      orgSecretStore,
+		AlertSettings:  alertStore,
 		Exports:        exportStore,
 		ExportBook:     exports.NewBookData(st.GORM()),
 		ExprChannel:    cfg.ExprChannel, // B/P5: read-only capability for field-level varBindings FE gate
@@ -427,6 +440,9 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	cleanup := func() {
 		stopWorkers()
 		wg.Wait()
+		// 在关池前等在途告警邮件收尾（每个通知 goroutine 自带 SendTimeout 上界，
+		// 不会无限阻塞），避免 shutdown 期间 lookup 撞已关闭的连接池刷错误日志。
+		alertNotifier.Wait()
 		_ = tp.Shutdown(ctx)
 		st.Close()
 	}

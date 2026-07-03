@@ -540,6 +540,7 @@ func (s *Storage) goSteps() []migrationStep {
 		{version: "m22", run: m22CreateExportJobs},
 		{version: "m23", run: m23RemovePicturebookStandard},
 		{version: "m24", run: m24CreateExportJobs},
+		{version: "m25", run: m25CreateOrgAlertSettings},
 	}
 }
 
@@ -688,6 +689,23 @@ func m24CreateExportJobs(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx,
 		`CREATE INDEX IF NOT EXISTS export_jobs_project_idx ON export_jobs (project_id)`); err != nil {
 		return fmt.Errorf("create export_jobs_project_idx: %w", err)
+	}
+	return nil
+}
+
+// m25CreateOrgAlertSettings creates the org_alert_settings table (run 失败邮件
+// 告警的 org 级配置)：每 org 一行（org_id 主键），email 为告警收件邮箱，enabled
+// 为总开关。未配置行 = 完全静默（等价 enabled=false）。Forward-only、幂等
+// (CREATE TABLE IF NOT EXISTS)。
+func m25CreateOrgAlertSettings(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS org_alert_settings (
+			org_id     TEXT PRIMARY KEY,
+			email      TEXT NOT NULL DEFAULT '',
+			enabled    BOOLEAN NOT NULL DEFAULT false,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`); err != nil {
+		return fmt.Errorf("create org_alert_settings: %w", err)
 	}
 	return nil
 }
