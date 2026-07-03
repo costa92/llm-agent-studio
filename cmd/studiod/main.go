@@ -334,7 +334,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 			CallTimeout:              cfg.WorkerCallTimeout,
 			ExprParity:               cfg.ExprParity,     // P3: $node shadow probe (default off)
 			ExprChannel:              cfg.ExprChannel,    // P3: expr live value channel (default ON; STUDIO_EXPR_CHANNEL=0 reverts to legacy)
-			ItemsCanonical:           cfg.ItemsCanonical, // items cut-over PR-A: storyboard/prescreen inputs via per-dep items (default OFF)
+			ItemsCanonical:           cfg.ItemsCanonical, // items cut-over PR-B: storyboard/prescreen inputs via per-dep items (default ON; STUDIO_ITEMS_CANONICAL=0 reverts)
 			Tracer:                   tp.Tracer("studio.worker"),
 		})
 		wg.Add(1)
