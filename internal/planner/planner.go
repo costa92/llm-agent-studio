@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"regexp"
 
-	"github.com/costa92/llm-agent-contract/llm"
 	"gorm.io/gorm"
 
 	"github.com/costa92/llm-agent-studio/internal/prompt"
@@ -41,18 +40,15 @@ type ReadyTodo struct {
 }
 
 // Planner turns a custom workflow graph into a persisted todo graph. The LLM
-// auto-planner (Plan/PlanWith) was removed; only PlanCustom remains. model is
-// retained on the struct (set by New) for signature stability but is no longer
-// read by any planning path.
+// auto-planner (Plan/PlanWith) was removed; only PlanCustom remains.
 type Planner struct {
-	model llm.ChatModel // retained for New's signature; unused since the auto-planner was removed
 	todos *todos.Store
 	db    *gorm.DB
 }
 
-// New builds a Planner. model is retained for signature stability but unused.
-func New(model llm.ChatModel, todoStore *todos.Store, db *gorm.DB) *Planner {
-	return &Planner{model: model, todos: todoStore, db: db}
+// New builds a Planner.
+func New(todoStore *todos.Store, db *gorm.DB) *Planner {
+	return &Planner{todos: todoStore, db: db}
 }
 
 func newID() string {
