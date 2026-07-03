@@ -20,13 +20,16 @@ import (
 
 // stubCost is a canned CostStore for handler tests.
 type stubCost struct {
-	agg      cost.Aggregate
-	per      []cost.ProjectAggregate
-	recent   []cost.LedgerEntry
-	count    int
-	recorded []cost.Generation
+	agg        cost.Aggregate
+	per        []cost.ProjectAggregate
+	recent     []cost.LedgerEntry
+	recentNext string
+	recentErr  error
+	count      int
+	recorded   []cost.Generation
 
 	gotFrom, gotTo time.Time
+	gotCursor      string
 }
 
 func (s *stubCost) Record(_ context.Context, g cost.Generation) error {
@@ -45,8 +48,9 @@ func (s *stubCost) ByProjectBetween(_ context.Context, _ string, from, to time.T
 func (s *stubCost) PerProjectByOrg(_ context.Context, _ string, _, _ time.Time) ([]cost.ProjectAggregate, error) {
 	return s.per, nil
 }
-func (s *stubCost) RecentByOrg(_ context.Context, _ string, _ int) ([]cost.LedgerEntry, error) {
-	return s.recent, nil
+func (s *stubCost) RecentByOrg(_ context.Context, _ string, _ int, cursor string) ([]cost.LedgerEntry, string, error) {
+	s.gotCursor = cursor
+	return s.recent, s.recentNext, s.recentErr
 }
 func (s *stubCost) CountByOrgSince(_ context.Context, _ string, _ time.Time) (int, error) {
 	return s.count, nil
@@ -96,14 +100,31 @@ func TestOrgCostProjectsHandler(t *testing.T) {
 }
 
 func TestOrgGenerationsHandler(t *testing.T) {
-	cs := &stubCost{recent: []cost.LedgerEntry{{ID: "g1", Provider: "openai"}}}
+	cs := &stubCost{recent: []cost.LedgerEntry{{ID: "g1", Provider: "openai"}}, recentNext: "cur-next"}
 	h := orgGenerationsHandler(cs)
-	req := httptest.NewRequest("GET", "/api/orgs/o1/generations?limit=5", nil)
+	req := httptest.NewRequest("GET", "/api/orgs/o1/generations?limit=5&cursor=cur-1", nil)
 	req.SetPathValue("org", "o1")
 	rr := httptest.NewRecorder()
 	h(rr, req)
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"id":"g1"`) {
 		t.Fatalf("code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if cs.gotCursor != "cur-1" {
+		t.Fatalf("cursor not forwarded: %q", cs.gotCursor)
+	}
+	if !strings.Contains(rr.Body.String(), `"next_cursor":"cur-next"`) {
+		t.Fatalf("next_cursor missing: %s", rr.Body.String())
+	}
+}
+
+func TestOrgGenerationsHandlerRejectsBadCursor(t *testing.T) {
+	h := orgGenerationsHandler(&stubCost{recentErr: cost.ErrBadCursor})
+	req := httptest.NewRequest("GET", "/api/orgs/o1/generations?cursor=garbage", nil)
+	req.SetPathValue("org", "o1")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("bad cursor should 400, got %d", rr.Code)
 	}
 }
 

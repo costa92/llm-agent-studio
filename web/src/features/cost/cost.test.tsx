@@ -177,6 +177,9 @@ function costViewProps() {
     aggregate: AGG,
     projects: PROJECTS,
     generations: LEDGER,
+    hasNextPage: false,
+    isFetchingNextPage: false,
+    onLoadMore: vi.fn(),
     isLoading: false,
     isError: false,
     onRetry: vi.fn(),
@@ -213,6 +216,25 @@ describe("CostCenterView", () => {
     await user.click(screen.getByRole("button", { name: /近 30 天/ }))
     await user.click(await screen.findByText("近 7 天"))
     expect(onRangeChange).toHaveBeenCalledWith("7d")
+  })
+
+  it("shows load-more only when hasNextPage and fires onLoadMore", async () => {
+    const onLoadMore = vi.fn()
+    const user = userEvent.setup()
+    const { rerender } = render(<CostCenterView {...costViewProps()} />)
+    expect(screen.queryByRole("button", { name: "加载更多" })).not.toBeInTheDocument()
+    rerender(
+      <CostCenterView {...costViewProps()} hasNextPage onLoadMore={onLoadMore} />,
+    )
+    await user.click(screen.getByRole("button", { name: "加载更多" }))
+    expect(onLoadMore).toHaveBeenCalledTimes(1)
+  })
+
+  it("disables the load-more button while fetching the next page", () => {
+    render(
+      <CostCenterView {...costViewProps()} hasNextPage isFetchingNextPage />,
+    )
+    expect(screen.getByRole("button", { name: "加载中…" })).toBeDisabled()
   })
 
   it("renders an empty state when there is no usage", () => {

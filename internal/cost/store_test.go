@@ -2,6 +2,7 @@ package cost
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -145,10 +146,13 @@ func TestAggregatesByRangePerProjectAndRecent(t *testing.T) {
 	if err != nil || len(per) != 1 || per[0].ProjectID != pid || per[0].Generations != 2 {
 		t.Fatalf("per-project rollup = %+v err=%v", per, err)
 	}
-	// Recent ledger entries, newest first.
-	recent, err := s.RecentByOrg(ctx, orgID, 10)
+	// Recent ledger entries, newest first. Under-limit page → next cursor 空串.
+	recent, next, err := s.RecentByOrg(ctx, orgID, 10, "")
 	if err != nil || len(recent) != 2 {
 		t.Fatalf("recent = %d err=%v, want 2", len(recent), err)
+	}
+	if next != "" {
+		t.Fatalf("under-limit page must return empty next cursor, got %q", next)
 	}
 	if recent[0].CreatedAt.Before(recent[1].CreatedAt) {
 		t.Fatalf("recent must be newest-first")
@@ -157,6 +161,77 @@ func TestAggregatesByRangePerProjectAndRecent(t *testing.T) {
 	n, err := s.CountByOrgSince(ctx, orgID, time.Now().Add(-24*time.Hour))
 	if err != nil || n != 1 {
 		t.Fatalf("CountByOrgSince = %d err=%v, want 1", n, err)
+	}
+}
+
+// TestRecentByOrgPagination pages the ledger with a keyset cursor: 5 rows,
+// 3 of them sharing the exact same created_at (tie broken by id DESC), limit=2
+// → 3 pages, no duplicate, no omission, no drift across the tie boundary.
+func TestRecentByOrgPagination(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	s := New(db)
+	orgID := "org_page_" + time.Now().Format("150405.000000000")
+	pid := seedProject(t, db, orgID)
+	// Run-unique id prefix (re-runs must not hit the generations pkey); the
+	// suffix alone decides id DESC ordering inside a created_at tie.
+	prefix := "pg" + time.Now().Format("150405.000000000") + "-"
+	// 2 rows at distinct times + 3 rows at the SAME timestamp (same-second drift risk).
+	seed := func(suffix string, createdAt string) {
+		t.Helper()
+		if err := db.WithContext(ctx).Exec(`INSERT INTO generations
+			(id, project_id, kind, provider, model, image_count, cost_micros, created_at)
+			VALUES ($1, $2, 'image', 'p', 'm', 1, 100, $3::timestamptz)`, prefix+suffix, pid, createdAt).Error; err != nil {
+			t.Fatalf("seed %s: %v", suffix, err)
+		}
+	}
+	seed("newest", "2026-06-10T10:00:05Z")
+	seed("tie-c", "2026-06-10T10:00:03Z")
+	seed("tie-b", "2026-06-10T10:00:03Z")
+	seed("tie-a", "2026-06-10T10:00:03Z")
+	seed("oldest", "2026-06-10T10:00:01Z")
+
+	var got []LedgerEntry
+	cursor := ""
+	pages := 0
+	for {
+		items, next, err := s.RecentByOrg(ctx, orgID, 2, cursor)
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		got = append(got, items...)
+		pages++
+		if next == "" {
+			break
+		}
+		cursor = next
+		if pages > 10 {
+			t.Fatalf("cursor did not terminate")
+		}
+	}
+	// Deterministic order: created_at DESC then id DESC inside the tie.
+	wantIDs := []string{
+		prefix + "newest", prefix + "tie-c", prefix + "tie-b", prefix + "tie-a", prefix + "oldest",
+	}
+	if len(got) != len(wantIDs) {
+		t.Fatalf("paged rows = %d, want %d (dup or omission)", len(got), len(wantIDs))
+	}
+	seen := map[string]bool{}
+	for i, e := range got {
+		if seen[e.ID] {
+			t.Fatalf("duplicate row %s across pages", e.ID)
+		}
+		seen[e.ID] = true
+		if e.ID != wantIDs[i] {
+			t.Fatalf("row %d = %s, want %s (order drift)", i, e.ID, wantIDs[i])
+		}
+	}
+	if pages != 3 {
+		t.Fatalf("pages = %d, want 3 (2+2+1)", pages)
+	}
+	// Malformed cursor → ErrBadCursor.
+	if _, _, err := s.RecentByOrg(ctx, orgID, 2, "not-a-cursor"); !errors.Is(err, ErrBadCursor) {
+		t.Fatalf("malformed cursor: err = %v, want ErrBadCursor", err)
 	}
 }
 

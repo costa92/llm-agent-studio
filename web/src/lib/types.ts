@@ -1,8 +1,9 @@
 // 后端线缆类型的 TS 镜像。字段名严格照真实 Go `json:` tag（lowerCamel）。
 // 来源：internal/{project,assets,events,models,cost,prompt}/store.go + httpapi/*.go 的 writeJSON。
-// 列表信封不统一：项目/资产库用 {items, next_cursor}；其余多为 {items}（见各 handler）。
+// 列表信封不统一：项目/资产库/生成明细用 {items, next_cursor}；其余多为 {items}（见各 handler）。
 
-// keyset 分页信封（仅项目列表 listProjectsHandler / 资产库 libraryHandler）。
+// keyset 分页信封（项目列表 listProjectsHandler / 资产库 libraryHandler /
+// 生成明细 orgGenerationsHandler）。
 export interface ListEnvelope<T> {
   items: T[]
   next_cursor: string
@@ -513,7 +514,7 @@ export interface ProjectAggregate {
   costMicros: number
 }
 
-// cost/store.go LedgerEntry。GET /api/orgs/{org}/generations → {items: LedgerEntry[]}。
+// cost/store.go LedgerEntry。GET /api/orgs/{org}/generations → {items, next_cursor}（keyset 分页）。
 export interface LedgerEntry {
   id: string
   projectId: string
