@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -227,17 +228,55 @@ type LedgerEntry struct {
 	CreatedAt   time.Time `json:"createdAt"`
 }
 
-// RecentByOrg returns the org's most recent ledger entries, newest first.
-func (s *Store) RecentByOrg(ctx context.Context, orgID string, limit int) ([]LedgerEntry, error) {
+// ErrBadCursor marks a malformed pagination cursor (handler maps it to 400).
+var ErrBadCursor = errors.New("cost: bad cursor")
+
+// recentCursor encodes a keyset position as "<created_at RFC3339Nano UTC>_<id>"
+// (the id is hex, RFC3339Nano never contains '_'). Composite created_at+id keeps
+// paging stable when many rows share the same timestamp.
+func recentCursor(e LedgerEntry) string {
+	return e.CreatedAt.UTC().Format(time.RFC3339Nano) + "_" + e.ID
+}
+
+func parseRecentCursor(cursor string) (time.Time, string, error) {
+	ts, id, ok := strings.Cut(cursor, "_")
+	if !ok || id == "" {
+		return time.Time{}, "", ErrBadCursor
+	}
+	t, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		return time.Time{}, "", ErrBadCursor
+	}
+	return t, id, nil
+}
+
+// RecentByOrg returns the org's most recent ledger entries, newest first,
+// keyset-paginated by (created_at, id) DESC. cursor="" starts at the newest
+// row. Returns (items, nextCursor, error); nextCursor is "" on the last page
+// (same envelope convention as assets.Library / project.ListByOrg).
+func (s *Store) RecentByOrg(ctx context.Context, orgID string, limit int, cursor string) ([]LedgerEntry, string, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	rows, err := s.db.WithContext(ctx).Raw(`
-		SELECT g.id, g.project_id, p.name, g.kind, g.provider, g.model, g.tokens, g.image_count, g.cost_micros, g.latency_ms, g.created_at
+	const cols = `g.id, g.project_id, p.name, g.kind, g.provider, g.model, g.tokens, g.image_count, g.cost_micros, g.latency_ms, g.created_at`
+	q := `SELECT ` + cols + `
 		FROM generations g JOIN projects p ON g.project_id=p.id
-		WHERE p.org_id=$1 ORDER BY g.created_at DESC, g.id DESC LIMIT $2`, orgID, limit).Rows()
+		WHERE p.org_id=$1 ORDER BY g.created_at DESC, g.id DESC LIMIT $2`
+	args := []any{orgID, limit}
+	if cursor != "" {
+		ct, cid, err := parseRecentCursor(cursor)
+		if err != nil {
+			return nil, "", err
+		}
+		q = `SELECT ` + cols + `
+		FROM generations g JOIN projects p ON g.project_id=p.id
+		WHERE p.org_id=$1 AND (g.created_at, g.id) < ($2, $3)
+		ORDER BY g.created_at DESC, g.id DESC LIMIT $4`
+		args = []any{orgID, ct, cid, limit}
+	}
+	rows, err := s.db.WithContext(ctx).Raw(q, args...).Rows()
 	if err != nil {
-		return nil, fmt.Errorf("cost: recent: %w", err)
+		return nil, "", fmt.Errorf("cost: recent: %w", err)
 	}
 	defer rows.Close()
 	out := make([]LedgerEntry, 0)
@@ -245,11 +284,18 @@ func (s *Store) RecentByOrg(ctx context.Context, orgID string, limit int) ([]Led
 		var e LedgerEntry
 		if err := rows.Scan(&e.ID, &e.ProjectID, &e.ProjectName, &e.Kind, &e.Provider, &e.Model,
 			&e.Tokens, &e.ImageCount, &e.CostMicros, &e.LatencyMS, &e.CreatedAt); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		out = append(out, e)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	next := ""
+	if len(out) == limit {
+		next = recentCursor(out[len(out)-1])
+	}
+	return out, next, nil
 }
 
 // CountByOrgSince counts the org's generations since a timestamp (rolling-24h

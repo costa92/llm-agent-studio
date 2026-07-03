@@ -25,14 +25,19 @@ function CostPage() {
   // 避免每次 render 推新 from/to 时间戳让 queryKey 永变 → refetch loop。
   const cost = useOrgCost(org, rangeValue)
   const projects = useOrgCostProjects(org, rangeValue)
+  // 生成明细走 keyset 游标累积（useInfiniteQuery），多页信封串接成单数组。
   const generations = useGenerations(org)
+  const generationRows = generations.data?.pages.flatMap((p) => p.items)
 
   return (
     <AdminGate role={role}>
       <CostCenterView
         aggregate={cost.data}
         projects={projects.data}
-        generations={generations.data}
+        generations={generationRows}
+        hasNextPage={generations.hasNextPage}
+        isFetchingNextPage={generations.isFetchingNextPage}
+        onLoadMore={() => void generations.fetchNextPage()}
         isLoading={cost.isLoading || projects.isLoading || generations.isLoading}
         isError={cost.isError || projects.isError || generations.isError}
         onRetry={() => {

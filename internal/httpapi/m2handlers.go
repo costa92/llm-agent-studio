@@ -79,7 +79,7 @@ type CostStore interface {
 	ByOrgBetween(ctx context.Context, orgID string, from, to time.Time) (cost.Aggregate, error)
 	ByProjectBetween(ctx context.Context, projectID string, from, to time.Time) (cost.Aggregate, error)
 	PerProjectByOrg(ctx context.Context, orgID string, from, to time.Time) ([]cost.ProjectAggregate, error)
-	RecentByOrg(ctx context.Context, orgID string, limit int) ([]cost.LedgerEntry, error)
+	RecentByOrg(ctx context.Context, orgID string, limit int, cursor string) ([]cost.LedgerEntry, string, error)
 	CountByOrgSince(ctx context.Context, orgID string, since time.Time) (int, error)
 }
 
@@ -629,8 +629,9 @@ func orgCostProjectsHandler(cs CostStore) http.HandlerFunc {
 	}
 }
 
-// orgGenerationsHandler (GET /api/orgs/{org}/generations?limit=): admin.
-// Recent usage-detail rows (UI 用量明细表).
+// orgGenerationsHandler (GET /api/orgs/{org}/generations?limit=&cursor=): admin.
+// Recent usage-detail rows (UI 用量明细表), keyset-paginated: cursor 缺省 = 首页
+//（与现状兼容），响应带 next_cursor（空串 = 到底，同 libraryHandler 信封）。
 func orgGenerationsHandler(cs CostStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		limit := 0
@@ -639,11 +640,14 @@ func orgGenerationsHandler(cs CostStore) http.HandlerFunc {
 				limit = n
 			}
 		}
-		items, err := cs.RecentByOrg(r.Context(), r.PathValue("org"), limit)
-		if err != nil {
+		items, next, err := cs.RecentByOrg(r.Context(), r.PathValue("org"), limit, r.URL.Query().Get("cursor"))
+		if errors.Is(err, cost.ErrBadCursor) {
+			http.Error(w, "bad request: invalid cursor", http.StatusBadRequest)
+			return
+		} else if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+		writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_cursor": next})
 	}
 }

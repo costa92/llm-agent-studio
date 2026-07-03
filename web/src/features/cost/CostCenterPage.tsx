@@ -27,6 +27,10 @@ export interface CostCenterViewProps {
   aggregate: Aggregate | undefined
   projects: ProjectAggregate[] | undefined
   generations: LedgerEntry[] | undefined
+  // 生成明细「加载更多」（keyset 游标累积，同资产库）。
+  hasNextPage: boolean
+  isFetchingNextPage: boolean
+  onLoadMore: () => void
   isLoading: boolean
   isError: boolean
   onRetry: () => void
@@ -40,6 +44,9 @@ export function CostCenterView({
   aggregate,
   projects,
   generations,
+  hasNextPage,
+  isFetchingNextPage,
+  onLoadMore,
   isLoading,
   isError,
   onRetry,
@@ -120,15 +127,31 @@ export function CostCenterView({
             </section>
           )}
 
-          <GenerationsTable rows={generations ?? []} />
+          <GenerationsTable
+            rows={generations ?? []}
+            hasNextPage={hasNextPage}
+            isFetchingNextPage={isFetchingNextPage}
+            onLoadMore={onLoadMore}
+          />
         </>
       )}
     </div>
   )
 }
 
-// 生成明细台账：时间 / 项目 / provider·model / 类型 / 用量 / 金额（金额右对齐 mono）。
-function GenerationsTable({ rows }: { rows: LedgerEntry[] }) {
+// 生成明细台账：时间 / 项目 / provider·model / 类型 / 用量 / 金额（金额右对齐 mono）
+// + 「加载更多」（keyset 游标，next_cursor 空即到底，样式同资产库）。
+function GenerationsTable({
+  rows,
+  hasNextPage,
+  isFetchingNextPage,
+  onLoadMore,
+}: {
+  rows: LedgerEntry[]
+  hasNextPage: boolean
+  isFetchingNextPage: boolean
+  onLoadMore: () => void
+}) {
   return (
     <section className="rounded-xl border border-line bg-bg-surface p-[18px]">
       <h2 className="mb-3 text-[11.5px] font-semibold tracking-[0.08em] text-text-3">
@@ -171,6 +194,13 @@ function GenerationsTable({ rows }: { rows: LedgerEntry[] }) {
             ))}
           </TableBody>
         </Table>
+      )}
+      {hasNextPage && (
+        <div className="mt-4 flex justify-center">
+          <Button variant="ghost" onClick={onLoadMore} disabled={isFetchingNextPage}>
+            {isFetchingNextPage ? "加载中…" : "加载更多"}
+          </Button>
+        </div>
       )}
     </section>
   )

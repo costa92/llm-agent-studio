@@ -1,7 +1,10 @@
 import {
+  useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
+  type InfiniteData,
+  type UseInfiniteQueryResult,
   type UseMutationResult,
   type UseQueryResult,
 } from "@tanstack/react-query"
@@ -12,6 +15,7 @@ import type {
   CreateModelConfigInput,
   ItemsEnvelope,
   LedgerEntry,
+  ListEnvelope,
   ModelConfig,
   ProjectAggregate,
 } from "@/lib/types"
@@ -66,18 +70,23 @@ export function useOrgCostProjects(
   })
 }
 
-// 生成明细台账：GET /api/orgs/{org}/generations?limit= → {items: LedgerEntry[]}
-//（admin，orgGenerationsHandler，最近在前；注意此端点不读 from/to，仅 limit）。
+// 生成明细台账：GET /api/orgs/{org}/generations?limit=&cursor= → {items, next_cursor}
+//（admin，orgGenerationsHandler，最近在前，keyset 分页；注意此端点不读 from/to）。
+// useInfiniteQuery 按 next_cursor 累积：getNextPageParam 空串 → 停（同资产库 useLibrary）。
 export function useGenerations(
   org: string,
   limit = 50,
-): UseQueryResult<LedgerEntry[]> {
-  return useQuery({
+): UseInfiniteQueryResult<InfiniteData<ListEnvelope<LedgerEntry>>, Error> {
+  return useInfiniteQuery({
     queryKey: ["generations", org, limit],
-    queryFn: () =>
-      apiJSON<ItemsEnvelope<LedgerEntry>>(
-        `/api/orgs/${org}/generations?limit=${limit}`,
-      ).then((env) => env.items),
+    queryFn: ({ pageParam }) =>
+      apiJSON<ListEnvelope<LedgerEntry>>(
+        `/api/orgs/${org}/generations?limit=${limit}${
+          pageParam ? `&cursor=${encodeURIComponent(pageParam)}` : ""
+        }`,
+      ),
+    initialPageParam: "" as string,
+    getNextPageParam: (last) => (last.next_cursor ? last.next_cursor : undefined),
     enabled: org !== "",
   })
 }
