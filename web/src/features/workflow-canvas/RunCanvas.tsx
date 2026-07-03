@@ -65,6 +65,7 @@ import { ItemInspector } from "./ItemInspector"
 import { WorkflowNode } from "./WorkflowNode"
 import { GroupNode, type GroupRunNodeData } from "./GroupNode"
 import { RunMatrix } from "./RunMatrix"
+import { RunCostSummary } from "./RunCostSummary"
 import { RunPreview } from "./RunPreview"
 import { RunEdge } from "./RunEdge"
 import { markActiveEdges } from "./runEdges"
@@ -504,6 +505,20 @@ function RunCanvasInner({
           </h4>
           <RunSummary state={wfState} className="rounded-lg border border-line bg-bg-base px-3 py-2" />
         </section>
+        {/* 本次运行成本：admin 门控（成本端点是 admin 门槛，非 admin 不发请求不吃 403）。 */}
+        {isAdmin && (
+          <section>
+            <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
+              本次成本
+            </h4>
+            <RunCostSummary
+              projectId={projectId}
+              planId={runId}
+              live={live}
+              className="rounded-lg border border-line bg-bg-base px-3 py-2"
+            />
+          </section>
+        )}
         <section>
           <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
             事件日志

@@ -164,6 +164,79 @@ func TestAggregatesByRangePerProjectAndRecent(t *testing.T) {
 	}
 }
 
+// TestByPlan aggregates one run's ledger via the generations→todos join:
+// multi-todo multi-kind seed data → totals + per-kind counts + per-todo
+// breakdown; other-plan rows, other-project rows and todo-less rows (empty todo_id)
+// stay excluded; an unknown plan returns the zero rollup with an empty slice.
+func TestByPlan(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	s := New(db)
+	orgID := "org_plan_" + time.Now().Format("150405.000000000")
+	pid := seedProject(t, db, orgID)
+	planID := "plan-" + time.Now().Format("150405.000000000")
+	seedTodo := func(id, typ, plan string) {
+		t.Helper()
+		if err := db.WithContext(ctx).Exec(
+			`INSERT INTO todos (id, project_id, plan_id, type) VALUES ($1,$2,$3,$4)`,
+			id, pid, plan, typ).Error; err != nil {
+			t.Fatalf("seed todo %s: %v", id, err)
+		}
+	}
+	tdScript := planID + "-t-script"
+	tdImage := planID + "-t-image"
+	tdOther := planID + "-t-other"
+	seedTodo(tdScript, "script", planID)
+	seedTodo(tdImage, "storyboard", planID)
+	seedTodo(tdOther, "script", planID+"-other") // 另一个 plan 的 todo
+	rec := func(g Generation) {
+		t.Helper()
+		if err := s.Record(ctx, g); err != nil {
+			t.Fatalf("record: %v", err)
+		}
+	}
+	// 目标 plan：1 次 chat（script 节点）+ 2 次 image（storyboard 节点，重生成 2 次）。
+	rec(Generation{ProjectID: pid, TodoID: tdScript, Kind: "chat", Provider: "openai", Model: "gpt", Tokens: 800, CostMicros: 1600})
+	rec(Generation{ProjectID: pid, TodoID: tdImage, Kind: "image", Provider: "fake", Model: "img", Tokens: 50, ImageCount: 1, CostMicros: 5000})
+	rec(Generation{ProjectID: pid, TodoID: tdImage, Kind: "image", Provider: "fake", Model: "img", Tokens: 50, ImageCount: 1, CostMicros: 5000})
+	// 噪音：另一 plan 的行、无 todo 的行（封面/朗读）、另一项目同 todo id 的行。
+	rec(Generation{ProjectID: pid, TodoID: tdOther, Kind: "chat", Provider: "openai", Model: "gpt", Tokens: 999, CostMicros: 999})
+	rec(Generation{ProjectID: pid, TodoID: "", Kind: "image", Provider: "fake", Model: "img", ImageCount: 1, CostMicros: 777})
+	otherPid := seedProject(t, db, orgID)
+	rec(Generation{ProjectID: otherPid, TodoID: tdScript, Kind: "chat", Provider: "openai", Model: "gpt", Tokens: 5, CostMicros: 5})
+
+	pc, err := s.ByPlan(ctx, pid, planID)
+	if err != nil {
+		t.Fatalf("ByPlan: %v", err)
+	}
+	if pc.Generations != 3 || pc.Tokens != 900 || pc.ImageCount != 2 || pc.CostMicros != 11600 {
+		t.Fatalf("totals mismatch: %+v", pc.Aggregate)
+	}
+	if pc.KindCounts["chat"] != 1 || pc.KindCounts["image"] != 2 || len(pc.KindCounts) != 2 {
+		t.Fatalf("kind counts mismatch: %+v", pc.KindCounts)
+	}
+	if len(pc.Todos) != 2 {
+		t.Fatalf("breakdown rows = %d, want 2: %+v", len(pc.Todos), pc.Todos)
+	}
+	// 按首次 created_at 排序：script 先于 storyboard。
+	if pc.Todos[0].TodoID != tdScript || pc.Todos[0].TodoType != "script" ||
+		pc.Todos[0].Kind != "chat" || pc.Todos[0].Tokens != 800 || pc.Todos[0].CostMicros != 1600 {
+		t.Fatalf("script row mismatch: %+v", pc.Todos[0])
+	}
+	if pc.Todos[1].TodoID != tdImage || pc.Todos[1].TodoType != "storyboard" ||
+		pc.Todos[1].Generations != 2 || pc.Todos[1].ImageCount != 2 || pc.Todos[1].CostMicros != 10000 {
+		t.Fatalf("storyboard row mismatch: %+v", pc.Todos[1])
+	}
+	// 未知 plan → 零总计 + 空（非 nil）分解。
+	empty, err := s.ByPlan(ctx, pid, "no-such-plan")
+	if err != nil {
+		t.Fatalf("ByPlan empty: %v", err)
+	}
+	if empty.Generations != 0 || empty.CostMicros != 0 || empty.Todos == nil || len(empty.Todos) != 0 {
+		t.Fatalf("empty plan rollup mismatch: %+v", empty)
+	}
+}
+
 // TestRecentByOrgPagination pages the ledger with a keyset cursor: 5 rows,
 // 3 of them sharing the exact same created_at (tie broken by id DESC), limit=2
 // → 3 pages, no duplicate, no omission, no drift across the tie boundary.
