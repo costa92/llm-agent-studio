@@ -63,7 +63,10 @@ services:
     environment:
       HTTP_ADDR: ":8083"
       PG_URL: "postgres://postgres:studio@postgres:5432/studio?sslmode=disable"
-      JWT_SECRET: "dev-insecure-secret-change-me"
+      # 必填 secret：不设则拒绝启动（而非静默用弱默认值）。生成方式见 .env.example。
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET 未设置 — 复制 .env.example 为 .env 并生成随机值（openssl rand -hex 32）}"
+      # BYOK 模型密钥 / 存储 secret 的加密钥匙（base64 32B）。不设则无法保存任何带密钥的配置。
+      STUDIO_CONFIG_ENC_KEY: "${STUDIO_CONFIG_ENC_KEY:?STUDIO_CONFIG_ENC_KEY 未设置 — 复制 .env.example 为 .env 并生成随机值（openssl rand -base64 32）}"
       # LLM provider for planner/script/storyboard/review (pass keys from host env).
       PROVIDER: "${PROVIDER:-deepseek}"
       MODEL: "${MODEL:-deepseek-chat}"
