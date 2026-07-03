@@ -95,6 +95,8 @@ type Config struct {
 
 	ExprChannel bool // P3d: when true, custom-node {{name}} values resolve via the expr engine ($node, project-scoped, fail-closed) instead of the un-scoped resolveVariables/resolveOutputText path. substituteVars interpolation + secret pre-pass + {status}/SSRF guards UNCHANGED. Default ON (STUDIO_EXPR_CHANNEL=0 reverts to legacy).
 
+	ItemsCanonical bool // items cut-over PR-A (docs/specs/items-cutover.md §3): when true, runStoryboard/runPrescreen resolve upstream inputs via the per-dep items channel (loadInputsByDep, project-scoped, fail-closed) instead of the legacy depends_on/output_ref JOIN reads; custom kinds are forced onto the expr channel (items canonical structurally implies it — config.Load already fail-closes the =1/expr-off combination). Default OFF (STUDIO_ITEMS_CANONICAL=1 enables).
+
 	// M4 async engine knobs (spec §5.6/§9.4).
 	MaxConcurrentVideo int // global video submit-admission + fetch cap; 0 = unlimited
 	MaxConcurrentAudio int // global audio submit-admission + fetch cap; 0 = unlimited
@@ -493,23 +495,33 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 	// whose storyboard has no script parent edge.
 	var scriptID string
 	var contentJSON []byte
-	var parentRef string
-	perr := w.cfg.DB.WithContext(ctx).Raw(`
-		SELECT t.output_ref FROM todos t
-		JOIN todos sb ON t.id = ANY(sb.depends_on)
-		WHERE sb.id=$1 AND t.type='script' AND t.output_ref LIKE 'script:%'
-		ORDER BY t.updated_at DESC LIMIT 1`, c.todoID).Row().Scan(&parentRef)
-	if perr == nil {
-		scriptID = strings.TrimPrefix(parentRef, "script:")
-		if err := w.cfg.DB.WithContext(ctx).Raw(
-			`SELECT content_json FROM scripts WHERE id=$1`, scriptID).Row().Scan(&contentJSON); err != nil {
-			return "", fmt.Errorf("worker: load parent script %s: %w", scriptID, err)
+	if w.cfg.ItemsCanonical {
+		// items cut-over PR-A: resolve the upstream script via the per-dep items
+		// channel (project-scoped, fail-closed) instead of the legacy JOIN below.
+		var ierr error
+		scriptID, contentJSON, ierr = w.storyboardScriptInput(ctx, c)
+		if ierr != nil {
+			return "", ierr
 		}
 	} else {
-		if err := w.cfg.DB.WithContext(ctx).Raw(
-			`SELECT id, content_json FROM scripts WHERE project_id=$1 ORDER BY created_at DESC LIMIT 1`,
-			c.projectID).Row().Scan(&scriptID, &contentJSON); err != nil {
-			return "", fmt.Errorf("worker: load upstream script: %w", err)
+		var parentRef string
+		perr := w.cfg.DB.WithContext(ctx).Raw(`
+			SELECT t.output_ref FROM todos t
+			JOIN todos sb ON t.id = ANY(sb.depends_on)
+			WHERE sb.id=$1 AND t.type='script' AND t.output_ref LIKE 'script:%'
+			ORDER BY t.updated_at DESC LIMIT 1`, c.todoID).Row().Scan(&parentRef)
+		if perr == nil {
+			scriptID = strings.TrimPrefix(parentRef, "script:")
+			if err := w.cfg.DB.WithContext(ctx).Raw(
+				`SELECT content_json FROM scripts WHERE id=$1`, scriptID).Row().Scan(&contentJSON); err != nil {
+				return "", fmt.Errorf("worker: load parent script %s: %w", scriptID, err)
+			}
+		} else {
+			if err := w.cfg.DB.WithContext(ctx).Raw(
+				`SELECT id, content_json FROM scripts WHERE project_id=$1 ORDER BY created_at DESC LIMIT 1`,
+				c.projectID).Row().Scan(&scriptID, &contentJSON); err != nil {
+				return "", fmt.Errorf("worker: load upstream script: %w", err)
+			}
 		}
 	}
 	// B1: style is sourced from the projects row, NOT the storyboard todo's
@@ -998,15 +1010,23 @@ func (w *Worker) runPrescreen(ctx context.Context, c claimed) (string, error) {
 	}
 	// Newest upstream node whose output_ref is a resolvable text source
 	// (script:/custom:). asset:/shots: refs are binary/fan-out and excluded.
-	var parentRef string
-	if err := w.cfg.DB.WithContext(ctx).Raw(`
-		SELECT t.output_ref FROM todos t
-		JOIN todos p ON t.id = ANY(p.depends_on)
-		WHERE p.id=$1 AND (t.output_ref LIKE 'script:%' OR t.output_ref LIKE 'custom:%')
-		ORDER BY t.updated_at DESC LIMIT 1`, c.todoID).Row().Scan(&parentRef); err != nil {
-		return "", fmt.Errorf("worker: prescreen found no upstream text node: %w", err)
+	var text string
+	var err error
+	if w.cfg.ItemsCanonical {
+		// items cut-over PR-A: resolve the upstream text via the per-dep items
+		// channel (project-scoped, fail-closed) instead of the legacy JOIN below.
+		text, err = w.prescreenUpstreamText(ctx, c)
+	} else {
+		var parentRef string
+		if serr := w.cfg.DB.WithContext(ctx).Raw(`
+			SELECT t.output_ref FROM todos t
+			JOIN todos p ON t.id = ANY(p.depends_on)
+			WHERE p.id=$1 AND (t.output_ref LIKE 'script:%' OR t.output_ref LIKE 'custom:%')
+			ORDER BY t.updated_at DESC LIMIT 1`, c.todoID).Row().Scan(&parentRef); serr != nil {
+			return "", fmt.Errorf("worker: prescreen found no upstream text node: %w", serr)
+		}
+		text, err = w.resolveOutputText(ctx, parentRef)
 	}
-	text, err := w.resolveOutputText(ctx, parentRef)
 	if err != nil {
 		return "", err
 	}
@@ -1817,7 +1837,11 @@ func (w *Worker) runCustomLLM(ctx context.Context, c claimed, in llmParams) (str
 	// fail-closed). Only the value SOURCE swaps; substituteVars below is unchanged.
 	var replacer map[string]string
 	var err error
-	if w.cfg.ExprChannel {
+	// ItemsCanonical implies the expr channel (items cut-over PR-A): custom kinds
+	// are ALREADY items-authoritative through resolveVariablesExpr — no behavior
+	// change; the OR is the worker-level assertion mirroring config.Load's
+	// fail-closed =1/expr-off rejection.
+	if w.cfg.ExprChannel || w.cfg.ItemsCanonical {
 		replacer, err = w.resolveVariablesExpr(ctx, c, in.Variables)
 	} else {
 		replacer, err = w.resolveVariables(ctx, in.Variables)
@@ -1896,7 +1920,8 @@ func (w *Worker) runCustomHTTP(ctx context.Context, c claimed, in httpParams) (s
 	// (the SECOND pass); the {{secret:}} pre-pass below is untouched.
 	var nameVals map[string]string
 	var err error
-	if w.cfg.ExprChannel {
+	// ItemsCanonical implies the expr channel (items cut-over PR-A; see runCustomLLM).
+	if w.cfg.ExprChannel || w.cfg.ItemsCanonical {
 		nameVals, err = w.resolveVariablesExpr(ctx, c, in.Variables)
 	} else {
 		nameVals, err = w.resolveVariables(ctx, in.Variables)
@@ -2050,7 +2075,8 @@ func (w *Worker) runCustomScript(ctx context.Context, c claimed, in scriptParams
 	}
 	var inputs map[string]string
 	var err error
-	if w.cfg.ExprChannel {
+	// ItemsCanonical implies the expr channel (items cut-over PR-A; see runCustomLLM).
+	if w.cfg.ExprChannel || w.cfg.ItemsCanonical {
 		inputs, err = w.resolveVariablesExpr(ctx, c, in.Variables)
 	} else {
 		inputs, err = w.resolveVariables(ctx, in.Variables)

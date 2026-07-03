@@ -52,6 +52,13 @@ type Config struct {
 	// set STUDIO_EXPR_CHANNEL=0 to fall back to the legacy resolveVariables resolver.
 	ExprParity  bool // STUDIO_EXPR_PARITY=1 → run the expr $node shadow probe (soak evidence)
 	ExprChannel bool // default ON; STUDIO_EXPR_CHANNEL=0 → revert to legacy value channel (reversible kill-switch)
+	// ItemsCanonical (items cut-over PR-A, docs/specs/items-cutover.md §3) routes the
+	// built-in storyboard/prescreen upstream-input reads through the per-dep items
+	// channel (loadInputsByDep, project-scoped, fail-closed) instead of the legacy
+	// depends_on/output_ref JOIN reads. Default OFF until the PR-B soak.
+	// Structurally depends on the expr channel: =1 with STUDIO_EXPR_CHANNEL=0 is a
+	// load error (fail-closed, same P5 principle).
+	ItemsCanonical bool // STUDIO_ITEMS_CANONICAL=1 → items canonical input channel (default OFF)
 
 	// Per-provider image keys (M3 模型路由): a key registers that provider's
 	// catalog models as real generators in the registry. Empty = not registered
@@ -149,6 +156,7 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		ReviewPrescreen:   get("REVIEW_PRESCREEN", "true") == "true",
 		ExprParity:        get("STUDIO_EXPR_PARITY", "") == "1",
 		ExprChannel:       get("STUDIO_EXPR_CHANNEL", "1") != "0",
+		ItemsCanonical:    get("STUDIO_ITEMS_CANONICAL", "") == "1",
 		OpenAIAPIKey:      get("OPENAI_API_KEY", ""),
 		GoogleAPIKey:      get("GOOGLE_API_KEY", ""),
 		MinimaxAPIKey:     get("MINIMAX_API_KEY", ""),
@@ -197,6 +205,10 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 	if cfg.LeaseRenewInterval > 0 && cfg.LeaseRenewInterval >= cfg.WorkerLease {
 		return Config{}, fmt.Errorf("config: LEASE_RENEW_INTERVAL (%s) must be strictly shorter than WORKER_LEASE (%s)",
 			cfg.LeaseRenewInterval, cfg.WorkerLease)
+	}
+	if cfg.ItemsCanonical && !cfg.ExprChannel {
+		// items 权威结构性依赖 expr 通道 (spec items-cutover §3): fail-closed 而非静默降级。
+		return Config{}, fmt.Errorf("config: STUDIO_ITEMS_CANONICAL=1 requires the expr channel (unset STUDIO_EXPR_CHANNEL=0)")
 	}
 	if cfg.PGURL == "" {
 		return Config{}, fmt.Errorf("config: PG_URL is required")
