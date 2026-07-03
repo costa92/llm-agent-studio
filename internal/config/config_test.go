@@ -126,6 +126,27 @@ func TestLoadExprFlags(t *testing.T) {
 	if !cfg.ExprChannel {
 		t.Fatalf("STUDIO_EXPR_CHANNEL=1 should enable ExprChannel")
 	}
+	// ItemsCanonical (items cut-over PR-A) defaults OFF until the PR-B soak.
+	if cfg.ItemsCanonical {
+		t.Fatalf("ItemsCanonical must default off, got %v", cfg.ItemsCanonical)
+	}
+	// STUDIO_ITEMS_CANONICAL=1 enables the items canonical input channel.
+	cfg, err = LoadFromLookup(base(map[string]string{"STUDIO_ITEMS_CANONICAL": "1"}))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.ItemsCanonical {
+		t.Fatalf("STUDIO_ITEMS_CANONICAL=1 should set ItemsCanonical")
+	}
+	// Fail-closed combination (spec items-cutover §3): items canonical structurally
+	// depends on the expr channel; =1 with the expr kill-switch thrown must ERROR,
+	// never silently degrade.
+	if _, err = LoadFromLookup(base(map[string]string{
+		"STUDIO_ITEMS_CANONICAL": "1",
+		"STUDIO_EXPR_CHANNEL":    "0",
+	})); err == nil {
+		t.Fatalf("STUDIO_ITEMS_CANONICAL=1 + STUDIO_EXPR_CHANNEL=0 must fail config.Load (fail-closed)")
+	}
 }
 
 func TestLoadWebDir(t *testing.T) {
