@@ -98,8 +98,17 @@ E2E_FULL=1 CASE=science E2E_ORG=<org> node e2e/case-showcase.mjs
 E2E_SMOKE_ONLY=1 CASE=ad E2E_ORG=<org> node e2e/case-showcase.mjs
 ```
 
+```bash
+# HITL 审核功能流（accept/reject/regenerate 断言；先真实生成，付费）——须显式开启
+E2E_FULL=1 E2E_ORG=<org> node e2e/case-hitl-review.mjs
+
+# 跨租户隔离（纯 API、注册新用户建新 org、0 生成费用，默认可跑）
+E2E_ORG=<org> node e2e/case-cross-tenant.mjs
+```
+
 也可用 `web/package.json` 里的封装脚本：`pnpm e2e:smoke` / `pnpm e2e:music` /
-`pnpm e2e:childrens-story` / `pnpm e2e:science` / `pnpm e2e:ad` / `pnpm e2e:poem` / `pnpm e2e:travel`。
+`pnpm e2e:childrens-story` / `pnpm e2e:science` / `pnpm e2e:ad` / `pnpm e2e:poem` / `pnpm e2e:travel` /
+`pnpm e2e:hitl` / `pnpm e2e:cross-tenant`。
 
 ## 用例做了什么
 
@@ -132,6 +141,30 @@ project/workflow id（没有就带提示跳过）。断言：未重定向到 `/l
 - **`PREVIEW_FULL=1` 追加**（会真实写资产/花钱）：点「朗读歌词」→ 断言 `<audio>` 拿到 `blob:` src 且
   `readyState>0`（真实 minimax TTS，~10-30s）；点「导出」→ ExportDialog（PDF/EPUB/ZIP）→「开始导出」→
   断言到达可下载态。默认（不设 `PREVIEW_FULL`）只做便宜的只读渲染断言。
+
+### `case-hitl-review.mjs`（`pnpm e2e:hitl`，`E2E_FULL=1`，**真实付费生成**）
+HITL 审核功能流：复用共享 runner 跑 `childrens-story` 场景到生成完成，然后走审核 API 断言三个门禁转换
+（此前 HITL 只有渲染冒烟、零功能断言）：
+
+1. 审核队列非空：`GET /api/orgs/{org}/assets?status=pending_acceptance&project={pid}`（与前端
+   `useReviewQueue` 同一查询）；
+2. **accept**：`POST /api/assets/{id}/accept` → `{status:"accepted"}`，GET 复核，重复 accept → 409；
+3. **reject**：`POST /api/assets/{id}/reject` → `{status:"rejected"}`，GET 复核，对已 rejected 的资产
+   regenerate → 409（只有 pending 可重生成）；
+4. **regenerate**：`POST /api/assets/{id}/regenerate` → `{newAssetId, todoId, status:"generating"}`；
+   断言父资产转 rejected、子资产 `version=父+1` 且 `parentAssetId` 指回父、父的 versions 血缘含子。
+   **不等新生成完成**（真实生成耗时且付费，触发成功 + 血缘落库即为断言终点）。
+
+分镜张数由 LLM 决定（不确定），断言按待审数量分层收敛到确定性部分：N≥3 三个动作全做；N=2 accept +
+regenerate（reject 语义折叠进 regenerate 的父转 rejected）；N=1 只做 regenerate + accept 的 409 冲突路径。
+
+### `case-cross-tenant.mjs`（`pnpm e2e:cross-tenant`，纯 API，0 生成费用，默认可跑）
+跨租户隔离（此前 e2e 零覆盖，只有 DB-gated Go 测试）：demo 账号在 org A 建靶子项目/工作流并取一个已有
+资产 id → 自助注册新用户（`POST /api/auth/register` + 从仓库根 `mails/` 的 dev mock 邮件解析 6 位验证码
+→ `POST /api/auth/verify`）→ 新用户 `POST /api/orgs` 建 org B → 以 B 身份打 org A 的项目/工作流/资产
+（含 HITL accept/reject/regenerate）/成本/成员等 20 个端点，逐一断言 **403/404**（middleware 语义：
+非成员 → RoleNone → 403 安全默认；302/2xx 即隔离穿透、立即失败）→ 断言 PUT 篡改未生效 → 正向对照
+（B 在 org B 建/读/列表/成本全部 200）。
 
 ### `run-cases.mjs`（`pnpm e2e:cases`，有界并发用例驱动）
 把 `lib/scenarios.mjs` 的多个场景经共享 runner `runShowcaseCase` 并发跑，最多 N 个在飞。只做调度 + 汇总，
