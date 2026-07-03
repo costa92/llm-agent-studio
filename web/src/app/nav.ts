@@ -1,6 +1,7 @@
 import type { ReactNode } from "react"
 import {
   Activity,
+  Bell,
   Boxes,
   Building2,
   CheckSquare,
@@ -60,6 +61,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { to: "/orgs/$org/builtin-node-types", params: {}, icon: createElement(Boxes), label: "内置节点", adminOnly: true, orgScoped: true },
       { to: "/orgs/$org/custom-node-types", params: {}, icon: createElement(Cpu), label: "自定义节点", adminOnly: true, orgScoped: true },
       { to: "/orgs/$org/secrets", params: {}, icon: createElement(KeyRound), label: "密钥", adminOnly: true, orgScoped: true },
+      { to: "/orgs/$org/alerts", params: {}, icon: createElement(Bell), label: "告警", adminOnly: true, orgScoped: true },
       { to: "/orgs/$org/members", params: {}, icon: createElement(Users), label: "成员", adminOnly: true, orgScoped: true },
     ],
   },
