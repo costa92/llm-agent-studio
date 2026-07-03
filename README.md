@@ -22,6 +22,24 @@ GOWORK=off go test ./...
 
 提交时 replace-guard 钩子会自动剥离本地 `replace`（如已安装生态钩子）。
 
+### 本地命令 / CI
+
+常用入口在 Makefile（Go 命令已内置 `GOWORK=off`）：
+
+```bash
+make vet build test        # 快速路径：无 PG，DB-gated 测试自动 skip
+make test-db               # 全量测试：要求 LLM_AGENT_STUDIO_PG_URL 指向 fresh database
+make web-install web-test web-build   # 前端（pnpm）
+```
+
+DB 测试必须 fresh database + `-p 1`（并行迁移有 race，脏库会撞 transient 唯一索引），
+`make test-db` 已封装 `-p 1 -count=1`。
+
+CI（`.github/workflows/ci.yml`）在 push main / PR 时跑两个 job：`go`（起真
+postgres:16 跑 `make test-db`，并断言没有 DB-gated 测试被 skip——出现
+`set LLM_AGENT_STUDIO_PG_URL` 的 skip 提示即 fail，防假绿）和 `web`
+（vitest + tsc/vite build blocking；lint 有预存红，non-blocking）。
+
 ### 测试 / 演示账号（本地开发）
 
 > ⚠️ 仅用于**本地开发 / 演示**（fake 模式、本地库）。下列账号**不会自动种子**到全新数据库——它们是开发实例里手工建/引导出来的。正式获取账号的方式是 **自助注册**（前端 `/register` 或 `POST /api/auth/register`）。密码是非机密的演示值，**切勿用于生产**。
