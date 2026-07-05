@@ -36,7 +36,7 @@ export type SseClient = typeof fetchEventSource
 export interface SseHandlers {
   // 每个白名单命名帧（含终止帧 run_done）。frame.seq 供 reducer 去重。
   onEvent: (frame: SseFrame) => void
-  // 终止帧 run_done 额外触发（用于隐藏 SlateBar / 成功 toast 信号）。
+  // 终止帧 run_done 额外触发（用于结束运行中 UI / 成功 toast 信号）。
   onDone?: (frame: SseFrame) => void
   // 非白名单 kind（服务端以 `message` 事件流出，原 kind 仍在帧里）——仅追加日志，不改节点态。
   onMessage?: (frame: SseFrame) => void

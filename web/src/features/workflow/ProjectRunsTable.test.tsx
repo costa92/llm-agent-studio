@@ -18,8 +18,8 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-// 隔离挂载 ProjectRunsTable：根路由渲染表格，另注册 /runs/$runId 桩路由让行点击导航可解析。
-// 这样组件的导航目标是轻量桩（无重型 fetch），断言 pathname 干净。
+// 隔离挂载 ProjectRunsTable：根路由渲染表格，另注册 /workflow 桩路由让行点击导航可解析。
+// 这样组件的导航目标是轻量桩（无重型 fetch），断言 pathname/search 干净。
 function renderTable(plans: Plan[]) {
   const rootRoute = createRootRoute()
   const indexRoute = createRoute({
@@ -27,13 +27,13 @@ function renderTable(plans: Plan[]) {
     path: "/",
     component: () => <ProjectRunsTable projectId="p1" org="acme" />,
   })
-  const runDetailRoute = createRoute({
+  const workflowRoute = createRoute({
     getParentRoute: () => rootRoute,
-    path: "/orgs/$org/projects/$id/runs/$runId",
-    component: () => <div>run detail stub</div>,
+    path: "/orgs/$org/projects/$id/workflow",
+    component: () => <div>workflow canvas stub</div>,
   })
   const router = createRouter({
-    routeTree: rootRoute.addChildren([indexRoute, runDetailRoute]),
+    routeTree: rootRoute.addChildren([indexRoute, workflowRoute]),
     history: createMemoryHistory({ initialEntries: ["/"] }),
   })
   const queryClient = new QueryClient({
@@ -50,7 +50,7 @@ function renderTable(plans: Plan[]) {
   return router
 }
 
-// 默认管线 run（无 workflowId）+ 自定义工作流 run（workflowId 非空）各一条。
+// 遗留 run（无 workflowId）+ 自定义工作流 run（workflowId 非空）各一条。
 function fixtures(): Plan[] {
   return [
     {
@@ -82,11 +82,11 @@ describe("ProjectRunsTable", () => {
     expect(screen.getByText("生产中")).toBeInTheDocument()
     // 回落 run 显示「已回落」徽标。
     expect(screen.getByText("已回落")).toBeInTheDocument()
-    // 两行操作按钮。
-    expect(screen.getAllByText("进入工作台 →")).toHaveLength(2)
+    // 仅带 workflowId 的行有操作按钮。
+    expect(screen.getAllByText("进入工作台 →")).toHaveLength(1)
   })
 
-  it("renders both a custom-workflow plan and a default (picturebook) plan as rows", async () => {
+  it("renders both a custom-workflow plan and a legacy plan as rows", async () => {
     renderTable(fixtures())
 
     expect(await screen.findByText("plan-default")).toBeInTheDocument()
@@ -99,18 +99,29 @@ describe("ProjectRunsTable", () => {
     expect(await screen.findByText("暂无生成记录")).toBeInTheDocument()
   })
 
-  it("navigates to /runs/$runId when a row is clicked", async () => {
+  it("navigates straight to the workflow canvas run mode when a row is clicked", async () => {
     const user = userEvent.setup()
     const router = renderTable(fixtures())
 
-    const buttons = await screen.findAllByText("进入工作台 →")
-    // 第一行 = plan-default（无 workflowId），点击进入其 run 详情。
-    await user.click(buttons[0])
+    // 唯一按钮属于 plan-wf（workflowId=w1），点击直达画布运行模式。
+    await user.click(await screen.findByText("进入工作台 →"))
 
     await waitFor(() => {
       expect(router.state.location.pathname).toBe(
-        "/orgs/acme/projects/p1/runs/plan-default",
+        "/orgs/acme/projects/p1/workflow",
       )
+      expect(router.state.location.search).toEqual({ wf: "w1", run: "plan-wf" })
     })
+  })
+
+  it("renders no navigation for legacy rows without a workflowId", async () => {
+    const router = renderTable(fixtures())
+
+    await screen.findByText("plan-default")
+    // 遗留行无按钮，只有占位「—」；路由停留原地。
+    const legacyRow = screen.getByText("plan-default").closest("tr")!
+    expect(legacyRow).toHaveTextContent("—")
+    expect(legacyRow.querySelector("button")).toBeNull()
+    expect(router.state.location.pathname).toBe("/")
   })
 })

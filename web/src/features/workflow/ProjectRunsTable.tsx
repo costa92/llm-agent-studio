@@ -100,17 +100,23 @@ export function ProjectRunsTable({
                   {new Date(plan.createdAt).toLocaleString()}
                 </td>
                 <td className="py-3 text-right">
-                  <Button
-                    variant="ghost"
-                    onClick={() => {
-                      void navigate({
-                        to: "/orgs/$org/projects/$id/runs/$runId",
-                        params: { org, id: projectId, runId: plan.id },
-                      })
-                    }}
-                  >
-                    进入工作台 →
-                  </Button>
+                  {plan.workflowId ? (
+                    <Button
+                      variant="ghost"
+                      onClick={() => {
+                        void navigate({
+                          to: "/orgs/$org/projects/$id/workflow",
+                          params: { org, id: projectId },
+                          search: { wf: plan.workflowId, run: plan.id },
+                        })
+                      }}
+                    >
+                      进入工作台 →
+                    </Button>
+                  ) : (
+                    // 遗留空 workflowId run：无落地视图，不给跳转（跳了也会被门弹回）。
+                    <span className="text-text-3 text-xs">—</span>
+                  )}
                 </td>
               </tr>
             )
