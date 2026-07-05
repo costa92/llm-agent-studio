@@ -143,7 +143,7 @@ func TestWorkflowInputsSchemaRoundTrip(t *testing.T) {
 	}
 
 	// Update replaces the schema.
-	schema2 := json.RawMessage(`[{"name":"voice","type":"select","target":"pbConfig","options":[{"value":"warm"}]}]`)
+	schema2 := json.RawMessage(`[{"name":"voice","type":"select","target":"variable","options":[{"value":"warm"}]}]`)
 	upd, err := s.Update(ctx, pid, w.ID, "带 schema", json.RawMessage(`[]`), schema2)
 	if err != nil {
 		t.Fatalf("update: %v", err)

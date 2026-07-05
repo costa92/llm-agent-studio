@@ -11,10 +11,10 @@ function submitBtn() {
 }
 
 describe("RunInputsDialog", () => {
-  it("按 schema 渲染字段（text/number/multiselect），并显示 label", () => {
+  it("按 schema 渲染字段（text/number），并显示 label", () => {
     const schema: InputField[] = [
       { name: "heroName", label: "主角名字", type: "text", target: "variable" },
-      { name: "pageCount", label: "页数", type: "number", target: "pbConfig" },
+      { name: "pageCount", label: "页数", type: "number", target: "variable" },
     ]
     render(
       <RunInputsDialog
@@ -57,7 +57,7 @@ describe("RunInputsDialog", () => {
   it("number 提交为数字字面量（非字符串），供后端 Validate 通过", async () => {
     const onSubmit = vi.fn()
     const schema: InputField[] = [
-      { name: "pageCount", label: "页数", type: "number", target: "pbConfig", default: "12" },
+      { name: "pageCount", label: "页数", type: "number", target: "variable", default: "12" },
     ]
     render(
       <RunInputsDialog open onOpenChange={() => {}} schema={schema} onSubmit={onSubmit} />,
@@ -66,14 +66,13 @@ describe("RunInputsDialog", () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ pageCount: 12 }))
   })
 
-  it("绘本派生 schema：预填当前 cfg 全字段，提交带全部非空字段", async () => {
+  it("带 default 的 schema：预填全字段，提交带全部非空字段", async () => {
     const onSubmit = vi.fn()
-    // 模拟 pictureBookRunSchema 的输出形态（JSON 字面量 default）。
+    // JSON 字面量 default 形态。
     const schema: InputField[] = [
-      { name: "voice", type: "select", target: "pbConfig", options: [{ value: "warm", label: "warm" }], default: JSON.stringify("warm") },
-      { name: "themes", type: "multiselect", target: "pbConfig", options: [{ value: "friendship", label: "友谊" }, { value: "courage", label: "勇气" }], default: JSON.stringify(["friendship"]) },
-      { name: "ageBand", type: "select", target: "pbConfig", options: [{ value: "3-6", label: "3-6" }], default: JSON.stringify("3-6") },
-      { name: "pageCount", type: "number", target: "pbConfig", default: JSON.stringify(16) },
+      { name: "voice", type: "select", target: "variable", options: [{ value: "warm", label: "warm" }], default: JSON.stringify("warm") },
+      { name: "ageBand", type: "select", target: "variable", options: [{ value: "3-6", label: "3-6" }], default: JSON.stringify("3-6") },
+      { name: "pageCount", type: "number", target: "variable", default: JSON.stringify(16) },
     ]
     render(
       <RunInputsDialog open onOpenChange={() => {}} schema={schema} onSubmit={onSubmit} />,
@@ -82,7 +81,6 @@ describe("RunInputsDialog", () => {
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith({
         voice: "warm",
-        themes: ["friendship"],
         ageBand: "3-6",
         pageCount: 16,
       }),
@@ -92,7 +90,7 @@ describe("RunInputsDialog", () => {
   it("select 未选（NONE）的可选字段在提交时被省略（避免后端枚举越界 400）", async () => {
     const onSubmit = vi.fn()
     const schema: InputField[] = [
-      { name: "bookType", type: "select", target: "pbConfig", options: [{ value: "narrative", label: "故事绘本" }], default: JSON.stringify("") },
+      { name: "bookType", type: "select", target: "variable", options: [{ value: "narrative", label: "故事绘本" }], default: JSON.stringify("") },
     ]
     render(
       <RunInputsDialog open onOpenChange={() => {}} schema={schema} onSubmit={onSubmit} />,

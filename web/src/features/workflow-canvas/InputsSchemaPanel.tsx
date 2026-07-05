@@ -45,7 +45,7 @@ export function InputsSchemaPanel({ schema, onChange }: InputsSchemaPanelProps) 
         <h2 className="text-[13px] font-semibold text-text-1">工作流输入</h2>
         <p className="text-[11px] text-text-3">
           运行该工作流时填写的类型化输入。变量经 {"{{input:name}}"} 注入；
-          其余可覆盖 brief 或绘本配置。
+          其余可覆盖 brief。
         </p>
       </div>
 
@@ -58,7 +58,7 @@ export function InputsSchemaPanel({ schema, onChange }: InputsSchemaPanelProps) 
       <div className="flex flex-col gap-3">
         {schema.map((f, i) => {
           const err = inputFieldError(f)
-          const showOptions = f.type === "select" || f.type === "multiselect"
+          const showOptions = f.type === "select"
           return (
             <div
               key={i}

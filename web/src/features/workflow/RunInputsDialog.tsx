@@ -18,7 +18,6 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/studio/Button"
-import { cn } from "@/lib/utils"
 import type { InputField } from "@/lib/types"
 
 // 运行期输入表单对话框：按 InputField[] schema 渲染类型化表单，前端拦截 required 缺失，
@@ -28,8 +27,8 @@ import type { InputField } from "@/lib/types"
 // Radix Select.Item 不允许空串 value，故用哨兵代表「未指定」；提交时还原为省略。
 const NONE = "__none__"
 
-// 表单内部值：text/textarea/select/number 存字符串（number 在提交时转数字）；multiselect 存 string[]。
-type FormValue = string | string[]
+// 表单内部值：text/textarea/select/number 统一存字符串（number 在提交时转数字）。
+type FormValue = string
 
 export interface RunInputsDialogProps {
   open: boolean
@@ -52,12 +51,9 @@ function parseDefault(raw?: string): unknown {
   }
 }
 
-// 字段初始表单值：multiselect → 数组；标量 → 字符串；缺省 → 空。
+// 字段初始表单值：标量 → 字符串；缺省 → 空。
 function initialValue(f: InputField): FormValue {
   const d = parseDefault(f.default)
-  if (f.type === "multiselect") {
-    return Array.isArray(d) ? d.map((x) => String(x)) : []
-  }
   if (d === undefined || d === null || typeof d === "object") return ""
   return String(d)
 }
@@ -71,17 +67,13 @@ function requiredErrors(
   for (const f of schema) {
     if (!f.required) continue
     const v = values[f.name]
-    const empty =
-      f.type === "multiselect"
-        ? !(Array.isArray(v) && v.length > 0)
-        : String(v ?? "").trim() === ""
-    if (empty) errs[f.name] = `${f.label || f.name} 为必填`
+    if (String(v ?? "").trim() === "") errs[f.name] = `${f.label || f.name} 为必填`
   }
   return errs
 }
 
 // 按类型把表单值分流为提交载荷。空的可选 select/number/text 省略（避免后端枚举越界/类型 400）；
-// multiselect 始终提交数组（覆盖语义：本 run 完整快照）。number 转为数字字面量。
+// number 转为数字字面量。
 function buildInputs(
   schema: InputField[],
   values: Record<string, FormValue>,
@@ -89,10 +81,6 @@ function buildInputs(
   const out: Record<string, unknown> = {}
   for (const f of schema) {
     const v = values[f.name]
-    if (f.type === "multiselect") {
-      out[f.name] = Array.isArray(v) ? v : []
-      continue
-    }
     const s = String(v ?? "").trim()
     if (s === "") continue
     if (f.type === "number") {
@@ -237,37 +225,6 @@ function FieldControl({
               ))}
           </SelectContent>
         </Select>
-      )}
-
-      {field.type === "multiselect" && (
-        <div className="flex flex-wrap gap-2">
-          {options.map((o) => {
-            const arr = Array.isArray(value) ? value : []
-            const active = arr.includes(o.value)
-            return (
-              <button
-                key={o.value}
-                type="button"
-                aria-pressed={active}
-                onClick={() =>
-                  onChange(
-                    active
-                      ? arr.filter((x) => x !== o.value)
-                      : [...arr, o.value],
-                  )
-                }
-                className={cn(
-                  "rounded-full border px-3 py-1 text-[12px] transition-colors",
-                  active
-                    ? "border-amber bg-amber/15 text-amber"
-                    : "border-line text-text-2 hover:border-text-3 hover:text-text-1",
-                )}
-              >
-                {o.label || o.value}
-              </button>
-            )
-          })}
-        </div>
       )}
 
       {error && <p className="text-[11.5px] text-danger">{error}</p>}
