@@ -211,6 +211,10 @@ func (s cntProjectStore) Update(_ context.Context, _ string, _ project.UpdateInp
 func (s cntProjectStore) SetStatus(_ context.Context, _, _ string) error  { return nil }
 func (s cntProjectStore) SetCover(_ context.Context, _, _ string) error   { return nil }
 func (s cntProjectStore) Cancel(_ context.Context, _ string) error        { return nil }
+func (s cntProjectStore) Deleted(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+func (s cntProjectStore) SoftDelete(_ context.Context, _ string) error { return nil }
 func (s cntProjectStore) OrgIDForProject(_ context.Context, _ string) (string, error) {
 	return s.p.OrgID, nil
 }

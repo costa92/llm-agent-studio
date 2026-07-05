@@ -5,6 +5,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"net/http"
 
@@ -13,6 +14,7 @@ import (
 	authztoken "github.com/costa92/llm-agent-authz/token"
 
 	"github.com/costa92/llm-agent-studio/internal/limits"
+	"github.com/costa92/llm-agent-studio/internal/project"
 	"github.com/costa92/llm-agent-studio/internal/prompt"
 )
 
@@ -128,6 +130,26 @@ func exportScope(lookup orgLookup, store ExportsStore) authzhttp.ScopeFromReques
 	}
 }
 
+// requireLiveProject 404s soft-deleted (and vanished) projects on every
+// project-scoped route. 挂在 auth→RBAC 之后（proj 闭包内层）：org 成员对已删项目
+// 拿 404，跨租户/未授权者在 RBAC 就被 403 挡住，不泄露删除状态。DELETE 路由复用
+// 同一门禁 → 重复删除 404（幂等约定）。Store 层的 Get/List 过滤是纵深防御；这里
+// 兜住不经 Get 的路由（cancel/run/events/todos/exports/workflows…）。
+func requireLiveProject(ps ProjectStore, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		deleted, err := ps.Deleted(r.Context(), r.PathValue("id"))
+		if errors.Is(err, project.ErrNotFound) || (err == nil && deleted) {
+			http.Error(w, "project not found", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		next(w, r)
+	}
+}
+
 // orgScope resolves (orgID from {org}, scopeID="") for org-scoped routes.
 func orgScope(r *http.Request) (string, string) { return r.PathValue("org"), "" }
 
@@ -158,8 +180,12 @@ func NewMux(d Deps) *http.ServeMux {
 		return authzhttp.Authenticate(d.Issuer)(handler)
 	}
 	projScope := projectScope(d.Projects)
+	// proj 在 auth→RBAC 之后追加 requireLiveProject 门禁：软删项目对一切
+	// project-scoped 路由一律 404（spec docs/specs/project-delete.md §1）。门禁排
+	// 在 RBAC 之后，跨租户探测者仍拿 403，不泄露"该 id 存在且已删"。DELETE 路由
+	// 同样受此门禁——重复删除自然落 404（幂等约定，与其余 DELETE 端点一致）。
 	proj := func(min authzrole.Role, h http.HandlerFunc) http.Handler {
-		return scoped(min, projScope, h)
+		return scoped(min, projScope, requireLiveProject(d.Projects, h))
 	}
 	// platformAdmin 门禁：以 scope_kind="platform" 在固定 scope (orgID="", scopeID="")
 	// 上解析角色，要求 ≥ admin。镜像 scoped，但锚定 platform 维度而非 org。
@@ -180,6 +206,7 @@ func NewMux(d Deps) *http.ServeMux {
 	// Project-scoped routes ({id}).
 	mux.Handle("GET /api/projects/{id}", proj(roleViewer, getProjectHandler(d.Projects)))
 	mux.Handle("PUT /api/projects/{id}", proj(roleEditor, updateProjectHandler(d.Projects)))
+	mux.Handle("DELETE /api/projects/{id}", proj(roleAdmin, deleteProjectHandler(d.Projects)))
 	mux.Handle("POST /api/projects/{id}/run", proj(roleEditor, runHandler(d.Projects, d.Planner, d.Events, d.Cost, d.GenQuota, d.ChatRouter, d.CustomNodeType)))
 	mux.Handle("POST /api/projects/{id}/cancel", proj(roleEditor, cancelHandler(d.Projects)))
 	mux.Handle("GET /api/projects/{id}/plans", proj(roleViewer, listPlansHandler(d.Projects)))

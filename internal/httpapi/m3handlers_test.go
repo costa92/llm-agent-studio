@@ -199,6 +199,8 @@ func (s stubProjects) Update(_ context.Context, _ string, _ project.UpdateInput)
 func (s stubProjects) SetStatus(_ context.Context, _, _ string) error  { return nil }
 func (s stubProjects) SetCover(_ context.Context, _, _ string) error   { return nil }
 func (s stubProjects) Cancel(_ context.Context, _ string) error        { return nil }
+func (s stubProjects) Deleted(_ context.Context, _ string) (bool, error) { return false, nil }
+func (s stubProjects) SoftDelete(_ context.Context, _ string) error      { return nil }
 func (s stubProjects) OrgIDForProject(_ context.Context, _ string) (string, error) {
 	return s.orgID, nil
 }
@@ -294,6 +296,8 @@ func (s fixedProjectStore) Update(_ context.Context, _ string, _ project.UpdateI
 func (s fixedProjectStore) SetStatus(_ context.Context, _, _ string) error  { return nil }
 func (s fixedProjectStore) SetCover(_ context.Context, _, _ string) error   { return nil }
 func (s fixedProjectStore) Cancel(_ context.Context, _ string) error        { return nil }
+func (s fixedProjectStore) Deleted(_ context.Context, _ string) (bool, error) { return false, nil }
+func (s fixedProjectStore) SoftDelete(_ context.Context, _ string) error      { return nil }
 func (s fixedProjectStore) OrgIDForProject(_ context.Context, _ string) (string, error) {
 	return s.p.OrgID, nil
 }

@@ -211,6 +211,17 @@ func exportContentHandler(store ExportsStore, router BlobRouter, projects export
 			return
 		}
 
+		// 软删项目的导出产物随项目一并消失（spec §2 威胁表）：Get 已过滤
+		// deleted_at → 已删/不存在一律 404。该读取同时供下方文件名使用。
+		proj, err := projects.Get(r.Context(), job.ProjectID)
+		if errors.Is(err, project.ErrNotFound) {
+			http.Error(w, "project not found", http.StatusNotFound)
+			return
+		} else if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
 		orgID, err := projects.OrgIDForProject(r.Context(), job.ProjectID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -225,7 +236,7 @@ func exportContentHandler(store ExportsStore, router BlobRouter, projects export
 		// 文件名：项目名（回落 "export"）+ 格式扩展名。项目名是用户可控且常为中文/UTF-8，
 		// 故走 RFC 6266/5987：ASCII filename 兜底 + filename*（UTF-8 百分号编码）。
 		name := "export"
-		if proj, perr := projects.Get(r.Context(), job.ProjectID); perr == nil && proj.Name != "" {
+		if proj.Name != "" {
 			name = proj.Name
 		}
 		w.Header().Set("Content-Disposition", exportContentDisposition(name, exportExt(job.Format)))

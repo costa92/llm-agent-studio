@@ -268,6 +268,10 @@ func (w *Worker) claim(ctx context.Context) (claimed, bool, error) {
 		SELECT id, project_id, type, attempts, input_json FROM todos
 		WHERE ((status='ready' AND next_run_at <= now())
 		   OR (status='running' AND locked_until IS NOT NULL AND locked_until < now()))
+		  -- 软删项目的 todo 不可 claim（docs/specs/project-delete.md：级联取消已覆盖
+		  -- 绝大多数，这里是双保险，防 tombstone 与 cancel 之间的竞态残留/stuck-reclaim）。
+		  -- NOT EXISTS 子查询不参与 FOR UPDATE 行锁（保持只锁 todos 行）。
+		  AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.id = todos.project_id AND p.deleted_at IS NOT NULL)
 		  AND (type <> 'asset' OR $1 <= 0
 		       OR (SELECT count(*) FROM todos
 		           WHERE type='asset' AND status='running' AND locked_until > now()) < $1)

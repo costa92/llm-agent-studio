@@ -7,6 +7,7 @@ import type { CreateProjectInput, ModelConfig, Project, StorageConfig, Style } f
 import { statusLabel, statusVariant } from "./status"
 import { CreateProjectDialog } from "./CreateProjectDialog"
 import { CoverDialog } from "./CoverDialog"
+import { DeleteProjectDialog } from "./DeleteProjectDialog"
 import { EditProjectDialog } from "./EditProjectDialog"
 
 // 「编辑」按钮提交的项目信息（= useUpdateProject 载荷去掉 id）。
@@ -43,6 +44,10 @@ export interface ProjectListViewProps {
   onCreate: (input: CreateProjectInput) => Promise<Project>
   /** 编辑项目信息（卡片「编辑」按钮）。id + 整表单字段 → 更新后的 Project。 */
   onUpdate: (input: { id: string } & UpdateProjectFields) => Promise<Project>
+  /** roleAdmin 才显示「删除」（rbac.useRole 探针；后端 DELETE 仍强制 admin）。 */
+  canDelete?: boolean
+  /** 删除项目（卡片「删除」入口，DeleteProjectDialog 输入名确认后调）。 */
+  onDelete?: (project: Project) => Promise<unknown>
   /** 点击卡片进工作台（路由在 T10 接入；T9 为可注入回调便于单测）。 */
   onOpenProject: (project: Project) => void
   /** T5：org 尚无启用的生成模型配置 → 空态先引导去配置模型。 */
@@ -65,6 +70,8 @@ export function ProjectListView({
   storageConfigs,
   onCreate,
   onUpdate,
+  canDelete = false,
+  onDelete,
   onOpenProject,
   needsModelConfig = false,
   onConfigureModel,
@@ -176,6 +183,22 @@ export function ProjectListView({
                       </Button>
                     }
                   />
+                  {/* 「删除」：admin 探针可见（后端 roleAdmin 强制）；输入项目名确认。 */}
+                  {canDelete && onDelete && (
+                    <DeleteProjectDialog
+                      project={project}
+                      onSubmit={() => onDelete(project)}
+                      onSuccess={() => toast.success("项目已删除")}
+                      trigger={
+                        <Button
+                          variant="ghost"
+                          className="ml-auto h-auto px-2 py-1 text-[12px] text-danger"
+                        >
+                          删除
+                        </Button>
+                      }
+                    />
+                  )}
                 </div>
               )}
             </div>

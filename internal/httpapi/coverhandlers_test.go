@@ -58,6 +58,10 @@ func (s *coverProjStub) SetCover(_ context.Context, _, assetID string) error {
 	return nil
 }
 func (s *coverProjStub) Cancel(context.Context, string) error { return nil }
+func (s *coverProjStub) Deleted(context.Context, string) (bool, error) {
+	return false, nil
+}
+func (s *coverProjStub) SoftDelete(context.Context, string) error { return nil }
 func (s *coverProjStub) OrgIDForProject(context.Context, string) (string, error) {
 	return s.orgID, nil
 }

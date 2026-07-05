@@ -185,7 +185,7 @@ func (s *Store) Get(ctx context.Context, id string) (Project, error) {
 		     FROM plans
 		     ORDER BY project_id, created_at DESC
 		 ) pl ON p.id = pl.project_id
-		 WHERE p.id=$1`, id).Row().
+		 WHERE p.id=$1 AND p.deleted_at IS NULL`, id).Row().
 		Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy, &p.FallbackUsed, &p.PlannerProvider, &p.PlannerModel, &p.ImageProvider, &p.ImageModel, &p.StorageMode, &p.CustomWorkflowEnabled, &nodesB, &p.CoverAssetID, &p.StorageConfigID, &p.Kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Project{}, ErrNotFound
@@ -198,6 +198,11 @@ func (s *Store) Get(ctx context.Context, id string) (Project, error) {
 
 // OrgIDForProject resolves the org for a project (used by the RBAC middleware,
 // which only has the project id from the path). Mirrors orgkb.OrgIDForKB.
+//
+// 刻意不过滤 deleted_at：(1) worker 在途任务的成本落账/告警要按 org 归属，项目
+// 删除瞬间不能让这些内部解析失败；(2) DELETE 端点自身与 requireLiveProject 门禁
+// 都要先经 RBAC——org 解析得通，org 成员才能拿到 404 而非 403。对外的软删排除
+// 由 Get/List + httpapi 的 requireLiveProject 门禁承担。
 func (s *Store) OrgIDForProject(ctx context.Context, projectID string) (string, error) {
 	var orgID string
 	err := s.db.WithContext(ctx).Raw(`SELECT org_id FROM projects WHERE id=$1`, projectID).Row().Scan(&orgID)
@@ -214,7 +219,7 @@ func (s *Store) ListByOrg(ctx context.Context, orgID string, limit int, cursor s
 	}
 	rows, err := s.db.WithContext(ctx).Raw(
 		`SELECT id, org_id, name, description, content_type, target_platform, style, status, created_by, planner_provider, planner_model, image_provider, image_model, storage_mode, custom_workflow_enabled, workflow_nodes, cover_asset_id, COALESCE(storage_config_id, ''), COALESCE(kind, 'custom')
-		 FROM projects WHERE org_id=$1 AND id>$2 ORDER BY id ASC LIMIT $3`,
+		 FROM projects WHERE org_id=$1 AND deleted_at IS NULL AND id>$2 ORDER BY id ASC LIMIT $3`,
 		orgID, cursor, limit).Rows()
 	if err != nil {
 		return nil, "", err
@@ -411,6 +416,63 @@ func (s *Store) Cancel(ctx context.Context, projectID string) error {
 		return fmt.Errorf("project: cancel assets: %w", err)
 	}
 	return s.SetStatus(ctx, projectID, "canceled")
+}
+
+// Deleted reports whether a project row is soft-deleted (deleted_at 非空)。
+// Missing row → ErrNotFound。httpapi 的 requireLiveProject 门禁用它把已删项目
+// 从一切 project-scoped 路由上 404 掉（RBAC 之后，防跨租户枚举）。
+func (s *Store) Deleted(ctx context.Context, id string) (bool, error) {
+	var deleted bool
+	err := s.db.WithContext(ctx).Raw(
+		`SELECT deleted_at IS NOT NULL FROM projects WHERE id=$1`, id).Row().Scan(&deleted)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, ErrNotFound
+	}
+	return deleted, err
+}
+
+// SoftDelete tombstones a project (deleted_at=now()) and cascade-cancels its
+// in-flight work in ONE transaction (docs/specs/project-delete.md §1):
+//   - todos: 复用 Cancel 的语义（pending/ready/blocked/running → canceled，清租约）；
+//     worker 正持租约执行的 todo 由 MarkDone/MarkFailed 的 status 守卫幂等收口。
+//   - assets: in-flight（generating/submitted）→ canceled，与 Cancel 同一把扫帚。
+//   - export_jobs: 在途（pending/running）→ 复用其状态机的 failed 终态（该状态机无
+//     canceled；running 持有者随后的 MarkDone/MarkFailed 因 status 守卫 no-op）。
+//   - generations 计费账本与 blob 字节刻意不动（账单保留 / blob GC 不做）。
+//
+// 幂等：已删除或不存在 → ErrNotFound（0 行 tombstone），与仓库 DELETE 端点对
+// missing 资源一致返 404 的惯例对齐。
+func (s *Store) SoftDelete(ctx context.Context, id string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		res := tx.Exec(
+			`UPDATE projects SET deleted_at=now(), updated_at=now() WHERE id=$1 AND deleted_at IS NULL`, id)
+		if res.Error != nil {
+			return fmt.Errorf("project: soft delete: %w", res.Error)
+		}
+		if res.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		if err := tx.Exec(
+			`UPDATE todos SET status='canceled', locked_by='', locked_until=NULL, updated_at=now()
+			 WHERE project_id=$1 AND status IN ('pending','ready','blocked','running')`, id).Error; err != nil {
+			return fmt.Errorf("project: soft delete: cancel todos: %w", err)
+		}
+		if err := tx.Exec(
+			`UPDATE assets SET status='canceled' WHERE project_id=$1 AND status IN ('generating','submitted')`, id).Error; err != nil {
+			return fmt.Errorf("project: soft delete: cancel assets: %w", err)
+		}
+		if err := tx.Exec(
+			`UPDATE export_jobs SET status='failed', error='project deleted',
+			        locked_by='', locked_until=NULL, updated_at=now()
+			 WHERE project_id=$1 AND status IN ('pending','running')`, id).Error; err != nil {
+			return fmt.Errorf("project: soft delete: cancel export jobs: %w", err)
+		}
+		if err := tx.Exec(
+			`UPDATE projects SET status='canceled', updated_at=now() WHERE id=$1`, id).Error; err != nil {
+			return fmt.Errorf("project: soft delete: set status: %w", err)
+		}
+		return nil
+	})
 }
 
 // Plan represents a run/plan for a project.

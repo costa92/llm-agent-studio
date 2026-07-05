@@ -11,7 +11,9 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
+	"github.com/costa92/llm-agent-studio/internal/cost"
 	"github.com/costa92/llm-agent-studio/internal/projectstate"
 	"github.com/costa92/llm-agent-studio/internal/storage"
 )
@@ -25,6 +27,13 @@ func uniqueSuffix() string {
 }
 
 func newStore(t *testing.T) (*Store, *pgxpool.Pool) {
+	s, pool, _ := newStoreG(t)
+	return s, pool
+}
+
+// newStoreG additionally exposes the GORM handle（软删测试用它构造 cost.Store，
+// 断言 org 成本聚合仍含已删项目历史）。
+func newStoreG(t *testing.T) (*Store, *pgxpool.Pool, *gorm.DB) {
 	t.Helper()
 	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
 	if dsn == "" {
@@ -39,7 +48,7 @@ func newStore(t *testing.T) (*Store, *pgxpool.Pool) {
 	if err := st.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	return New(st.GORM()), st.Pool()
+	return New(st.GORM()), st.Pool(), st.GORM()
 }
 
 func TestCreateGetListProject(t *testing.T) {
@@ -1231,5 +1240,140 @@ func TestLoadState_Items_MarshalParity(t *testing.T) {
 	// fixed compact form.
 	if !bytes.Contains(b, []byte(`"field"`)) || !bytes.Contains(b, []byte(`"value"`)) {
 		t.Fatalf("marshalled items lost the verbatim object: %s", b)
+	}
+}
+
+// TestSoftDeleteProject 覆盖 spec（docs/specs/project-delete.md §3）的 store 层验收：
+// 删除后 Get/List 不可见、在途 todos/assets/export_jobs 被级联取消、重复删除幂等
+// （ErrNotFound → 端点 404）、generations 计费账本保留（org 聚合仍含历史）。
+func TestSoftDeleteProject(t *testing.T) {
+	s, pool, db := newStoreG(t)
+	ctx := context.Background()
+	orgID := "org_del_" + uniqueSuffix()
+	p, err := s.Create(ctx, CreateInput{OrgID: orgID, Name: "Doomed", Brief: "b", CreatedBy: "u"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	pln := "pln_del_" + p.ID
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO plans (id, project_id, status, valid, fallback_used, created_at)
+		 VALUES ($1, $2, 'running', true, false, now())`, pln, p.ID); err != nil {
+		t.Fatalf("insert plan: %v", err)
+	}
+	// 在途 todo 全谱（pending/ready/blocked/running-with-lease）+ 一个已完成的。
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO todos (id, project_id, plan_id, type, status, locked_by, locked_until) VALUES
+		 ($1, $6, $7, 'script', 'pending', '', NULL),
+		 ($2, $6, $7, 'script', 'ready', '', NULL),
+		 ($3, $6, $7, 'asset', 'blocked', '', NULL),
+		 ($4, $6, $7, 'asset', 'running', 'w1', now() + interval '60 seconds'),
+		 ($5, $6, $7, 'script', 'done', '', NULL)`,
+		"td_p_"+p.ID, "td_r_"+p.ID, "td_b_"+p.ID, "td_run_"+p.ID, "td_d_"+p.ID, p.ID, pln); err != nil {
+		t.Fatalf("insert todos: %v", err)
+	}
+	// 在途资产（generating 同步 + submitted 异步）+ 一个待审的（保留可审）。
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO assets (id, project_id, status) VALUES
+		 ($1, $4, 'generating'), ($2, $4, 'submitted'), ($3, $4, 'pending_acceptance')`,
+		"as_g_"+p.ID, "as_s_"+p.ID, "as_pa_"+p.ID, p.ID); err != nil {
+		t.Fatalf("insert assets: %v", err)
+	}
+	// 在途导出任务（pending + running-with-lease）+ 一个已完成的。
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO export_jobs (id, project_id, plan_id, format, status, locked_by, locked_until) VALUES
+		 ($1, $4, $5, 'pdf', 'pending', '', NULL),
+		 ($2, $4, $5, 'epub', 'running', 'w1', now() + interval '60 seconds'),
+		 ($3, $4, $5, 'zip', 'done', '', NULL)`,
+		"ej_p_"+p.ID, "ej_r_"+p.ID, "ej_d_"+p.ID, p.ID, pln); err != nil {
+		t.Fatalf("insert export jobs: %v", err)
+	}
+	// 计费账本一行（删除后 org 聚合必须仍含它）。
+	cs := cost.New(db)
+	if err := cs.Record(ctx, cost.Generation{
+		ProjectID: p.ID, AssetID: "as_g_" + p.ID, TodoID: "td_run_" + p.ID,
+		Kind: "image", Provider: "fake", Model: "m", ImageCount: 1, CostMicros: 100,
+	}); err != nil {
+		t.Fatalf("record generation: %v", err)
+	}
+
+	if err := s.SoftDelete(ctx, p.ID); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+
+	// 验收 1：删除后 Get → ErrNotFound；List 排除。
+	if _, err := s.Get(ctx, p.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("get after delete: err=%v want ErrNotFound", err)
+	}
+	list, _, err := s.ListByOrg(ctx, orgID, 50, "")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, it := range list {
+		if it.ID == p.ID {
+			t.Fatalf("deleted project still listed: %+v", it)
+		}
+	}
+	if deleted, err := s.Deleted(ctx, p.ID); err != nil || !deleted {
+		t.Fatalf("Deleted() = (%v, %v), want (true, nil)", deleted, err)
+	}
+	// worker 落账/告警路径：org 解析对已删项目刻意仍可用。
+	if org, err := s.OrgIDForProject(ctx, p.ID); err != nil || org != orgID {
+		t.Fatalf("OrgIDForProject after delete = (%q, %v), want (%q, nil)", org, err, orgID)
+	}
+
+	// 验收 3：在途 todos 全部取消（租约清空），done 不动。
+	var canceled, done int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FILTER (WHERE status='canceled' AND locked_by='' AND locked_until IS NULL),
+		        count(*) FILTER (WHERE status='done')
+		 FROM todos WHERE project_id=$1`, p.ID).Scan(&canceled, &done); err != nil {
+		t.Fatalf("count todos: %v", err)
+	}
+	if canceled != 4 || done != 1 {
+		t.Fatalf("todos after delete: canceled=%d done=%d, want 4/1", canceled, done)
+	}
+	// 在途资产 → canceled；pending_acceptance 保留（与 Cancel 语义一致）。
+	var aCanceled, aPending int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FILTER (WHERE status='canceled'),
+		        count(*) FILTER (WHERE status='pending_acceptance')
+		 FROM assets WHERE project_id=$1`, p.ID).Scan(&aCanceled, &aPending); err != nil {
+		t.Fatalf("count assets: %v", err)
+	}
+	if aCanceled != 2 || aPending != 1 {
+		t.Fatalf("assets after delete: canceled=%d pending=%d, want 2/1", aCanceled, aPending)
+	}
+	// 在途导出任务 → failed（该状态机的非成功终态），done 不动。
+	var ejFailed, ejDone int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FILTER (WHERE status='failed' AND error='project deleted' AND locked_by=''),
+		        count(*) FILTER (WHERE status='done')
+		 FROM export_jobs WHERE project_id=$1`, p.ID).Scan(&ejFailed, &ejDone); err != nil {
+		t.Fatalf("count export jobs: %v", err)
+	}
+	if ejFailed != 2 || ejDone != 1 {
+		t.Fatalf("export jobs after delete: failed=%d done=%d, want 2/1", ejFailed, ejDone)
+	}
+
+	// 验收 4：重复删除幂等 → ErrNotFound（端点 404）。
+	if err := s.SoftDelete(ctx, p.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second soft delete: err=%v want ErrNotFound", err)
+	}
+
+	// 验收 5：org 成本聚合仍含已删项目的历史消费（generations 不动）。
+	agg, err := cs.ByOrg(ctx, orgID)
+	if err != nil {
+		t.Fatalf("cost by org: %v", err)
+	}
+	if agg.Generations != 1 || agg.CostMicros != 100 {
+		t.Fatalf("org cost after delete = %+v, want 1 generation / 100 micros retained", agg)
+	}
+}
+
+// TestSoftDeleteMissingProject：不存在的 id → ErrNotFound（端点 404，不泄露信息）。
+func TestSoftDeleteMissingProject(t *testing.T) {
+	s, _ := newStore(t)
+	if err := s.SoftDelete(context.Background(), "no_such_"+uniqueSuffix()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("soft delete missing: err=%v want ErrNotFound", err)
 	}
 }

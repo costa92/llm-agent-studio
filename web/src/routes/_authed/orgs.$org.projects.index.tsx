@@ -1,10 +1,12 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import {
   useCreateProject,
+  useDeleteProject,
   useUpdateProject,
   useProjects,
   usePromptStyles,
 } from "@/features/projects/api"
+import { useRole } from "@/app/rbac"
 import {
   useModelConfigs,
   useOrgTextModels,
@@ -25,6 +27,9 @@ function ProjectsPage() {
   const stylesQuery = usePromptStyles()
   const createProject = useCreateProject(org)
   const updateProject = useUpdateProject(org)
+  const deleteProject = useDeleteProject(org)
+  // 删除是 admin-only（后端 roleAdmin 强制）；useRole 探针决定入口可见性。
+  const role = useRole(org)
   // T5：org 是否已有启用的生成模型配置（model-configs 列表里存在 enabled 项）。
   // 仅在查询成功（非加载/错误）且确无启用项时引导配置——避免加载中误闪引导。
   // admin-gated 端点；非 admin 拿不到列表 → 不引导（保持普通空态）。
@@ -57,6 +62,8 @@ function ProjectsPage() {
       storageConfigs={storageConfigsQuery.data}
       onCreate={(input) => createProject.mutateAsync(input)}
       onUpdate={(input) => updateProject.mutateAsync(input)}
+      canDelete={role.isAdmin}
+      onDelete={(project) => deleteProject.mutateAsync({ id: project.id })}
       onOpenProject={(project) =>
         // T10：进项目工作台（制片轨道）——org-scoped 路径，org param 透传以保住导航轨。
         navigate({
