@@ -10,7 +10,8 @@ import {
   usePlans,
 } from "@/features/workflow/api"
 import { ProjectRunsTable } from "@/features/workflow/ProjectRunsTable"
-import { useUpdateProject, usePromptStyles } from "@/features/projects/api"
+import { useDeleteProject, useUpdateProject, usePromptStyles } from "@/features/projects/api"
+import { useRole } from "@/app/rbac"
 import {
   useWorkflows,
   useRunWorkflow,
@@ -18,6 +19,7 @@ import {
 } from "@/features/projects/workflowApi"
 import { useOrgTextModels, useOrgImageModels } from "@/features/cost/api"
 import { useStorageConfigs } from "@/features/storage/api"
+import { DeleteProjectDialog } from "@/features/projects/DeleteProjectDialog"
 import { EditProjectDialog } from "@/features/projects/EditProjectDialog"
 import { RunInputsDialog } from "@/features/workflow/RunInputsDialog"
 import { statusLabel, statusVariant } from "@/features/projects/status"
@@ -45,6 +47,9 @@ function RunsListPage() {
 
   // M5.1/M9: 项目级"编辑模型配置"。
   const updateProject = useUpdateProject(org)
+  // 删除项目（admin-only 探针可见；后端 roleAdmin 强制）。成功后导航回项目列表。
+  const deleteProject = useDeleteProject(org)
+  const role = useRole(org)
   const textModelsQuery = useOrgTextModels(org)
   const imageModelsQuery = useOrgImageModels(org)
   const stylesQuery = usePromptStyles()
@@ -174,6 +179,25 @@ function RunsListPage() {
             />
           </p>
         </div>
+        {/* 删除项目：admin 探针可见（后端 roleAdmin 强制）；输入项目名确认，
+            成功后回项目列表（该项目一切路由此后 404）。 */}
+        {role.isAdmin && (
+          <div className="shrink-0">
+            <DeleteProjectDialog
+              project={project}
+              onSubmit={() => deleteProject.mutateAsync({ id: project.id })}
+              onSuccess={() => {
+                toast.success("项目已删除")
+                void navigate({ to: "/orgs/$org/projects", params: { org } })
+              }}
+              trigger={
+                <Button variant="ghost" className="text-danger">
+                  删除项目
+                </Button>
+              }
+            />
+          </div>
+        )}
       </header>
 
       {/* 工作流 section：一个项目可有多条 DAG 工作流，各自独立运行。 */}

@@ -541,6 +541,7 @@ func (s *Storage) goSteps() []migrationStep {
 		{version: "m23", run: m23RemovePicturebookStandard},
 		{version: "m24", run: m24CreateExportJobs},
 		{version: "m25", run: m25CreateOrgAlertSettings},
+		{version: "m26", run: m26AddProjectsDeletedAt},
 	}
 }
 
@@ -706,6 +707,18 @@ func m25CreateOrgAlertSettings(ctx context.Context, tx pgx.Tx) error {
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`); err != nil {
 		return fmt.Errorf("create org_alert_settings: %w", err)
+	}
+	return nil
+}
+
+// m26AddProjectsDeletedAt adds projects.deleted_at (TIMESTAMPTZ, NULL = 活) for
+// the DELETE project 软删 feature (docs/specs/project-delete.md §1)。NULL 行为
+// 存量项目零回归；置非空即从 Get/List/中间件解析/worker claim 一切读路径消失，
+// generations 计费账本与 blob 字节保留不动。Forward-only、幂等 (IF NOT EXISTS)。
+func m26AddProjectsDeletedAt(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx,
+		`ALTER TABLE projects ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`); err != nil {
+		return fmt.Errorf("add projects.deleted_at: %w", err)
 	}
 	return nil
 }

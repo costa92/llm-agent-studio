@@ -64,6 +64,10 @@ type ProjectStore interface {
 	SetStatus(ctx context.Context, id, status string) error
 	SetCover(ctx context.Context, projectID, assetID string) error
 	Cancel(ctx context.Context, projectID string) error
+	// Deleted 供 requireLiveProject 门禁探测软删（missing → project.ErrNotFound）。
+	Deleted(ctx context.Context, id string) (bool, error)
+	// SoftDelete 置 tombstone + 级联取消在途 todos/assets/export_jobs（事务内）。
+	SoftDelete(ctx context.Context, id string) error
 	OrgIDForProject(ctx context.Context, projectID string) (string, error)
 	ListPlans(ctx context.Context, projectID string) ([]project.Plan, error)
 	LoadState(ctx context.Context, projectID, planID string) (projectstate.ProjectState, error)
@@ -526,6 +530,26 @@ func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore,
 	}
 }
 
+
+// deleteProjectHandler (DELETE /api/projects/{id}): admin——项目级最大破坏性操作，
+// 与成本中心/存储配置同级门禁（spec §2）。软删：置 deleted_at + 级联取消在途
+// todos/assets/export_jobs（事务内，SoftDelete）。幂等：重复删除/不存在 → 404
+// （与 workflow/prompt/model-config 的 DELETE 端点对 missing 一致；正常情况下
+// 重复删除已被 requireLiveProject 门禁 404，这里兜竞态）。
+func deleteProjectHandler(ps ProjectStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		err := ps.SoftDelete(r.Context(), r.PathValue("id"))
+		if errors.Is(err, project.ErrNotFound) {
+			http.Error(w, "project not found", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	}
+}
 
 // cancelHandler (POST /api/projects/{id}/cancel): editor+.
 func cancelHandler(ps ProjectStore) http.HandlerFunc {

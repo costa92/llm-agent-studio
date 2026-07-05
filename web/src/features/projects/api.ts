@@ -83,6 +83,26 @@ export function useUpdateProject(
   })
 }
 
+// DELETE /api/projects/{id} → {ok:true}（admin）。软删：项目从列表/详情消失，
+// 在途 run 被级联取消；计费账本保留。成功后失效项目列表 + 移除该项目的详情缓存
+//（invalidate 会触发对已删项目的 404 重取，remove 更干净）。
+export function useDeleteProject(
+  org: string,
+): UseMutationResult<void, Error, { id: string }> {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id }) =>
+      apiJSON<{ ok: boolean }>(`/api/projects/${id}`, { method: "DELETE" }).then(
+        () => undefined,
+      ),
+    onSuccess: (_data, vars) => {
+      void queryClient.invalidateQueries({ queryKey: ["projects", org] })
+      queryClient.removeQueries({ queryKey: ["project", vars.id] })
+      queryClient.removeQueries({ queryKey: ["plans", vars.id] })
+    },
+  })
+}
+
 // GET /api/prompt-styles → {styles: Style[]}（auth-only）。建项目/重生成共用风格下拉。
 export function usePromptStyles(): UseQueryResult<Style[]> {
   return useQuery({
