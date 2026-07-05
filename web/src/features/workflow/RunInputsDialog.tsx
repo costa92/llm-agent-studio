@@ -23,7 +23,7 @@ import type { InputField } from "@/lib/types"
 
 // 运行期输入表单对话框：按 InputField[] schema 渲染类型化表单，前端拦截 required 缺失，
 // 提交把 {<name>: <value>} 交回调用方（调用方再 POST {inputs}）。后端 400 为兜底。
-// 既服务自定义工作流（wf.inputsSchema），又服务绘本（pictureBookRunSchema 派生）。
+// schema 来源是工作流的 wf.inputsSchema（workflow-only：运行期输入唯一入口）。
 
 // Radix Select.Item 不允许空串 value，故用哨兵代表「未指定」；提交时还原为省略。
 const NONE = "__none__"

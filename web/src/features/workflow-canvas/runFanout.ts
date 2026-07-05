@@ -4,7 +4,7 @@ import type { ProjectState, GraphNodeStatus } from "@/lib/projectState"
 // 归并成「父分镜 → 逐页(RunPage) + 状态计数」。运行态画布把它渲成可折叠的大功能
 // 容器（折叠=状态条 + [N 项]；展开=逐页卡片），右栏渲成 Run Matrix。
 //
-// 图音双渲染（PR-4）：一个绘本跨页会扇出 image + audio 两个 asset todo，二者共享
+// 图音双渲染（PR-4）：一个 storyboard shot 可扇出 image + audio 两个 asset todo，二者共享
 //   同一 shotId（见 worker.go 逐 shot 建 image/audio 两条 todo，输入 JSON 同 shotId）。
 //   GraphNode 本身不带 shotId，只有 assetId → 经 assetMetaById 解析出 {kind, shotId}，
 //   按 shotId 把图/音配成一页（image 槽 + audio 槽）。无法解析 shotId（如资产未生成、

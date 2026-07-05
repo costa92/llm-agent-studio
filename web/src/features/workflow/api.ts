@@ -77,7 +77,7 @@ export function useProjectState(id: string, planId?: string): UseQueryResult<Pro
 }
 
 // POST /api/projects/{id}/run → 202 {planId,valid,fallbackUsed}（editor+）。配额超限 429；不存在 404。
-// 可带运行期输入 {inputs}（绘本派生 schema 时）；inputs 缺省 → 不带 body（与历史行为一致，零回归）。
+// 可带运行期输入 {inputs}（工作流 inputs_schema）；inputs 缺省 → 不带 body（与历史行为一致，零回归）。
 export function useRun(
   id: string,
 ): UseMutationResult<RunResponse, Error, Record<string, unknown> | undefined> {
@@ -167,7 +167,7 @@ export function useScript(id: string, planId?: string, todoId?: string): UseQuer
 
 // 分镜：GET /api/projects/{id}/shots → {items}（viewer+），后端按 ordering ASC 返回。
 // 真实形态（studiosvc/artifacts.go Shots）：{id,shotNo,camera,scene,action,prompt,duration}。
-// id 用于与项目资产（asset.shotId）配对——绘本阅读器据此把插图/音频归到对应页。
+// id 用于与项目资产（asset.shotId）配对——成品阅读器据此把插图/音频归到对应页。
 export interface Shot {
   id?: string
   shotNo?: number
@@ -196,7 +196,7 @@ export function useShots(id: string, planId?: string, todoId?: string): UseQuery
 
 // 项目资产行（studiosvc/artifacts.go ProjectAssets）：
 //   {id, shotId, type, blobKey, url, prompt, style, provider, model, status, version, parentAssetId}。
-//   type ∈ image/audio/video；shotId 关联 shots.id（绘本阅读器据此把插图/音频配到对应页）。
+//   type ∈ image/audio/video；shotId 关联 shots.id（成品阅读器据此把插图/音频配到对应页）。
 export interface ProjectAsset {
   id: string
   shotId: string
@@ -329,7 +329,7 @@ export function usePlanCost(
   })
 }
 
-// 绘本成书导出：导出格式与异步任务（后端 T1-T5）。
+// 成品文档导出（PDF/EPUB）：导出格式与异步任务（后端 T1-T5）。
 export type ExportFormat = "pdf" | "epub" | "zip"
 
 // GET /api/projects/{id}/exports/{jobId} 的任务态。status ∈ pending|running|done|failed。
