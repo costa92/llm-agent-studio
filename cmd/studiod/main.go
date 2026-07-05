@@ -44,7 +44,6 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/generate"
 	genaudio "github.com/costa92/llm-agent-studio/internal/generate/audio"
 	genimage "github.com/costa92/llm-agent-studio/internal/generate/image"
-	genvideo "github.com/costa92/llm-agent-studio/internal/generate/video"
 	"github.com/costa92/llm-agent-studio/internal/health"
 	"github.com/costa92/llm-agent-studio/internal/httpapi"
 	"github.com/costa92/llm-agent-studio/internal/mail"
@@ -177,15 +176,9 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		st.Close()
 		return nil, nil, err
 	}
-	// M4: key-gated async video/audio adapters (skeletons; real HTTP is M5).
-	if err := registerVideoGenerators(registry, cfg, tp); err != nil {
-		st.Close()
-		return nil, nil, err
-	}
-	if err := registerAudioGenerators(registry, cfg, tp); err != nil {
-		st.Close()
-		return nil, nil, err
-	}
+	// M4 的 key-gated video/audio 骨架注册（Runway/Kling/Veo/OpenAI-TTS 全是
+	// not-configured 桩）已随 Phase 2.1 下架：真实音频走 org model-config 的
+	// MiniMax T2A（buildMediaFactory）；video 暂无真实适配器，sandbox 用 fake。
 	if registryHook != nil {
 		registryHook(registry) // e2e seam: inject distinguishable fakes
 	}
@@ -562,9 +555,10 @@ func buildGenerator(cfg config.Config) (generate.MediaGenerator, error) {
 }
 
 // modelAvailable reports whether a catalog (provider, kind) entry is usable —
-// its provider API key is configured, so registerImage/Video/AudioGenerators
-// has registered (or will register) the adapter. Mirrors the key-gating in those
-// register* funcs exactly. The "fake" provider needs no key (always available).
+// its provider API key is configured, so registerImageGenerators has registered
+// (or will register) the adapter. Mirrors the key-gating in that register func
+// exactly. The "fake" provider needs no key (always available). audio (MiniMax
+// T2A) 走 org model-config 自带 key（BYOK），无服务端 env key → false 即可。
 func modelAvailable(cfg config.Config) func(provider, kind string) bool {
 	return func(provider, kind string) bool {
 		if provider == "fake" {
@@ -581,20 +575,6 @@ func modelAvailable(cfg config.Config) func(provider, kind string) bool {
 				return cfg.MinimaxAPIKey != ""
 			case "volcengine":
 				return cfg.VolcengineAPIKey != ""
-			}
-		case "video":
-			switch provider {
-			case "runway":
-				return cfg.RunwayAPIKey != ""
-			case "kling":
-				return cfg.KlingAPIKey != ""
-			case "google":
-				return cfg.GoogleAPIKey != ""
-			}
-		case "audio":
-			switch provider {
-			case "openai":
-				return cfg.TTSAPIKey != ""
 			}
 		case "text":
 			// BYOK: text 模型可在表单自带 key，available:false 仅表示"无服务端 env key"
@@ -655,60 +635,6 @@ func registerImageGenerators(reg *generate.Registry, cfg config.Config, tp trace
 			return fmt.Errorf("studiod: build %s/%s image generator: %w", e.Provider, e.Model, err)
 		}
 		reg.Register(e.Provider, e.Model, obs.WrapGenerator(genimage.New(ig, nil), tp))
-	}
-	return nil
-}
-
-// registerVideoGenerators registers a key-gated async video adapter per video
-// catalog entry whose provider has a key (spec §8.1, mirrors registerImage-
-// Generators). Filtered to e.Kind=="video" (M3). Wrapped with obs.WrapGenerator
-// — which preserves the AsyncGenerator seam (B1). Unkeyed providers resolve to
-// the registry default.
-func registerVideoGenerators(reg *generate.Registry, cfg config.Config, tp trace.TracerProvider) error {
-	for _, e := range models.Catalog() {
-		if e.Kind != "video" {
-			continue
-		}
-		var ag generate.MediaGenerator
-		switch e.Provider {
-		case "runway":
-			if cfg.RunwayAPIKey == "" {
-				continue
-			}
-			ag = genvideo.NewRunway(cfg.RunwayAPIKey)
-		case "kling":
-			if cfg.KlingAPIKey == "" {
-				continue
-			}
-			ag = genvideo.NewKling(cfg.KlingAPIKey)
-		case "google":
-			if cfg.GoogleAPIKey == "" {
-				continue
-			}
-			ag = genvideo.NewVeo(cfg.GoogleAPIKey)
-		default:
-			continue
-		}
-		reg.Register(e.Provider, e.Model, obs.WrapGenerator(ag, tp))
-	}
-	return nil
-}
-
-// registerAudioGenerators is the audio analog (key-gated, e.Kind=="audio").
-func registerAudioGenerators(reg *generate.Registry, cfg config.Config, tp trace.TracerProvider) error {
-	for _, e := range models.Catalog() {
-		if e.Kind != "audio" {
-			continue
-		}
-		switch e.Provider {
-		case "openai":
-			if cfg.TTSAPIKey == "" {
-				continue
-			}
-			reg.Register(e.Provider, e.Model, obs.WrapGenerator(genaudio.NewOpenAITTS(cfg.TTSAPIKey), tp))
-		default:
-			continue
-		}
 	}
 	return nil
 }
@@ -797,25 +723,14 @@ func buildMediaFactory(tp trace.TracerProvider) func(kind, provider, model, apiK
 			}
 			return obs.WrapGenerator(genimage.New(ig, nil), tp), nil
 		case "video":
-			var ag generate.MediaGenerator
-			switch provider {
-			case "runway":
-				ag = genvideo.NewRunway(apiKey)
-			case "kling":
-				ag = genvideo.NewKling(apiKey)
-			case "google":
-				ag = genvideo.NewVeo(apiKey)
-			default:
-				return nil, fmt.Errorf("studiod: unknown video provider %q", provider)
-			}
-			return obs.WrapGenerator(ag, tp), nil
+			// 真实 video 适配器尚不存在（M4 的 Runway/Kling/Veo not-configured 骨架
+			// 已随 Phase 2.1 下架）；sandbox 走 fake（registry 默认 fake 生成器）。
+			return nil, fmt.Errorf("studiod: video generation not wired (no real provider; provider %q)", provider)
 		case "audio":
 			switch provider {
-			case "openai":
-				return obs.WrapGenerator(genaudio.NewOpenAITTS(apiKey), tp), nil
 			case "minimax":
 				// 真实 MiniMax T2A（speech-2.8-hd 等）：同步 TTS，用 config 的
-				// api_key + base_url。补 M4 骨架遗留的真实音频实现。
+				// api_key + base_url。
 				return obs.WrapGenerator(genaudio.NewMinimaxTTS(apiKey, model, baseURL), tp), nil
 			default:
 				return nil, fmt.Errorf("studiod: unknown audio provider %q", provider)

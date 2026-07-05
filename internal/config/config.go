@@ -84,12 +84,6 @@ type Config struct {
 	LeaseRenewInterval       time.Duration // heartbeat renewLease period; MUST be < WorkerLease
 	VideoFetchMaxBytes       int64         // hard cap on a pulled video/audio body (default 512MB)
 
-	// M4 video/audio provider keys (key-gated real-adapter skeletons, spec §8).
-	RunwayAPIKey string
-	KlingAPIKey  string
-	TTSAPIKey    string
-	// Veo reuses GoogleAPIKey (already present, spec §8.2).
-
 	// BlobDir/BlobSecret/BlobPublic configure the BUILT-IN localfs default store +
 	// the single回源 server. 远端对象存储 (s3/oss/cos) 改由 DB-only storage_configs
 	// 配置 + StorageRouter 路由 (Phase 3 决策: 删除 env 存储配置)。
@@ -174,9 +168,6 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		MaxConcurrentAudioPerOrg: intOf("MAX_CONCURRENT_AUDIO_PER_ORG", get("MAX_CONCURRENT_AUDIO_PER_ORG", "0"), &errs),
 		LeaseRenewInterval:       durOf("LEASE_RENEW_INTERVAL", get("LEASE_RENEW_INTERVAL", "40s"), &errs),
 		VideoFetchMaxBytes:       int64(intOf("VIDEO_FETCH_MAX_BYTES", get("VIDEO_FETCH_MAX_BYTES", "536870912"), &errs)),
-		RunwayAPIKey:             get("RUNWAY_API_KEY", ""),
-		KlingAPIKey:              get("KLING_API_KEY", ""),
-		TTSAPIKey:                get("TTS_API_KEY", ""),
 
 		BlobDir:    get("BLOB_DIR", "./blobdata"),
 		BlobSecret: get("BLOB_SECRET", ""),

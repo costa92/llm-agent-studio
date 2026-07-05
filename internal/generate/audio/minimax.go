@@ -1,3 +1,6 @@
+// Package audio houses real audio (TTS) generation adapters. The M4 key-gated
+// skeletons (OpenAI tts-1 not-configured stub) were retired in Phase 2.1 —
+// only wired, working adapters live here (currently MiniMax T2A).
 package audio
 
 import (
@@ -29,9 +32,7 @@ const (
 // data.audio 的 hex），故 NOT 实现 AsyncGenerator：worker 的 routed.(AsyncGenerator)
 // 断言为假 → 走与 image 相同的同步单遍路径（submit/poll 异步引擎不介入）。
 //
-// 这补上了 internal/generate/audio M4 骨架遗留的真实 TTS 实现（原 audio.go 只有
-// 返回 notConfigured 的 OpenAI 桩，registerAudioGenerators / buildMediaFactory 的
-// audio 分支都不认 minimax）。
+// 这是本包唯一的真实 TTS 实现（M4 的 OpenAI 桩骨架已随 Phase 2.1 下架）。
 type minimaxTTS struct {
 	apiKey  string
 	model   string
