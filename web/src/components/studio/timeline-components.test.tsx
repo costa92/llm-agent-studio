@@ -1,52 +1,8 @@
 import { describe, expect, it } from "vitest"
 import { render, screen } from "@testing-library/react"
-import { TimelineStage, type Stage } from "./TimelineStage"
-import { PipGroup } from "./PipGroup"
-import { SlateBar } from "./SlateBar"
 import { LineageTrail } from "./LineageTrail"
 
-function stage(over: Partial<Stage> = {}): Stage {
-  return { id: "S2", kind: "script", status: "running", linked: false, ...over }
-}
-
 describe("timeline presentational components", () => {
-  it("TimelineStage renders name, sn label and tchip status", () => {
-    render(<TimelineStage stage={stage({ status: "done" })} sub="ScriptAgent" />)
-    expect(screen.getByText("剧本生成")).toBeInTheDocument()
-    expect(screen.getByText("done")).toBeInTheDocument()
-    expect(screen.getByText("ScriptAgent")).toBeInTheDocument()
-  })
-
-  it("TimelineStage marks data-status for styling/queries", () => {
-    render(<TimelineStage stage={stage({ status: "failed" })} />)
-    expect(document.querySelector('[data-slot="stage"]')?.getAttribute("data-status")).toBe(
-      "failed",
-    )
-  })
-
-  it("PipGroup renders one pip per item with its status", () => {
-    render(
-      <PipGroup
-        pips={[
-          { todoId: "a1", status: "done", assetId: "as1" },
-          { todoId: "a2", status: "running" },
-          { todoId: "a3", status: "idle" },
-        ]}
-      />,
-    )
-    const pips = document.querySelectorAll('[data-slot="pip"]')
-    expect(pips).toHaveLength(3)
-    expect(pips[0].getAttribute("data-status")).toBe("done")
-    expect(pips[1].getAttribute("data-status")).toBe("running")
-  })
-
-  it("SlateBar shows only when visible", () => {
-    const { rerender } = render(<SlateBar visible={false} />)
-    expect(document.querySelector('[data-slot="slate-bar"]')).toBeNull()
-    rerender(<SlateBar visible />)
-    expect(document.querySelector('[data-slot="slate-bar"]')).not.toBeNull()
-  })
-
   it("LineageTrail renders nodes and marks the current one", () => {
     render(
       <LineageTrail
@@ -59,15 +15,5 @@ describe("timeline presentational components", () => {
     expect(screen.getByText("v1 已退回")).toBeInTheDocument()
     const cur = screen.getByText("v2 当前")
     expect(cur).toHaveAttribute("data-current")
-  })
-
-  // T3：连接线 done/linked 时 data-linked="true"，pending/unlinked 时 data-linked="false"。
-  it("TimelineStage connector is solid when linked, dashed-gray when not", () => {
-    const { rerender } = render(<TimelineStage stage={stage({ status: "done", linked: true })} />)
-    const linkedConn = document.querySelector('[data-slot="stage"] [data-slot="connector"]')
-    expect(linkedConn?.getAttribute("data-linked")).toBe("true")
-    rerender(<TimelineStage stage={stage({ status: "pending", linked: false })} />)
-    const pendingConn = document.querySelector('[data-slot="stage"] [data-slot="connector"]')
-    expect(pendingConn?.getAttribute("data-linked")).toBe("false")
   })
 })

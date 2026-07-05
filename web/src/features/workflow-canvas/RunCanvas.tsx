@@ -93,7 +93,7 @@ const nodeTypes = { studio: WorkflowNode, groupRun: GroupNode }
 // 运行态用只读 RunEdge（活动边渲流动粒子）；不复用编辑态 StudioEdge 的 +/× 控制簇。
 const edgeTypes = { studio: RunEdge }
 
-// SseConnState → SseIndicator 可视态（与 WorkbenchPage CONN_TO_STATUS 一致）。
+// SseConnState → SseIndicator 可视态。
 const CONN_TO_STATUS: Record<SseConnState, SseStatus> = {
   idle: "disconnected",
   connected: "connected",
@@ -171,7 +171,7 @@ function RunCanvasInner({
   const timing = useNodeTiming(runId ?? "")
   const { fitView } = useReactFlow()
 
-  // 抽屉数据 gated 拉取：非该类型时传 "" 不发请求（与 RunWorkbenchPage 一致）。
+  // 抽屉数据 gated 拉取：非该类型时传 "" 不发请求。
   const scriptQuery = useScript(
     selection?.kind === "script" ? projectId : "",
     runId,
@@ -373,7 +373,7 @@ function RunCanvasInner({
     if (sel) setSelection(sel)
   }
 
-  // 运行控制（移植 RunWorkbenchPage.handleRun/handleCancel）。
+  // 运行控制。
   const isLatestPlan = !!(
     plansQuery.data &&
     plansQuery.data.length > 0 &&

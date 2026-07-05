@@ -5,7 +5,6 @@ import { Button } from "./Button"
 import { Kbd } from "./Kbd"
 import { StatCard } from "./StatCard"
 import { BarRow } from "./BarRow"
-import { WarnStrip } from "./WarnStrip"
 import { EventLog } from "./EventLog"
 import { SseIndicator } from "./SseIndicator"
 
@@ -41,11 +40,6 @@ describe("studio base components", () => {
     render(<BarRow label="项目甲" ratio={1.5} value="¥99" />)
     expect(screen.getByText("项目甲")).toBeInTheDocument()
     expect(screen.getByText("¥99")).toBeInTheDocument()
-  })
-
-  it("WarnStrip renders message with status role", () => {
-    render(<WarnStrip>已降级到备用模型</WarnStrip>)
-    expect(screen.getByRole("status")).toHaveTextContent("已降级到备用模型")
   })
 
   it("EventLog renders empty state then collapsed summary", () => {

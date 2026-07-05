@@ -9,8 +9,7 @@ export interface RunSummaryProps {
 }
 
 // 运行总状态/进度概览条：runStatus 文案徽标 + 阶段 X/N + 素材 done/total + 细进度条。
-// 纯表现，读权威 state；不引入新数据。与底部 SlateBar 分工：SlateBar=运行中底部动效，
-// RunSummary=常驻信息条（含完成/失败态）。
+// 纯表现，读权威 state；不引入新数据。常驻信息条（含完成/失败态）。
 // isCustom 工作流（stages 为空）退化为节点计数（done nodes / total nodes）。
 export function RunSummary({ state, className }: RunSummaryProps) {
   const s = computeRunSummary(state)

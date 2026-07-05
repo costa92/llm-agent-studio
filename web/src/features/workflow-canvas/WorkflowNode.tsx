@@ -13,8 +13,8 @@ import { useCanvasActions } from "./CanvasActionsContext"
 import { formatDuration } from "@/features/workflow/useNodeTiming"
 
 // ReactFlow 自定义节点。编辑视图：圆角卡片 + 左侧 agent 语义色条 + 选中工具条。
-// 运行视图（data.run 存在）：叠加该 run 的执行状态指示器（复用 GraphView 视觉语言：
-// done 填充✓ / running 琥珀虚线转环 / failed danger / pending 中性），并隐藏编辑工具条
+// 运行视图（data.run 存在）：叠加该 run 的执行状态指示器（done 填充✓ /
+// running 琥珀虚线转环 / failed danger / pending 中性），并隐藏编辑工具条
 // （运行模式只读）。
 export type StudioRFNode = Node<StudioNodeData, "studio">
 
@@ -78,7 +78,7 @@ export function WorkflowNode({ id, data, selected }: NodeProps<StudioRFNode>) {
       )}
       <Handle type="target" position={Position.Top} />
       {isRunMode ? (
-        // 运行状态指示器（复用 GraphView GraphNodeCard 的类形 + token）。
+        // 运行状态指示器（沿用运行视图既有类形 + token）。
         <RunStatusDot status={runStatus} color={color} />
       ) : (
         <span
@@ -112,7 +112,7 @@ export function WorkflowNode({ id, data, selected }: NodeProps<StudioRFNode>) {
   )
 }
 
-// 运行状态圆点（复用 GraphView 视觉：done 填 var(--cur) + 白✓ / running 琥珀 + 虚线转环 /
+// 运行状态圆点（done 填 var(--cur) + 白✓ / running 琥珀 + 虚线转环 /
 // failed border-danger bg-danger/15 / pending 中性 border-line）。amber token only。
 function RunStatusDot({
   status,
