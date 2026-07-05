@@ -36,7 +36,6 @@ type Deps struct {
 	Projects     ProjectStore
 	Workflows    WorkflowStore // first-class 1:N workflows per project; nil in focused unit tests
 	Planner      PlannerPort
-	ChatRouter   ChatRouter // BYOK 模型路由 for the run handler's planner; nil → bound default
 	Events       EventAppender
 	EventReader  EventReader
 	Artifacts    ArtifactReader
@@ -207,7 +206,6 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("GET /api/projects/{id}", proj(roleViewer, getProjectHandler(d.Projects)))
 	mux.Handle("PUT /api/projects/{id}", proj(roleEditor, updateProjectHandler(d.Projects)))
 	mux.Handle("DELETE /api/projects/{id}", proj(roleAdmin, deleteProjectHandler(d.Projects)))
-	mux.Handle("POST /api/projects/{id}/run", proj(roleEditor, runHandler(d.Projects, d.Planner, d.Events, d.Cost, d.GenQuota, d.ChatRouter, d.CustomNodeType)))
 	mux.Handle("POST /api/projects/{id}/cancel", proj(roleEditor, cancelHandler(d.Projects)))
 	mux.Handle("GET /api/projects/{id}/plans", proj(roleViewer, listPlansHandler(d.Projects)))
 	mux.Handle("GET /api/projects/{id}/state", proj(roleViewer, stateHandler(d.Projects)))

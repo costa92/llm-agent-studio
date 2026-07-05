@@ -77,13 +77,6 @@ export interface CreateProjectInput {
   workflowNodes?: string
 }
 
-// runHandler 返回：POST /api/projects/{id}/run → 202。
-export interface RunResponse {
-  planId: string
-  valid: boolean
-  fallbackUsed: boolean
-}
-
 // 工作流 DAG 节点。type ∈ script/storyboard/asset；script&storyboard 可带 promptId
 // （提示词库/内置预设 override，空 = 系统内置默认）或 promptText（行内自定义文本，
 // 不入库；非空时优先于 promptId）；dependsOn 引用同一工作流内其他节点的 id。

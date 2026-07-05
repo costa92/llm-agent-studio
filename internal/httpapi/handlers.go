@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,7 +13,6 @@ import (
 	authzhttp "github.com/costa92/llm-agent-authz/httpapi"
 	authzrole "github.com/costa92/llm-agent-authz/role"
 	authzsvc "github.com/costa92/llm-agent-authz/service"
-	"github.com/costa92/llm-agent-contract/llm"
 
 	"github.com/costa92/llm-agent-studio/internal/customnodetype"
 	"github.com/costa92/llm-agent-studio/internal/nodedesc"
@@ -77,15 +75,6 @@ type ProjectStore interface {
 // workflows are planned now — the LLM auto-planner (Plan/PlanWith) was removed.
 type PlannerPort interface {
 	PlanCustom(ctx context.Context, projectID, workflowID string, b planner.Brief, nodes []planner.WorkflowNode, resolved map[string]planner.ResolvedType, runInputs json.RawMessage) (planner.Result, error)
-}
-
-// ChatRouter resolves an org's BYOK chat model (satisfied by *modelrouter.Router).
-// nil in Deps → the run handler uses PlannerPort.Plan (the bound default).
-type ChatRouter interface {
-	ChatModelFor(ctx context.Context, orgID string) llm.ChatModel
-	// M5.1: per-project 规划模型 override 解析；caller 在 ChatModelForNamed
-	// 返 nil 时退回 ChatModelFor。
-	ChatModelForNamed(ctx context.Context, orgID, provider, modelName string) llm.ChatModel
 }
 
 // CustomNodeTypeResolver resolves a typed custom node's registry entry, org-scoped
@@ -433,103 +422,6 @@ func quotaExceeded(ctx context.Context, cs CostStore, quota int, orgID string) (
 	}
 	return n >= quota, nil
 }
-
-// runHandler (POST /api/projects/{id}/run): editor+. Sets status=planning, runs
-// the planner (synchronously enqueues todos), emits planner_started.
-func runHandler(ps ProjectStore, pl PlannerPort, ev EventAppender, cs CostStore, quota int, cr ChatRouter, customTypeResolver CustomNodeTypeResolver) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
-		p, err := ps.Get(r.Context(), id)
-		if errors.Is(err, project.ErrNotFound) {
-			http.Error(w, "project not found", http.StatusNotFound)
-			return
-		} else if err != nil {
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
-		// Early validation for project-level custom workflows: catch invalid graphs
-		// (including cycles) before any side effects (SetStatus, planner_started).
-		// PlanCustom also validates, but doing it here maps the error to 400 and
-		// avoids a dangling "planning" status + spurious planner_started event.
-		var customNodes []planner.WorkflowNode
-		if p.CustomWorkflowEnabled && len(p.WorkflowNodes) > 0 {
-			if err := json.Unmarshal(p.WorkflowNodes, &customNodes); err != nil {
-				http.Error(w, "invalid workflow: "+err.Error(), http.StatusBadRequest)
-				return
-			}
-			if len(customNodes) > 0 {
-				if err := planner.ValidateCustomGraph(customNodes); err != nil {
-					http.Error(w, "invalid workflow: "+err.Error(), http.StatusBadRequest)
-					return
-				}
-			}
-		}
-		if planner.HasUnboundCustomNode(customNodes) {
-			http.Error(w, "当前 Workflow 包含未绑定类型的自定义节点，请先在注册表中为其指定类型后再运行", http.StatusBadRequest)
-			return
-		}
-		// Only custom-workflow projects are runnable via project-level /run. The
-		// picturebook and standard auto-planner pipelines were removed; a project
-		// without a custom workflow has no runnable pipeline here — first-class
-		// workflows run via POST /workflows/{id}/run instead. The guard sits before
-		// SetStatus("planning") so we never leave the project dangling in 'planning'.
-		if !p.CustomWorkflowEnabled {
-			http.Error(w, "this project has no runnable workflow; use /workflows/{id}/run", http.StatusBadRequest)
-			return
-		}
-		// Read + size-guard the body. v1 legacy project-level custom runs have no
-		// inputs_schema (no workflows row), so body.inputs is ignored (not an error,
-		// not persisted); we still bound the read and reject malformed JSON.
-		r.Body = http.MaxBytesReader(w, r.Body, maxRunInputsBody)
-		var runBody struct {
-			Inputs map[string]json.RawMessage `json:"inputs"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&runBody); err != nil && !errors.Is(err, io.EOF) {
-			http.Error(w, "invalid run inputs: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		if over, err := quotaExceeded(r.Context(), cs, quota, p.OrgID); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		} else if over {
-			http.Error(w, "generation quota exceeded for org", http.StatusTooManyRequests)
-			return
-		}
-		if err := ps.SetStatus(r.Context(), id, "planning"); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		_, _ = ev.Append(r.Context(), id, "planner_started", "", nil)
-		brief := planner.Brief{
-			Brief: p.Description, ContentType: p.ContentType,
-			TargetPlatform: p.TargetPlatform, Style: p.Style,
-		}
-		// customNodes already validated and populated above; use them directly.
-		// Legacy project-level custom run: no first-class workflow → NULL workflow_id.
-		resolved, rerr := resolveCustomTypes(r.Context(), customTypeResolver, p.OrgID, customNodes)
-		if rerr != nil {
-			http.Error(w, rerr.Error(), http.StatusBadRequest)
-			return
-		}
-		res, err := pl.PlanCustom(r.Context(), id, "", brief, customNodes, resolved, nil)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		// Announce the initially-ready node(s) (the script todo) so the timeline
-		// shows todo_ready before todo_started (spec §9). The worker's
-		// emitNewlyReady dedups via NOT EXISTS, so it won't re-emit these.
-		for _, rt := range res.ReadyTodos {
-			_, _ = ev.Append(r.Context(), id, "todo_ready", rt.ID, map[string]any{"type": rt.Type})
-		}
-		// status no longer set imperatively to "running" here — it's derived from
-		// todos by projectstate.Compute / RefreshStatus (single source of truth).
-		writeJSON(w, http.StatusAccepted, map[string]any{
-			"planId": res.PlanID, "valid": res.Valid, "fallbackUsed": res.FallbackUsed,
-		})
-	}
-}
-
 
 // deleteProjectHandler (DELETE /api/projects/{id}): admin——项目级最大破坏性操作，
 // 与成本中心/存储配置同级门禁（spec §2）。软删：置 deleted_at + 级联取消在途

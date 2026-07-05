@@ -31,6 +31,8 @@ const RUNNING_STATE: ProjectState = {
 
 // 可变 state holder：默认 RUNNING_STATE，按测试覆盖（useProjectState mock 读它）。
 let currentState: ProjectState = RUNNING_STATE
+// 运行入口 mutation spy（useRunWorkflow mock 返回它）：断言弹 dialog 时不直接发请求。
+const runWorkflowMutateAsync = vi.fn()
 
 vi.mock("@/features/workflow/api", () => ({
   usePlans: vi.fn(() => ({
@@ -38,7 +40,6 @@ vi.mock("@/features/workflow/api", () => ({
     refetch: vi.fn(),
   })),
   useProjectState: vi.fn(() => ({ data: currentState })),
-  useRun: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useCancel: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useScript: vi.fn(() => ({ data: null, isLoading: false, isError: false })),
   useShots: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
@@ -46,6 +47,11 @@ vi.mock("@/features/workflow/api", () => ({
   useProject: vi.fn(() => ({ data: undefined })),
   usePlanCost: vi.fn(() => ({ data: undefined, isLoading: true, isError: false })),
   fetchAllEvents: vi.fn(async () => []),
+}))
+
+// 运行入口已收敛到工作流端点（POST /workflows/{wfId}/run）。
+vi.mock("@/features/projects/workflowApi", () => ({
+  useRunWorkflow: vi.fn(() => ({ mutateAsync: runWorkflowMutateAsync, isPending: false })),
 }))
 
 vi.mock("@/features/workflow/useProductionTimeline", () => ({
@@ -425,5 +431,30 @@ describe("RunCanvas completion summons in-run review (variant A)", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "开始审核" })[0])
     // 抽屉内融合审核容器渲染（空队列 → 空态文案），证明就地开抽屉而非跳走。
     expect(await screen.findByText("没有待审资产")).toBeInTheDocument()
+  })
+})
+
+// 运行入口收敛：RunCanvas 走工作流端点（useRunWorkflow）；有必填 inputsSchema 时
+// 点「运行」先弹 RunInputsDialog，不直接发请求（与项目页入口同一模式）。
+describe("RunCanvas unified run entry (workflow endpoint + run inputs)", () => {
+  it("有必填 schema 点运行先弹 RunInputsDialog，不直接发请求", () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RunCanvas
+          projectId="p1"
+          org="acme"
+          runId="run1"
+          nodes={WF_NODES}
+          workflowId="w1"
+          inputsSchema={[{ name: "topic", label: "主题", type: "text", target: "variable", required: true }]}
+          onSelectRun={vi.fn()}
+        />
+      </QueryClientProvider>,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "重新运行" }))
+    // 先弹运行期输入表单（默认标题），且未直接发起 run 请求。
+    expect(screen.getByText("填写运行输入")).toBeInTheDocument()
+    expect(runWorkflowMutateAsync).not.toHaveBeenCalled()
   })
 })

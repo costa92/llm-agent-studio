@@ -261,8 +261,8 @@ func deleteWorkflowHandler(ws WorkflowStore) http.HandlerFunc {
 // runWorkflowHandler POST /api/projects/{id}/workflows/{wfId}/run — editor+.
 // Runs ONE workflow as an independent unit: builds the Brief from the project
 // row, loads the workflow's DAG, and calls PlanCustom with the workflow id so
-// the resulting plan (run) is tagged with workflow_id. Mirrors runHandler's
-// quota gate + status/event emission.
+// the resulting plan (run) is tagged with workflow_id. This is the sole run
+// entry point (the legacy project-level POST /run was removed).
 func runWorkflowHandler(ps ProjectStore, ws WorkflowStore, pl PlannerPort, ev EventAppender, cs CostStore, quota int, customTypeResolver CustomNodeTypeResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")

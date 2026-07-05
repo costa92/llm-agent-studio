@@ -16,6 +16,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/planner"
 	"github.com/costa92/llm-agent-studio/internal/project"
 	"github.com/costa92/llm-agent-studio/internal/projectstate"
+	"github.com/costa92/llm-agent-studio/internal/workflows"
 )
 
 // stubCost is a canned CostStore for handler tests.
@@ -227,22 +228,21 @@ type stubAppender struct{}
 
 func (stubAppender) Append(_ context.Context, _, _, _ string, _ any) (int64, error) { return 1, nil }
 
-// quotaTestProject is a runnable custom-workflow project so the run reaches the
-// quota gate (a non-custom project 400s before quota now — the picturebook/standard
-// pipelines were removed).
-func quotaTestProject() project.Project {
-	nodes, _ := json.Marshal([]planner.WorkflowNode{{ID: "s1", Type: "script"}})
-	return project.Project{
-		ID: "p1", OrgID: "o1", Status: "draft",
-		CustomWorkflowEnabled: true, WorkflowNodes: json.RawMessage(nodes),
-	}
+// quotaTestWorkflow is a runnable single-node workflow store so the run reaches
+// the quota gate (invalid graphs 400 before quota).
+func quotaTestWorkflow() *stubWorkflows {
+	return &stubWorkflows{got: workflows.Workflow{
+		Name:  "wf",
+		Nodes: json.RawMessage(`[{"id":"s1","type":"script","promptId":"","dependsOn":[]}]`),
+	}}
 }
 
-func TestRunHandler429WhenQuotaExhausted(t *testing.T) {
+func TestRunWorkflowHandler429WhenQuotaExhausted(t *testing.T) {
 	cs := &stubCost{count: 5} // org already used 5 generations in the window
-	h := runHandler(fixedProjectStore{p: quotaTestProject()}, stubPlanner{}, stubAppender{}, cs, 5, nil, nil)
-	req := httptest.NewRequest("POST", "/api/projects/p1/run", nil)
+	h := runWorkflowHandler(stubProjects{orgID: "o1"}, quotaTestWorkflow(), stubPlanner{}, stubAppender{}, cs, 5, nil)
+	req := httptest.NewRequest("POST", "/api/projects/p1/workflows/wf1/run", nil)
 	req.SetPathValue("id", "p1")
+	req.SetPathValue("wfId", "wf1")
 	rr := httptest.NewRecorder()
 	h(rr, req)
 	if rr.Code != http.StatusTooManyRequests {
@@ -250,11 +250,12 @@ func TestRunHandler429WhenQuotaExhausted(t *testing.T) {
 	}
 }
 
-func TestRunHandlerPassesUnderQuota(t *testing.T) {
+func TestRunWorkflowHandlerPassesUnderQuota(t *testing.T) {
 	cs := &stubCost{count: 4}
-	h := runHandler(fixedProjectStore{p: quotaTestProject()}, stubPlanner{}, stubAppender{}, cs, 5, nil, nil)
-	req := httptest.NewRequest("POST", "/api/projects/p1/run", nil)
+	h := runWorkflowHandler(stubProjects{orgID: "o1"}, quotaTestWorkflow(), stubPlanner{}, stubAppender{}, cs, 5, nil)
+	req := httptest.NewRequest("POST", "/api/projects/p1/workflows/wf1/run", nil)
 	req.SetPathValue("id", "p1")
+	req.SetPathValue("wfId", "wf1")
 	rr := httptest.NewRecorder()
 	h(rr, req)
 	if rr.Code != http.StatusAccepted {
@@ -262,77 +263,16 @@ func TestRunHandlerPassesUnderQuota(t *testing.T) {
 	}
 }
 
-func TestRunHandlerQuotaZeroDisabled(t *testing.T) {
+func TestRunWorkflowHandlerQuotaZeroDisabled(t *testing.T) {
 	cs := &stubCost{count: 1000}
-	h := runHandler(fixedProjectStore{p: quotaTestProject()}, stubPlanner{}, stubAppender{}, cs, 0, nil, nil)
-	req := httptest.NewRequest("POST", "/api/projects/p1/run", nil)
+	h := runWorkflowHandler(stubProjects{orgID: "o1"}, quotaTestWorkflow(), stubPlanner{}, stubAppender{}, cs, 0, nil)
+	req := httptest.NewRequest("POST", "/api/projects/p1/workflows/wf1/run", nil)
 	req.SetPathValue("id", "p1")
+	req.SetPathValue("wfId", "wf1")
 	rr := httptest.NewRecorder()
 	h(rr, req)
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("quota=0 must disable the check, got %d", rr.Code)
-	}
-}
-
-// fixedProjectStore is a ProjectStore stub whose Get always returns the
-// pre-configured project (used to inject CustomWorkflowEnabled / WorkflowNodes
-// without a real database).
-type fixedProjectStore struct {
-	p project.Project
-}
-
-func (s fixedProjectStore) Create(_ context.Context, _ project.CreateInput) (project.Project, error) {
-	return project.Project{}, nil
-}
-func (s fixedProjectStore) Get(_ context.Context, _ string) (project.Project, error) {
-	return s.p, nil
-}
-func (s fixedProjectStore) ListByOrg(_ context.Context, _ string, _ int, _ string) ([]project.Project, string, error) {
-	return nil, "", nil
-}
-func (s fixedProjectStore) Update(_ context.Context, _ string, _ project.UpdateInput) (project.Project, error) {
-	return project.Project{}, nil
-}
-func (s fixedProjectStore) SetStatus(_ context.Context, _, _ string) error  { return nil }
-func (s fixedProjectStore) SetCover(_ context.Context, _, _ string) error   { return nil }
-func (s fixedProjectStore) Cancel(_ context.Context, _ string) error        { return nil }
-func (s fixedProjectStore) Deleted(_ context.Context, _ string) (bool, error) { return false, nil }
-func (s fixedProjectStore) SoftDelete(_ context.Context, _ string) error      { return nil }
-func (s fixedProjectStore) OrgIDForProject(_ context.Context, _ string) (string, error) {
-	return s.p.OrgID, nil
-}
-func (s fixedProjectStore) ListPlans(_ context.Context, _ string) ([]project.Plan, error) {
-	return nil, nil
-}
-func (s fixedProjectStore) LoadState(_ context.Context, _, _ string) (projectstate.ProjectState, error) {
-	return projectstate.ProjectState{}, nil
-}
-
-// TestRunHandlerRefusesCustomNodes verifies that the project-level run path
-// (POST /api/projects/{id}/run) returns 400 when the project's WorkflowNodes
-// contains a custom:* node type, before any side effects are triggered.
-func TestRunHandlerRefusesCustomNodes(t *testing.T) {
-	nodes, _ := json.Marshal([]planner.WorkflowNode{
-		{ID: "s1", Type: "script"},
-		{ID: "c1", Type: "custom:translate", DependsOn: []string{"s1"}},
-	})
-	ps := fixedProjectStore{p: project.Project{
-		ID:                    "p1",
-		OrgID:                 "o1",
-		Status:                "draft",
-		CustomWorkflowEnabled: true,
-		WorkflowNodes:         json.RawMessage(nodes),
-	}}
-	h := runHandler(ps, stubPlanner{}, stubAppender{}, &stubCost{count: 0}, 100, nil, nil)
-	req := httptest.NewRequest("POST", "/api/projects/p1/run", nil)
-	req.SetPathValue("id", "p1")
-	rr := httptest.NewRecorder()
-	h(rr, req)
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("custom-node project run should 400, got %d: %s", rr.Code, rr.Body.String())
-	}
-	if !strings.Contains(rr.Body.String(), "未绑定类型") {
-		t.Fatalf("body should contain \"未绑定类型\", got: %s", rr.Body.String())
 	}
 }
 
