@@ -9,7 +9,6 @@ import {
   useCancel,
   useCreateExport,
   useLyricsAudio,
-  useRun,
 } from "./api"
 import { setAccessToken } from "@/lib/apiClient"
 import { jsonResponse } from "@/test/helpers"
@@ -124,47 +123,6 @@ describe("fetchScript (bare JSON, 404 → null, tolerant parse)", () => {
     )
     const doc = await fetchScript("p1")
     expect(doc?.title).toBe("x")
-  })
-})
-
-describe("useRun (POST /run)", () => {
-  // 重新运行会新建一个 plan（res.planId），运行页随即导航到新 runId。
-  // isLatestPlan 由 usePlans()[0].id === runId 推导——若不失效 ["plans"]，
-  // 列表仍是旧 plan，新页 isLatestPlan=false → Run/Cancel 静默禁用直至手动刷新。
-  it("invalidates both the project AND the plans list on success", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({ planId: "plan9", valid: true, fallbackUsed: false }),
-    )
-    vi.stubGlobal("fetch", fetchMock)
-
-    const { wrapper, invalidateSpy } = setup()
-    const { result } = renderHook(() => useRun("p1"), { wrapper })
-    result.current.mutate(undefined)
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
-
-    expect(String(fetchMock.mock.calls[0][0])).toBe("/api/projects/p1/run")
-    expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("POST")
-    // 无 inputs → 不带 body（标准项目零回归）。
-    expect((fetchMock.mock.calls[0][1] as RequestInit).body).toBeUndefined()
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["project", "p1"] })
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["plans", "p1"] })
-  })
-
-  it("带 inputs（绘本运行期覆盖）→ POST body 携带 {inputs}", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({ planId: "plan9", valid: true, fallbackUsed: false }),
-    )
-    vi.stubGlobal("fetch", fetchMock)
-
-    const { wrapper } = setup()
-    const { result } = renderHook(() => useRun("p1"), { wrapper })
-    result.current.mutate({ voice: "warm", pageCount: 12 })
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
-
-    const body = (fetchMock.mock.calls[0][1] as RequestInit).body
-    expect(JSON.parse(String(body))).toEqual({
-      inputs: { voice: "warm", pageCount: 12 },
-    })
   })
 })
 

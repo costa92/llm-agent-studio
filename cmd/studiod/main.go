@@ -398,7 +398,6 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		Projects:     projectStore,
 		Workflows:    workflowStore,
 		Planner:      plannerSvc,
-		ChatRouter:   router,
 		Events:       eventStore,
 		EventReader:  eventStore,
 		Artifacts:    studiosvc.NewArtifacts(st.GORM()),

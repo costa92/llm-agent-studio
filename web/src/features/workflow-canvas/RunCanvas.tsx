@@ -9,10 +9,9 @@ import {
   type Node,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
-import { useNavigate } from "@tanstack/react-router"
 import { toast } from "sonner"
 import "./canvasTheme.css"
-import type { ProjectStatus, WorkflowNode as WorkflowNodeType } from "@/lib/types"
+import type { InputField, ProjectStatus, WorkflowNode as WorkflowNodeType } from "@/lib/types"
 import type { ProjectState, GraphNodeStatus } from "@/lib/projectState"
 import { Badge } from "@/components/studio/Badge"
 import { Button } from "@/components/studio/Button"
@@ -26,7 +25,7 @@ import {
 } from "@/components/ui/sheet"
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { EventLog } from "@/components/studio/EventLog"
-import { getAccessToken } from "@/lib/apiClient"
+import { ApiError, getAccessToken } from "@/lib/apiClient"
 import { statusLabel, statusVariant } from "@/features/projects/status"
 import {
   fetchAllEvents,
@@ -34,11 +33,12 @@ import {
   useProjectAssets,
   useProjectState,
   usePlans,
-  useRun,
   useScript,
   useShots,
   type Plan,
 } from "@/features/workflow/api"
+import { useRunWorkflow } from "@/features/projects/workflowApi"
+import { RunInputsDialog } from "@/features/workflow/RunInputsDialog"
 import { useAsset } from "@/features/review/api"
 import { ReviewBoard } from "@/features/review/ReviewBoard"
 import { useRole } from "@/app/rbac"
@@ -108,6 +108,10 @@ export interface RunCanvasProps {
   runId?: string
   // 工作流已保存节点（含 position）——运行模式用自存坐标，不用可编辑态。
   nodes: WorkflowNodeType[]
+  // 该工作流 id：运行入口走 POST /workflows/{wfId}/run；缺省 → 运行按钮禁用。
+  workflowId?: string
+  // 运行期输入声明：非空则点「运行」先弹 RunInputsDialog，填完再发起 run。
+  inputsSchema?: InputField[]
   onSelectRun: (runId: string) => void
 }
 
@@ -126,16 +130,19 @@ function RunCanvasInner({
   org,
   runId,
   nodes,
+  workflowId,
+  inputsSchema,
   onSelectRun,
 }: RunCanvasProps) {
-  const navigate = useNavigate()
   const qc = useQueryClient()
   const { isAdmin } = useRole(org)
 
   const plansQuery = usePlans(projectId)
   const stateQuery = useProjectState(projectId, runId ?? "")
-  const run = useRun(projectId)
+  const runWorkflow = useRunWorkflow(projectId)
   const cancel = useCancel(projectId)
+  // 运行期输入弹窗开合：inputsSchema 非空时点「运行」先弹表单，填完再发起 run。
+  const [runInputsOpen, setRunInputsOpen] = useState(false)
 
   // 选中态：点节点 → 看工件（剧本/分镜抽屉 或 右栏资产预览 或大功能容器 Run Matrix）。
   const [selection, setSelection] = useState<RunSelection>(null)
@@ -374,30 +381,40 @@ function RunCanvasInner({
   )
   const canCancel =
     isLatestPlan && (wfState.status === "running" || wfState.status === "planning")
-  const isRunning = run.isPending || cancel.isPending
+  const isRunning = runWorkflow.isPending || cancel.isPending
 
-  async function handleRun() {
+  // 运行入口（与项目页 handleRunWorkflow 一致）：inputsSchema 非空 → 先弹运行期
+  // 表单；空 → 直接跑。workflowId 缺省时运行按钮已禁用，这里兜底 no-op。
+  function handleRun() {
+    if (!workflowId) return
+    if (inputsSchema && inputsSchema.length > 0) {
+      setRunInputsOpen(true)
+      return
+    }
+    void doRunWorkflow()
+  }
+
+  async function doRunWorkflow(inputs?: Record<string, unknown>) {
+    if (!workflowId) return
     try {
-      const res = await run.mutateAsync(undefined)
+      const res = await runWorkflow.mutateAsync({ wfId: workflowId, inputs })
       if (res.fallbackUsed) {
-        toast.warning("Planner 输出畸形，已回落默认管线")
+        toast.warning("工作流校验未通过，已回落默认管线")
       } else {
         toast.success("已开始运行")
       }
       onSelectRun(res.planId)
     } catch (err) {
-      const status = (err as { status?: number }).status
-      if (status === 429) {
+      if (err instanceof ApiError && err.status === 429) {
         toast.error("配额已用尽，请稍后再试")
         return
       }
-      toast.error("运行失败", {
-        action: {
-          label: "去配置模型",
-          onClick: () =>
-            void navigate({ to: "/orgs/$org/model-configs", params: { org } }),
-        },
-      })
+      if (err instanceof ApiError && err.status === 400) {
+        const msg = err.body.replace(/^invalid workflow:\s*/i, "").replace(/^custom workflow:\s*/i, "").trim()
+        toast.error(msg || "工作流配置无效")
+        return
+      }
+      toast.error("运行失败")
     }
   }
 
@@ -472,15 +489,33 @@ function RunCanvasInner({
       ? selection.kind
       : null
 
+  // 运行期输入表单：inputsSchema 非空时点「运行」弹出，填完再发起 run。
+  // 条件挂载 → 每次打开都以最新 schema 重置内部表单态（与项目页一致）。
+  const runInputsDialog = runInputsOpen && inputsSchema && inputsSchema.length > 0 && (
+    <RunInputsDialog
+      open
+      onOpenChange={(o) => {
+        if (!o) setRunInputsOpen(false)
+      }}
+      schema={inputsSchema}
+      submitting={runWorkflow.isPending}
+      onSubmit={async (inputs) => {
+        await doRunWorkflow(inputs)
+        setRunInputsOpen(false)
+      }}
+    />
+  )
+
   // 无 runId：居中「尚无运行」空态 + 运行按钮。
   if (!runId) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 bg-bg-base text-center">
         <p className="text-[13px] text-text-2">尚无运行</p>
         <p className="text-[12px] text-text-3">点「运行」开始一次生产，状态将叠加到画布上</p>
-        <Button variant="amber" onClick={handleRun} disabled={isRunning}>
+        <Button variant="amber" onClick={handleRun} disabled={isRunning || !workflowId}>
           运行
         </Button>
+        {runInputsDialog}
       </div>
     )
   }
@@ -689,7 +724,7 @@ function RunCanvasInner({
           <Button
             variant={readyForReview ? "ghost" : "amber"}
             onClick={handleRun}
-            disabled={isRunning}
+            disabled={isRunning || !workflowId}
           >
             {runStatus === "idle" ? "运行" : "重新运行"}
           </Button>
@@ -773,6 +808,8 @@ function RunCanvasInner({
           />
         </DialogContent>
       </Dialog>
+
+      {runInputsDialog}
     </div>
   )
 }

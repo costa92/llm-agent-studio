@@ -11,7 +11,6 @@ import type {
   ItemsEnvelope,
   Project,
   RegenerateResponse,
-  RunResponse,
   StudioEvent,
 } from "@/lib/types"
 import type { ProjectState } from "@/lib/projectState"
@@ -73,33 +72,6 @@ export function useProjectState(id: string, planId?: string): UseQueryResult<Pro
     queryFn: () => fetchProjectState(id, planId),
     enabled: id !== "",
     staleTime: 5_000,
-  })
-}
-
-// POST /api/projects/{id}/run → 202 {planId,valid,fallbackUsed}（editor+）。配额超限 429；不存在 404。
-// 可带运行期输入 {inputs}（工作流 inputs_schema）；inputs 缺省 → 不带 body（与历史行为一致，零回归）。
-export function useRun(
-  id: string,
-): UseMutationResult<RunResponse, Error, Record<string, unknown> | undefined> {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (inputs?: Record<string, unknown>) =>
-      apiJSON<RunResponse>(
-        `/api/projects/${id}/run`,
-        inputs
-          ? {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ inputs }),
-            }
-          : { method: "POST" },
-      ),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["project", id] })
-      // 新建了一个 plan：失效运行历史，使运行页导航到新 runId 后 usePlans()[0]
-      // 即为新 plan，isLatestPlan 正确，Run/Cancel 不再静默禁用直至刷新。
-      void queryClient.invalidateQueries({ queryKey: ["plans", id] })
-    },
   })
 }
 

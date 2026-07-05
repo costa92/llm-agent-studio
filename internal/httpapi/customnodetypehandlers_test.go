@@ -13,8 +13,7 @@ import (
 	"github.com/costa92/llm-agent-contract/llm"
 	"github.com/costa92/llm-agent-studio/internal/customnodetype"
 	"github.com/costa92/llm-agent-studio/internal/planner"
-	"github.com/costa92/llm-agent-studio/internal/project"
-	"github.com/costa92/llm-agent-studio/internal/projectstate"
+	"github.com/costa92/llm-agent-studio/internal/workflows"
 )
 
 // stubCNTStore implements CustomNodeTypeStore for DB-free handler tests.
@@ -192,89 +191,25 @@ func (c *capturingPlanner) PlanCustom(_ context.Context, _, _ string, _ planner.
 	return planner.Result{PlanID: "pl", Valid: true, ReadyTodos: []planner.ReadyTodo{{ID: "t1", Type: "custom:llm"}}}, nil
 }
 
-// cntProjectStore is a ProjectStore that returns a project whose WorkflowNodes
-// contain a custom:* node with a given typeId (for run-gate tests).
-type cntProjectStore struct {
-	p project.Project
-}
-
-func (s cntProjectStore) Create(_ context.Context, _ project.CreateInput) (project.Project, error) {
-	return project.Project{}, nil
-}
-func (s cntProjectStore) Get(_ context.Context, _ string) (project.Project, error) { return s.p, nil }
-func (s cntProjectStore) ListByOrg(_ context.Context, _ string, _ int, _ string) ([]project.Project, string, error) {
-	return nil, "", nil
-}
-func (s cntProjectStore) Update(_ context.Context, _ string, _ project.UpdateInput) (project.Project, error) {
-	return project.Project{}, nil
-}
-func (s cntProjectStore) SetStatus(_ context.Context, _, _ string) error  { return nil }
-func (s cntProjectStore) SetCover(_ context.Context, _, _ string) error   { return nil }
-func (s cntProjectStore) Cancel(_ context.Context, _ string) error        { return nil }
-func (s cntProjectStore) Deleted(_ context.Context, _ string) (bool, error) {
-	return false, nil
-}
-func (s cntProjectStore) SoftDelete(_ context.Context, _ string) error { return nil }
-func (s cntProjectStore) OrgIDForProject(_ context.Context, _ string) (string, error) {
-	return s.p.OrgID, nil
-}
-func (s cntProjectStore) ListPlans(_ context.Context, _ string) ([]project.Plan, error) {
-	return nil, nil
-}
-func (s cntProjectStore) LoadState(_ context.Context, _, _ string) (projectstate.ProjectState, error) {
-	return projectstate.ProjectState{}, nil
-}
-
-// TestRunHandler_AnnotationCustomNode400 verifies annotation custom nodes (no typeId) → 400.
-func TestRunHandler_AnnotationCustomNode400(t *testing.T) {
-	nodes, _ := json.Marshal([]planner.WorkflowNode{
-		{ID: "s1", Type: "script"},
-		{ID: "c1", Type: "custom:translate", DependsOn: []string{"s1"}},
-	})
-	ps := cntProjectStore{p: project.Project{
-		ID:                    "p1",
-		OrgID:                 "o1",
-		Status:                "draft",
-		CustomWorkflowEnabled: true,
-		WorkflowNodes:         json.RawMessage(nodes),
-	}}
-	h := runHandler(ps, &capturingPlanner{}, stubAppender{}, &stubCost{count: 0}, 100, nil, &stubCNTStore{})
-	req := httptest.NewRequest("POST", "/api/projects/p1/run", nil)
-	req.SetPathValue("id", "p1")
-	rr := httptest.NewRecorder()
-	h(rr, req)
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("annotation custom node should 400, got %d: %s", rr.Code, rr.Body.String())
-	}
-	if !strings.Contains(rr.Body.String(), "未绑定类型") {
-		t.Fatalf("body should mention 未绑定类型, got: %s", rr.Body.String())
-	}
-}
-
-// TestRunHandler_TypedCustomNode202 verifies typed custom nodes (with typeId) are resolved
-// and PlanCustom is called with a non-nil resolved map entry.
-func TestRunHandler_TypedCustomNode202(t *testing.T) {
+// TestRunWorkflowHandler_TypedCustomNode202 verifies typed custom nodes (with
+// typeId) are resolved and PlanCustom is called with a non-nil resolved map entry.
+func TestRunWorkflowHandler_TypedCustomNode202(t *testing.T) {
 	params, _ := json.Marshal(map[string]any{"userPrompt": "{{draft}}", "outputFormat": "text"})
 	nodes, _ := json.Marshal([]planner.WorkflowNode{
 		{ID: "s1", Type: "script"},
 		{ID: "c1", Type: "custom:llm", TypeId: "reg-1", DependsOn: []string{"s1"}},
 	})
-	ps := cntProjectStore{p: project.Project{
-		ID:                    "p1",
-		OrgID:                 "o1",
-		Status:                "draft",
-		CustomWorkflowEnabled: true,
-		WorkflowNodes:         json.RawMessage(nodes),
-	}}
+	ws := &stubWorkflows{got: workflows.Workflow{Name: "wf", Nodes: json.RawMessage(nodes)}}
 	cnt := &stubCNTStore{got: customnodetype.CustomNodeType{
 		ID:     "reg-1",
 		Kind:   "llm",
 		Params: params,
 	}}
 	cp := &capturingPlanner{}
-	h := runHandler(ps, cp, stubAppender{}, &stubCost{count: 0}, 100, nil, cnt)
-	req := httptest.NewRequest("POST", "/api/projects/p1/run", nil)
+	h := runWorkflowHandler(stubProjects{orgID: "o1"}, ws, cp, stubAppender{}, &stubCost{count: 0}, 100, cnt)
+	req := httptest.NewRequest("POST", "/api/projects/p1/workflows/wf1/run", nil)
 	req.SetPathValue("id", "p1")
+	req.SetPathValue("wfId", "wf1")
 	rr := httptest.NewRecorder()
 	h(rr, req)
 	if rr.Code != http.StatusAccepted {

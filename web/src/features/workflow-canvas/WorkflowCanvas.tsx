@@ -1211,10 +1211,12 @@ function CanvasInner({
 // 运行模式壳：顶栏（返回 / 名 / 编辑|运行 切换）+ 只读运行画布。
 // 编辑态的所有 hook/handler/面板都在 CanvasInner 内，运行态走独立子树（避免条件 hook）。
 function RunShell({
+  workflowId,
   workflowName,
   projectId,
   org,
   nodes,
+  inputsSchema,
   runId,
   onBack,
   onModeChange,
@@ -1241,6 +1243,8 @@ function RunShell({
         org={org}
         runId={runId}
         nodes={nodes}
+        workflowId={workflowId}
+        inputsSchema={inputsSchema}
         onSelectRun={(rid) => onSelectRun?.(rid)}
       />
     </div>
