@@ -8,7 +8,7 @@ export type PreviewMode = "reader" | "music"
 // 音乐/歌曲工作流命中词：节点 type/label 或工作流名含这些词 → 判为 music 模式。
 const MUSIC_HINT = /词|歌|曲|音乐|song|lyric/i
 
-// 从自定义 LLM 节点产物解析出的成品文档。lyrics（音乐）/story（绘本/故事）二选一或都缺。
+// 从自定义 LLM 节点产物解析出的成品文档。lyrics（音乐）/story（故事）二选一或都缺。
 export interface StoryDoc {
   title?: string
   lyrics?: string

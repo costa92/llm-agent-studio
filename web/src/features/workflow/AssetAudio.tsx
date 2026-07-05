@@ -2,7 +2,7 @@ import { forwardRef } from "react"
 import { cn } from "@/lib/utils"
 import { useResolvedAssetUrl } from "./assetThumb"
 
-// 音频播放器（绘本阅读器旁白）：复用 useResolvedAssetUrl 扩 "audio"，
+// 通用音频播放器（成品阅读旁白/TTS 朗读）：复用 useResolvedAssetUrl 扩 "audio"，
 //   走 GET /api/assets/{id}/content 下载字节生成 blob object URL 喂 <audio controls src>。
 //   加载/失败降级文案。ref 透传给 <audio>，供阅读器自动朗读时 play()/监听 onEnded。
 export interface AssetAudioProps {
