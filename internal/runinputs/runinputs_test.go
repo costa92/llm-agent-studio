@@ -26,7 +26,6 @@ func TestValidateSchema(t *testing.T) {
 			schema: []Field{
 				{Name: "heroName", Type: "text", Target: "variable"},
 				{Name: "tone", Type: "select", Target: "variable", Options: []Option{{Value: "warm"}}},
-				{Name: "themes", Type: "multiselect", Target: "pbConfig", Options: []Option{{Value: "friendship"}}},
 			},
 			wantErr: false,
 		},
@@ -61,12 +60,12 @@ func TestValidateSchema(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "multiselect 无 options",
-			schema:  []Field{{Name: "x", Type: "multiselect", Target: "pbConfig"}},
+			name:    "已下线 target=pbConfig 被拒",
+			schema:  []Field{{Name: "x", Type: "text", Target: "pbConfig"}},
 			wantErr: true,
 		},
 		{
-			name:    "multiselect 非 pbConfig target",
+			name:    "已下线 type=multiselect 被拒",
 			schema:  []Field{{Name: "x", Type: "multiselect", Target: "variable", Options: []Option{{Value: "a"}}}},
 			wantErr: true,
 		},
@@ -118,7 +117,7 @@ func TestValidate_EmptyOK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
-	if len(got.Variables) != 0 || len(got.BriefOverride) != 0 || len(got.PBOverride) != 0 {
+	if len(got.Variables) != 0 || len(got.BriefOverride) != 0 {
 		t.Fatalf("expected empty Resolved, got %+v", got)
 	}
 }
@@ -145,14 +144,9 @@ func TestValidate_Errors(t *testing.T) {
 			values: map[string]json.RawMessage{"tone": raw(`"cold"`)},
 		},
 		{
-			name:   "multiselect 越界",
-			schema: []Field{{Name: "themes", Type: "multiselect", Target: "pbConfig", Options: []Option{{Value: "a"}, {Value: "b"}}}},
-			values: map[string]json.RawMessage{"themes": raw(`["a","x"]`)},
-		},
-		{
-			name:   "multiselect 值非数组",
-			schema: []Field{{Name: "themes", Type: "multiselect", Target: "pbConfig", Options: []Option{{Value: "a"}}}},
-			values: map[string]json.RawMessage{"themes": raw(`"a"`)},
+			name:   "已下线 target=pbConfig（运行时也拒绝）",
+			schema: []Field{{Name: "voice", Type: "text", Target: "pbConfig"}},
+			values: map[string]json.RawMessage{"voice": raw(`"warm"`)},
 		},
 		{
 			name:   "单值超 8KB",
@@ -165,7 +159,7 @@ func TestValidate_Errors(t *testing.T) {
 			values: map[string]json.RawMessage{},
 		},
 		{
-			name:   "multiselect 非 pbConfig（运行时也拒绝）",
+			name:   "已下线 type=multiselect（运行时也拒绝）",
 			schema: []Field{{Name: "x", Type: "multiselect", Target: "variable", Options: []Option{{Value: "a"}}}},
 			values: map[string]json.RawMessage{"x": raw(`["a"]`)},
 		},
@@ -186,8 +180,6 @@ func TestValidate_Routing(t *testing.T) {
 		{Name: "tone", Type: "select", Target: "variable", Options: []Option{{Value: "warm"}}},
 		{Name: "brief", Type: "textarea", Target: "brief"},
 		{Name: "platform", Type: "text", Target: "targetPlatform"},
-		{Name: "voice", Type: "select", Target: "pbConfig", Options: []Option{{Value: "warm"}}},
-		{Name: "themes", Type: "multiselect", Target: "pbConfig", Options: []Option{{Value: "a"}, {Value: "b"}}},
 	}
 	values := map[string]json.RawMessage{
 		"heroName": raw(`"阿力"`),
@@ -195,8 +187,6 @@ func TestValidate_Routing(t *testing.T) {
 		"tone":     raw(`"warm"`),
 		"brief":    raw(`"写一个关于勇气的故事"`),
 		"platform": raw(`"小红书"`),
-		"voice":    raw(`"warm"`),
-		"themes":   raw(`["a","b"]`),
 	}
 	got, err := Validate(schema, values)
 	if err != nil {
@@ -218,13 +208,6 @@ func TestValidate_Routing(t *testing.T) {
 	}
 	if got.BriefOverride["targetPlatform"] != "小红书" {
 		t.Errorf("targetPlatform=%q", got.BriefOverride["targetPlatform"])
-	}
-	// pbConfig override 保留原始 json
-	if string(got.PBOverride["voice"]) != `"warm"` {
-		t.Errorf("pb voice=%q", string(got.PBOverride["voice"]))
-	}
-	if string(got.PBOverride["themes"]) != `["a","b"]` {
-		t.Errorf("pb themes=%q", string(got.PBOverride["themes"]))
 	}
 }
 

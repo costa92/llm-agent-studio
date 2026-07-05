@@ -1,7 +1,6 @@
 // Package runinputs 提供工作流「运行期输入」的类型化校验与分流：
 // 既校验设计期声明的 schema（ValidateSchema），又在 run 时校验提交值并把
-// 它们分流到 variable / brief / pbConfig 三个通道（Validate）。本包是纯逻辑，
-// 不依赖 DB。绘本派生 schema 见 picturebook.go。
+// 它们分流到 variable / brief 两类通道（Validate）。本包是纯逻辑，不依赖 DB。
 package runinputs
 
 import (
@@ -23,15 +22,15 @@ var nameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // type / target allowlist。
 var (
 	validTypes = map[string]bool{
-		"text": true, "textarea": true, "number": true, "select": true, "multiselect": true,
+		"text": true, "textarea": true, "number": true, "select": true,
 	}
 	validTargets = map[string]bool{
 		"variable": true, "brief": true, "contentType": true,
-		"targetPlatform": true, "style": true, "pbConfig": true,
+		"targetPlatform": true, "style": true,
 	}
 )
 
-// Option 是 select / multiselect 的可选项。
+// Option 是 select 的可选项。
 type Option struct {
 	Value string `json:"value"`
 	Label string `json:"label,omitempty"`
@@ -50,13 +49,12 @@ type Field struct {
 
 // Resolved 是校验后按 target 分流的结果。
 type Resolved struct {
-	Variables     map[string]string          // target=="variable" → {{input:name}}
-	BriefOverride map[string]string          // target∈{brief,contentType,targetPlatform,style}，按 target 键
-	PBOverride    map[string]json.RawMessage // target=="pbConfig"，按 name（即 pbconfig json key）键，保留原始 json
+	Variables     map[string]string // target=="variable" → {{input:name}}
+	BriefOverride map[string]string // target∈{brief,contentType,targetPlatform,style}，按 target 键
 }
 
 // ValidateSchema 做设计期（存时）校验：name 正则、type/target allowlist、
-// select/multiselect 必带非空 options、multiselect 只允许 pbConfig、字段数上限。
+// select 必带非空 options、字段数上限。
 func ValidateSchema(schema []Field) error {
 	if len(schema) > maxFields {
 		return fmt.Errorf("input schema 字段数 %d 超过上限 %d", len(schema), maxFields)
@@ -70,8 +68,8 @@ func ValidateSchema(schema []Field) error {
 }
 
 // checkFieldStructure 校验单个字段的结构。requireOptions 为 true 时（存时）
-// 要求 select/multiselect 必带非空 options；运行时（false）放宽这一条——派生
-// schema（如绘本无枚举的 voice）允许空 options，值是否合法交由值校验环节判定。
+// 要求 select 必带非空 options；运行时（false）放宽这一条——派生 schema 允许
+// 空 options，值是否合法交由值校验环节判定。
 func checkFieldStructure(f Field, requireOptions bool) error {
 	if !nameRe.MatchString(f.Name) {
 		return fmt.Errorf("字段名 %q 不合法（须匹配 ^[A-Za-z_][A-Za-z0-9_]*$）", f.Name)
@@ -82,10 +80,7 @@ func checkFieldStructure(f Field, requireOptions bool) error {
 	if !validTargets[f.Target] {
 		return fmt.Errorf("字段 %s 的 target %q 未知", f.Name, f.Target)
 	}
-	if f.Type == "multiselect" && f.Target != "pbConfig" {
-		return fmt.Errorf("字段 %s：multiselect 仅允许 target=pbConfig", f.Name)
-	}
-	if requireOptions && (f.Type == "select" || f.Type == "multiselect") && len(f.Options) == 0 {
+	if requireOptions && f.Type == "select" && len(f.Options) == 0 {
 		return fmt.Errorf("字段 %s（%s）必须带非空 options", f.Name, f.Type)
 	}
 	return nil
@@ -129,21 +124,13 @@ func Validate(schema []Field, values map[string]json.RawMessage) (Resolved, erro
 				res.BriefOverride = map[string]string{}
 			}
 			res.BriefOverride[f.Target] = rawToString(val)
-		case "pbConfig":
-			if res.PBOverride == nil {
-				res.PBOverride = map[string]json.RawMessage{}
-			}
-			// 拷贝一份，避免持有调用方底层数组。
-			cp := make(json.RawMessage, len(val))
-			copy(cp, val)
-			res.PBOverride[f.Name] = cp
 		}
 	}
 	return res, nil
 }
 
-// checkValue 按 type 校验提交值：number 必为数字；select 值须在 options；
-// multiselect 须为字符串数组且每项在 options。text/textarea 不限值。
+// checkValue 按 type 校验提交值：number 必为数字；select 值须在 options。
+// text/textarea 不限值。
 func checkValue(f Field, val json.RawMessage) error {
 	switch f.Type {
 	case "number":
@@ -158,16 +145,6 @@ func checkValue(f Field, val json.RawMessage) error {
 		}
 		if !optionAllowed(f.Options, s) {
 			return fmt.Errorf("字段 %s 的值 %q 不在可选项内", f.Name, s)
-		}
-	case "multiselect":
-		var arr []string
-		if err := json.Unmarshal(val, &arr); err != nil {
-			return fmt.Errorf("字段 %s 期望字符串数组", f.Name)
-		}
-		for _, s := range arr {
-			if !optionAllowed(f.Options, s) {
-				return fmt.Errorf("字段 %s 的值 %q 不在可选项内", f.Name, s)
-			}
 		}
 	}
 	return nil

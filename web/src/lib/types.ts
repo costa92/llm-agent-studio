@@ -109,14 +109,13 @@ export interface WorkflowNode {
 
 // 运行期输入 schema（设计期声明，存 workflows.inputs_schema）。字段形态对齐后端
 // internal/runinputs.Field：name + label + type + target + options + default + required。
-export type InputFieldType = "text" | "textarea" | "number" | "select" | "multiselect"
+export type InputFieldType = "text" | "textarea" | "number" | "select"
 export type InputFieldTarget =
   | "variable"
   | "brief"
   | "contentType"
   | "targetPlatform"
   | "style"
-  | "pbConfig"
 
 export interface InputFieldOption {
   value: string
@@ -129,7 +128,7 @@ export interface InputField {
   label?: string
   type: InputFieldType
   target: InputFieldTarget
-  // 仅 select/multiselect 用；非空校验。
+  // 仅 select 用；非空校验。
   options?: InputFieldOption[]
   // 默认值（可选）；后端为 json.RawMessage，前端以字符串字面量提交（合法 JSON）。
   default?: string

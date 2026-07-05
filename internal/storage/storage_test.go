@@ -476,3 +476,82 @@ func TestM21AddsItemsColumnAndBackfillsFormatAware(t *testing.T) {
 		t.Fatalf("migrate 3 (idempotent): %v", err)
 	}
 }
+
+// TestM27StripsPBConfigInputs covers the m27 cleanup: existing workflows whose
+// inputs_schema carries retired target='pbConfig' fields get those fields
+// stripped (other fields preserved verbatim), an all-pbConfig schema collapses
+// to '[]', and pbConfig-free rows are left untouched. Re-running migrate is a
+// no-op (idempotent).
+func TestM27StripsPBConfigInputs(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, Config{PGURL: testDSN(t)})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	pool := st.Pool()
+
+	var pid string
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),'org','p','u') RETURNING id`).Scan(&pid); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	seed := func(id, schema string) {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO workflows (id, project_id, name, nodes, inputs_schema) VALUES ($1,$2,'wf','[]',$3::jsonb)`,
+			id, pid, schema); err != nil {
+			t.Fatalf("seed workflow %s: %v", id, err)
+		}
+	}
+	mixed := "wf-mixed-" + randHex(6)
+	allPB := "wf-allpb-" + randHex(6)
+	clean := "wf-clean-" + randHex(6)
+	seed(mixed, `[{"name":"heroName","type":"text","target":"variable"},{"name":"themes","type":"multiselect","target":"pbConfig","options":[{"value":"a"}]},{"name":"brief","type":"textarea","target":"brief"}]`)
+	seed(allPB, `[{"name":"voice","type":"select","target":"pbConfig","options":[{"value":"warm"}]}]`)
+	seed(clean, `[{"name":"tone","type":"select","target":"variable","options":[{"value":"warm"}]}]`)
+
+	// In the shared-DB suite an earlier test run may already have recorded m27;
+	// clear its record so the step re-runs against THESE freshly-seeded rows
+	// (re-run is safe — the UPDATE only matches rows still carrying pbConfig).
+	if _, err := pool.Exec(ctx, `DELETE FROM schema_migrations WHERE version='m27'`); err != nil {
+		t.Fatalf("reset m27 record: %v", err)
+	}
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate with m27: %v", err)
+	}
+
+	get := func(id string) string {
+		var s string
+		if err := pool.QueryRow(ctx, `SELECT inputs_schema::text FROM workflows WHERE id=$1`, id).Scan(&s); err != nil {
+			t.Fatalf("read %s: %v", id, err)
+		}
+		return s
+	}
+	var fields []struct {
+		Name   string `json:"name"`
+		Target string `json:"target"`
+	}
+	if err := json.Unmarshal([]byte(get(mixed)), &fields); err != nil {
+		t.Fatalf("decode mixed schema: %v", err)
+	}
+	if len(fields) != 2 || fields[0].Name != "heroName" || fields[1].Name != "brief" {
+		t.Fatalf("mixed schema should keep exactly heroName+brief in order, got %s", get(mixed))
+	}
+	for _, f := range fields {
+		if f.Target == "pbConfig" {
+			t.Fatalf("pbConfig field survived m27: %s", get(mixed))
+		}
+	}
+	if got := get(allPB); got != "[]" {
+		t.Fatalf("all-pbConfig schema should collapse to [], got %s", got)
+	}
+	if !strings.Contains(get(clean), `"tone"`) {
+		t.Fatalf("pbConfig-free schema should be untouched, got %s", get(clean))
+	}
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate 2 (idempotent): %v", err)
+	}
+}

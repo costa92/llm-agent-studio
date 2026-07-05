@@ -60,11 +60,6 @@ describe("InputsSchemaPanel", () => {
     expect(screen.getByRole("alert").textContent).toMatch(/选项/)
   })
 
-  it("multiselect × 非 pbConfig → 显示校验错误", () => {
-    render(<Harness initial={[{ name: "tags", type: "multiselect", target: "variable" }]} />)
-    expect(screen.getByRole("alert").textContent).toMatch(/pbConfig|绘本/)
-  })
-
   it("合法字段不显示错误", () => {
     render(<Harness initial={[{ name: "heroName", type: "text", target: "variable" }]} />)
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()

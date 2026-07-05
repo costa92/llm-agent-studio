@@ -542,6 +542,7 @@ func (s *Storage) goSteps() []migrationStep {
 		{version: "m24", run: m24CreateExportJobs},
 		{version: "m25", run: m25CreateOrgAlertSettings},
 		{version: "m26", run: m26AddProjectsDeletedAt},
+		{version: "m27", run: m27StripPBConfigInputs},
 	}
 }
 
@@ -719,6 +720,28 @@ func m26AddProjectsDeletedAt(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx,
 		`ALTER TABLE projects ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`); err != nil {
 		return fmt.Errorf("add projects.deleted_at: %w", err)
+	}
+	return nil
+}
+
+// m27StripPBConfigInputs strips target='pbConfig' fields from workflows.
+// inputs_schema：workflow-only 转型（m23）删掉绘本配置后，pbConfig 是死通道
+// （Resolved.PBOverride 无任何消费方），runinputs 的 allowlist 已随之删除
+// target=pbConfig 与 type=multiselect。不清洗则存量 workflow 保存 / 运行时会
+// 撞新 allowlist 校验失败。multiselect 字段旧校验强制 target=pbConfig，故按
+// target 过滤即一并剥离。Forward-only、幂等（首跑后无行再匹配 WHERE）。
+func m27StripPBConfigInputs(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `
+		UPDATE workflows
+		SET inputs_schema = COALESCE(
+			(SELECT jsonb_agg(f ORDER BY ord)
+			   FROM jsonb_array_elements(inputs_schema) WITH ORDINALITY AS t(f, ord)
+			  WHERE f->>'target' IS DISTINCT FROM 'pbConfig'),
+			'[]'::jsonb)
+		WHERE EXISTS (
+			SELECT 1 FROM jsonb_array_elements(inputs_schema) AS f
+			 WHERE f->>'target' = 'pbConfig')`); err != nil {
+		return fmt.Errorf("strip pbConfig inputs: %w", err)
 	}
 	return nil
 }

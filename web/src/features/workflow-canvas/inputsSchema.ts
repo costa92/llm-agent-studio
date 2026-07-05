@@ -2,9 +2,9 @@ import { z } from "zod"
 import type { InputField } from "@/lib/types"
 
 // 设计期输入字段的前端校验，与后端 internal/runinputs.ValidateSchema 对齐：
-// name 须 ^[A-Za-z_][A-Za-z0-9_]*$；select/multiselect 必带非空 options；
-// multiselect 只允许 target=pbConfig。校验风格复刻 WorkflowDialog.schema.ts（superRefine
-// 首个问题即停）。后端 400 为兜底，此处只为让用户在保存前看到行内提示。
+// name 须 ^[A-Za-z_][A-Za-z0-9_]*$；select 必带非空 options。校验风格复刻
+// WorkflowDialog.schema.ts（superRefine 首个问题即停）。后端 400 为兜底，
+// 此处只为让用户在保存前看到行内提示。
 
 // 类型下拉选项（UI 文案 → value 对齐后端 type allowlist）。
 export const INPUT_FIELD_TYPES: { value: InputField["type"]; label: string }[] = [
@@ -12,7 +12,6 @@ export const INPUT_FIELD_TYPES: { value: InputField["type"]; label: string }[] =
   { value: "textarea", label: "多行文本" },
   { value: "number", label: "数字" },
   { value: "select", label: "单选" },
-  { value: "multiselect", label: "多选" },
 ]
 
 // 目标下拉选项（value 对齐后端 target allowlist）。
@@ -22,7 +21,6 @@ export const INPUT_FIELD_TARGETS: { value: InputField["target"]; label: string }
   { value: "contentType", label: "覆盖 内容类型" },
   { value: "targetPlatform", label: "覆盖 目标平台" },
   { value: "style", label: "覆盖 风格" },
-  { value: "pbConfig", label: "覆盖 绘本配置" },
 ]
 
 const nameRe = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -31,14 +29,13 @@ export const inputFieldSchema = z
   .object({
     name: z.string(),
     label: z.string().optional(),
-    type: z.enum(["text", "textarea", "number", "select", "multiselect"]),
+    type: z.enum(["text", "textarea", "number", "select"]),
     target: z.enum([
       "variable",
       "brief",
       "contentType",
       "targetPlatform",
       "style",
-      "pbConfig",
     ]),
     options: z
       .array(z.object({ value: z.string(), label: z.string().optional() }))
@@ -55,22 +52,11 @@ export const inputFieldSchema = z
       })
       return
     }
-    if (f.type === "multiselect" && f.target !== "pbConfig") {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["target"],
-        message: "multiselect 仅允许目标为「覆盖绘本配置」(pbConfig)",
-      })
-      return
-    }
-    if (
-      (f.type === "select" || f.type === "multiselect") &&
-      !(f.options ?? []).some((o) => o.value.trim())
-    ) {
+    if (f.type === "select" && !(f.options ?? []).some((o) => o.value.trim())) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["options"],
-        message: "单选/多选必须至少有一个非空选项",
+        message: "单选必须至少有一个非空选项",
       })
     }
   })

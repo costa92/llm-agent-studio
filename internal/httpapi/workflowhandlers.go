@@ -41,8 +41,8 @@ type workflowReq struct {
 
 // validateInputsSchema runs the design-time (save-time) check on a raw
 // inputs_schema payload: it unmarshals to []runinputs.Field then delegates to
-// runinputs.ValidateSchema (name regex, type/target allowlist, select/multiselect
-// options, multiselect×非pbConfig). An empty/absent schema is valid.
+// runinputs.ValidateSchema (name regex, type/target allowlist, select
+// options). An empty/absent schema is valid.
 func validateInputsSchema(raw json.RawMessage) error {
 	if len(raw) == 0 {
 		return nil

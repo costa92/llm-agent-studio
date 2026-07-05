@@ -96,10 +96,11 @@ func TestCreateWorkflowRejectsInvalidInputsSchema(t *testing.T) {
 		schema string
 	}{
 		{"bad name", `[{"name":"1bad","type":"text","target":"variable"}]`},
-		{"select no options", `[{"name":"voice","type":"select","target":"pbConfig"}]`},
+		{"select no options", `[{"name":"voice","type":"select","target":"variable"}]`},
 		{"unknown type", `[{"name":"x","type":"color","target":"variable"}]`},
 		{"unknown target", `[{"name":"x","type":"text","target":"secret"}]`},
-		{"multiselect non-pbConfig", `[{"name":"themes","type":"multiselect","target":"variable","options":[{"value":"a"}]}]`},
+		{"retired multiselect type", `[{"name":"themes","type":"multiselect","target":"variable","options":[{"value":"a"}]}]`},
+		{"retired pbConfig target", `[{"name":"voice","type":"text","target":"pbConfig"}]`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
