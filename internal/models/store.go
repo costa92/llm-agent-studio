@@ -83,15 +83,12 @@ func Catalog() []CatalogEntry {
 		{Provider: "minimax", Model: "image-01", Kind: "image", Label: "MiniMax image-01"},
 		{Provider: "volcengine", Model: "doubao-seedream-3-0-t2i", Kind: "image", Label: "Volcengine Seedream"},
 		{Provider: "fake", Model: "fake", Kind: "image", Label: "Fake Image (sandbox)"},
-		// M4 二期: video/audio entries. fake-* drive the sandbox FakeAsync live
-		// verification; the real models are key-gated skeletons (spec §8, TODO m5).
+		// video/audio: fake-* drive the sandbox FakeAsync live verification;
+		// audio 真实实现是 MiniMax T2A（同步，org config 自带 key）。M4 的必失败
+		// 骨架条目（Runway/Kling/Veo/OpenAI-TTS/Hailuo-02）已随 Phase 2.1 下架——
+		// 真实接线时再回表。
 		{Provider: "fake", Model: "fake-video-async", Kind: "video", Label: "Fake Async Video (sandbox)"},
 		{Provider: "fake", Model: "fake-audio-async", Kind: "audio", Label: "Fake Async Audio (sandbox)"},
-		{Provider: "runway", Model: "gen-3", Kind: "video", Label: "Runway Gen-3"},
-		{Provider: "kling", Model: "kling-v1", Kind: "video", Label: "Kling v1"},
-		{Provider: "google", Model: "veo-2", Kind: "video", Label: "Google Veo 2"},
-		{Provider: "minimax", Model: "MiniMax-Hailuo-02", Kind: "video", Label: "MiniMax Hailuo-02"},
-		{Provider: "openai", Model: "tts-1", Kind: "audio", Label: "OpenAI TTS-1"},
 		{Provider: "minimax", Model: "speech-02-hd", Kind: "audio", Label: "MiniMax speech-02-hd"},
 		{Provider: "minimax", Model: "speech-01-turbo", Kind: "audio", Label: "MiniMax speech-01-turbo"},
 		// BYOK: text/chat 模型建议项 (provider/model 在 store 中自由填写，UI 还可经
