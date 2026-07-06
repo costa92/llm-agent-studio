@@ -1,12 +1,11 @@
 import type { LogLine, StageId } from "@/lib/timeline"
 
-// 分组小标题（emphasis S1–S5 → 中文阶段名）。
+// 分组小标题（emphasis S1–S4 → 中文阶段名）。
 export const EMPHASIS_TITLE: Record<StageId, string> = {
   S1: "规划",
   S2: "剧本",
   S3: "分镜",
   S4: "素材",
-  S5: "审核",
 }
 
 export interface LogGroup {
