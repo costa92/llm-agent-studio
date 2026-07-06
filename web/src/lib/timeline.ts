@@ -3,9 +3,9 @@
 // 这一纯表现职责 + 阶段着色映射。
 import type { SseFrame } from "./types"
 
-// 阶段着色 id（供日志 emphasis；与 ProjectState 的语义 role 一一对应：
-// planner→S1 script→S2 storyboard→S3 asset→S4 review→S5）。纯前端表现。
-export type StageId = "S1" | "S2" | "S3" | "S4" | "S5"
+// 阶段着色 id（供日志 emphasis；与 emit 的 run 事件对应：
+// planner→S1 script→S2 storyboard→S3 asset→S4）。纯前端表现。
+export type StageId = "S1" | "S2" | "S3" | "S4"
 
 // EventLog 行（左栏日志）。emphasis = 阶段标签供着色。
 export interface LogLine {

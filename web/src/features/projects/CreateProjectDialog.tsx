@@ -27,7 +27,7 @@ import {
 } from "./ProjectFields.schema"
 
 // 表单值 → CreateProjectInput。空模型不带（= 后端无 override）。项目工作流化后
-// 不再区分类型：创建即普通（工作流）项目，不带 kind/pbConfig。
+// 不再区分类型：创建即工作流项目，不带 kind（后端默认 custom）。
 function toCreateInput(values: ProjectFormValues): CreateProjectInput {
   return {
     name: values.name,
