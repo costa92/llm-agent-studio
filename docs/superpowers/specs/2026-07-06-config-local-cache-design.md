@@ -5,8 +5,8 @@
 ## 目标
 
 启动时把配置类数据全量加载到进程内存，避免每次请求打库；更新时同步刷新内存。
-多副本部署下通过 PostgreSQL `LISTEN/NOTIFY` 广播失效。缓存原语参考
-`code.hellotalk.com/im/config-center-v2/local_cache` 的「泛型全量加载 + ReloadAll」设计。
+多副本部署下通过 PostgreSQL `LISTEN/NOTIFY` 广播失效。缓存原语采用「泛型全量加载 +
+ReloadAll」设计。
 
 ## 范围（缓存的表）
 

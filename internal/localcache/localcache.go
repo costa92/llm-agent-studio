@@ -1,8 +1,7 @@
-// Package localcache is a small in-memory, full-reload config cache. It mirrors
-// the design of code.hellotalk.com/im/config-center-v2/local_cache (generic
-// Record[DATA,ID] + ReloadAll + Get/GetAll/GetMap), trimmed to the two sources
-// studio needs — a GORM table loader and a custom query func — with no mongo
-// dependency and stdlib-only errors.
+// Package localcache is a small in-memory, full-reload config cache. It is a
+// generic, full-reload loader (Record[DATA,ID] + ReloadAll + Get/GetAll/GetMap)
+// with two sources studio needs — a GORM table loader and a custom query func —
+// and stdlib-only errors.
 //
 // Semantics: after a ReloadAll the cache is authoritative — Get miss means the
 // key genuinely does not exist (callers do NOT fall back to the DB). Reads
