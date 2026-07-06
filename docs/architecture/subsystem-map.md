@@ -70,8 +70,8 @@
 │  └──────────────┘   │ expr 引擎      │  │ scriptengine (Starlark     │    │
 │  ┌──────────────┐   │ $node/$json/   │  │  沙箱: 无 I/O builtins,    │    │
 │  │ runinputs    │   │ $binary 表达式 │  │  step/time/output 限额)    │    │
-│  │ 运行期输入   │   │ (ExprChannel   │  └────────────────────────────┘    │
-│  │ schema 校验  │   │  默认 ON)      │                                    │
+│  │ 运行期输入   │   │ ({{var}} 取值  │  └────────────────────────────┘    │
+│  │ schema 校验  │   │  唯一通道)     │                                    │
 │  └──────────────┘   └────────────────┘                                    │
 │  ┌──────────────┐  ┌─────────────────────────────────────────────────┐    │
 │  │ exports      │  │ ModelRouter (per-org BYOK) → BuildChat/Media    │    │
@@ -166,7 +166,7 @@
 - **内置节点 4 种**（`internal/builtinnode/catalog.go:15-20`）：`script`（剧本）/ `storyboard`（分镜，完成后按镜头扇出 asset todo）/ `asset`（图像/视频/音频生成）/ `prescreen`（上游文本安全评分）。
 - **自定义节点 `custom:*`**：组织级注册表 `custom_node_types` 定义类型，`kind ∈ {llm, http, script}`（`internal/customnodetype/store.go:27`）；`script` kind 跑 Starlark 沙箱（`internal/scriptengine`，无 I/O builtins）。节点实例通过 `typeId` 绑定注册表类型，未绑定的 custom 节点是纯注释、拒绝运行（`planner.HasUnboundCustomNode`，planner.go:195）。
 - **plan 生成无 LLM**：`planner.PlanCustom`（planner.go:210）把 DAG 校验（环检测 graph.go:109）后逐节点翻译成 todos（`todos.CreateGraph`），prompt 取值优先级：节点内联 `promptText` > `promptId`（builtin 预设 / org prompt 库）（planner.go:295-308）。
-- **变量与表达式**：节点 `varBindings` 绑定上游输出；`ExprChannel` 开启时（默认 ON，`internal/config/config.go:146`）取值走 `internal/expr` 表达式引擎（`$node["id"].json.field` 路径），关闭（`STUDIO_EXPR_CHANNEL=0`）回退 legacy resolveVariables。
+- **变量与表达式**：节点 `varBindings` 绑定上游输出；取值走 `internal/expr` 表达式引擎（`$node["id"].json.field` 路径，项目 scoped + 直接 depends_on + fail-closed）——这是**唯一通道**：items cut-over（`docs/specs/items-cutover.md` §3 PR-C）已删除 legacy 解析与切换 flag。
 - **运行期输入**：workflow 可声明 `inputs_schema`，run 时 body 带 `{"inputs":...}`，`internal/runinputs` 做类型化校验与分流。
 - **运行观测**：后端权威渲染态 `projectstate.Compute`（`internal/projectstate/state.go:167`）经 `GET /state`（httpapi.go:185）+ SSE `/events/stream` 的 state 帧下发；前端纯渲染。
 
@@ -174,8 +174,7 @@
 
 | 项 | 现状 | 位置 |
 |---|---|---|
-| items 通道 cut-over 未完成 | `loadInputs`（items 通道）是 **ADDITIVE**——执行真源仍是 legacy `depends_on`/`output_ref`/resolveVariables 解析，items 仅供 parity 测试与后续 cut-over | `internal/worker/worker.go:2165`（P2a NOTE）+ `:2168` |
-| ExprChannel 已默认 ON | `STUDIO_EXPR_CHANNEL=0` 可回退 legacy 解析；`STUDIO_EXPR_PARITY=1` 开 soak 对照探针 | `internal/config/config.go:145-146` |
+| items/expr 已是唯一通道（cut-over 完成） | 执行期输入解析全部走 items 通道（`loadInputs`/`itemsForDep`/`loadInputsByDep`）+ expr 引擎（`resolveVariablesExpr`）；legacy 双通道、两个切换 flag 与 parity 探针已删除。`itemsForDep` 的 output_ref 投影回退保留至少一个部署周期（在途 run 兼容，★M-4） | `docs/specs/items-cutover.md` §3 PR-C |
 | legacy 项目级 run 仍在 | `POST /api/projects/{id}/run` 保留，仅接受项目级嵌入式 custom workflow（`CustomWorkflowEnabled`），否则 400 引导走 `/workflows/{id}/run` | `internal/httpapi/httpapi.go:182` + `handlers.go:470-475` |
 | 新项目默认 kind 仍写 `"standard"` | 建项目未传 kind 时落 `"standard"`（待 Phase 1 收敛为 `"custom"`） | `internal/project/store.go:150` |
 | video/audio 生成是骨架 | `internal/generate/{video,audio}` 的 Submit/Poll 必返错（`video.go:17-20`），真实 SaaS HTTP 未实现 | `internal/generate/video/`、`internal/generate/audio/` |

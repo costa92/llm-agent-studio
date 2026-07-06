@@ -91,12 +91,6 @@ type Config struct {
 	GenQuota         int // rolling-24h per-org generation quota; 0 = unlimited (backstop for fan-out)
 	MaxConcurrentGen int // global concurrent asset-todo cap; 0 = unlimited
 
-	ExprParity bool // P2b parity probe: recompute {{name}} via the expr engine and compare to substituteVars; logs only metadata, never feeds downstream. default false.
-
-	ExprChannel bool // P3d: when true, custom-node {{name}} values resolve via the expr engine ($node, project-scoped, fail-closed) instead of the un-scoped resolveVariables/resolveOutputText path. substituteVars interpolation + secret pre-pass + {status}/SSRF guards UNCHANGED. Default ON (STUDIO_EXPR_CHANNEL=0 reverts to legacy).
-
-	ItemsCanonical bool // items cut-over PR-A (docs/specs/items-cutover.md §3): when true, runStoryboard/runPrescreen resolve upstream inputs via the per-dep items channel (loadInputsByDep, project-scoped, fail-closed) instead of the legacy depends_on/output_ref JOIN reads; custom kinds are forced onto the expr channel (items canonical structurally implies it — config.Load already fail-closes the on/expr-off combination). Default ON (STUDIO_ITEMS_CANONICAL=0 reverts to legacy).
-
 	// M4 async engine knobs (spec §5.6/§9.4).
 	MaxConcurrentVideo int // global video submit-admission + fetch cap; 0 = unlimited
 	MaxConcurrentAudio int // global audio submit-admission + fetch cap; 0 = unlimited
@@ -493,40 +487,13 @@ func (w *Worker) runScript(ctx context.Context, c claimed) (string, error) {
 // StoryboardAgent, and persists shots rows. outputRef = "shots:<scriptID>".
 func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 	// Resolve the upstream script through the storyboard todo's depends_on
-	// parent (its output_ref is 'script:<id>') — correct across re-runs where
-	// multiple scripts exist (M1 carry: the created_at DESC heuristic picked
-	// the newest project-wide script). Fallback to the heuristic for graphs
-	// whose storyboard has no script parent edge.
-	var scriptID string
-	var contentJSON []byte
-	if w.cfg.ItemsCanonical {
-		// items cut-over PR-A: resolve the upstream script via the per-dep items
-		// channel (project-scoped, fail-closed) instead of the legacy JOIN below.
-		var ierr error
-		scriptID, contentJSON, ierr = w.storyboardScriptInput(ctx, c)
-		if ierr != nil {
-			return "", ierr
-		}
-	} else {
-		var parentRef string
-		perr := w.cfg.DB.WithContext(ctx).Raw(`
-			SELECT t.output_ref FROM todos t
-			JOIN todos sb ON t.id = ANY(sb.depends_on)
-			WHERE sb.id=$1 AND t.type='script' AND t.output_ref LIKE 'script:%'
-			ORDER BY t.updated_at DESC LIMIT 1`, c.todoID).Row().Scan(&parentRef)
-		if perr == nil {
-			scriptID = strings.TrimPrefix(parentRef, "script:")
-			if err := w.cfg.DB.WithContext(ctx).Raw(
-				`SELECT content_json FROM scripts WHERE id=$1`, scriptID).Row().Scan(&contentJSON); err != nil {
-				return "", fmt.Errorf("worker: load parent script %s: %w", scriptID, err)
-			}
-		} else {
-			if err := w.cfg.DB.WithContext(ctx).Raw(
-				`SELECT id, content_json FROM scripts WHERE project_id=$1 ORDER BY created_at DESC LIMIT 1`,
-				c.projectID).Row().Scan(&scriptID, &contentJSON); err != nil {
-				return "", fmt.Errorf("worker: load upstream script: %w", err)
-			}
-		}
+	// parent via the per-dep items channel (storyboardScriptInput: project-scoped,
+	// fail-closed) — correct across re-runs where multiple scripts exist. Falls
+	// back to the project-wide newest-script heuristic for graphs whose
+	// storyboard has no script parent edge (M1 compat, preserved as-is).
+	scriptID, contentJSON, ierr := w.storyboardScriptInput(ctx, c)
+	if ierr != nil {
+		return "", ierr
 	}
 	// B1: style is sourced from the projects row, NOT the storyboard todo's
 	// input. The M1 planner only writes input to the script node; every other
@@ -1013,24 +980,10 @@ func (w *Worker) runPrescreen(ctx context.Context, c claimed) (string, error) {
 		return "", fmt.Errorf("worker: prescreen disabled (no ReviewAgent configured)")
 	}
 	// Newest upstream node whose output_ref is a resolvable text source
-	// (script:/custom:). asset:/shots: refs are binary/fan-out and excluded.
-	var text string
-	var err error
-	if w.cfg.ItemsCanonical {
-		// items cut-over PR-A: resolve the upstream text via the per-dep items
-		// channel (project-scoped, fail-closed) instead of the legacy JOIN below.
-		text, err = w.prescreenUpstreamText(ctx, c)
-	} else {
-		var parentRef string
-		if serr := w.cfg.DB.WithContext(ctx).Raw(`
-			SELECT t.output_ref FROM todos t
-			JOIN todos p ON t.id = ANY(p.depends_on)
-			WHERE p.id=$1 AND (t.output_ref LIKE 'script:%' OR t.output_ref LIKE 'custom:%')
-			ORDER BY t.updated_at DESC LIMIT 1`, c.todoID).Row().Scan(&parentRef); serr != nil {
-			return "", fmt.Errorf("worker: prescreen found no upstream text node: %w", serr)
-		}
-		text, err = w.resolveOutputText(ctx, parentRef)
-	}
+	// (script:/custom:), resolved via the per-dep items channel
+	// (prescreenUpstreamText: project-scoped, fail-closed). asset:/shots: refs
+	// are binary/fan-out and excluded.
+	text, err := w.prescreenUpstreamText(ctx, c)
 	if err != nil {
 		return "", err
 	}
@@ -1574,10 +1527,9 @@ type customVariable struct {
 	Name         string `json:"name"`
 	SourceTodoId string `json:"sourceTodoId"`
 	// SourceField (B/P5) optional: target field of the upstream node's output.
-	// Empty = whole output (today's behavior). Non-empty = .json.<field> via the
-	// expr channel; structurally requires ExprChannel ON (the legacy resolver has
-	// no item JSON), so resolveVariables fails closed on it (§5.2). Charset-gated
-	// in resolveVariablesExpr (§8.1, run-time authoritative line).
+	// Empty = whole output. Non-empty = .json.<field> via the expr engine (the
+	// only {{name}} value channel since the items cut-over). Charset-gated in
+	// resolveVariablesExpr (§8.1, run-time authoritative line).
 	SourceField string `json:"sourceField"`
 }
 
@@ -1797,71 +1749,23 @@ func (w *Worker) runCustom(ctx context.Context, c claimed) (string, error) {
 	}
 }
 
-// resolveVariables resolves each post-rewrite varBinding to its upstream node's
-// text output. Shared by every custom kind (llm/http/script).
-func (w *Worker) resolveVariables(ctx context.Context, vars []customVariable) (map[string]string, error) {
-	out := map[string]string{}
-	for _, v := range vars {
-		// B/P5 fail-closed (§5.2 + §12 amendment 1): a field-level binding cannot
-		// work on the legacy channel — resolveOutputText returns whole TEXT, no item
-		// JSON to index a field on. Never silently degrade to whole-output; ERROR.
-		// This check is BEFORE the empty-SourceTodoId continue below so an empty
-		// SourceTodoId + non-empty SourceField binding does NOT slip through. The
-		// error is opaque (errRequestFailed) for http/script and verbatim for llm
-		// (worker.go run* wrappers); the FE capability-gate (Phase 2) is the primary
-		// UX guard, this is the safety backstop.
-		if v.SourceField != "" {
-			return nil, fmt.Errorf("worker: variable %q field-level binding (sourceField) requires the expr channel (STUDIO_EXPR_CHANNEL=1)", v.Name)
-		}
-		if v.SourceTodoId == "" {
-			continue
-		}
-		var outputRef string
-		if err := w.cfg.DB.WithContext(ctx).Raw(
-			`SELECT COALESCE(output_ref,'') FROM todos WHERE id=$1`, v.SourceTodoId).Row().Scan(&outputRef); err != nil {
-			return nil, fmt.Errorf("worker: load variable %q source todo: %w", v.Name, err)
-		}
-		text, err := w.resolveOutputText(ctx, outputRef)
-		if err != nil {
-			return nil, fmt.Errorf("worker: resolve variable %q: %w", v.Name, err)
-		}
-		out[v.Name] = text
-	}
-	return out, nil
-}
-
 // runCustomLLM executes the "llm" kind: resolve each variable's upstream text
 // output, substitute {{name}} in system/user prompt, call the routed chat model
 // (same routing as runScript), optionally instruct+validate JSON, write a
 // node_outputs row, return "custom:<id>".
 // This path requires a Router: routedChatModel returns (nil,false) when cfg.Router==nil.
 func (w *Worker) runCustomLLM(ctx context.Context, c claimed, in llmParams) (string, error) {
-	// 1. Resolve variables: sourceTodoId → that todo's output_ref → resolveOutputText
-	// (legacy), OR via the expr engine's $node path (ExprChannel: project-scoped,
-	// fail-closed). Only the value SOURCE swaps; substituteVars below is unchanged.
-	var replacer map[string]string
-	var err error
-	// ItemsCanonical implies the expr channel (items cut-over PR-A): custom kinds
-	// are ALREADY items-authoritative through resolveVariablesExpr — no behavior
-	// change; the OR is the worker-level assertion mirroring config.Load's
-	// fail-closed =1/expr-off rejection.
-	if w.cfg.ExprChannel || w.cfg.ItemsCanonical {
-		replacer, err = w.resolveVariablesExpr(ctx, c, in.Variables)
-	} else {
-		replacer, err = w.resolveVariables(ctx, in.Variables)
-	}
+	// 1. Resolve variables via the expr engine's $node path (resolveVariablesExpr:
+	// project-scoped, fail-closed — the only value channel since the items
+	// cut-over). substituteVars below only interpolates the resolved map.
+	replacer, err := w.resolveVariablesExpr(ctx, c, in.Variables)
 	if err != nil {
 		return "", err
 	}
 
 	system := substituteVars(in.SystemPrompt, replacer)
 	user := substituteVars(in.UserPrompt, replacer)
-	if w.cfg.ExprParity {
-		w.exprParityCheck(ctx, c, "system", in.SystemPrompt, system, replacer)
-		w.exprParityCheck(ctx, c, "user", in.UserPrompt, user, replacer)
-		w.exprNodeProbe(ctx, c, in.Variables)
-	}
-	// {{input:}} pass — the FINAL substitution (after name pass + parity probe). No
+	// {{input:}} pass — the FINAL substitution (after name pass). No
 	// secret pass on the LLM channel. Run-time input values land literally and are
 	// never re-scanned by any other channel.
 	inputVals := w.runInputValues(ctx, c)
@@ -1918,33 +1822,14 @@ func (w *Worker) runCustomHTTP(ctx context.Context, c claimed, in httpParams) (s
 	if w.cfg.HTTPFetcher == nil {
 		return "", errRequestFailed
 	}
-	// 1. Resolve {{name}} upstream variables (same channel as llm). Preserve the
+	// 1. Resolve {{name}} upstream variables (same channel as llm: the expr
+	// engine's $node path, project-scoped, fail-closed). Preserve the
 	// opaque-error behavior: any resolve failure surfaces as errRequestFailed
-	// (never leak the variable/source). ExprChannel swaps ONLY this value source
-	// (the SECOND pass); the {{secret:}} pre-pass below is untouched.
-	var nameVals map[string]string
-	var err error
-	// ItemsCanonical implies the expr channel (items cut-over PR-A; see runCustomLLM).
-	if w.cfg.ExprChannel || w.cfg.ItemsCanonical {
-		nameVals, err = w.resolveVariablesExpr(ctx, c, in.Variables)
-	} else {
-		nameVals, err = w.resolveVariables(ctx, in.Variables)
-	}
+	// (never leak the variable/source). This is the SECOND pass; the
+	// {{secret:}} pre-pass below is untouched.
+	nameVals, err := w.resolveVariablesExpr(ctx, c, in.Variables)
 	if err != nil {
 		return "", errRequestFailed
-	}
-
-	if w.cfg.ExprParity {
-		// Parity probe (P3a): compare the expr engine's {{name}} channel against
-		// substituteVars on the RAW header/body templates. Operates on raw templates
-		// + nameVals only — never on secret-resolved values (the {{secret:...}} pass
-		// below runs on the real values; both channels here leave secret: spans
-		// verbatim). Logs metadata only; never feeds the request.
-		for hk, hv := range in.Headers {
-			w.exprParityCheck(ctx, c, "http.header."+hk, hv, substituteVars(hv, nameVals), nameVals)
-		}
-		w.exprParityCheck(ctx, c, "http.body", in.BodyTemplate, substituteVars(in.BodyTemplate, nameVals), nameVals)
-		w.exprNodeProbe(ctx, c, in.Variables)
 	}
 
 	// 2. Resolve org from the TRUSTED run context (never from input_json/node).
@@ -2077,19 +1962,9 @@ func (w *Worker) runCustomScript(ctx context.Context, c claimed, in scriptParams
 	if secretRefRe.MatchString(in.Code) || strings.Contains(in.Code, "{{secret:") {
 		return "", errScriptFailed // D1 runtime defense-in-depth
 	}
-	var inputs map[string]string
-	var err error
-	// ItemsCanonical implies the expr channel (items cut-over PR-A; see runCustomLLM).
-	if w.cfg.ExprChannel || w.cfg.ItemsCanonical {
-		inputs, err = w.resolveVariablesExpr(ctx, c, in.Variables)
-	} else {
-		inputs, err = w.resolveVariables(ctx, in.Variables)
-	}
+	inputs, err := w.resolveVariablesExpr(ctx, c, in.Variables)
 	if err != nil {
 		return "", errScriptFailed // opaque: never leak the variable/source
-	}
-	if w.cfg.ExprParity {
-		w.exprNodeProbe(ctx, c, in.Variables)
 	}
 	// {{input:}} run-time values join the predeclared Starlark globals as read-only
 	// data (SECURITY-CRITICAL: NEVER substituted into in.Code — that would be code
@@ -2176,43 +2051,11 @@ func substituteVars(tpl string, vars map[string]string) string {
 	return out
 }
 
-// resolveOutputText is the single ref→text seam: "script:<id>" → scripts.content_json
-// text; "custom:<id>" → node_outputs.content. asset:/shots: refs are binary/fan-out
-// and are a validation error here (A: custom nodes read only text outputs).
-func (w *Worker) resolveOutputText(ctx context.Context, outputRef string) (string, error) {
-	switch {
-	case strings.HasPrefix(outputRef, "script:"):
-		id := strings.TrimPrefix(outputRef, "script:")
-		var contentJSON []byte
-		if err := w.cfg.DB.WithContext(ctx).Raw(
-			`SELECT content_json FROM scripts WHERE id=$1`, id).Row().Scan(&contentJSON); err != nil {
-			return "", fmt.Errorf("worker: load script %s: %w", id, err)
-		}
-		return string(contentJSON), nil
-	case strings.HasPrefix(outputRef, "custom:"):
-		id := strings.TrimPrefix(outputRef, "custom:")
-		var content string
-		if err := w.cfg.DB.WithContext(ctx).Raw(
-			`SELECT content FROM node_outputs WHERE id=$1`, id).Row().Scan(&content); err != nil {
-			return "", fmt.Errorf("worker: load node_output %s: %w", id, err)
-		}
-		return content, nil
-	case strings.HasPrefix(outputRef, "asset:"), strings.HasPrefix(outputRef, "shots:"):
-		return "", fmt.Errorf("worker: output_ref %q is binary/fan-out, not a text source", outputRef)
-	default:
-		return "", fmt.Errorf("worker: unknown output_ref %q", outputRef)
-	}
-}
-
 // loadInputs gathers the items emitted by each of todoID's dependency todos (the
-// canonical inter-node channel going forward). For a dependency whose
-// node_outputs.items is empty — a straddling-deploy run that completed under old
-// code (★M-4) — it falls back to projecting that dep's scripts/shots/output_ref
-// into equivalent items so in-flight runs are not stranded.
-//
-// P2a NOTE: loadInputs is ADDITIVE — execution is NOT yet routed through it. The
-// legacy depends_on/output_ref/resolveVariables resolution stays live. This exists
-// for parity tests + the P2b/P3 cut-over.
+// canonical inter-node channel). For a dependency whose node_outputs.items is
+// empty — a straddling-deploy run that completed under old code (★M-4) — it
+// falls back to projecting that dep's scripts/shots/output_ref into equivalent
+// items so in-flight runs are not stranded.
 func (w *Worker) loadInputs(ctx context.Context, todoID string) ([]Item, error) {
 	var depIDs pq.StringArray
 	var projectID string
@@ -2285,8 +2128,8 @@ func (w *Worker) itemsForDep(ctx context.Context, depID, projectID string) ([]It
 		}
 		return items, nil
 	case strings.HasPrefix(ref, "custom:"):
-		// Project-scoped inline read (F1) — do NOT delegate to the unscoped legacy
-		// resolveOutputText (it reads node_outputs by bare id and is used elsewhere).
+		// Project-scoped inline read (F1): reads node_outputs by id AND project_id,
+		// never by bare id — a forged cross-project ref reads zero rows.
 		var content string
 		if err := w.cfg.DB.WithContext(ctx).Raw(
 			`SELECT content FROM node_outputs WHERE id=$1 AND project_id=$2`, strings.TrimPrefix(ref, "custom:"), projectID).Row().Scan(&content); err != nil {

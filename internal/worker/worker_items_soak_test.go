@@ -17,28 +17,21 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/todos"
 )
 
-// TestItemsCanonical_DifferentialSoak is the reproducible local proxy for the
-// soak that gates the ItemsCanonical flip (items cut-over PR-A/PR-B,
-// docs/specs/items-cutover.md §3/§4). It covers the two consumers the spec calls
-// out as having ZERO parity coverage before this PR: the storyboard upstream
-// input and the prescreen upstream input, including the legacy "多 dep 按
-// updated_at 挑最新单个上游" selection semantics rebuilt on the items channel.
-//
-// For each scenario it runs the SAME execution twice — once under
-// ItemsCanonical:false (legacy depends_on/output_ref JOIN reads) and once under
-// ItemsCanonical:true (loadInputsByDep per-dep items reads) — against the same
-// seeded data, and asserts the observable output is EQUIVALENT under the
-// established soak envelope (worker_expr_soak_test.go): text byte-identical;
-// json semantically equal (decode + DeepEqual — JSONB round-trips may reorder
-// keys / normalize whitespace; nothing else may differ).
+// TestItemsInput_Regression is the regression battery for the per-dep items
+// input channel — the ONLY upstream-input channel for runStoryboard/runPrescreen
+// since the items cut-over (docs/specs/items-cutover.md §3 PR-C). It descends
+// from the PR-A/PR-B differential soak; with the legacy JOIN reads deleted, each
+// scenario now runs once through the authoritative path (loadInputsByDep) and
+// asserts the selection semantics ("多 dep 按 updated_at 挑最新单个上游") plus
+// the resolved content against the seeded data.
 //
 // The scripted model returns a canned answer, so the observables are (a) the
 // returned output_ref (which upstream got SELECTED) and (b) the exact prompt fed
 // to the agent (captured by promptCapturingModel — which upstream CONTENT the
 // selection resolved).
-func TestItemsCanonical_DifferentialSoak(t *testing.T) {
+func TestItemsInput_Regression(t *testing.T) {
 	if os.Getenv("LLM_AGENT_STUDIO_PG_URL") == "" {
-		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run the items cut-over differential soak")
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run the items input regression battery")
 	}
 	t.Run("StoryboardInput", func(t *testing.T) { soakStoryboardInput(t) })
 	t.Run("PrescreenInput", func(t *testing.T) { soakPrescreenInput(t) })
@@ -47,7 +40,7 @@ func TestItemsCanonical_DifferentialSoak(t *testing.T) {
 // ---- prompt capture ---------------------------------------------------------
 
 // promptCapturingModel wraps a ChatModel and records every Generate request so
-// the soak can compare the EXACT prompt each flag state fed the agent.
+// the battery can assert the EXACT prompt the resolved input produced.
 type promptCapturingModel struct {
 	inner llm.ChatModel
 	mu    sync.Mutex
@@ -86,17 +79,14 @@ func (m *promptCapturingModel) capturedPrompt(t *testing.T) string {
 	return b.String()
 }
 
-// assertPromptJSONMiddle splits both prompts around start/end markers, requires
-// the shell (everything outside the middle) to be byte-identical and the middle
-// to be semantically-equal JSON (the soak envelope for a json upstream).
-func assertPromptJSONMiddle(t *testing.T, label, legacy, expr, start, end string) {
+// assertPromptJSONMiddle extracts the json span between start/end markers in the
+// prompt and asserts it is semantically-equal JSON to want (the accepted
+// envelope for a json upstream: JSONB round-trips may reorder keys / normalize
+// whitespace; nothing else may differ).
+func assertPromptJSONMiddle(t *testing.T, label, prompt, want, start, end string) {
 	t.Helper()
-	lb, lm, la := splitAround(t, legacy, start, end)
-	eb, em, ea := splitAround(t, expr, start, end)
-	if lb != eb || la != ea {
-		t.Fatalf("%s: prompt shell diverged across flags:\n legacy=%q\n items =%q", label, legacy, expr)
-	}
-	assertJSONSemEqual(t, label, lm, em)
+	_, mid, _ := splitAround(t, prompt, start, end)
+	assertJSONSemEqual(t, label, want, mid)
 }
 
 // splitAround splits s into (before+start, middle, end+after) around the FIRST
@@ -189,7 +179,7 @@ func seedConsumerAt(t *testing.T, db *gorm.DB, projID, typ string, deps ...strin
 	return seedConsumerTodo(t, w, projID, typ, deps...)
 }
 
-// ---- storyboard input soak ---------------------------------------------------
+// ---- storyboard input battery --------------------------------------------------
 
 func soakStoryboardInput(t *testing.T) {
 	ctx := context.Background()
@@ -202,36 +192,30 @@ func soakStoryboardInput(t *testing.T) {
 	const jsonStart = "Script JSON:\n"
 	const jsonEnd = "\n\nStyle:"
 
-	// runBoth runs the SAME storyboard execution under both flag states (fresh
-	// consumer todo per state over the same seeded deps) and returns per-state
+	// runOne runs one storyboard execution over the seeded deps and returns
 	// (output_ref, captured prompt).
-	runBoth := func(t *testing.T, projID string, deps []string) (refs [2]string, prompts [2]string) {
+	runOne := func(t *testing.T, projID string, deps []string) (string, string) {
 		t.Helper()
-		for i, canonical := range []bool{false, true} {
-			model := &promptCapturingModel{inner: llm.NewScriptedLLM(llm.WithResponses(llm.Response{Text: sbAnswer}))}
-			w := itemsTestWorker(t, db, model)
-			w.cfg.ItemsCanonical = canonical
-			c := seedConsumerAt(t, db, projID, "storyboard", deps...)
-			c.input = []byte(`{}`)
-			ref, err := w.runStoryboard(ctx, c)
-			if err != nil {
-				t.Fatalf("runStoryboard (itemsCanonical=%v): %v", canonical, err)
-			}
-			// runStoryboard fans out one READY asset todo per shot (AddDynamic).
-			// Delete them: this soak never drains a queue, and leftover claimable
-			// todos would poison later queue-draining tests sharing the DB.
-			if err := db.WithContext(ctx).Exec(
-				`DELETE FROM todos WHERE project_id=$1 AND type='asset'`, projID).Error; err != nil {
-				t.Fatalf("cleanup fan-out asset todos: %v", err)
-			}
-			refs[i] = ref
-			prompts[i] = model.capturedPrompt(t)
+		model := &promptCapturingModel{inner: llm.NewScriptedLLM(llm.WithResponses(llm.Response{Text: sbAnswer}))}
+		w := itemsTestWorker(t, db, model)
+		c := seedConsumerAt(t, db, projID, "storyboard", deps...)
+		c.input = []byte(`{}`)
+		ref, err := w.runStoryboard(ctx, c)
+		if err != nil {
+			t.Fatalf("runStoryboard: %v", err)
 		}
-		return refs, prompts
+		// runStoryboard fans out one READY asset todo per shot (AddDynamic).
+		// Delete them: this battery never drains a queue, and leftover claimable
+		// todos would poison later queue-draining tests sharing the DB.
+		if err := db.WithContext(ctx).Exec(
+			`DELETE FROM todos WHERE project_id=$1 AND type='asset'`, projID).Error; err != nil {
+			t.Fatalf("cleanup fan-out asset todos: %v", err)
+		}
+		return ref, model.capturedPrompt(t)
 	}
 
 	// Scenario 1: TWO script parents — the selection semantics (newest updated_at
-	// wins) must survive the cut-over: both states pick the NEWER script.
+	// wins) must hold: the NEWER script is picked and embedded.
 	t.Run("newest of two script parents wins", func(t *testing.T) {
 		projID := seedItemsProject(t, db)
 		const older = `{"title":"OLD-SCRIPT-soak","logline":"old","scenes":[{"heading":"H","description":"D","dialogue":"x"}]}`
@@ -239,16 +223,13 @@ func soakStoryboardInput(t *testing.T) {
 		oldTodo, _ := seedScriptParentAged(t, db, projID, older, true, time.Hour)
 		newTodo, newScriptID := seedScriptParentAged(t, db, projID, newer, true, 0)
 
-		refs, prompts := runBoth(t, projID, []string{oldTodo, newTodo})
-		if refs[0] != refs[1] {
-			t.Fatalf("selected script diverged across flags: legacy=%q items=%q", refs[0], refs[1])
+		ref, prompt := runOne(t, projID, []string{oldTodo, newTodo})
+		if want := "shots:" + newScriptID; ref != want {
+			t.Fatalf("want the NEWER script selected (%q), got %q", want, ref)
 		}
-		if want := "shots:" + newScriptID; refs[0] != want {
-			t.Fatalf("sanity: want the NEWER script selected (%q), got %q", want, refs[0])
-		}
-		assertPromptJSONMiddle(t, "storyboard two-parent prompt", prompts[0], prompts[1], jsonStart, jsonEnd)
-		if !strings.Contains(prompts[1], "NEW-SCRIPT-soak") || strings.Contains(prompts[1], "OLD-SCRIPT-soak") {
-			t.Fatalf("sanity: items prompt must embed the newer script only:\n%s", prompts[1])
+		assertPromptJSONMiddle(t, "storyboard two-parent prompt", prompt, newer, jsonStart, jsonEnd)
+		if !strings.Contains(prompt, "NEW-SCRIPT-soak") || strings.Contains(prompt, "OLD-SCRIPT-soak") {
+			t.Fatalf("prompt must embed the newer script only:\n%s", prompt)
 		}
 	})
 
@@ -259,18 +240,15 @@ func soakStoryboardInput(t *testing.T) {
 		const content = `{"title":"STRADDLE-SCRIPT-soak","logline":"L","scenes":[{"heading":"H","description":"D","dialogue":"z"}]}`
 		depTodo, scriptID := seedScriptParentAged(t, db, projID, content, false, 0)
 
-		refs, prompts := runBoth(t, projID, []string{depTodo})
-		if refs[0] != refs[1] {
-			t.Fatalf("straddling ref diverged: legacy=%q items=%q", refs[0], refs[1])
+		ref, prompt := runOne(t, projID, []string{depTodo})
+		if want := "shots:" + scriptID; ref != want {
+			t.Fatalf("want %q, got %q", want, ref)
 		}
-		if want := "shots:" + scriptID; refs[0] != want {
-			t.Fatalf("sanity: want %q, got %q", want, refs[0])
-		}
-		assertPromptJSONMiddle(t, "storyboard straddling prompt", prompts[0], prompts[1], jsonStart, jsonEnd)
+		assertPromptJSONMiddle(t, "storyboard straddling prompt", prompt, content, jsonStart, jsonEnd)
 	})
 
 	// Scenario 3: NO script parent edge — the project-wide newest-script heuristic
-	// (M1 compat) is preserved AS-IS on the items branch.
+	// (M1 compat) is preserved AS-IS.
 	t.Run("no parent edge preserves project-wide heuristic", func(t *testing.T) {
 		projID := seedItemsProject(t, db)
 		const content = `{"title":"HEURISTIC-SCRIPT-soak","logline":"L","scenes":[{"heading":"H","description":"D","dialogue":"h"}]}`
@@ -281,18 +259,15 @@ func soakStoryboardInput(t *testing.T) {
 			t.Fatalf("seed heuristic scripts row: %v", err)
 		}
 
-		refs, prompts := runBoth(t, projID, nil)
-		if refs[0] != refs[1] {
-			t.Fatalf("heuristic ref diverged: legacy=%q items=%q", refs[0], refs[1])
+		ref, prompt := runOne(t, projID, nil)
+		if want := "shots:" + scriptID; ref != want {
+			t.Fatalf("want heuristic script %q, got %q", want, ref)
 		}
-		if want := "shots:" + scriptID; refs[0] != want {
-			t.Fatalf("sanity: want heuristic script %q, got %q", want, refs[0])
-		}
-		assertPromptJSONMiddle(t, "storyboard heuristic prompt", prompts[0], prompts[1], jsonStart, jsonEnd)
+		assertPromptJSONMiddle(t, "storyboard heuristic prompt", prompt, content, jsonStart, jsonEnd)
 	})
 }
 
-// ---- prescreen input soak ----------------------------------------------------
+// ---- prescreen input battery ----------------------------------------------------
 
 func soakPrescreenInput(t *testing.T) {
 	ctx := context.Background()
@@ -304,34 +279,29 @@ func soakPrescreenInput(t *testing.T) {
 	const textStart = "Generation prompt: "
 	const textEnd = "\nStyle:"
 
-	runBoth := func(t *testing.T, projID string, deps []string) (refs [2]string, prompts [2]string) {
+	runOne := func(t *testing.T, projID string, deps []string) (string, string) {
 		t.Helper()
-		for i, canonical := range []bool{false, true} {
-			model := &promptCapturingModel{inner: llm.NewScriptedLLM(llm.WithResponses(llm.Response{Text: verdict}))}
-			w := New(Config{
-				DB:       db,
-				Todos:    todos.New(db),
-				Projects: project.New(db),
-				Events:   events.New(db),
-				Review:   studioagents.NewReviewAgent(model),
-				WorkerID: "items-soak-ps", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
-			})
-			w.cfg.ItemsCanonical = canonical
-			c := seedConsumerAt(t, db, projID, "prescreen", deps...)
-			c.input = []byte(`{}`)
-			ref, err := w.runPrescreen(ctx, c)
-			if err != nil {
-				t.Fatalf("runPrescreen (itemsCanonical=%v): %v", canonical, err)
-			}
-			refs[i] = ref
-			prompts[i] = model.capturedPrompt(t)
+		model := &promptCapturingModel{inner: llm.NewScriptedLLM(llm.WithResponses(llm.Response{Text: verdict}))}
+		w := New(Config{
+			DB:       db,
+			Todos:    todos.New(db),
+			Projects: project.New(db),
+			Events:   events.New(db),
+			Review:   studioagents.NewReviewAgent(model),
+			WorkerID: "items-soak-ps", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
+		})
+		c := seedConsumerAt(t, db, projID, "prescreen", deps...)
+		c.input = []byte(`{}`)
+		ref, err := w.runPrescreen(ctx, c)
+		if err != nil {
+			t.Fatalf("runPrescreen: %v", err)
 		}
-		return refs, prompts
+		return ref, model.capturedPrompt(t)
 	}
 
 	// Scenario 1: two text deps + a NEWER shots dep — the newest TEXT-SOURCE dep
-	// wins under both flags (selection semantics + the script:/custom: prefix
-	// filter both survive the cut-over); text is byte-identical.
+	// wins (selection semantics + the script:/custom: prefix filter); the text is
+	// embedded byte-identically.
 	t.Run("newest text dep wins and shots dep is excluded", func(t *testing.T) {
 		projID := seedItemsProject(t, db)
 		const oldText = "OLD-PRESCREEN-TEXT-soak"
@@ -340,8 +310,7 @@ func soakPrescreenInput(t *testing.T) {
 			`[{"json":{"text":"`+oldText+`"}}]`, time.Hour)
 		newDep := seedCustomDepAged(t, db, projID, newText, "text",
 			`[{"json":{"text":"`+newText+`"}}]`, 0)
-		// A shots: dep NEWER than both text deps — excluded by the prefix filter
-		// on both channels.
+		// A shots: dep NEWER than both text deps — excluded by the prefix filter.
 		shotsDep := newID()
 		if err := db.WithContext(ctx).Exec(
 			`INSERT INTO todos (id, project_id, plan_id, type, status, output_ref, input_json, updated_at)
@@ -350,52 +319,46 @@ func soakPrescreenInput(t *testing.T) {
 			t.Fatalf("seed shots dep: %v", err)
 		}
 
-		_, prompts := runBoth(t, projID, []string{oldDep, newDep, shotsDep})
-		if prompts[0] != prompts[1] {
-			t.Fatalf("text upstream prompt not byte-identical:\n legacy=%q\n items =%q", prompts[0], prompts[1])
-		}
-		if !strings.Contains(prompts[0], newText) || strings.Contains(prompts[0], oldText) {
-			t.Fatalf("sanity: prompt must embed the newer text only:\n%s", prompts[0])
+		_, prompt := runOne(t, projID, []string{oldDep, newDep, shotsDep})
+		if !strings.Contains(prompt, newText) || strings.Contains(prompt, oldText) {
+			t.Fatalf("prompt must embed the newer text only:\n%s", prompt)
 		}
 	})
 
-	// Scenario 2: a script upstream (json content) — the shell is byte-identical
-	// and the embedded json is semantically equal across flags.
+	// Scenario 2: a script upstream (json content) — the embedded json is
+	// semantically equal to the seeded script content.
 	t.Run("script upstream json is semantically equal", func(t *testing.T) {
 		projID := seedItemsProject(t, db)
 		const content = `{"title":"PS-SCRIPT-soak","logline":"L","scenes":[{"heading":"H","description":"D","dialogue":"q"}]}`
 		depTodo, _ := seedScriptParentAged(t, db, projID, content, true, 0)
 
-		_, prompts := runBoth(t, projID, []string{depTodo})
-		assertPromptJSONMiddle(t, "prescreen script upstream", prompts[0], prompts[1], textStart, textEnd)
+		_, prompt := runOne(t, projID, []string{depTodo})
+		assertPromptJSONMiddle(t, "prescreen script upstream", prompt, content, textStart, textEnd)
 	})
 
 	// Scenario 3: a custom json upstream stored with NON-canonical key order —
-	// legacy reads the raw content string, items reads the JSONB-normalized item;
-	// the accepted envelope is json semantic equality.
+	// the items channel reads the JSONB-normalized item; the accepted envelope is
+	// json semantic equality against the seed.
 	t.Run("custom json upstream is semantically equal", func(t *testing.T) {
 		projID := seedItemsProject(t, db)
 		const obj = `{"beta":2,"alpha":1,"nested":{"z":9,"y":8}}`
 		depTodo := seedCustomDepAged(t, db, projID, obj, "json", `[{"json":`+obj+`}]`, 0)
 
-		_, prompts := runBoth(t, projID, []string{depTodo})
-		assertPromptJSONMiddle(t, "prescreen custom json upstream", prompts[0], prompts[1], textStart, textEnd)
+		_, prompt := runOne(t, projID, []string{depTodo})
+		assertPromptJSONMiddle(t, "prescreen custom json upstream", prompt, obj, textStart, textEnd)
 	})
 
 	// Scenario 4: a straddling custom TEXT dep (no items payload — column default
-	// '[]') — itemsForDep's projection fallback must reproduce the legacy content
+	// '[]') — itemsForDep's projection fallback must reproduce the stored content
 	// byte-identically.
 	t.Run("straddling custom text dep falls back byte-identically", func(t *testing.T) {
 		projID := seedItemsProject(t, db)
 		const content = "STRADDLE-PRESCREEN-TEXT-soak"
 		depTodo := seedCustomDepAged(t, db, projID, content, "text", "", 0)
 
-		_, prompts := runBoth(t, projID, []string{depTodo})
-		if prompts[0] != prompts[1] {
-			t.Fatalf("straddling text prompt not byte-identical:\n legacy=%q\n items =%q", prompts[0], prompts[1])
-		}
-		if !strings.Contains(prompts[0], content) {
-			t.Fatalf("sanity: prompt must embed the straddling content:\n%s", prompts[0])
+		_, prompt := runOne(t, projID, []string{depTodo})
+		if !strings.Contains(prompt, content) {
+			t.Fatalf("prompt must embed the straddling content:\n%s", prompt)
 		}
 	})
 }

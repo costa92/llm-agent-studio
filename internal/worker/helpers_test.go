@@ -17,6 +17,26 @@ func randHex3() string {
 	return hex.EncodeToString(b)
 }
 
+// itoa is a tiny int->string helper (avoids importing strconv just for tests).
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var b []byte
+	for n > 0 {
+		b = append([]byte{byte('0' + n%10)}, b...)
+		n /= 10
+	}
+	if neg {
+		b = append([]byte{'-'}, b...)
+	}
+	return string(b)
+}
+
 // newStoryboardAgentWithShots builds a StoryboardAgent backed by a ScriptedLLM
 // that returns a shots JSON with n shots (each shot carries a prompt the
 // fan-out will hand to an asset todo).

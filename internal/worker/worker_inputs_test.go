@@ -412,6 +412,13 @@ func TestRunCustomScript_NameVariableWinsCollision(t *testing.T) {
 		upTodoID, projID, "custom:"+upOutID).Error; err != nil {
 		t.Fatalf("seed upstream todo: %v", err)
 	}
+	// Wire the consumer's depends_on to the upstream (the expr value channel is
+	// direct-deps gated; an unwired var would fail closed).
+	if err := db.WithContext(ctx).Exec(
+		`UPDATE todos SET depends_on=ARRAY[$1]::text[] WHERE id=$2`,
+		upTodoID, c.todoID).Error; err != nil {
+		t.Fatalf("wire consumer depends_on: %v", err)
+	}
 
 	w := httpTestWorker(t, db, &inputSecretsSpy{values: map[string]string{}}, &fakeDoer{})
 	out, err := w.runCustomScript(ctx, c, scriptParams{

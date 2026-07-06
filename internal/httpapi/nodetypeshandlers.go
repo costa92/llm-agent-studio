@@ -17,10 +17,12 @@ import (
 // always wins — and reserved-namespace slugs (studio.*, llm, http, script) are
 // dropped, so a malicious/buggy org cannot hijack the canvas. Built-ins are
 // emitted first (declared order); customs follow, sorted by Type for stability.
-// exprChannel reflects config.ExprChannel: a read-only capability flag the FE
-// uses to gate field-level varBindings (B/P5) — field bindings only function when
-// the expr channel is ON, so the FE disables the field selector when it is OFF.
-func nodeTypesHandler(s CustomNodeTypeStore, exprChannel bool) http.HandlerFunc {
+// The envelope's exprChannel capability field is now CONSTANT true: the items
+// cut-over (docs/specs/items-cutover.md §3 PR-C) removed the legacy value channel,
+// so the expr engine is the only {{name}} value source and field-level varBindings
+// always function. The field is kept (API shape unchanged) because the FE still
+// reads it to enable the field selector.
+func nodeTypesHandler(s CustomNodeTypeStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		builtins := nodedesc.Builtins()
 		// Base description per kind a custom row may extend.
@@ -59,7 +61,7 @@ func nodeTypesHandler(s CustomNodeTypeStore, exprChannel bool) http.HandlerFunc 
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"version":     nodedesc.Version,
-			"exprChannel": exprChannel,
+			"exprChannel": true, // constant since the items cut-over (see handler doc)
 			"nodeTypes":   out,
 		})
 	}

@@ -49,10 +49,10 @@
    └────────┬───────────┘     │  │   llm    → ChatModel 调用        │
             │                 │  │   http   → SSRF-safe fetch       │
             │            ┌────▼──│   script → Starlark 沙箱         │
-            │            │fan-out│  {{var}} 取值: ExprChannel ON →  │
-            │            │N×asset│   expr 引擎 / OFF → legacy 解析  │
+            │            │fan-out│  {{var}} 取值: expr 引擎（唯一   │
+            │            │N×asset│   通道，项目 scoped fail-closed）│
             │            │(每镜头│  产物 → node_outputs (content    │
-            │            │ todo) │   + items, items 仅 ADDITIVE)    │
+            │            │ todo) │   + items 双写)                  │
             │            └───────┘└──────────────────────────────────┘
             ▼
    routed.(AsyncGenerator)?
@@ -124,9 +124,9 @@
 | runAsset（sync/async 分叉） | `internal/worker/worker.go` | 625, 698 | `AsyncGenerator` type assertion；sync 路径扇出中 quota 复查（:705-719） |
 | runPrescreen | `internal/worker/worker.go` | 981 | 上游文本安全评分，写回 asset prescreen 字段 |
 | runCustom 分发 | `internal/worker/worker.go` | 1720 | switch `input_json.kind`：llm(:1796) / http(:1871) / script(:2029) |
-| ExprChannel 取值分支 | `internal/worker/worker.go` | 1802, 1881, 2035 | ON→expr 引擎，OFF→legacy resolveVariables |
+| {{var}} 取值（expr 引擎，唯一通道） | `internal/worker/expr_resolver.go` | — | `resolveVariablesExpr`：$node 路径，项目 scoped + 直接 depends_on + fail-closed；legacy 双通道与 flag 已删（items cut-over PR-C） |
 | Starlark 沙箱 | `internal/scriptengine/engine.go` | — | 无 I/O builtins；错误分类为不透明枚举 |
-| items 通道（ADDITIVE） | `internal/worker/worker.go` | 2165, 2168 | `loadInputs`——执行尚未走它，见"过渡态" |
+| items 通道（权威） | `internal/worker/worker.go` + `items_canonical.go` | — | `loadInputs`/`itemsForDep`/`loadInputsByDep`——执行期输入的唯一通道；`itemsForDep` 保留 output_ref 投影回退（在途 run 兼容，★M-4） |
 | runAssetAsync 入口 | `internal/worker/worker.go` | 1126 | async path |
 | short-circuit poll | `internal/worker/worker.go` | 1144-1146 | `submitted + ExternalJobID` |
 | submit precondition | `internal/worker/worker.go` | 1159-1161 | 非 `generating` 状态 fail-fast（防死循环） |
@@ -150,8 +150,7 @@
 
 | 项 | 现状 | 锚点 |
 |---|---|---|
-| **items 通道未 cut-over** | `loadInputs`（依赖节点 items 汇集）是 ADDITIVE：执行真源仍是 legacy `depends_on`/`output_ref`/resolveVariables；items 仅供 parity 测试与 P2b/P3 切换 | `worker.go:2165`（P2a NOTE） |
-| **ExprChannel 默认 ON** | custom 节点 `{{var}}` 取值走 expr 引擎；`STUDIO_EXPR_CHANNEL=0` 回退 legacy；`STUDIO_EXPR_PARITY=1` 开对照探针（`worker/expr_resolver.go`） | `config.go:145-146` |
+| **items/expr 已是唯一通道** | items cut-over 完成（PR-C）：执行期输入解析全部走 `loadInputs`/`itemsForDep`/`resolveVariablesExpr`（项目 scoped、fail-closed）；legacy 双通道、两个 flag 与 parity 探针已删除。`itemsForDep` 的 output_ref 投影回退保留（在途 run 兼容） | `docs/specs/items-cutover.md` §3 PR-C |
 | **legacy `POST /api/projects/{id}/run` 仍在** | 仅接受项目级嵌入式 custom workflow；无 workflow 的项目 400 引导走 `/workflows/{id}/run`。绘本/标准管线分支已删除 | `httpapi.go:182`，`handlers.go:470-475` |
 | **新项目默认 kind 写 `"standard"`** | 建项目未传 kind 时的默认值，待 Phase 1 收敛 | `project/store.go:150` |
 

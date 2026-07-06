@@ -88,13 +88,21 @@ func TestRunPrescreenHappyPath(t *testing.T) {
 		len(verdict.Flags) != 1 || verdict.Flags[0] != "check_copyright" {
 		t.Fatalf("verdict = %+v, want {77 [check_copyright] ok}", verdict)
 	}
-	// Downstream readability: resolveOutputText on the returned ref yields the JSON.
-	got, err := w.resolveOutputText(ctx, ref)
+	// Downstream readability: itemsForDep (the canonical inter-node channel) on
+	// the prescreen todo yields one item carrying the verdict JSON.
+	items, err := w.itemsForDep(ctx, prescreenTodo, pid)
 	if err != nil {
-		t.Fatalf("resolveOutputText: %v", err)
+		t.Fatalf("itemsForDep: %v", err)
 	}
-	if got != content {
-		t.Fatalf("resolveOutputText = %q, want %q", got, content)
+	if len(items) != 1 {
+		t.Fatalf("itemsForDep items = %d, want 1", len(items))
+	}
+	var itemVerdict studioagents.ReviewOutput
+	if err := json.Unmarshal(items[0].JSON, &itemVerdict); err != nil {
+		t.Fatalf("unmarshal item verdict %q: %v", items[0].JSON, err)
+	}
+	if itemVerdict.Score != 77 || itemVerdict.Note != "ok" {
+		t.Fatalf("item verdict = %+v, want {77 ... ok}", itemVerdict)
 	}
 }
 

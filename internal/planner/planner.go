@@ -99,8 +99,7 @@ type CustomVariable struct {
 	// output. Empty = bind the whole output (= today's behavior, accessor still
 	// inferred by exprNodeAccessor as .json.text / .json). Non-empty = .json.<field>.
 	// MUST match the safe-identifier charset (fieldNameRe, §8.1 injection gate);
-	// candidates come from the upstream type's OutputSchema (§6). Only functional
-	// when ExprChannel is ON.
+	// candidates come from the upstream type's OutputSchema (§6).
 	SourceField string `json:"sourceField,omitempty"`
 }
 

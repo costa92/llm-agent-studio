@@ -14,9 +14,8 @@ import (
 // seedTextDep seeds a text-format dep under projID: a node_outputs row
 // (format='text', items=[{json:{text:<content>}}], id==coid AND todo_id==depTodo)
 // + a done dep todo whose output_ref is "custom:<coid>". Returns the dep todo id.
-// This mirrors the consistent dual-seed in worker_expr_nodeprobe_test.go so:
-//   legacy: resolveOutputText("custom:"+coid) -> node_outputs.content
-//   expr  : $node[depTodo].json.text          -> the same content (byte-equal).
+// The expr channel resolves $node[depTodo].json.text to <content> (byte-equal to
+// the stored node_outputs.content).
 func seedTextDep(t *testing.T, w *Worker, projID, content string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -92,63 +91,53 @@ func seedConsumerTodo(t *testing.T, w *Worker, projID, typ string, deps ...strin
 	return claimed{todoID: id, projectID: projID, typ: typ, attempts: 1}
 }
 
-// TestExprChannel_LLM_ResolvesViaNode proves the ExprChannel value source resolves
-// a {{draft}} var via the live $node path (project-scoped, fail-closed) end-to-end:
-// with ExprChannel:true the run completes (the dep value resolved through the
-// S-2 resolver without error) for a node whose var is a properly-wired dep. The
-// scripted model returns a canned answer (it cannot observe the prompt), so the
-// byte-exact interpolated-value assertion lives in the HTTP test (doer.gotReq).
-func TestExprChannel_LLM_ResolvesViaNode(t *testing.T) {
+// TestExprValueSource_LLM_ResolvesViaNode proves the {{name}} value source
+// resolves a {{draft}} var via the live $node path (project-scoped, fail-closed)
+// end-to-end: the run completes (the dep value resolved through the S-2 resolver
+// without error) for a node whose var is a properly-wired dep. The scripted model
+// returns a canned answer (it cannot observe the prompt), so the byte-exact
+// interpolated-value assertion lives in the HTTP test (doer.gotReq).
+func TestExprValueSource_LLM_ResolvesViaNode(t *testing.T) {
 	if os.Getenv("LLM_AGENT_STUDIO_PG_URL") == "" {
-		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker ExprChannel tests")
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker expr value-source tests")
 	}
 	ctx := context.Background()
 
-	run := func(t *testing.T, exprChannel bool) string {
-		t.Helper()
-		const canned = "MODEL_ANSWER"
-		w := customTestWorker(t, llm.NewScriptedLLM(llm.WithResponses(llm.Response{Text: canned})))
-		w.cfg.ExprChannel = exprChannel
-		orgID := os.Getenv("_CUSTOM_TEST_ORG_ID")
-		var projID string
-		if err := w.cfg.DB.WithContext(ctx).Raw(
-			`INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),$1,'p','u') RETURNING id`,
-			orgID).Row().Scan(&projID); err != nil {
-			t.Fatalf("seed project: %v", err)
-		}
-		dep := seedTextDep(t, w, projID, "DRAFT_BODY")
-		c := seedConsumerTodo(t, w, projID, "custom:translate", dep)
-		ref, err := w.runCustomLLM(ctx, c, llmParams{
-			UserPrompt: "Use: {{draft}}",
-			Variables:  []customVariable{{Name: "draft", SourceTodoId: dep}},
-		})
-		if err != nil {
-			t.Fatalf("runCustomLLM (exprChannel=%v): %v", exprChannel, err)
-		}
-		outID := strings.TrimPrefix(ref, "custom:")
-		var content string
-		if err := w.cfg.DB.WithContext(ctx).Raw(
-			`SELECT content FROM node_outputs WHERE id=$1`, outID).Row().Scan(&content); err != nil {
-			t.Fatalf("load node_output: %v", err)
-		}
-		return content
+	const canned = "MODEL_ANSWER"
+	w := customTestWorker(t, llm.NewScriptedLLM(llm.WithResponses(llm.Response{Text: canned})))
+	orgID := os.Getenv("_CUSTOM_TEST_ORG_ID")
+	var projID string
+	if err := w.cfg.DB.WithContext(ctx).Raw(
+		`INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),$1,'p','u') RETURNING id`,
+		orgID).Row().Scan(&projID); err != nil {
+		t.Fatalf("seed project: %v", err)
 	}
-
-	// Both flag states complete the run with a properly-wired text dep. The
-	// resolve path differing must not change the (canned) outcome.
-	got := run(t, true)
-	legacy := run(t, false)
-	if got != legacy {
-		t.Fatalf("ExprChannel run %q != legacy run %q (both should complete for a wired text dep)", got, legacy)
+	dep := seedTextDep(t, w, projID, "DRAFT_BODY")
+	c := seedConsumerTodo(t, w, projID, "custom:translate", dep)
+	ref, err := w.runCustomLLM(ctx, c, llmParams{
+		UserPrompt: "Use: {{draft}}",
+		Variables:  []customVariable{{Name: "draft", SourceTodoId: dep}},
+	})
+	if err != nil {
+		t.Fatalf("runCustomLLM: %v", err)
+	}
+	outID := strings.TrimPrefix(ref, "custom:")
+	var content string
+	if err := w.cfg.DB.WithContext(ctx).Raw(
+		`SELECT content FROM node_outputs WHERE id=$1`, outID).Row().Scan(&content); err != nil {
+		t.Fatalf("load node_output: %v", err)
+	}
+	if content != canned {
+		t.Fatalf("node_outputs.content = %q, want %q", content, canned)
 	}
 }
 
-// TestExprChannel_S2_FailClosed is the core security test: with ExprChannel:true a
-// var pointing at a todo NOT in the consumer's depends_on, or in a different
-// project, must make the run FAIL with an opaque error and surface no cross-data.
-func TestExprChannel_S2_FailClosed(t *testing.T) {
+// TestExprValueSource_S2_FailClosed is the core security test: a var pointing at
+// a todo NOT in the consumer's depends_on, or in a different project, must make
+// the run FAIL with an opaque error and surface no cross-data.
+func TestExprValueSource_S2_FailClosed(t *testing.T) {
 	if os.Getenv("LLM_AGENT_STUDIO_PG_URL") == "" {
-		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker ExprChannel tests")
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker expr value-source tests")
 	}
 	ctx := context.Background()
 
@@ -158,7 +147,6 @@ func TestExprChannel_S2_FailClosed(t *testing.T) {
 	t.Run("out-of-deps LLM fails closed", func(t *testing.T) {
 		echo := llm.NewScriptedLLM(llm.WithResponses(llm.Response{Text: "SHOULD_NOT_RUN"}))
 		w := customTestWorker(t, echo)
-		w.cfg.ExprChannel = true
 		orgID := os.Getenv("_CUSTOM_TEST_ORG_ID")
 		var projID string
 		if err := w.cfg.DB.WithContext(ctx).Raw(
@@ -190,7 +178,6 @@ func TestExprChannel_S2_FailClosed(t *testing.T) {
 		secrets := &fakeSecrets{value: "tok"}
 		doer := &fakeDoer{resp: fetch.Response{Status: 200, Body: []byte("ok")}}
 		w := httpTestWorker(t, db, secrets, doer)
-		w.cfg.ExprChannel = true
 
 		// Project B with recognizable content.
 		var projB string
@@ -239,7 +226,6 @@ func TestExprChannel_S2_FailClosed(t *testing.T) {
 	t.Run("out-of-deps script fails closed opaquely", func(t *testing.T) {
 		db := assetTestGorm(t)
 		w := scriptTestWorker(t, db)
-		w.cfg.ExprChannel = true
 		var projID string
 		if err := db.WithContext(ctx).Raw(
 			`INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),'orgS','pS','u') RETURNING id`,
@@ -264,12 +250,12 @@ func TestExprChannel_S2_FailClosed(t *testing.T) {
 	})
 }
 
-// TestExprChannel_HTTP_SecretSurvivesAndGuards proves the untouched secret pre-pass,
-// the {{name}} expr channel, and the {status} body-suppression guard all still work
-// under the flag.
-func TestExprChannel_HTTP_SecretSurvivesAndGuards(t *testing.T) {
+// TestExprValueSource_HTTP_SecretSurvivesAndGuards proves the untouched secret
+// pre-pass, the {{name}} expr channel, and the {status} body-suppression guard
+// all work together on the authoritative channel.
+func TestExprValueSource_HTTP_SecretSurvivesAndGuards(t *testing.T) {
 	if os.Getenv("LLM_AGENT_STUDIO_PG_URL") == "" {
-		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker ExprChannel tests")
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker expr value-source tests")
 	}
 	ctx := context.Background()
 	db := assetTestGorm(t)
@@ -279,7 +265,6 @@ func TestExprChannel_HTTP_SecretSurvivesAndGuards(t *testing.T) {
 		secrets := &fakeSecrets{value: "RESOLVED_SECRET"}
 		doer := &fakeDoer{resp: fetch.Response{Status: 200, Body: []byte("ok")}}
 		w := httpTestWorker(t, db, secrets, doer)
-		w.cfg.ExprChannel = true
 
 		orgA := "org_http_" + randHex3()
 		var projA string
@@ -328,7 +313,6 @@ func TestExprChannel_HTTP_SecretSurvivesAndGuards(t *testing.T) {
 		secrets := &fakeSecrets{value: "LEAKED"}
 		doer := &fakeDoer{resp: fetch.Response{Status: 200, Body: []byte("ok")}}
 		w := httpTestWorker(t, db, secrets, doer)
-		w.cfg.ExprChannel = true
 
 		orgA := "org_http_" + randHex3()
 		var projA string
@@ -362,11 +346,10 @@ func TestExprChannel_HTTP_SecretSurvivesAndGuards(t *testing.T) {
 	})
 
 	// (d) secret-bearing + AllowResponseBody:false still stores {status}-only.
-	t.Run("status-only guard under flag", func(t *testing.T) {
+	t.Run("status-only guard", func(t *testing.T) {
 		secrets := &fakeSecrets{value: "tok"}
 		doer := &fakeDoer{resp: fetch.Response{Status: 200, Body: []byte(`{"data":"x"}`)}}
 		w := httpTestWorker(t, db, secrets, doer)
-		w.cfg.ExprChannel = true
 
 		orgA := "org_http_" + randHex3()
 		var projA string
@@ -400,41 +383,4 @@ func TestExprChannel_HTTP_SecretSurvivesAndGuards(t *testing.T) {
 			t.Fatalf("want {status}-only, got %q", content)
 		}
 	})
-}
-
-// TestExprChannel_FlagOff_Unchanged sanity-checks that with ExprChannel:false the
-// executors use the legacy resolveVariables path and resolve a text dep identically
-// — even when the consumer has NO depends_on edge (legacy is un-scoped).
-func TestExprChannel_FlagOff_Unchanged(t *testing.T) {
-	if os.Getenv("LLM_AGENT_STUDIO_PG_URL") == "" {
-		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker ExprChannel tests")
-	}
-	ctx := context.Background()
-	w := customTestWorker(t, llm.NewScriptedLLM(llm.WithResponses(llm.Response{Text: "LEGACY_ANSWER"})))
-	// ExprChannel defaults false; assert explicitly.
-	if w.cfg.ExprChannel {
-		t.Fatalf("ExprChannel should default to false")
-	}
-	orgID := os.Getenv("_CUSTOM_TEST_ORG_ID")
-	var projID string
-	if err := w.cfg.DB.WithContext(ctx).Raw(
-		`INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),$1,'p','u') RETURNING id`,
-		orgID).Row().Scan(&projID); err != nil {
-		t.Fatalf("seed project: %v", err)
-	}
-	dep := seedTextDep(t, w, projID, "LEGACY_VAL")
-	// No depends_on edge — the legacy resolveVariables path is UN-SCOPED, so it
-	// must still resolve and the run must complete. (Under ExprChannel this exact
-	// wiring would fail closed — the S-2 contrast proven in TestExprChannel_S2.)
-	c := seedConsumerTodo(t, w, projID, "custom:translate")
-	ref, err := w.runCustomLLM(ctx, c, llmParams{
-		UserPrompt: "V: {{v}}",
-		Variables:  []customVariable{{Name: "v", SourceTodoId: dep}},
-	})
-	if err != nil {
-		t.Fatalf("runCustomLLM (legacy, no depends_on edge) must succeed via un-scoped path: %v", err)
-	}
-	if !strings.HasPrefix(ref, "custom:") {
-		t.Fatalf("want custom: ref, got %q", ref)
-	}
 }

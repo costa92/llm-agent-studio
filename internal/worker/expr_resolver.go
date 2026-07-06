@@ -2,9 +2,7 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"reflect"
 	"regexp"
 	"strings"
 
@@ -24,144 +22,11 @@ import (
 // matching the expr engine's identifier lexer (no unicode mismatch).
 var safeFieldRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// toExprTemplate rewrites the {{name}} parity subset to {{ $json.<name> }} so the
-// expr engine resolves the same upstream-variable channel as substituteVars. It
-// rewrites ONLY the known variable names (mirroring substituteVars' match), leaving
-// {{secret:...}} and any other braces untouched.
-//
-// IMPORTANT: it uses ReplaceAllLiteralString, NOT ReplaceAllString — the replacement
-// contains "$json", and ReplaceAllString would interpret "$j"/"$json" as a
-// capture-group reference and silently drop it.
-func toExprTemplate(tpl string, varNames []string) string {
-	out := tpl
-	for _, name := range varNames {
-		trimmed := strings.TrimSpace(name)
-		re := regexp.MustCompile(`\{\{\s*` + regexp.QuoteMeta(trimmed) + `\s*\}\}`)
-		out = re.ReplaceAllLiteralString(out, "{{ $json."+trimmed+" }}")
-	}
-	return out
-}
-
-// exprParityCheck recomputes the {{name}} substitution for one template via the expr
-// engine and logs ONLY safe metadata — todo id, label, a diverged bool, and the two
-// lengths. It is a PARITY PROBE: it never feeds the result downstream and never calls
-// Secrets.Resolve.
-//
-// F4: the log line must NEVER contain the resolved value strings — they can carry
-// secret or cross-project content; only id/label/bool/lengths are emitted.
-// F3: runCustomLLM has NO secret pass at all; the secret-literal guarantee here comes
-// from the engine treating "secret:" as a literal, NOT from any "secret pass ran
-// first" ordering (that argument applies only to runCustomHTTP).
-func (w *Worker) exprParityCheck(ctx context.Context, c claimed, label, tpl, legacy string, replacer map[string]string) {
-	names := make([]string, 0, len(replacer))
-	for n := range replacer {
-		names = append(names, n)
-	}
-	exprTpl := toExprTemplate(tpl, names)
-	selfJSON, err := json.Marshal(replacer) // {"name":"value", ...}
-	if err != nil {
-		// F4: log metadata only — never the value strings. Treat a marshal
-		// failure as a diverged probe and return before calling expr.Resolve.
-		w.cfg.Logger.Info("worker: expr parity probe",
-			"todo_id", c.todoID, "label", label, "diverged", true, "marshal_err", true)
-		return
-	}
-	ec := w.exprNodeResolver(ctx, c, []Item{{JSON: selfJSON}})
-	got, err := expr.Resolve(exprTpl, ec)
-	diverged := err != nil || got != legacy
-	w.cfg.Logger.Info("worker: expr parity probe",
-		"todo_id", c.todoID, "label", label,
-		"diverged", diverged, "len_legacy", len(legacy), "len_expr", len(got))
-}
-
-// exprNodeProbe is the real-$node shadow probe (P3b). For each variable with a
-// non-empty SourceTodoId it compares the LEGACY whole-output value (mirroring
-// resolveVariables exactly) against the value the cut-over will use: a real
-// $node["<src>"]<accessor> resolution through the LIVE, S-2-enforcing
-// exprNodeResolver (NOT a fresh unscoped expr.Context). The accessor (Q1=A')
-// is derived from the dep's stored node_outputs.format (or, for a straddling dep
-// with no node_outputs row, inferred from the output_ref prefix the itemsForDep
-// fallback will project). Each comparison is classified exact / benign (the
-// accepted H-3/M-1 key-reorder/whitespace case: byte-different but
-// json.Unmarshal+reflect.DeepEqual equal) / divergent.
-//
-// It is a SHADOW probe: it NEVER feeds the resolved value downstream and a probe
-// failure NEVER fails the run (it returns nothing; it only logs). It is gated on
-// w.cfg.ExprParity at the call sites.
-//
-// F4: the log line carries metadata ONLY — todo id, the slice INDEX (not v.Name),
-// the class, the two lengths, and the two error bools. NEVER the resolved values,
-// NEVER v.Name.
-func (w *Worker) exprNodeProbe(ctx context.Context, c claimed, vars []customVariable) {
-	// B/P5 ordering invariant (§12 amendment 4): this probe deliberately IGNORES
-	// v.SourceField and rebuilds the whole-output accessor unchanged. It is safe
-	// against an injection-shaped sourceField ONLY because the run ABORTS before
-	// reaching here: the gating resolver (resolveVariablesExpr in ExprChannel mode,
-	// or resolveVariables in legacy mode) runs first and returns an error for any
-	// invalid/field-bearing binding, so runCustomLLM/HTTP exit at that point and
-	// never call this probe with a tainted field. Do NOT reorder the probe ahead of
-	// the gating resolver, and do NOT feed v.SourceField into the template here
-	// without adding the same safeFieldRe charset gate.
-	for i, v := range vars {
-		if v.SourceTodoId == "" {
-			continue
-		}
-
-		// 1. Legacy value — mirror resolveVariables EXACTLY.
-		var legacyVal string
-		var legacyErr error
-		var outputRef string
-		if err := w.cfg.DB.WithContext(ctx).Raw(
-			`SELECT COALESCE(output_ref,'') FROM todos WHERE id=$1`, v.SourceTodoId).Row().Scan(&outputRef); err != nil {
-			legacyErr = err
-		} else {
-			legacyVal, legacyErr = w.resolveOutputText(ctx, outputRef)
-		}
-
-		// 2. Determine the Q1=A' accessor from the dep's stored format. A "text"
-		// output is projected as {"text": ...} (accessor .json.text); any other
-		// non-empty format wraps the object itself (accessor .json). With no
-		// node_outputs row (straddling dep — itemsForDep falls back to projecting
-		// output_ref), infer from the output_ref prefix: custom: -> .json.text
-		// (the custom fallback wraps as a textItem), everything else -> .json.
-		accessor := w.exprNodeAccessor(ctx, v.SourceTodoId, c.projectID, outputRef)
-
-		// 3. Expr value via the LIVE resolver (S-2 enforced; Self=nil — custom
-		// nodes reference $node, not $json).
-		tpl := `{{ $node["` + v.SourceTodoId + `"]` + accessor + ` }}`
-		exprVal, exprErr := expr.Resolve(tpl, w.exprNodeResolver(ctx, c, nil))
-
-		// 4. Classify.
-		class := "divergent"
-		switch {
-		case exprErr != nil || legacyErr != nil:
-			class = "divergent"
-		case exprVal == legacyVal:
-			class = "exact"
-		default:
-			var a, b any
-			if json.Unmarshal([]byte(exprVal), &a) == nil &&
-				json.Unmarshal([]byte(legacyVal), &b) == nil &&
-				reflect.DeepEqual(a, b) {
-				class = "benign"
-			} else {
-				class = "divergent"
-			}
-		}
-
-		// 5. Log metadata ONLY (F4).
-		w.cfg.Logger.Info("worker: expr $node shadow probe",
-			"todo_id", c.todoID, "var_index", i, "class", class,
-			"len_legacy", len(legacyVal), "len_expr", len(exprVal),
-			"expr_err", exprErr != nil, "legacy_err", legacyErr != nil)
-	}
-}
-
-// resolveVariablesExpr is the ExprChannel value resolver (P3d / R2). It resolves
-// each upstream variable's whole-output value through the expr engine's $node path
-// — project-scoped + direct-depends_on + fail-closed via exprNodeResolver — instead
-// of the legacy un-scoped resolveOutputText. The returned map feeds the SAME
-// substituteVars interpolation as the legacy path; only the value SOURCE changes.
+// resolveVariablesExpr is the {{name}} value resolver (the only channel since the
+// items cut-over, docs/specs/items-cutover.md §3 PR-C). It resolves each upstream
+// variable's whole-output value through the expr engine's $node path —
+// project-scoped + direct-depends_on + fail-closed via exprNodeResolver. The
+// returned map feeds the substituteVars interpolation.
 // A missing / empty-items / out-of-deps / cross-project dep returns an error
 // (fail-closed) — the run fails rather than silently resolving wrong/no data.
 func (w *Worker) resolveVariablesExpr(ctx context.Context, c claimed, vars []customVariable) (map[string]string, error) {

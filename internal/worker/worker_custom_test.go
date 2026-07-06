@@ -112,79 +112,13 @@ func customTestWorker(t *testing.T, chatModel llm.ChatModel) *Worker {
 	})
 }
 
-// TestResolveOutputText_ScriptAndCustom verifies that resolveOutputText correctly
-// reads from scripts.content_json and node_outputs.content, and errors on asset refs.
-func TestResolveOutputText_ScriptAndCustom(t *testing.T) {
-	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
-	if dsn == "" {
-		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker custom tests")
-	}
-	ctx := context.Background()
-	pool := assetTestPool(t)
-
-	// Insert a project for foreign-key constraints.
-	var projID string
-	_ = pool.QueryRow(ctx,
-		`INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),'orgX','p','u') RETURNING id`,
-	).Scan(&projID)
-
-	// Seed a scripts row. scripts.content_json is JSONB, so postgres will
-	// normalize the stored value (e.g. add spaces). We read back what postgres
-	// stored and compare against that, not the raw input string.
-	scriptID := newID()
-	scriptContent := `{"title":"hello"}`
-	_, err := pool.Exec(ctx,
-		`INSERT INTO scripts (id, project_id, todo_id, content_json, version) VALUES ($1,$2,'todo-x',$3,1)`,
-		scriptID, projID, []byte(scriptContent))
-	if err != nil {
-		t.Fatalf("seed script: %v", err)
-	}
-	// Read back what postgres actually stored (JSONB normalized).
-	var storedScriptContent string
-	_ = pool.QueryRow(ctx, `SELECT content_json::text FROM scripts WHERE id=$1`, scriptID).Scan(&storedScriptContent)
-
-	// Seed a node_outputs row.
-	outID := newID()
-	outContent := "resolved custom output"
-	_, err = pool.Exec(ctx,
-		`INSERT INTO node_outputs (id, project_id, todo_id, type, content, format) VALUES ($1,$2,'todo-y','custom:llm',$3,'text')`,
-		outID, projID, outContent)
-	if err != nil {
-		t.Fatalf("seed node_output: %v", err)
-	}
-
-	// Build a worker just to exercise resolveOutputText.
-	w := customTestWorker(t, llm.NewScriptedLLM(llm.WithResponses(llm.Response{Text: "unused"})))
-
-	// script: ref returns content_json blob (as stored by postgres JSONB).
-	got, err := w.resolveOutputText(ctx, "script:"+scriptID)
-	if err != nil {
-		t.Fatalf("resolveOutputText script: %v", err)
-	}
-	if got != storedScriptContent {
-		t.Fatalf("script: want %q got %q", storedScriptContent, got)
-	}
-
-	// custom: ref returns node_outputs.content.
-	got, err = w.resolveOutputText(ctx, "custom:"+outID)
-	if err != nil {
-		t.Fatalf("resolveOutputText custom: %v", err)
-	}
-	if got != outContent {
-		t.Fatalf("custom: want %q got %q", outContent, got)
-	}
-
-	// asset: ref must error.
-	if _, err := w.resolveOutputText(ctx, "asset:someID"); err == nil {
-		t.Fatalf("expected error for asset: ref, got nil")
-	}
-}
-
 // TestRunCustomLLM_TextAndJSON is the core executor test:
 //  1. Seeds a script todo (status=done, output_ref="script:<id>") + a matching
 //     scripts row.
-//  2. Seeds a typed custom todo whose input_json has kind=llm, params with
-//     {{draft}} template, and variables:[{name:"draft",sourceTodoId:<scriptTodo>}].
+//  2. Seeds a typed custom todo (depends_on the script todo — the expr value
+//     channel is project-scoped + direct-deps gated) whose input_json has
+//     kind=llm, params with {{draft}} template, and
+//     variables:[{name:"draft",sourceTodoId:<scriptTodo>}].
 //  3. Runs runCustom with a mock chat model.
 //  4. Asserts a node_outputs row is written with format="text".
 //  5. Re-runs with outputFormat="json" and a non-JSON model response → error.
@@ -254,9 +188,9 @@ func TestRunCustomLLM_TextAndJSON(t *testing.T) {
 	t.Run("text output writes node_outputs row", func(t *testing.T) {
 		customTodoID := newID()
 		_, err = pool.Exec(ctx,
-			`INSERT INTO todos (id, project_id, plan_id, type, status, input_json)
-			 VALUES ($1,$2,'plan-x','custom:translate','running',$3)`,
-			customTodoID, projID, buildInput("text"))
+			`INSERT INTO todos (id, project_id, plan_id, type, status, depends_on, input_json)
+			 VALUES ($1,$2,'plan-x','custom:translate','running',ARRAY[$3]::text[],$4)`,
+			customTodoID, projID, scriptTodoID, buildInput("text"))
 		if err != nil {
 			t.Fatalf("seed custom todo: %v", err)
 		}
@@ -295,9 +229,9 @@ func TestRunCustomLLM_TextAndJSON(t *testing.T) {
 	t.Run("json outputFormat with non-JSON model response returns error", func(t *testing.T) {
 		customTodoID := newID()
 		_, err = pool.Exec(ctx,
-			`INSERT INTO todos (id, project_id, plan_id, type, status, input_json)
-			 VALUES ($1,$2,'plan-x','custom:translate','running',$3)`,
-			customTodoID, projID, buildInput("json"))
+			`INSERT INTO todos (id, project_id, plan_id, type, status, depends_on, input_json)
+			 VALUES ($1,$2,'plan-x','custom:translate','running',ARRAY[$3]::text[],$4)`,
+			customTodoID, projID, scriptTodoID, buildInput("json"))
 		if err != nil {
 			t.Fatalf("seed custom todo: %v", err)
 		}
@@ -659,6 +593,13 @@ func TestRunCustomHTTP_NameChannelCannotSmuggleSecret(t *testing.T) {
 		 VALUES ($1,$2,'plan-x','custom:up','done',$3,'{}')`,
 		upTodoID, projID, "custom:"+upOutID).Error; err != nil {
 		t.Fatalf("seed upstream todo: %v", err)
+	}
+	// Wire the consumer's depends_on to the upstream (the expr value channel is
+	// direct-deps gated; an unwired var would fail closed before the smuggle).
+	if err := db.WithContext(ctx).Exec(
+		`UPDATE todos SET depends_on=ARRAY[$1]::text[] WHERE id=$2`,
+		upTodoID, c.todoID).Error; err != nil {
+		t.Fatalf("wire consumer depends_on: %v", err)
 	}
 
 	// Org secret LEAKME resolves to the sentinel value. fakeSecrets records the

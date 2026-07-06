@@ -1,14 +1,14 @@
 package worker
 
-// items cut-over PR-A (docs/specs/items-cutover.md §3): the ItemsCanonical ON
-// branch for the two built-in upstream-input consumers that the plain loadInputs
-// concatenation cannot serve — runStoryboard and runPrescreen both need the
-// legacy "多 dep 按 updated_at 挑最新单个上游" SELECTION over their deps, so this
-// file adds a per-dep variant (loadInputsByDep) that preserves the dep grouping +
-// the todo metadata the selection keys on, and rebuilds each consumer's legacy
-// choice equivalently on top of it. Every read stays project-scoped/fail-closed
-// (F1) via itemsForDep; items missing → itemsForDep's output_ref projection
-// fallback (★M-4) covers straddling-deploy runs.
+// items cut-over (docs/specs/items-cutover.md §3): the AUTHORITATIVE upstream-input
+// channel for the two built-in consumers that the plain loadInputs concatenation
+// cannot serve — runStoryboard and runPrescreen both need the "多 dep 按
+// updated_at 挑最新单个上游" SELECTION over their deps, so this file adds a
+// per-dep variant (loadInputsByDep) that preserves the dep grouping + the todo
+// metadata the selection keys on, and rebuilds each consumer's choice on top of
+// it. Every read stays project-scoped/fail-closed (F1) via itemsForDep; items
+// missing → itemsForDep's output_ref projection fallback (★M-4) covers
+// straddling-deploy runs.
 
 import (
 	"context"
@@ -20,9 +20,9 @@ import (
 	"github.com/lib/pq"
 )
 
-// depInput is one dependency's items plus the dep-todo metadata needed to
-// rebuild the legacy selection semantics (newest-single-upstream, prefix
-// filtering) that loadInputs' flat concatenation drops.
+// depInput is one dependency's items plus the dep-todo metadata needed for the
+// selection semantics (newest-single-upstream, prefix filtering) that
+// loadInputs' flat concatenation drops.
 type depInput struct {
 	todoID    string
 	typ       string
@@ -34,7 +34,7 @@ type depInput struct {
 // loadInputsByDep is the per-dep variant of loadInputs: the same project-scoped
 // items read + output_ref projection fallback (itemsForDep, F1/★M-4), but it
 // PRESERVES the dep grouping and carries each dep todo's type/output_ref/
-// updated_at so callers can equivalently rebuild legacy selection semantics.
+// updated_at so callers can apply per-dep selection semantics.
 func (w *Worker) loadInputsByDep(ctx context.Context, todoID string) ([]depInput, error) {
 	var depIDs pq.StringArray
 	var projectID string
@@ -55,7 +55,7 @@ func (w *Worker) loadInputsByDep(ctx context.Context, todoID string) ([]depInput
 		// An empty output_ref (a dep that never completed) has nothing to project;
 		// skip the items read — itemsForDep's default case would return nil anyway,
 		// but its fallback scans output_ref without COALESCE and a NULL would error
-		// where the legacy JOIN filters silently.
+		// where the selection below simply skips the dep.
 		if d.outputRef != "" {
 			items, err := w.itemsForDep(ctx, dep, projectID)
 			if err != nil {
@@ -69,13 +69,13 @@ func (w *Worker) loadInputsByDep(ctx context.Context, todoID string) ([]depInput
 }
 
 // storyboardScriptInput resolves the storyboard's upstream script via the items
-// canonical channel (ItemsCanonical ON branch). It equivalently rebuilds the
-// legacy selection: among depends_on parents, the NEWEST (updated_at) 'script'
-// todo whose output_ref is 'script:<id>' wins; its single item carries the
-// script content (dual-written by runScript, or projected from the scripts row
-// by itemsForDep's fallback for a straddling dep). The no-parent-edge fallback
-// — project-wide newest script (M1 compat heuristic) — is preserved AS-IS;
-// removing it is a Phase 3 decision, not this cut-over's.
+// channel (the only channel since the cut-over). Selection: among depends_on
+// parents, the NEWEST (updated_at) 'script' todo whose output_ref is
+// 'script:<id>' wins; its single item carries the script content (dual-written
+// by runScript, or projected from the scripts row by itemsForDep's fallback for
+// a straddling dep). The no-parent-edge fallback — project-wide newest script
+// (M1 compat heuristic) — is preserved AS-IS; removing it is a Phase 3
+// decision, not this cut-over's.
 func (w *Worker) storyboardScriptInput(ctx context.Context, c claimed) (string, []byte, error) {
 	deps, err := w.loadInputsByDep(ctx, c.todoID)
 	if err != nil {
@@ -108,14 +108,13 @@ func (w *Worker) storyboardScriptInput(ctx context.Context, c claimed) (string, 
 }
 
 // prescreenUpstreamText resolves the prescreen's upstream text via the items
-// canonical channel (ItemsCanonical ON branch). Legacy selection rebuilt
-// equivalently: the NEWEST (updated_at) dep whose output_ref is a text source
-// (script:/custom:) wins; asset:/shots: deps are excluded exactly like the
-// legacy JOIN filter. The item→text projection uses the same Q1=A' accessor
-// inference as the expr channel (exprNodeAccessor): a text-shaped dep unwraps
-// its {"text":...} item byte-identically to the legacy content read; anything
-// else is the item's json — JSONB-normalized, i.e. semantically equal to the
-// legacy content string (the accepted soak envelope).
+// channel (the only channel since the cut-over). Selection: the NEWEST
+// (updated_at) dep whose output_ref is a text source (script:/custom:) wins;
+// asset:/shots: deps are excluded. The item→text projection uses the same
+// Q1=A' accessor inference as the expr channel (exprNodeAccessor): a
+// text-shaped dep unwraps its {"text":...} item byte-identically to the stored
+// content; anything else is the item's json (JSONB-normalized, semantically
+// equal — the accepted soak envelope).
 func (w *Worker) prescreenUpstreamText(ctx context.Context, c claimed) (string, error) {
 	deps, err := w.loadInputsByDep(ctx, c.todoID)
 	if err != nil {

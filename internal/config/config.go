@@ -46,22 +46,6 @@ type Config struct {
 	MaxConcurrentGen  int           // global concurrent asset-todo cap; 0 = unlimited
 	ReviewPrescreen   bool          // run the ReviewAgent prescreen after generation
 
-	// workflow-v2 cut-over (P3). ExprParity defaults OFF (the soak probe). ExprChannel
-	// defaults ON (P3e flip, 2026-06-30): the expr engine is the LIVE custom-node
-	// {{name}} value source (project-scoped, fail-closed). The flip is REVERSIBLE —
-	// set STUDIO_EXPR_CHANNEL=0 to fall back to the legacy resolveVariables resolver.
-	ExprParity  bool // STUDIO_EXPR_PARITY=1 → run the expr $node shadow probe (soak evidence)
-	ExprChannel bool // default ON; STUDIO_EXPR_CHANNEL=0 → revert to legacy value channel (reversible kill-switch)
-	// ItemsCanonical (items cut-over PR-A, docs/specs/items-cutover.md §3) routes the
-	// built-in storyboard/prescreen upstream-input reads through the per-dep items
-	// channel (loadInputsByDep, project-scoped, fail-closed) instead of the legacy
-	// depends_on/output_ref JOIN reads. Default ON since the PR-B flip
-	// (STUDIO_ITEMS_CANONICAL=0 is the reversible kill-switch back to legacy).
-	// Structurally depends on the expr channel: ON with STUDIO_EXPR_CHANNEL=0 is a
-	// load error (fail-closed, same P5 principle) — throwing the expr kill-switch
-	// now requires STUDIO_ITEMS_CANONICAL=0 as well.
-	ItemsCanonical bool // default ON; STUDIO_ITEMS_CANONICAL=0 → revert to legacy input reads (reversible kill-switch)
-
 	// Per-provider image keys (M3 模型路由): a key registers that provider's
 	// catalog models as real generators in the registry. Empty = not registered
 	// (org defaults pointing there resolve to the env default generator).
@@ -150,9 +134,6 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		OrgDailyGenQuota:  intOf("ORG_DAILY_GEN_QUOTA", get("ORG_DAILY_GEN_QUOTA", "0"), &errs),
 		MaxConcurrentGen:  intOf("MAX_CONCURRENT_GENERATIONS", get("MAX_CONCURRENT_GENERATIONS", "0"), &errs),
 		ReviewPrescreen:   get("REVIEW_PRESCREEN", "true") == "true",
-		ExprParity:        get("STUDIO_EXPR_PARITY", "") == "1",
-		ExprChannel:       get("STUDIO_EXPR_CHANNEL", "1") != "0",
-		ItemsCanonical:    get("STUDIO_ITEMS_CANONICAL", "1") != "0",
 		OpenAIAPIKey:      get("OPENAI_API_KEY", ""),
 		GoogleAPIKey:      get("GOOGLE_API_KEY", ""),
 		MinimaxAPIKey:     get("MINIMAX_API_KEY", ""),
@@ -198,10 +179,6 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 	if cfg.LeaseRenewInterval > 0 && cfg.LeaseRenewInterval >= cfg.WorkerLease {
 		return Config{}, fmt.Errorf("config: LEASE_RENEW_INTERVAL (%s) must be strictly shorter than WORKER_LEASE (%s)",
 			cfg.LeaseRenewInterval, cfg.WorkerLease)
-	}
-	if cfg.ItemsCanonical && !cfg.ExprChannel {
-		// items 权威结构性依赖 expr 通道 (spec items-cutover §3): fail-closed 而非静默降级。
-		return Config{}, fmt.Errorf("config: the items canonical channel (default ON) requires the expr channel — with STUDIO_EXPR_CHANNEL=0 you must also set STUDIO_ITEMS_CANONICAL=0")
 	}
 	if cfg.PGURL == "" {
 		return Config{}, fmt.Errorf("config: PG_URL is required")

@@ -452,9 +452,9 @@ func TestRunCustomLLMDualWritesItems(t *testing.T) {
 
 		customTodoID := newID()
 		if err := db.WithContext(ctx).Exec(
-			`INSERT INTO todos (id, project_id, plan_id, type, status, input_json)
-			 VALUES ($1,$2,'plan-x','custom:translate','running',$3)`,
-			customTodoID, projID, buildInput("text", scriptTodoID)).Error; err != nil {
+			`INSERT INTO todos (id, project_id, plan_id, type, status, depends_on, input_json)
+			 VALUES ($1,$2,'plan-x','custom:translate','running',ARRAY[$3]::text[],$4)`,
+			customTodoID, projID, scriptTodoID, buildInput("text", scriptTodoID)).Error; err != nil {
 			t.Fatalf("seed custom todo: %v", err)
 		}
 		if _, err := w.runCustom(ctx, claimed{
@@ -499,9 +499,9 @@ func TestRunCustomLLMDualWritesItems(t *testing.T) {
 
 		customTodoID := newID()
 		if err := db.WithContext(ctx).Exec(
-			`INSERT INTO todos (id, project_id, plan_id, type, status, input_json)
-			 VALUES ($1,$2,'plan-x','custom:translate','running',$3)`,
-			customTodoID, projID, buildInput("json", scriptTodoID)).Error; err != nil {
+			`INSERT INTO todos (id, project_id, plan_id, type, status, depends_on, input_json)
+			 VALUES ($1,$2,'plan-x','custom:translate','running',ARRAY[$3]::text[],$4)`,
+			customTodoID, projID, scriptTodoID, buildInput("json", scriptTodoID)).Error; err != nil {
 			t.Fatalf("seed custom todo: %v", err)
 		}
 		if _, err := w.runCustom(ctx, claimed{

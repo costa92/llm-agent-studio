@@ -325,9 +325,6 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 			MaxAttempts:              cfg.WorkerMaxAttempt,
 			BaseBackoff:              cfg.WorkerBackoff,
 			CallTimeout:              cfg.WorkerCallTimeout,
-			ExprParity:               cfg.ExprParity,     // P3: $node shadow probe (default off)
-			ExprChannel:              cfg.ExprChannel,    // P3: expr live value channel (default ON; STUDIO_EXPR_CHANNEL=0 reverts to legacy)
-			ItemsCanonical:           cfg.ItemsCanonical, // items cut-over PR-B: storyboard/prescreen inputs via per-dep items (default ON; STUDIO_ITEMS_CANONICAL=0 reverts)
 			Tracer:                   tp.Tracer("studio.worker"),
 		})
 		wg.Add(1)
@@ -416,7 +413,6 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		AlertSettings:  alertStore,
 		Exports:        exportStore,
 		ExportBook:     exports.NewBookData(st.GORM()),
-		ExprChannel:    cfg.ExprChannel, // B/P5: read-only capability for field-level varBindings FE gate
 		Members:        membersSvc,
 		Platform:       platformSvc,
 		TaskBoard:      taskBoard,
