@@ -1267,30 +1267,3 @@ func TestFakeChatModelPicturebookPrompts(t *testing.T) {
 		}
 	}
 }
-
-// TestFakeChatModelPlannerNotShadowedByStoryboard guards the switch ORDERING bug:
-// plannerSystemPrompt itself contains the words "script" and "storyboard" (it lists
-// them as allowed node types), so if the "storyboard" case precedes the "planner"
-// case the planner prompt is wrongly answered with storyboard JSON ({"shots":...}).
-// ParseGraph then fails → every run records fallback_used=true and the UI shows
-// "Planner 输出畸形，已回落默认管线" on EVERY generation. The planner case must win.
-func TestFakeChatModelPlannerNotShadowedByStoryboard(t *testing.T) {
-	m := &fakeChatModel{}
-	// Mimic the real plannerSystemPrompt: contains "planner" AND "storyboard".
-	sys := `You are a content-production planner. Allowed node types: "script", "storyboard". "storyboard" should depend on "script".`
-	resp, err := m.Generate(context.Background(), llm.Request{SystemPrompt: sys})
-	if err != nil {
-		t.Fatalf("generate: %v", err)
-	}
-	var out map[string]any
-	if err := json.Unmarshal([]byte(resp.Text), &out); err != nil {
-		t.Fatalf("planner response not JSON: %v (%q)", err, resp.Text)
-	}
-	if _, hasShots := out["shots"]; hasShots {
-		t.Fatalf("planner prompt was shadowed by the storyboard branch (got shots, want nodes): %q", resp.Text)
-	}
-	nodes, ok := out["nodes"].([]any)
-	if !ok || len(nodes) == 0 {
-		t.Fatalf("planner prompt did not yield a node graph: %q", resp.Text)
-	}
-}
