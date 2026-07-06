@@ -17,7 +17,7 @@
 
 | 项 | 为何 M4 出局 | 重启需要什么 |
 |---|---|---|
-| **Runway/Kling/Veo/TTS 真实 HTTP** | 各家 submit/poll REST 形态不同 + 需密钥 + sandbox 不可达；M4 遵循「不为未验证的外部集成写臆测代码」 | M5 逐家落 submit/poll HTTP（替换适配器体内 `// TODO(m5)`），含 idemKey→client-token header 映射；引擎/接口不动（fake 与真实走同一 `AsyncGenerator`） |
+| **Runway/Kling/Veo/TTS 真实 HTTP** | 各家 submit/poll REST 形态不同 + 需密钥 + sandbox 不可达；M4 遵循「不为未验证的外部集成写臆测代码」 | **更新（Phase 2.1）**：原 M4 的必失败骨架适配器（Runway/Kling/Veo/OpenAI-TTS/Hailuo-02 + 体内 `// TODO(m5)`）已**整体下架**（`internal/models/store.go:88` 注释）——真实接线时重新引入 submit/poll HTTP（含 idemKey→client-token header 映射），不再是替换体内 TODO；引擎/接口不动（fake 与真实走同一 `AsyncGenerator`） |
 | **外部 provider Cancel HTTP** | 真正向 provider 发取消的 REST 形态各异；M4 本地取消（停轮询 + 终态化 submitted 资产）已收口本地态 | M5 实现 `Canceler.Cancel(ctx, jobID)` 真 HTTP（当前 no-op 默认）；同时收口「已提交 job 仍计费」窗口 |
 
 ## 3. 同步短 TTS 路径（I5 刻意分歧，延后 M5）
@@ -26,6 +26,7 @@
 
 - **为何 M4 这样做**：M4 无真实 TTS HTTP，骨架的形态选择对活验无影响；统一 `AsyncGenerator` 让 worker 引擎代码更简单（CLAUDE.md 第2条：不为 stub 引入分叉路径）。
 - **重启条件**：M5 接真实 TTS HTTP 时，按 spec §8.2 落同步 `Generate` 路径（短音频直接同步返回），届时 worker 已有的 `MediaGenerator`（非 async）分支即可承载，无需新增引擎逻辑。
+- **更新（Phase 2.1，MiniMax 已收口）**：`internal/generate/audio/minimax.go`（`Generate`，:99）以同步 `MediaGenerator` 落地 MiniMax T2A，且**显式不实现 `AsyncGenerator`**——`routed.(AsyncGenerator)` 断言对它失败，走 sync 分支。即 spec §8.2 的同步短 TTS 路径对 MiniMax 已按 spec 收口；该 I5 分歧对 MiniMax 不再存在（其余 provider 若接入 TTS 仍按此约定落同步 `Generate`）。
 
 ## 4. 大文件流式拉回（spec §11 R10，延后 M5）
 
