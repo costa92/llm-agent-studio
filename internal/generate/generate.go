@@ -1,7 +1,9 @@
 // Package generate is the unified media-generation seam (spec §7.2): AssetAgent
 // calls a MediaGenerator without knowing image/video/audio. M2 ships the image
 // adapter (wrapping contract/llm.ImageGenerator) + a fake + a registry that
-// resolves model_configs (provider+model) to a generator. Video/audio are M4.
+// resolves model_configs (provider+model) to a generator. image + audio (MiniMax
+// T2A) are wired real; there is no video adapter (the M5 video/audio skeletons
+// were retired) — the async submit→poll engine survives, exercised via FakeAsync.
 package generate
 
 import "context"

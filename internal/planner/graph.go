@@ -1,7 +1,7 @@
-// Package planner turns a project brief into a validated todo graph via an LLM
-// (graph.go = pure validation/fallback; planner.go = LLM + persistence). Spec
-// §7.1: type whitelist + acyclic + must-contain-script; malformed → default
-// pipeline fallback.
+// Package planner turns a custom workflow node DAG into a validated, persisted
+// todo graph — no LLM. graph.go = graph validation (type whitelist + acyclic);
+// planner.go = PlanCustom + persistence. (The LLM auto-planner that generated a
+// graph from a project brief was removed with the workflow-only pivot.)
 package planner
 
 import (
