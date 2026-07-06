@@ -1,10 +1,8 @@
 package worker
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"log/slog"
 	"os"
 	"reflect"
 	"strings"
@@ -20,35 +18,23 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/todos"
 )
 
-// TestExprChannel_DifferentialSoak is the reproducible local proxy for the
-// production soak that gates the ExprChannel flip (workflow-v2 P3 cut-over).
-//
-// For each realistic custom-node scenario it runs the SAME execution twice — once
-// under ExprChannel:false (legacy resolveVariables/resolveOutputText) and once under
-// ExprChannel:true (the expr engine $node path) — against freshly-seeded, identical
-// data, and asserts the observable output is EQUIVALENT. "Equivalent" is the soak's
-// acceptance bar:
-//   - text-format deps: BYTE-IDENTICAL across flags.
-//   - json-object deps: SEMANTICALLY EQUAL (json.Unmarshal both + reflect.DeepEqual) —
-//     the engine decodes→re-marshals so key order / whitespace may differ; nothing
-//     else may.
-//
-// Anything outside that envelope is a real divergence that must block the flip; the
-// assertions below do NOT tolerate it.
-//
-// The probe half re-runs the same battery under ExprParity:true with a captured slog
-// buffer and asserts EVERY "$node shadow probe" log line is class=exact or
-// class=benign — zero class=divergent — and that no resolved value or var name leaks
-// into the buffer.
-func TestExprChannel_DifferentialSoak(t *testing.T) {
+// TestExprValueSource_Regression is the regression battery for the expr $node
+// {{name}} value source — the ONLY value channel since the items cut-over
+// (docs/specs/items-cutover.md §3 PR-C). It descends from the P3 differential
+// soak that gated the flip; with the legacy channel deleted, each scenario now
+// runs once through the authoritative path and asserts the observable output
+// against the seeded content:
+//   - text-format deps interpolate BYTE-IDENTICAL to the seeded value.
+//   - json-object deps interpolate SEMANTICALLY EQUAL (decode + DeepEqual) —
+//     the engine decodes→re-marshals so key order / whitespace may differ.
+func TestExprValueSource_Regression(t *testing.T) {
 	if os.Getenv("LLM_AGENT_STUDIO_PG_URL") == "" {
-		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run the P3 differential soak")
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run the expr value-source regression battery")
 	}
 
 	t.Run("HTTP", func(t *testing.T) { soakHTTP(t) })
 	t.Run("LLM", func(t *testing.T) { soakLLM(t) })
 	t.Run("Script", func(t *testing.T) { soakScript(t) })
-	t.Run("ShadowProbe", func(t *testing.T) { soakShadowProbe(t) })
 }
 
 // ---- seed helpers (soak-local; recognizable content) -----------------------
@@ -67,9 +53,9 @@ func seedSoakProject(t *testing.T, db *gorm.DB, org string) string {
 
 // seedJSONDep seeds a json-object dep: a node_outputs row (format='json',
 // content=<obj string>, items=[{json:<obj>}], id==coid AND todo_id==depTodo) + a
-// done dep todo whose output_ref is "custom:<coid>". Legacy resolves the content
-// string; expr resolves $node[depTodo].json (re-marshaled object) → semantically
-// equal but possibly key-reordered. Returns the dep todo id.
+// done dep todo whose output_ref is "custom:<coid>". The expr channel resolves
+// $node[depTodo].json (re-marshaled object) → semantically equal to objJSON but
+// possibly key-reordered. Returns the dep todo id.
 func seedJSONDep(t *testing.T, db *gorm.DB, projID, objJSON string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -94,8 +80,7 @@ func seedJSONDep(t *testing.T, db *gorm.DB, projID, objJSON string) string {
 // seedScriptFallbackDep seeds a STRADDLING dep that completed under old code: a
 // scripts row (output_ref 'script:<id>') with NO node_outputs.items row. The expr
 // side must satisfy it via itemsForDep's script-projection fallback + the
-// exprNodeAccessor output_ref-prefix inference (.json). Legacy resolves the
-// JSONB-normalized content_json text. Returns the dep todo id.
+// exprNodeAccessor output_ref-prefix inference (.json). Returns the dep todo id.
 func seedScriptFallbackDep(t *testing.T, db *gorm.DB, projID, contentJSON string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -116,8 +101,7 @@ func seedScriptFallbackDep(t *testing.T, db *gorm.DB, projID, contentJSON string
 }
 
 // seedHTTPConsumer inserts a running custom:http todo whose depends_on is exactly
-// deps (required so the ExprChannel S-2 direct-deps gate admits each dep). Returns
-// the claimed.
+// deps (required so the S-2 direct-deps gate admits each dep). Returns the claimed.
 func seedHTTPConsumer(t *testing.T, db *gorm.DB, projID string, deps ...string) claimed {
 	t.Helper()
 	w := &Worker{cfg: Config{DB: db}}
@@ -125,9 +109,9 @@ func seedHTTPConsumer(t *testing.T, db *gorm.DB, projID string, deps ...string) 
 }
 
 // httpSoakWorker builds an http-path worker over db with the given fake fetcher.
-func httpSoakWorker(t *testing.T, db *gorm.DB, doer HTTPDoer, exprChannel bool) *Worker {
+func httpSoakWorker(t *testing.T, db *gorm.DB, doer HTTPDoer) *Worker {
 	t.Helper()
-	w := New(Config{
+	return New(Config{
 		DB:          db,
 		Todos:       todos.New(db),
 		Projects:    project.New(db),
@@ -136,8 +120,6 @@ func httpSoakWorker(t *testing.T, db *gorm.DB, doer HTTPDoer, exprChannel bool) 
 		HTTPFetcher: doer,
 		WorkerID:    "soak-http", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
 	})
-	w.cfg.ExprChannel = exprChannel
-	return w
 }
 
 // assertJSONSemEqual asserts a and b decode to equal JSON values (benign reorder /
@@ -146,17 +128,17 @@ func assertJSONSemEqual(t *testing.T, label, a, b string) {
 	t.Helper()
 	var av, bv any
 	if err := json.Unmarshal([]byte(a), &av); err != nil {
-		t.Fatalf("%s: legacy/expr value not valid JSON (a=%q): %v", label, a, err)
+		t.Fatalf("%s: value not valid JSON (a=%q): %v", label, a, err)
 	}
 	if err := json.Unmarshal([]byte(b), &bv); err != nil {
-		t.Fatalf("%s: legacy/expr value not valid JSON (b=%q): %v", label, b, err)
+		t.Fatalf("%s: value not valid JSON (b=%q): %v", label, b, err)
 	}
 	if !reflect.DeepEqual(av, bv) {
-		t.Fatalf("%s: JSON deps not semantically equal:\n legacy=%q\n expr  =%q", label, a, b)
+		t.Fatalf("%s: JSON values not semantically equal:\n a=%q\n b=%q", label, a, b)
 	}
 }
 
-// ---- HTTP soak (strongest — byte differential on the wire) ------------------
+// ---- HTTP battery (strongest — byte assertions on the wire) -----------------
 
 func soakHTTP(t *testing.T) {
 	ctx := context.Background()
@@ -167,37 +149,29 @@ func soakHTTP(t *testing.T) {
 	const textVal2 = "ANOTHER-TEXT-VALUE-soak"
 	const jsonObj = `{"b":2,"a":1,"nested":{"z":9,"y":8}}`
 
-	// runScenario seeds fresh, identical data, then runs the SAME http request under
-	// both flags via two workers sharing the db, capturing the outgoing request for
-	// each. It returns (legacyReq, exprReq).
-	type capture struct{ req fetch.Request }
-	runBoth := func(t *testing.T, seed func(projID string) (deps []string), params func(deps []string) httpParams) (fetch.Request, fetch.Request) {
+	// runOne seeds fresh data, runs the http request through the authoritative
+	// channel, and returns the outgoing request captured on the wire.
+	runOne := func(t *testing.T, seed func(projID string) (deps []string), params func(deps []string) httpParams) fetch.Request {
 		t.Helper()
 		org := "org_soak_http_" + randHex3()
 		projID := seedSoakProject(t, db, org)
 		deps := seed(projID)
 
-		var caps [2]capture
-		for i, exprChannel := range []bool{false, true} {
-			doer := &fakeDoer{resp: fetch.Response{Status: 200, Body: []byte("ok")}}
-			w := httpSoakWorker(t, db, doer, exprChannel)
-			c := seedHTTPConsumer(t, db, projID, deps...)
-			if _, err := w.runCustomHTTP(ctx, c, params(deps)); err != nil {
-				t.Fatalf("runCustomHTTP (exprChannel=%v): %v", exprChannel, err)
-			}
-			caps[i].req = doer.gotReq
+		doer := &fakeDoer{resp: fetch.Response{Status: 200, Body: []byte("ok")}}
+		w := httpSoakWorker(t, db, doer)
+		c := seedHTTPConsumer(t, db, projID, deps...)
+		if _, err := w.runCustomHTTP(ctx, c, params(deps)); err != nil {
+			t.Fatalf("runCustomHTTP: %v", err)
 		}
-		return caps[0].req, caps[1].req
+		return doer.gotReq
 	}
 
-	// Scenario 1: a single text-dep var in a header → byte-identical.
+	// Scenario 1: a single text-dep var in a header → byte-identical interpolation.
 	t.Run("single text dep var in header", func(t *testing.T) {
-		var depID string
-		legacy, expr := runBoth(t,
+		req := runOne(t,
 			func(projID string) []string {
 				w := &Worker{cfg: Config{DB: db}}
-				depID = seedTextDep(t, w, projID, textVal)
-				return []string{depID}
+				return []string{seedTextDep(t, w, projID, textVal)}
 			},
 			func(deps []string) httpParams {
 				return httpParams{
@@ -207,24 +181,19 @@ func soakHTTP(t *testing.T) {
 					Variables: []customVariable{{Name: "t", SourceTodoId: deps[0]}},
 				}
 			})
-		if legacy.Headers["X-Text"] != expr.Headers["X-Text"] {
-			t.Fatalf("text dep header not byte-identical:\n legacy=%q\n expr  =%q",
-				legacy.Headers["X-Text"], expr.Headers["X-Text"])
-		}
-		if !strings.Contains(legacy.Headers["X-Text"], textVal) {
-			t.Fatalf("sanity: text value not interpolated, got %q", legacy.Headers["X-Text"])
+		if want := "PRE[" + textVal + "]POST"; req.Headers["X-Text"] != want {
+			t.Fatalf("text dep header = %q, want byte-identical %q", req.Headers["X-Text"], want)
 		}
 	})
 
 	// Scenario 2: two vars (text + json) across headers + body.
-	// text var → byte-identical; json var → semantically equal.
+	// text var → byte-identical; json var → semantically equal to the seed.
 	t.Run("two vars text+json in headers and body", func(t *testing.T) {
-		var textDep, jsonDep string
-		legacy, expr := runBoth(t,
+		req := runOne(t,
 			func(projID string) []string {
 				w := &Worker{cfg: Config{DB: db}}
-				textDep = seedTextDep(t, w, projID, textVal2)
-				jsonDep = seedJSONDep(t, db, projID, jsonObj)
+				textDep := seedTextDep(t, w, projID, textVal2)
+				jsonDep := seedJSONDep(t, db, projID, jsonObj)
 				return []string{textDep, jsonDep}
 			},
 			func(deps []string) httpParams {
@@ -242,39 +211,36 @@ func soakHTTP(t *testing.T) {
 					},
 				}
 			})
-		// text header: byte-identical.
-		if legacy.Headers["X-Text"] != expr.Headers["X-Text"] {
-			t.Fatalf("text header not byte-identical:\n legacy=%q\n expr=%q",
-				legacy.Headers["X-Text"], expr.Headers["X-Text"])
+		// text header: byte-identical to the seed.
+		if req.Headers["X-Text"] != textVal2 {
+			t.Fatalf("text header = %q, want %q", req.Headers["X-Text"], textVal2)
 		}
-		if legacy.Headers["X-Text"] != textVal2 {
-			t.Fatalf("sanity: text header = %q want %q", legacy.Headers["X-Text"], textVal2)
+		// json header: semantically equal to the seeded object.
+		assertJSONSemEqual(t, "X-Json header", jsonObj, req.Headers["X-Json"])
+		// body: the embedded text part is byte-identical; the wrapped json is
+		// semantically equal (may reorder through the engine).
+		var body map[string]any
+		if err := json.Unmarshal(req.Body, &body); err != nil {
+			t.Fatalf("request body not valid JSON: %q (%v)", req.Body, err)
 		}
-		// json header: semantically equal (the var value is itself the json-object string).
-		assertJSONSemEqual(t, "X-Json header", legacy.Headers["X-Json"], expr.Headers["X-Json"])
-		// body: the embedded text part is byte-identical, and the whole body is
-		// semantically equal as JSON (wrapped_json may reorder under expr).
-		assertJSONSemEqual(t, "request body", string(legacy.Body), string(expr.Body))
-		// Cross-check the text portion landed byte-identical inside the body too.
-		var lb, eb map[string]any
-		_ = json.Unmarshal(legacy.Body, &lb)
-		_ = json.Unmarshal(expr.Body, &eb)
-		if lb["wrapped_text"] != eb["wrapped_text"] || lb["wrapped_text"] != textVal2 {
-			t.Fatalf("body text part diverged: legacy=%v expr=%v want %q",
-				lb["wrapped_text"], eb["wrapped_text"], textVal2)
+		if body["wrapped_text"] != textVal2 {
+			t.Fatalf("body text part = %v, want %q", body["wrapped_text"], textVal2)
 		}
+		wrapped, err := json.Marshal(body["wrapped_json"])
+		if err != nil {
+			t.Fatalf("re-marshal wrapped_json: %v", err)
+		}
+		assertJSONSemEqual(t, "body wrapped_json", jsonObj, string(wrapped))
 	})
 
 	// Scenario 3: a dep that ran via the script/fallback path (scripts row only, no
 	// node_outputs.items) — exercises the exprNodeAccessor + itemsForDep fallback.
-	// content_json is a JSON object → semantically equal across flags.
+	// content_json is a JSON object → semantically equal to the seed.
 	t.Run("script-fallback json dep in header", func(t *testing.T) {
 		const fallbackJSON = `{"title":"Draft Title","logline":"A short film.","characterSheet":"a teal fox"}`
-		var depID string
-		legacy, expr := runBoth(t,
+		req := runOne(t,
 			func(projID string) []string {
-				depID = seedScriptFallbackDep(t, db, projID, fallbackJSON)
-				return []string{depID}
+				return []string{seedScriptFallbackDep(t, db, projID, fallbackJSON)}
 			},
 			func(deps []string) httpParams {
 				return httpParams{
@@ -284,25 +250,24 @@ func soakHTTP(t *testing.T) {
 					Variables: []customVariable{{Name: "f", SourceTodoId: deps[0]}},
 				}
 			})
-		assertJSONSemEqual(t, "script-fallback header", legacy.Headers["X-Fallback"], expr.Headers["X-Fallback"])
+		assertJSONSemEqual(t, "script-fallback header", fallbackJSON, req.Headers["X-Fallback"])
 	})
 }
 
-// ---- LLM soak --------------------------------------------------------------
+// ---- LLM battery -------------------------------------------------------------
 
 func soakLLM(t *testing.T) {
 	ctx := context.Background()
 
 	// The scripted model returns a canned answer (it cannot observe the interpolated
-	// prompt), so the observable is the stored node_outputs.content. Both flag states
-	// must complete and write equivalent node_outputs.
-	run := func(t *testing.T, exprChannel bool, content string) string {
-		t.Helper()
+	// prompt), so the observable is that the run completes through the authoritative
+	// resolver and lands the canned node_outputs.content.
+	t.Run("text dep into system+user prompt", func(t *testing.T) {
+		const depText = "LLM-UPSTREAM-DRAFT-soak"
 		const canned = "MODEL-ANSWER-soak"
 		w := customTestWorker(t, llm.NewScriptedLLM(llm.WithResponses(llm.Response{Text: canned})))
-		w.cfg.ExprChannel = exprChannel
 		projID := seedSoakProject(t, w.cfg.DB, os.Getenv("_CUSTOM_TEST_ORG_ID"))
-		dep := seedTextDep(t, w, projID, content)
+		dep := seedTextDep(t, w, projID, depText)
 		c := seedConsumerTodo(t, w, projID, "custom:translate", dep)
 		ref, err := w.runCustomLLM(ctx, c, llmParams{
 			SystemPrompt: "Context: {{ctx}}",
@@ -310,7 +275,7 @@ func soakLLM(t *testing.T) {
 			Variables:    []customVariable{{Name: "ctx", SourceTodoId: dep}},
 		})
 		if err != nil {
-			t.Fatalf("runCustomLLM (exprChannel=%v): %v", exprChannel, err)
+			t.Fatalf("runCustomLLM: %v", err)
 		}
 		outID := strings.TrimPrefix(ref, "custom:")
 		var out string
@@ -318,20 +283,13 @@ func soakLLM(t *testing.T) {
 			`SELECT content FROM node_outputs WHERE id=$1`, outID).Row().Scan(&out); err != nil {
 			t.Fatalf("load node_output: %v", err)
 		}
-		return out
-	}
-
-	t.Run("text dep into system+user prompt", func(t *testing.T) {
-		const depText = "LLM-UPSTREAM-DRAFT-soak"
-		legacy := run(t, false, depText)
-		expr := run(t, true, depText)
-		if legacy != expr {
-			t.Fatalf("LLM node_outputs.content diverged across flags:\n legacy=%q\n expr  =%q", legacy, expr)
+		if out != canned {
+			t.Fatalf("LLM node_outputs.content = %q, want %q", out, canned)
 		}
 	})
 }
 
-// ---- Script soak -----------------------------------------------------------
+// ---- Script battery ------------------------------------------------------------
 
 func soakScript(t *testing.T) {
 	ctx := context.Background()
@@ -339,129 +297,23 @@ func soakScript(t *testing.T) {
 
 	// A custom script node injects the resolved {{name}} value as a Starlark global,
 	// then echoes it back as output. The output node_outputs.content is the observable.
-	run := func(t *testing.T, exprChannel bool, depText string) string {
-		t.Helper()
+	t.Run("global var resolves byte-identically", func(t *testing.T) {
+		const depText = "SCRIPT-GLOBAL-VALUE-soak"
 		org := "org_soak_script_" + randHex3()
 		projID, depTodo := seedScriptUpstream(t, db, org, depText)
 		w := scriptTestWorker(t, db)
-		w.cfg.ExprChannel = exprChannel
-		// Consumer must depend on depTodo so the ExprChannel S-2 gate admits it.
+		// Consumer must depend on depTodo so the S-2 gate admits it.
 		c := seedConsumerTodo(t, w, projID, "custom:script", depTodo)
-		// runCustomScript reads params; build them directly (the global is named "g").
 		ref, err := w.runCustomScript(ctx, c, scriptParams{
 			Code:      `output = g`,
 			Variables: []customVariable{{Name: "g", SourceTodoId: depTodo}},
 		})
 		if err != nil {
-			t.Fatalf("runCustomScript (exprChannel=%v): %v", exprChannel, err)
+			t.Fatalf("runCustomScript: %v", err)
 		}
 		_, content := readNodeOutput(t, db, ref)
-		return content
-	}
-
-	t.Run("global var resolves identically across flags", func(t *testing.T) {
-		const depText = "SCRIPT-GLOBAL-VALUE-soak"
-		legacy := run(t, false, depText)
-		expr := run(t, true, depText)
-		if legacy != expr {
-			t.Fatalf("script global resolution diverged:\n legacy=%q\n expr  =%q", legacy, expr)
-		}
-		if legacy != depText {
-			t.Fatalf("sanity: script did not echo the global, got %q want %q", legacy, depText)
+		if content != depText {
+			t.Fatalf("script did not echo the global, got %q want %q", content, depText)
 		}
 	})
-}
-
-// ---- Shadow probe half -----------------------------------------------------
-
-// soakShadowProbe runs the same battery of dep shapes through the live $node shadow
-// probe (exprNodeProbe under ExprParity:true) with a captured slog buffer and asserts
-// EVERY probe line is class=exact or class=benign — zero class=divergent — and that
-// no resolved value or var name leaks into the buffer. A single divergent on a
-// legitimate scenario is a real finding and fails the test (the assertion is NOT
-// weakened).
-func soakShadowProbe(t *testing.T) {
-	ctx := context.Background()
-	db := assetTestGorm(t)
-	projID := seedSoakProject(t, db, "org_soak_probe_"+randHex3())
-
-	const textVal = "PROBE-TEXT-VALUE-soak"
-	const jsonObj = `{"b":2,"a":1,"nested":{"z":9}}`
-	const fallbackJSON = `{"title":"Probe Title","logline":"L"}`
-
-	w0 := &Worker{cfg: Config{DB: db}}
-	textDep := seedTextDep(t, w0, projID, textVal)
-	jsonDep := seedJSONDep(t, db, projID, jsonObj)
-	fallbackDep := seedScriptFallbackDep(t, db, projID, fallbackJSON)
-
-	// Executing custom todo depends on ALL three (so the probe's live S-2 resolver
-	// admits each — every line must classify exact/benign, never denied/divergent).
-	exec := newID()
-	if err := db.WithContext(ctx).Exec(
-		`INSERT INTO todos (id, project_id, plan_id, type, status, depends_on, input_json)
-		 VALUES ($1,$2,'plan-x','custom:next','running',ARRAY[$3,$4,$5]::text[],'{}')`,
-		exec, projID, textDep, jsonDep, fallbackDep).Error; err != nil {
-		t.Fatalf("seed exec todo: %v", err)
-	}
-
-	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, nil))
-	w := New(Config{
-		DB:         db,
-		Todos:      todos.New(db),
-		Projects:   project.New(db),
-		Events:     events.New(db),
-		Logger:     logger,
-		ExprParity: true,
-		WorkerID:   "soak-probe", Lease: time.Minute, MaxAttempts: 3, BaseBackoff: time.Millisecond,
-	})
-
-	// Distinctive var names so the no-leak check can prove they never appear.
-	vars := []customVariable{
-		{Name: "probeTEXT_secret", SourceTodoId: textDep},
-		{Name: "probeJSON_secret", SourceTodoId: jsonDep},
-		{Name: "probeFALLBACK_secret", SourceTodoId: fallbackDep},
-	}
-	w.exprNodeProbe(ctx, claimed{todoID: exec, projectID: projID}, vars)
-
-	out := buf.String()
-	if out == "" {
-		t.Fatalf("expected probe log lines, got empty buffer")
-	}
-
-	// Parse every "$node shadow probe" line; tally classes; assert zero divergent.
-	exact, benign, divergent := 0, 0, 0
-	for _, line := range strings.Split(out, "\n") {
-		if !strings.Contains(line, "expr $node shadow probe") {
-			continue
-		}
-		switch fieldVal(line, "class") {
-		case "exact":
-			exact++
-		case "benign":
-			benign++
-		case "divergent":
-			divergent++
-			t.Errorf("FINDING: shadow probe reported class=divergent on a legitimate scenario:\n%s", line)
-		default:
-			t.Errorf("unexpected probe class on line:\n%s", line)
-		}
-	}
-	if divergent != 0 {
-		t.Fatalf("soak FINDING: %d divergent probe line(s) — flip is NOT sound (exact=%d benign=%d)", divergent, exact, benign)
-	}
-	if exact+benign != len(vars) {
-		t.Fatalf("expected %d classified probe lines, got exact=%d benign=%d", len(vars), exact, benign)
-	}
-	t.Logf("shadow probe classification: exact=%d benign=%d divergent=%d", exact, benign, divergent)
-
-	// No value / var-name leak (F4).
-	for _, leak := range []string{
-		textVal, jsonObj, fallbackJSON, "Probe Title",
-		"probeTEXT_secret", "probeJSON_secret", "probeFALLBACK_secret",
-	} {
-		if strings.Contains(out, leak) {
-			t.Fatalf("F4 violation: probe buffer contains forbidden token %q:\n%s", leak, out)
-		}
-	}
 }

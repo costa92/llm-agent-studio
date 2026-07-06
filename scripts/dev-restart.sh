@@ -18,9 +18,6 @@
 #   PER_USER_LIMIT=6000              放宽单用户配额，避免开发时反复撞限额
 #   STUDIO_CONFIG_ENC_KEY / JWT_SECRET  见上，从文件读
 #   PLATFORM_ADMIN_EMAILS            平台管理员白名单（开发用占位邮箱）
-#   STUDIO_EXPR_CHANNEL=1            ⚠️ 极易漏！开启表达式通道——字段级 varBindings
-#                                    （节点间变量绑定）依赖它，不开则工作流跑不通。
-#                                    每次拉起都必须带，故写死在本脚本里。
 #   API_KEY / DEEPSEEK_API_KEY / PROVIDER / MODEL  真实 deepseek 文本模型接线。
 #
 # ⚠️ 杀进程只按「精确 PID + 精确 exe 路径」来（见 kill_old_studiod）：
@@ -90,7 +87,6 @@ log "拉起 studiod（真实 deepseek 文本 + minimax BYOK 图/音），日志 
   STUDIO_CONFIG_ENC_KEY="$(cat "$ENC_KEY_FILE")" \
   JWT_SECRET="$(cat "$JWT_SECRET_FILE")" \
   PLATFORM_ADMIN_EMAILS=pfadmin@s.com \
-  STUDIO_EXPR_CHANNEL=1 \
   API_KEY="$DEEPSEEK_API_KEY" \
   DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
   PROVIDER=deepseek \

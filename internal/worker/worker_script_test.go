@@ -58,17 +58,27 @@ func seedScriptUpstream(t *testing.T, db *gorm.DB, orgID, upstreamText string) (
 	return projID, upTodoID
 }
 
-// seedScriptTodo inserts a script custom todo with the given input_json and
-// returns its claimed.
-func seedScriptTodo(t *testing.T, db *gorm.DB, projID string, input []byte) claimed {
+// seedScriptTodo inserts a script custom todo with the given input_json (and
+// optional depends_on edges — required when the input carries a varBinding: the
+// expr value channel is direct-deps gated) and returns its claimed.
+func seedScriptTodo(t *testing.T, db *gorm.DB, projID string, input []byte, deps ...string) claimed {
 	t.Helper()
 	ctx := context.Background()
 	todoID := newID()
-	if err := db.WithContext(ctx).Exec(
-		`INSERT INTO todos (id, project_id, plan_id, type, status, input_json)
-		 VALUES ($1,$2,'plan-x','custom:script','running',$3)`,
-		todoID, projID, input).Error; err != nil {
-		t.Fatalf("seed script todo: %v", err)
+	if len(deps) == 0 {
+		if err := db.WithContext(ctx).Exec(
+			`INSERT INTO todos (id, project_id, plan_id, type, status, input_json)
+			 VALUES ($1,$2,'plan-x','custom:script','running',$3)`,
+			todoID, projID, input).Error; err != nil {
+			t.Fatalf("seed script todo: %v", err)
+		}
+	} else {
+		if err := db.WithContext(ctx).Exec(
+			`INSERT INTO todos (id, project_id, plan_id, type, status, depends_on, input_json)
+			 VALUES ($1,$2,'plan-x','custom:script','running',ARRAY[$3]::text[],$4)`,
+			todoID, projID, deps[0], input).Error; err != nil {
+			t.Fatalf("seed script todo: %v", err)
+		}
 	}
 	return claimed{todoID: todoID, projectID: projID, typ: "custom:script", attempts: 1, input: input}
 }
@@ -113,7 +123,7 @@ func TestRunCustomScript(t *testing.T) {
 	// 1. text output: upstream "hello" → output = up.upper() → "HELLO".
 	t.Run("text output uppercases upstream variable", func(t *testing.T) {
 		in := scriptInput(t, `output = up.upper()`, "text", "up", upTodoID)
-		c := seedScriptTodo(t, db, projID, in)
+		c := seedScriptTodo(t, db, projID, in, upTodoID)
 		ref, err := w.runCustom(ctx, c)
 		if err != nil {
 			t.Fatalf("runCustom script: %v", err)
@@ -154,7 +164,7 @@ func TestRunCustomScript(t *testing.T) {
 		// output assigned a non-string (5) → scriptengine.ErrFailed.
 		const secretSrc = `output = 5  # LEAK_SENTINEL_zzz`
 		in := scriptInput(t, secretSrc, "text", "up", upTodoID)
-		c := seedScriptTodo(t, db, projID, in)
+		c := seedScriptTodo(t, db, projID, in, upTodoID)
 		_, err := w.runCustom(ctx, c)
 		if err == nil {
 			t.Fatalf("expected error for non-string output")
