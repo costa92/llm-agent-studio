@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -38,6 +39,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/config"
 	"github.com/costa92/llm-agent-studio/internal/cost"
 	"github.com/costa92/llm-agent-studio/internal/customnodetype"
+	"github.com/costa92/llm-agent-studio/internal/localcache"
 	"github.com/costa92/llm-agent-studio/internal/events"
 	"github.com/costa92/llm-agent-studio/internal/exports"
 	"github.com/costa92/llm-agent-studio/internal/fetch"
@@ -144,10 +146,19 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	}
 	model = obs.WrapModel(model, tp) // otel decorator (spec §12)
 
+	// 配置内存缓存 hub (model_configs / pricing / custom_node_types / prompts):
+	// 各 NewCached store 把自己的缓存注册进来; 启动后 PreloadAll 全量预载, 多副本经
+	// PG LISTEN/NOTIFY 广播失效 (见 internal/localcache)。
+	cacheHub, err := localcache.NewHub(st.Pool(), cfg.PGURL, slog.Default())
+	if err != nil {
+		st.Close()
+		return nil, nil, fmt.Errorf("studiod: cache hub: %w", err)
+	}
+
 	projectStore := project.New(st.GORM())
 	healthStore := health.New(st.GORM(), projectStore)
 	workflowStore := workflows.New(st.GORM())
-	customNodeTypeStore := customnodetype.New(st.GORM())
+	customNodeTypeStore := customnodetype.NewCached(st.GORM(), cacheHub)
 	todoStore := todos.New(st.GORM())
 	eventStore := events.New(st.GORM())
 	plannerSvc := planner.New(todoStore, st.GORM())
@@ -185,7 +196,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 
 	promptBuilder := prompt.NewBuilder()
 	assetStore := assets.New(st.GORM())
-	costStore := cost.New(st.GORM())
+	costStore := cost.NewCached(st.GORM(), cacheHub)
 	taskBoard := studiosvc.NewTaskBoard(st.GORM())
 	// BYOK: per-config api key 静态加密 box (env STUDIO_CONFIG_ENC_KEY)。未配置时
 	// 返回 disabled box——存 key 会被拒，但服务仍可启动 (env-only key 老路径不受影响)。
@@ -194,8 +205,14 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		st.Close()
 		return nil, nil, fmt.Errorf("studiod: secretbox: %w", err)
 	}
-	modelStore := models.New(st.GORM(), encBox)
-	promptStore := prompt.NewStore(st.GORM())
+	modelStore := models.NewCached(st.GORM(), encBox, cacheHub)
+	promptStore := prompt.NewStoreCached(st.GORM(), cacheHub)
+
+	// 全量预载所有已注册配置缓存 (硬启动步骤: DB 迁移已过, 此处失败即致命)。
+	if err := cacheHub.PreloadAll(); err != nil {
+		st.Close()
+		return nil, nil, fmt.Errorf("studiod: cache preload: %w", err)
+	}
 	mailConfigStore := mailconfig.New(st.GORM(), encBox)
 	envMailCfg := mail.EnvConfig{
 		SMTPHost: cfg.SMTPHost,
@@ -300,6 +317,13 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	// Worker pool — bounded concurrency (agents call LLMs; slow).
 	workerCtx, stopWorkers := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
+
+	// 配置缓存失效监听 (跨副本 LISTEN/NOTIFY) + pricing 定时刷新 (无写路径, TTL 兜底)。
+	wg.Add(1)
+	go func() { defer wg.Done(); _ = cacheHub.Listen(workerCtx) }()
+	wg.Add(1)
+	go func() { defer wg.Done(); costStore.RunRefresh(workerCtx, cfg.CachePricingTTL) }()
+
 	for i := 0; i < cfg.Workers; i++ {
 		w := worker.New(worker.Config{
 			DB: st.GORM(), Todos: todoStore, Projects: projectStore, Events: eventStore,

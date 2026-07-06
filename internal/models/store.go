@@ -16,6 +16,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/costa92/llm-agent-studio/internal/localcache"
 	"github.com/costa92/llm-agent-studio/internal/secretbox"
 )
 
@@ -163,6 +164,11 @@ type UpdateInput struct {
 type Store struct {
 	db  *gorm.DB
 	box *secretbox.Box
+
+	// cache/hub are set only by NewCached. When cache != nil, reads are served
+	// from the in-memory model_configs cache and writes broadcast via hub.
+	cache localcache.Cache[*modelCacheRow, string]
+	hub   *localcache.Hub
 }
 
 // New builds a Store. box 提供 per-config api key 的静态加解密；nil/disabled box
@@ -255,6 +261,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (ModelConfig, error)
 	}); err != nil {
 		return ModelConfig{}, err
 	}
+	s.invalidate(ctx)
 	return mc, nil
 }
 
@@ -332,6 +339,7 @@ func (s *Store) Update(ctx context.Context, id, orgID string, in UpdateInput) (M
 	}); err != nil {
 		return ModelConfig{}, err
 	}
+	s.invalidate(ctx)
 	return mc, nil
 }
 
@@ -347,11 +355,15 @@ func (s *Store) Delete(ctx context.Context, id, orgID string) error {
 	if res.RowsAffected == 0 {
 		return ErrNotFound
 	}
+	s.invalidate(ctx)
 	return nil
 }
 
 // ListByOrg lists an org's model configs, newest first.
 func (s *Store) ListByOrg(ctx context.Context, orgID string) ([]ModelConfig, error) {
+	if s.cache != nil {
+		return s.listByOrgCached(orgID)
+	}
 	rows, err := s.db.WithContext(ctx).Raw(
 		`SELECT id, org_id, kind, provider, model, enabled, is_default,
 		        COALESCE(base_url,''), api_key_enc, params_json
@@ -381,6 +393,9 @@ func (s *Store) ListByOrg(ctx context.Context, orgID string) ([]ModelConfig, err
 // ModelRouter 使用。无启用默认时 ok=false。这是唯一暴露明文 key 的路径，仅服务端
 // 内部调用 (绝不进 HTTP handler)。api_key_enc 为 NULL 时 APIKey 为空。
 func (s *Store) ResolveForOrg(ctx context.Context, orgID, kind string) (ResolvedModel, bool, error) {
+	if s.cache != nil {
+		return s.resolveForOrgCached(orgID, kind)
+	}
 	row := s.db.WithContext(ctx).Raw(
 		`SELECT provider, model, COALESCE(base_url,''), api_key_enc, params_json
 		 FROM model_configs
@@ -418,6 +433,9 @@ func (s *Store) ResolveForOrgNamed(ctx context.Context, orgID, kind, provider, m
 	if provider == "" || modelName == "" {
 		return ResolvedModel{}, false, nil
 	}
+	if s.cache != nil {
+		return s.resolveForOrgNamedCached(orgID, kind, provider, modelName)
+	}
 	row := s.db.WithContext(ctx).Raw(
 		`SELECT provider, model, COALESCE(base_url,''), api_key_enc, params_json
 			 FROM model_configs
@@ -449,6 +467,9 @@ func (s *Store) ResolveForOrgNamed(ctx context.Context, orgID, kind, provider, m
 // DefaultForOrg returns the org's default provider+model for a kind. ok=false
 // when no enabled default exists (caller falls back to the registry default).
 func (s *Store) DefaultForOrg(ctx context.Context, orgID, kind string) (provider, model string, ok bool, err error) {
+	if s.cache != nil {
+		return s.defaultForOrgCached(orgID, kind)
+	}
 	row := s.db.WithContext(ctx).Raw(
 		`SELECT provider, model FROM model_configs
 		 WHERE org_id=$1 AND kind=$2 AND enabled=true AND is_default=true

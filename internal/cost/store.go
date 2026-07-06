@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+
+	"github.com/costa92/llm-agent-studio/internal/localcache"
 )
 
 // Generation is one generations row (a single provider call).
@@ -41,7 +43,12 @@ type Aggregate struct {
 }
 
 // Store persists + aggregates the generations ledger.
-type Store struct{ db *gorm.DB }
+type Store struct {
+	db *gorm.DB
+
+	// cache is set only by NewCached; when non-nil PriceFor is served from it.
+	cache localcache.Cache[*priceRow, priceKey]
+}
 
 // New builds a Store.
 func New(db *gorm.DB) *Store { return &Store{db: db} }
@@ -167,6 +174,20 @@ type Price struct {
 // PriceFor looks up the unit price. ok=false (no error) when the provider+model
 // has no pricing row — the caller records cost_micros=0 (unpriced).
 func (s *Store) PriceFor(ctx context.Context, provider, model string) (Price, bool, error) {
+	if s.cache != nil {
+		r, err := s.cache.Get(priceKey{Provider: provider, Model: model})
+		if errors.Is(err, localcache.ErrNotInCache) {
+			return Price{}, false, nil
+		}
+		if err != nil {
+			return Price{}, false, fmt.Errorf("cost: price for %s/%s: %w", provider, model, err)
+		}
+		return Price{
+			MicrosPerImage:    r.MicrosPerImage,
+			MicrosPer1kTokens: r.MicrosPer1kTokens,
+			MicrosPerSecond:   r.MicrosPerSecond,
+		}, true, nil
+	}
 	var p Price
 	err := s.db.WithContext(ctx).Raw(
 		`SELECT micros_per_image, micros_per_1k_tokens, micros_per_second FROM pricing WHERE provider=$1 AND model=$2`,

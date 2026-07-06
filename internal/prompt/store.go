@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+
+	"github.com/costa92/llm-agent-studio/internal/localcache"
 )
 
 // ErrNotFound is returned when a prompt row does not exist.
@@ -30,6 +32,11 @@ type Prompt struct {
 // Store persists prompt templates via GORM.
 type Store struct {
 	db *gorm.DB
+
+	// cache/hub set only by NewStoreCached; when cache != nil ListByOrg is
+	// served from memory and writes broadcast via hub.
+	cache localcache.Cache[*promptCacheRow, string]
+	hub   *localcache.Hub
 }
 
 // NewStore builds a Store.
@@ -58,6 +65,7 @@ func (s *Store) Create(ctx context.Context, orgID, name, content, style, kind st
 	if res.Error != nil {
 		return Prompt{}, fmt.Errorf("prompt: create: %w", res.Error)
 	}
+	s.invalidate(ctx)
 	return row.toPrompt(), nil
 }
 
@@ -80,6 +88,7 @@ func (s *Store) Update(ctx context.Context, id, orgID, name, content, style, kin
 	if res.RowsAffected == 0 {
 		return Prompt{}, ErrNotFound
 	}
+	s.invalidate(ctx)
 	return row.toPrompt(), nil
 }
 
@@ -117,6 +126,7 @@ func (s *Store) SetDefault(ctx context.Context, id, orgID string) (Prompt, error
 	if err != nil {
 		return Prompt{}, err
 	}
+	s.invalidate(ctx)
 	return out.toPrompt(), nil
 }
 
@@ -134,6 +144,7 @@ func (s *Store) Delete(ctx context.Context, id, orgID string) error {
 	if res.RowsAffected == 0 {
 		return ErrNotFound
 	}
+	s.invalidate(ctx)
 	return nil
 }
 
@@ -141,6 +152,9 @@ func (s *Store) Delete(ctx context.Context, id, orgID string) error {
 func (s *Store) ListByOrg(ctx context.Context, orgID string) ([]Prompt, error) {
 	if orgID == "" {
 		return nil, fmt.Errorf("prompt: orgID is required")
+	}
+	if s.cache != nil {
+		return s.listByOrgCached(orgID)
 	}
 	var rows []promptRow
 	if err := s.db.WithContext(ctx).

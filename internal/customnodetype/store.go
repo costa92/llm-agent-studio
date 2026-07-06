@@ -16,6 +16,8 @@ import (
 	"strings"
 
 	"gorm.io/gorm"
+
+	"github.com/costa92/llm-agent-studio/internal/localcache"
 )
 
 // ErrNotFound 表示按 org 定位的类型不存在 (含跨租户访问被拒)。
@@ -54,7 +56,14 @@ type UpsertInput struct {
 }
 
 // Store persists custom_node_types.
-type Store struct{ db *gorm.DB }
+type Store struct {
+	db *gorm.DB
+
+	// cache/hub set only by NewCached; when cache != nil List/Get are served
+	// from memory and writes broadcast via hub.
+	cache localcache.Cache[*ntCacheRow, string]
+	hub   *localcache.Hub
+}
 
 // New builds a Store.
 func New(db *gorm.DB) *Store { return &Store{db: db} }
@@ -115,11 +124,15 @@ func (s *Store) Create(ctx context.Context, orgID string, in UpsertInput) (Custo
 	if err != nil {
 		return CustomNodeType{}, fmt.Errorf("customnodetype: create: %w", err)
 	}
+	s.invalidate(ctx)
 	return ct, nil
 }
 
 // List 返回 org 的全部类型 (创建序)。
 func (s *Store) List(ctx context.Context, orgID string) ([]CustomNodeType, error) {
+	if s.cache != nil {
+		return s.listCached(orgID)
+	}
 	rows, err := s.db.WithContext(ctx).Raw(
 		`SELECT id, org_id, slug, label, color, kind, params
 		 FROM custom_node_types WHERE org_id=$1 ORDER BY created_at ASC`, orgID).Rows()
@@ -140,6 +153,9 @@ func (s *Store) List(ctx context.Context, orgID string) ([]CustomNodeType, error
 
 // Get 按 (id, org) 读一条；跨租户/不存在 → ErrNotFound。
 func (s *Store) Get(ctx context.Context, id, orgID string) (CustomNodeType, error) {
+	if s.cache != nil {
+		return s.getCached(id, orgID)
+	}
 	row := s.db.WithContext(ctx).Raw(
 		`SELECT id, org_id, slug, label, color, kind, params
 		 FROM custom_node_types WHERE id=$1 AND org_id=$2`, id, orgID).Row()
@@ -173,6 +189,7 @@ func (s *Store) Update(ctx context.Context, id, orgID string, in UpsertInput) (C
 	if err != nil {
 		return CustomNodeType{}, fmt.Errorf("customnodetype: update: %w", err)
 	}
+	s.invalidate(ctx)
 	return ct, nil
 }
 
@@ -184,7 +201,7 @@ func (s *Store) Delete(ctx context.Context, id, orgID string) error {
 	if orgID == "" || id == "" {
 		return fmt.Errorf("customnodetype: orgID+id required")
 	}
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var refs int
 		if err := tx.Raw(`
 			SELECT count(*) FROM workflows w
@@ -207,5 +224,9 @@ func (s *Store) Delete(ctx context.Context, id, orgID string) error {
 			return ErrNotFound
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	s.invalidate(ctx)
+	return nil
 }
