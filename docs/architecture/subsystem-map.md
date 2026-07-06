@@ -26,8 +26,8 @@
    │ Browser SPA  │    │ LLM providers  │    │ Object storage     │
    │ React 19 +   │    │ openai/anthro/ │    │ S3 / OSS / COS /   │
    │ ReactFlow 画布│    │ google/ollama  │    │ GitHub / localfs   │
-   │ TanStack+Vite│    │ (video/audio 为 │    │                    │
-   │              │    │  骨架,必失败)   │    │                    │
+   │ TanStack+Vite│    │ image/audio真实 │    │                    │
+   │              │    │ video无适配器   │    │                    │
    └────┬─────────┘    └────────▲───────┘    └─────────▲──────────┘
         │ HTTPS+SSE             │ HTTPS+key            │ HTTPS+sig
         ▼                       │                      │
@@ -61,10 +61,10 @@
 │  │ (1:N/项目,   │          │ uses                                         │
 │  │ nodes JSONB +│   ┌──────▼─────────┐  ┌────────────────────────────┐    │
 │  │ inputs_schema│   │ agents         │  │ generate (Adapter)         │    │
-│  └──────────────┘   │  ScriptAgent   │  │  Fake / FakeAsync          │    │
-│  ┌──────────────┐   │  Storyboard    │  │  image (sync, 可真实)      │    │
-│  │customnodetype│   │  AssetAgent    │  │  video/audio (async 骨架,  │    │
-│  │ 注册表:      │   │  ReviewAgent   │  │   Submit 必返错, 待实现)   │    │
+│  └──────────────┘   │  ScriptAgent   │  │  Fake / FakeAsync (沙箱)   │    │
+│  ┌──────────────┐   │  Storyboard    │  │  image  同步真实           │    │
+│  │customnodetype│   │  AssetAgent    │  │  audio  MiniMax 同步真实   │    │
+│  │ 注册表:      │   │  ReviewAgent   │  │  video  无 provider 适配器 │    │
 │  │ llm|http|    │   └────────────────┘  └────────────────────────────┘    │
 │  │ script 三kind│   ┌────────────────┐  ┌────────────────────────────┐    │
 │  └──────────────┘   │ expr 引擎      │  │ scriptengine (Starlark     │    │
@@ -134,7 +134,7 @@
 所有 `internal/*` store / service 的数据访问都走 **GORM 句柄**（`storage.Storage.GORM()`，`gorm.io/driver/postgres` + pgx stdlib 驱动）。PR #79–#96 把全部 store 包 + 服务层（studiosvc/planner/review/health）从 pgx/pgxpool 迁完。约定：
 
 - **混合**：CRUD / 简单读走 GORM 链式 API；`RETURNING`、事务、`FOR UPDATE`、`pg_advisory_xact_lock`、`ON CONFLICT`、递归 CTE、`FILTER` 聚合、部分唯一索引敏感的写**保留原生 SQL**，在同一 `*gorm.DB` 上以 `Raw/Exec/Transaction` 跑。
-- **不对既有表 AutoMigrate**：schema 由 `internal/storage/storage.go` 管理，两层结构——m1…m20 无条件 DDL（`IF NOT EXISTS` 自跳过）+ m21…m24 版本化 Go 迁移步骤（`goSteps`，`storage.go:534-543`，`schema_migrations` 表记录已执行版本）。GORM 模型仅作映射层。
+- **不对既有表 AutoMigrate**：schema 由 `internal/storage/storage.go` 管理，两层结构——m1…m20 无条件 DDL（`IF NOT EXISTS` 自跳过）+ m21…m27 版本化 Go 迁移步骤（`goSteps`，`storage.go:538-545`：m24 export_jobs / m25 org_alert_settings / m26 projects.deleted_at / m27 strip picturebook config；`schema_migrations` 表记录已执行版本）。GORM 模型仅作映射层。
 - **写返回落盘行一律 `INSERT...RETURNING`**（不用 `gorm.Create` 回填，避免 Go 时钟纳秒与 DB 微秒漂移）。
 - **`pgxpool` 仅存于 `storage` 地基**：`Open` 同时建 pgxpool + GORM 池（同一 DSN），GORM 池已设连接上限（MaxOpen=25/MaxIdle=10/Lifetime=1h/IdleTime=30m）。pgxpool 现仅供外部 `llm-agent-authz`（`authzstore.New(*pgxpool.Pool)`）+ `cmd/secretbox-rotate` + 测试 fixture；彻底退役需 authz 库自身迁移（lockstep）。
 - **DB-backed 测试**：`health` / `worker` 用 `internal/dbtest` 在 `TestMain` 建 per-package 独立库（前者全库扫描、后者全局队列 claim，须与兄弟包隔离）。
@@ -151,8 +151,8 @@
 | K2 | **capabilities per-(provider × model)**，不是 per-provider | `models.Catalog` + `MediaGeneratorFor(kind)` | 同 provider 不同 model 能力差异巨大（gpt-4o vs gpt-3.5） |
 | K3 | **otel 是装饰器**（`Wrap(inner)`），不是 hook | `obs.WrapModel` / `obs.WrapAgent` / `obs.WrapGenerator` | hook 模式让 type assertion 失效（K6 案例：otel wrap 必须保留 `AsyncGenerator` 接口） |
 | K4 | **streaming 事件按 seq 单调** | `run_events.seq BIGSERIAL`，SSE `id:<seq>` | 重连去重 + 顺序保证 |
-| K5 | **lease HB ctx 派生自父 ctx，不绑 dispatch ctx** | `worker.go:314` `hbCtx := context.WithCancel(ctx)`，renewLease 双 guard `locked_by` + `status='running'` | `CallTimeout` 触发 dispatch ctx cancel 时不能误杀 heartbeat |
-| K6 | **idemKey 确定性** `sha256("studio-submit:"+todoID)[:16]` | `worker.go:1488-1491`，FakeAsync 同模式回显 | 崩溃重启后同 todoID 必算出同 key，让 provider 用 client-token 去重 |
+| K5 | **lease HB ctx 派生自父 ctx，不绑 dispatch ctx** | `worker.go:323` `hbCtx, hbCancel := context.WithCancel(ctx)`，renewLease 双 guard `locked_by` + `status='running'` | `CallTimeout` 触发 dispatch ctx cancel 时不能误杀 heartbeat |
+| K6 | **idemKey 确定性** `sha256("studio-submit:"+todoID)[:16]` | `worker.go:1483-1486`，FakeAsync 同模式回显 | 崩溃重启后同 todoID 必算出同 key，让 provider 用 client-token 去重 |
 | K7 | **并发上限分软硬**：claim 级 / submit-admission（软）与 org 24h 配额（硬, advisory-lock）性质不同 | 见 [run-flow.md](./run-flow.md#并发上限速查) | billing-sensitive 硬限不能软；本地内存软限避免 race 过严 |
 | K8 | **密文经 secretbox AES-256-GCM 加密入库**，DTO 永不回密文 | `(api_key_enc IS NOT NULL) AS has_api_key` SQL 计算列 | secret 永不出 DB；HTTP 响应仅 `hasApiKey/hasSecret` 布尔 |
 | K9 | **`GOWORK=off` 跑全部测试** | 项目惯例 + sibling 仓约定 | `go.work` 是 dev only，会让本地 resolve 偏离 go.mod 锁定版本 |
@@ -161,23 +161,21 @@
 
 ## 工作流执行模型（核心概念）
 
-- **工作流是项目的一等子资源（1:N）**：`workflows` 表每行一条 DAG（`nodes` JSONB），每次运行产出一条 `plans` 行（`plans.workflow_id` 关联）。项目级 `POST /run` 是遗留通道（见下"过渡态"）。
-- **节点即 `planner.WorkflowNode`**（`internal/planner/planner.go:65-93`）：`{id, type, promptId, promptText, dependsOn, typeId, varBindings, typeVersion, parameters}`。`dependsOn` 边是 DAG 真源。
-- **内置节点 4 种**（`internal/builtinnode/catalog.go:15-20`）：`script`（剧本）/ `storyboard`（分镜，完成后按镜头扇出 asset todo）/ `asset`（图像/视频/音频生成）/ `prescreen`（上游文本安全评分）。
-- **自定义节点 `custom:*`**：组织级注册表 `custom_node_types` 定义类型，`kind ∈ {llm, http, script}`（`internal/customnodetype/store.go:27`）；`script` kind 跑 Starlark 沙箱（`internal/scriptengine`，无 I/O builtins）。节点实例通过 `typeId` 绑定注册表类型，未绑定的 custom 节点是纯注释、拒绝运行（`planner.HasUnboundCustomNode`，planner.go:195）。
-- **plan 生成无 LLM**：`planner.PlanCustom`（planner.go:210）把 DAG 校验（环检测 graph.go:109）后逐节点翻译成 todos（`todos.CreateGraph`），prompt 取值优先级：节点内联 `promptText` > `promptId`（builtin 预设 / org prompt 库）（planner.go:295-308）。
+- **工作流是项目的一等子资源（1:N）**：`workflows` 表每行一条 DAG（`nodes` JSONB），每次运行产出一条 `plans` 行（`plans.workflow_id` 关联）。唯一的 run 入口是 `POST /api/projects/{id}/workflows/{wfId}/run`（`internal/httpapi/httpapi.go:221`）——旧的项目级 `POST /api/projects/{id}/run` 通道已删除。
+- **节点即 `planner.WorkflowNode`**（`internal/planner/planner.go:61-88`）：`{id, type, promptId, promptText, dependsOn, typeId, varBindings, typeVersion, parameters}`。`dependsOn` 边是 DAG 真源。
+- **内置节点 4 种**（`internal/builtinnode/catalog.go:16-19`）：`script`（剧本）/ `storyboard`（分镜，完成后按镜头扇出 asset todo）/ `asset`（图像/视频/音频生成）/ `prescreen`（上游文本安全评分）。
+- **自定义节点 `custom:*`**：组织级注册表 `custom_node_types` 定义类型，`kind ∈ {llm, http, script}`（`internal/customnodetype/store.go:28`）；`script` kind 跑 Starlark 沙箱（`internal/scriptengine`，无 I/O builtins）。节点实例通过 `typeId` 绑定注册表类型，未绑定的 custom 节点是纯注释、拒绝运行（`planner.HasUnboundCustomNode`，planner.go:190）。
+- **plan 生成无 LLM**：`planner.PlanCustom`（planner.go:205）把 DAG 校验（环检测 graph.go:109）后逐节点翻译成 todos（`todos.CreateGraph`），prompt 取值优先级：节点内联 `promptText` > `promptId`（builtin 预设 / org prompt 库）（planner.go:291-308）。
 - **变量与表达式**：节点 `varBindings` 绑定上游输出；取值走 `internal/expr` 表达式引擎（`$node["id"].json.field` 路径，项目 scoped + 直接 depends_on + fail-closed）——这是**唯一通道**：items cut-over（`docs/specs/items-cutover.md` §3 PR-C）已删除 legacy 解析与切换 flag。
 - **运行期输入**：workflow 可声明 `inputs_schema`，run 时 body 带 `{"inputs":...}`，`internal/runinputs` 做类型化校验与分流。
-- **运行观测**：后端权威渲染态 `projectstate.Compute`（`internal/projectstate/state.go:167`）经 `GET /state`（httpapi.go:185）+ SSE `/events/stream` 的 state 帧下发；前端纯渲染。
+- **运行观测**：后端权威渲染态 `projectstate.Compute`（`internal/projectstate/state.go:167`）经 `GET /state`（httpapi.go:206）+ SSE `/events/stream` 的 state 帧下发；前端纯渲染。
 
 ### 过渡态（如实标注，勿当 bug 修）
 
 | 项 | 现状 | 位置 |
 |---|---|---|
 | items/expr 已是唯一通道（cut-over 完成） | 执行期输入解析全部走 items 通道（`loadInputs`/`itemsForDep`/`loadInputsByDep`）+ expr 引擎（`resolveVariablesExpr`）；legacy 双通道、两个切换 flag 与 parity 探针已删除。`itemsForDep` 的 output_ref 投影回退保留至少一个部署周期（在途 run 兼容，★M-4） | `docs/specs/items-cutover.md` §3 PR-C |
-| legacy 项目级 run 仍在 | `POST /api/projects/{id}/run` 保留，仅接受项目级嵌入式 custom workflow（`CustomWorkflowEnabled`），否则 400 引导走 `/workflows/{id}/run` | `internal/httpapi/httpapi.go:182` + `handlers.go:470-475` |
-| 新项目默认 kind 仍写 `"standard"` | 建项目未传 kind 时落 `"standard"`（待 Phase 1 收敛为 `"custom"`） | `internal/project/store.go:150` |
-| video/audio 生成是骨架 | `internal/generate/{video,audio}` 的 Submit/Poll 必返错（`video.go:17-20`），真实 SaaS HTTP 未实现 | `internal/generate/video/`、`internal/generate/audio/` |
+| 媒体生成器现状（非骨架必失败） | **image**=同步真实（`routed` 非 `AsyncGenerator`）；**audio**=MiniMax T2A 同步真实（`internal/generate/audio/minimax.go:99` `Generate`，显式 NOT 实现 `AsyncGenerator`）；**video** 无 provider 适配器。async submit→poll 引擎仍在，经沙箱 `FakeAsync` 条目（`fake-video-async`/`fake-audio-async`）活验 | `internal/generate/audio/minimax.go`、`internal/generate/fake_async.go:11` |
 
 ---
 
@@ -199,7 +197,10 @@
 | 加 worker 新 todo type | `internal/worker/worker.go`（executors map）+ `internal/agents/` | `worker/*_test.go`（integration） |
 | 改导出（PDF/EPUB/ZIP） | `internal/exports/`（队列 + runner）+ `internal/picturebook/`（渲染器，非绘本残留） | `exports/` + `picturebook/*_test.go` |
 | 改后端权威渲染态 | `internal/projectstate/` | `projectstate/*_test.go` |
-| 加 async provider 适配器 | `internal/generate/{video,audio}/` | `generate/*_test.go` |
+| 改 / 加媒体生成适配器 | `internal/generate/{image,audio}/`（现有真实：image + `audio/minimax.go`；无 video 适配器）；async 引擎/接缝在 `internal/generate/{fake_async.go,generate.go}` | `generate/*_test.go` |
+| 改项目软删（tombstone + 级联取消） | `internal/project/`（`SoftDelete`，`store.go:445`）+ `storage.go`（m26 `deleted_at`） | `project/store_test.go` |
+| 改 run 级成本统计 | `internal/cost/` + `internal/httpapi/m2handlers.go`（`planCostHandler`，路由 `GET /api/projects/{id}/plans/{planId}/cost`，`httpapi.go:347`） | `httpapi/*_test.go` |
+| 改 run 失败邮件告警 | `internal/alerts/`（`Notifier`，`notifier.go:58`）+ `storage.go`（m25 `org_alert_settings`） | `alerts/*_test.go` |
 | 加 blob 后端 | `internal/blob/<name>/` + `cmd/studiod/main.go` (factory) | `blob/<name>/*_test.go` |
 | 改 SSE 事件白名单 / state 帧 | `internal/httpapi/sse.go` (`sseEventNames`) | `httpapi/sse_test.go` |
 | 加 BYOK 字段 | `internal/models/` + `internal/storage/storage.go` (schema) | `models/*_test.go`（integration） |
@@ -251,7 +252,7 @@
 
 | Issue | 性质 | 概述 |
 |---|---|---|
-| [#21](https://github.com/costa92/llm-agent-studio/issues/21) | 决策 | submit-admission cap 全局 vs per-org → 已落地双层（global + per-org，`worker.go:1233-1240`） |
+| [#21](https://github.com/costa92/llm-agent-studio/issues/21) | 决策 | submit-admission cap 全局 vs per-org → 已落地双层（global + per-org，`worker.go:1222-1237` `submitCapHeld`） |
 | [#22](https://github.com/costa92/llm-agent-studio/issues/22) | RFC | secretbox 密文无 version/key-id → 密钥轮换路径设计 |
 | [#23](https://github.com/costa92/llm-agent-studio/issues/23) | 决策 | 用户删除后 `created_by` 悬空 → FK SET NULL / 软删 / UI 容错 |
 
