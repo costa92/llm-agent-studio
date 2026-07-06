@@ -1,13 +1,13 @@
-# AI Studio Web（M5 前端 SPA）
+# AI Studio Web（studio workflow 前端 SPA）
 
-驱动 studio 后端（studiod，M1–M4 接口表）的 React 19 单页应用 —— 登录、组织/项目管理、实时制片轨道（SSE 状态机）、剧本/分镜视图、HITL 审核看板、资产库、成本中心、模型配置、Prompt Builder。
+驱动 studio 后端（studiod）的 React 19 单页应用 —— **工作流画布（ReactFlow 拖拽编辑 dependsOn 图）+ 自定义/内置节点类型**、运行观测（实时制片轨道 SSE 状态机）、剧本/分镜视图、HITL 审核看板、资产库、成本中心、模型配置、Prompt Builder、组织/成员/存储/平台管理。
 
 **这是 Node/pnpm 工具链，不走 GOWORK**（与仓内 Go 命令隔离）。
 
 ## 栈
 
 - **构建**：Vite 8 + React 19 + TypeScript 6
-- **样式**：Tailwind v4（经 `@tailwindcss/vite` 插件，**无** `tailwind.config.js`，theme 写在 `src/index.css` 的 `@theme`）+ shadcn/ui（radix-nova preset）primitives + 自建 cva 组件（制片轨道/pip/血缘等）
+- **样式**：Tailwind v4（经 `@tailwindcss/vite` 插件，**无** `tailwind.config.js`，theme 写在 `src/index.css` 的 `@theme`）+ shadcn/ui（radix-nova preset）primitives + 自建 cva 组件（事件日志/血缘/资产卡/SSE 指示器等）
 - **路由**：`@tanstack/react-router` **file-based**（`@tanstack/router-plugin` + `@tanstack/router-cli` 的 `tsr generate` 生成 `src/routeTree.gen.ts`，gitignored）
 - **服务端状态**：TanStack Query
 - **SSE**：`@microsoft/fetch-event-source`（见下方「SSE 决策」）
@@ -71,14 +71,14 @@ src/
 ├── test/                     # jest-dom setup + mockFetch/注入式 SSE 帧 helpers
 ├── lib/                      # utils(cn)、types(后端线缆类型)、apiClient、sse、timeline
 ├── components/ui/            # shadcn primitives（lint 忽略 react-refresh）
-├── components/studio/        # 自建 cva 组件（Badge/Button/TimelineStage/PipGroup/...）
+├── components/studio/        # 自建 cva 组件（Badge/Button/EventLog/LineageTrail/AssetCard/...）
 ├── app/                      # auth context、rbac、AppShell（IconRail 导航）
-├── features/                 # projects / workflow / review / library / cost / prompt
+├── features/                 # workflow-canvas / custom-node-types / builtin-node-types / projects / workflow / review / library / cost / prompt / storage / members / platform ...
 └── routes/                   # TanStack file-based 路由（__root / login / _authed/*）
 ```
 
-## 验证范围（M5）
+## 验证范围
 
 `pnpm build`（含 tsc 类型检查）+ `pnpm test`（vitest）+ `pnpm lint` 三绿即为完成判据。
 
-**真实浏览器 / Playwright E2E 不在 M5 范围**（sandbox 无浏览器）。跨栈联调（dev server vs 活后端）是手动可选 smoke，不进 CI、不作完成判据。其余已知缺口与延期项见 [docs/m5-deferred.md](../docs/m5-deferred.md)。
+**真实浏览器 / Playwright E2E 不在自动化范围**（sandbox 无浏览器）。跨栈联调（dev server vs 活后端）是手动可选 smoke，不进 CI、不作完成判据。其余已知缺口与延期项见 [docs/m5-deferred.md](../docs/m5-deferred.md)。

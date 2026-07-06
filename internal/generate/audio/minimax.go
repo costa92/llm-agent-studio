@@ -17,8 +17,8 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/generate"
 )
 
-// defaultMinimaxVoice 是用户未在绘本配置里指定音色（GenRequest.Voice 为空）时的
-// 兜底 voice_id。MiniMax 的预置中文音色之一，温和适合儿童绘本旁白。
+// defaultMinimaxVoice 是工作流节点未透传音色（GenRequest.Voice 为空）时的
+// 兜底 voice_id。MiniMax 的预置中文音色之一，温和，适合旁白朗读。
 const defaultMinimaxVoice = "male-qn-qingse"
 
 const (
