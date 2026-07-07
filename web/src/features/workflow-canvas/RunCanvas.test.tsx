@@ -74,7 +74,7 @@ vi.mock("@/features/projects/api", () => ({
 
 // toast：断言完成上升沿召唤只弹一次。
 vi.mock("sonner", () => ({
-  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
+  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), dismiss: vi.fn() },
 }))
 
 vi.mock("@/app/rbac", () => ({

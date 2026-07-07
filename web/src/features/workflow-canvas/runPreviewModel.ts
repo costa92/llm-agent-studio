@@ -58,6 +58,19 @@ export function extractStoryDoc(nodes: GraphNode[]): StoryDoc | null {
   }
 }
 
+// 该 run 是否真的产出了音频/歌词 → 决定是否露出「音乐」预览模式。
+//   lyrics（自定义节点文本产物）或任一 audio 资产（含 Phase 2 预留的朗读音频 id）任一命中即为真。
+//   纯图文/图像工作流不含二者，音乐 tab 应隐藏（否则显示「未命名曲目/暂无歌词」空壳）。
+export function hasMusicOutput(
+  doc: StoryDoc | null,
+  assets: ProjectAsset[],
+  audioAssetId?: string,
+): boolean {
+  if (doc?.lyrics) return true
+  if (audioAssetId) return true
+  return assets.some((a) => a.type === "audio")
+}
+
 // 组装成品预览页：按分镜顺序 join 配图（宽松状态，按 shotId），文案取 shot.action。
 export function pairPages(shots: Shot[], assets: ProjectAsset[]): PreviewPage[] {
   const imageByShot = previewImageAssetIdByShotId(assets)

@@ -4,6 +4,7 @@ import { RunPreview } from "./RunPreview"
 import {
   classifyPreviewMode,
   extractStoryDoc,
+  hasMusicOutput,
   pairPages,
 } from "./runPreviewModel"
 import type { GraphNode } from "@/lib/projectState"
@@ -130,6 +131,55 @@ describe("pairPages", () => {
   })
 })
 
+describe("hasMusicOutput", () => {
+  it("有歌词 → true", () => {
+    expect(hasMusicOutput({ lyrics: "一句" }, [])).toBe(true)
+  })
+  it("有 audio 资产 → true", () => {
+    expect(
+      hasMusicOutput(null, [{ id: "a", shotId: "", type: "audio", status: "done" }] as ProjectAsset[]),
+    ).toBe(true)
+  })
+  it("有 audioAssetId → true", () => {
+    expect(hasMusicOutput(null, [], "au-1")).toBe(true)
+  })
+  it("纯图文（无歌词/无音频）→ false", () => {
+    expect(
+      hasMusicOutput({ story: "从前" }, [
+        { id: "a", shotId: "s1", type: "image", status: "done" },
+      ] as ProjectAsset[]),
+    ).toBe(false)
+  })
+})
+
+describe("RunPreview 音乐 tab 门控", () => {
+  it("纯图文工作流（无音频/歌词）→ 不露出「音乐」切换", () => {
+    render(
+      <RunPreview
+        open
+        onOpenChange={vi.fn()}
+        projectId="p1"
+        planId="plan1"
+        nodes={[customNode("custom:llm", STORY_DOC, "绘本编剧")]}
+      />,
+    )
+    expect(screen.queryByRole("button", { name: "音乐" })).toBeNull()
+  })
+
+  it("有歌词产物 → 露出「音乐」切换", () => {
+    render(
+      <RunPreview
+        open
+        onOpenChange={vi.fn()}
+        projectId="p1"
+        planId="plan1"
+        nodes={[customNode("custom:llm", MUSIC_DOC, "作词编曲")]}
+      />,
+    )
+    expect(screen.getByRole("button", { name: "音乐" })).toBeInTheDocument()
+  })
+})
+
 // 造 N 个各带一张 image 资产的分镜（s1..sN / a1..aN）。
 function makeShotPages(n: number): { shots: Shot[]; assets: ProjectAsset[] } {
   const shots: Shot[] = []
@@ -231,6 +281,37 @@ describe("RunPreview reader mode", () => {
     // 空白封面按无封面处理：总页 N=2。
     expect(screen.getByText(/1 \/ 2/)).toBeInTheDocument()
   })
+
+  it("配图无脚本文案 → 说明回落「镜头 N」，绝不用弹窗标题占位", () => {
+    // 无 title 的 doc + 无 action 的分镜 + 专属封面（内容页保留全部）。
+    useShotsMock.mockReturnValue({
+      data: [{ id: "s1", shotNo: 1 }, { id: "s2", shotNo: 2 }] as Shot[],
+    })
+    useProjectAssetsMock.mockReturnValue({
+      data: [
+        { id: "a1", shotId: "s1", type: "image", status: "done" },
+        { id: "a2", shotId: "s2", type: "image", status: "done" },
+      ] as ProjectAsset[],
+    })
+    useProjectMock.mockReturnValue({ data: { coverAssetId: "cover-x" } })
+    render(
+      <RunPreview
+        open
+        onOpenChange={vi.fn()}
+        projectId="p1"
+        planId="plan1"
+        nodes={[customNode("custom:llm", "{}", "绘本编剧")]}
+        mode="reader"
+      />,
+    )
+    // 封面标题无产物标题、无工作流名 → 回落「作品」，绝不是弹窗标题「成品预览」。
+    expect(screen.getByText("作品")).toBeInTheDocument()
+    // 「成品预览」只应出现一次（DialogTitle），不再被复用为封面标题。
+    expect(screen.getAllByText("成品预览")).toHaveLength(1)
+    // 进内容第 1 页：无脚本文案 → 说明回落「镜头 1」。
+    fireEvent.click(screen.getByText("下一页"))
+    expect(screen.getByText("镜头 1")).toBeInTheDocument()
+  })
 })
 
 function renderMusic(nodes = [customNode("custom:llm", MUSIC_DOC, "作词编曲")]) {
@@ -292,8 +373,12 @@ describe("RunPreview music mode", () => {
     expect(document.querySelector("audio")).not.toBeNull()
   })
 
-  it("无歌词 → 播放键禁用", () => {
+  it("无歌词但有音频资产 → 音乐页仍在，播放键禁用", () => {
     const noLyrics = JSON.stringify({ title: "空", mood: "静", coverPrompt: "x" })
+    // 有 audio 资产 → hasMusic 命中 → 音乐页渲染；但无歌词 → 朗读键禁用。
+    useProjectAssetsMock.mockReturnValue({
+      data: [{ id: "au1", shotId: "", type: "audio", status: "done" }] as ProjectAsset[],
+    })
     renderMusic([customNode("custom:llm", noLyrics, "作词编曲")])
     const bar = document.querySelector('[data-slot="transport-bar"]')!
     expect(bar.querySelector("button")!).toBeDisabled()
