@@ -1,7 +1,10 @@
 import {
+  useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
+  type InfiniteData,
+  type UseInfiniteQueryResult,
   type UseMutationResult,
   type UseQueryResult,
 } from "@tanstack/react-query"
@@ -13,25 +16,36 @@ import type {
   RegenerateResponse,
 } from "@/lib/types"
 
-// 审核队列：GET /api/orgs/{org}/assets?status=pending_acceptance[&project=…] → {items, next_cursor}
-// （viewer+，libraryHandler，keyset 分页）。status/project 过滤项已核实：
+// 每页拉取条数（libraryHandler limit；后端 store.go 默认 50、上限 100，与成本台账同口径）。
+const REVIEW_PAGE_LIMIT = 50
+
+// 审核队列：GET /api/orgs/{org}/assets?status=pending_acceptance[&project=…]&limit=&cursor=
+// → {items, next_cursor}（viewer+，libraryHandler，keyset 分页）。status/project 过滤项已核实：
 // internal/httpapi/m2handlers.go:197-200 透传 q.Get("status")/q.Get("project") 给
 // assets.LibraryFilter，store.go:238-245 拼 a.status=$N / a.project_id=$N。
 // Phase 3 T4：移除硬编码 type=image，让 video/audio 待审资产也进队列；可选 project 筛选
 // 由「去审核」CTA 携来的 ?project= 驱动（审核台默认仍是 org 级收件箱）。
+// P1 修复：改 useInfiniteQuery 按 next_cursor 累积（原来单页 limit=50 静默截断，>50 的
+// 待审积压永远够不到）。getNextPageParam 空串 → 停（同资产库 useLibrary / 成本 useGenerations）。
 export function useReviewQueue(
   org: string,
   project?: string,
-): UseQueryResult<Asset[]> {
-  return useQuery({
+): UseInfiniteQueryResult<InfiniteData<ListEnvelope<Asset>>, Error> {
+  return useInfiniteQuery({
     queryKey: ["review-queue", org, project ?? null],
-    queryFn: () => {
-      const params = new URLSearchParams({ status: "pending_acceptance" })
+    queryFn: ({ pageParam }) => {
+      const params = new URLSearchParams({
+        status: "pending_acceptance",
+        limit: String(REVIEW_PAGE_LIMIT),
+      })
       if (project) params.set("project", project)
+      if (pageParam) params.set("cursor", pageParam)
       return apiJSON<ListEnvelope<Asset>>(
         `/api/orgs/${org}/assets?${params.toString()}`,
-      ).then((env) => env.items)
+      )
     },
+    initialPageParam: "" as string,
+    getNextPageParam: (last) => (last.next_cursor ? last.next_cursor : undefined),
     enabled: org !== "",
   })
 }

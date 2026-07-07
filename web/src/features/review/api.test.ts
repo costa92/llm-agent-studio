@@ -50,7 +50,8 @@ describe("useReviewQueue", () => {
     })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
 
-    expect(result.current.data).toHaveLength(1)
+    // P1：infinite query——首页信封在 data.pages[0]。
+    expect(result.current.data?.pages[0].items).toHaveLength(1)
     const url = String(fetchMock.mock.calls[0][0])
     // status 过滤项已核实真实存在（m2handlers.go:175 → store.go:244）。
     expect(url).toContain("/api/orgs/acme/assets")
@@ -59,6 +60,8 @@ describe("useReviewQueue", () => {
     expect(url).not.toContain("type=image")
     // 无 project 参数时不带 &project=。
     expect(url).not.toContain("project=")
+    // 首页无 cursor（keyset 从头拉）。
+    expect(url).not.toContain("cursor=")
   })
 
   it("appends &project= when a project filter is given", async () => {
@@ -76,6 +79,31 @@ describe("useReviewQueue", () => {
     expect(url).toContain("status=pending_acceptance")
     expect(url).toContain("project=proj-1")
     expect(url).not.toContain("type=image")
+  })
+
+  it("follows next_cursor to accumulate the second page (backlog > one page)", async () => {
+    const page1 = { id: "a1", type: "image", status: "pending_acceptance" } as Asset
+    const page2 = { id: "a2", type: "image", status: "pending_acceptance" } as Asset
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ items: [page1], next_cursor: "a1" }))
+      .mockResolvedValueOnce(jsonResponse({ items: [page2], next_cursor: "" }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    const { result } = renderHook(() => useReviewQueue("acme"), {
+      wrapper: wrapper(),
+    })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    // 首页 next_cursor 非空 → 还有下一页。
+    expect(result.current.hasNextPage).toBe(true)
+
+    await result.current.fetchNextPage()
+    await waitFor(() => expect(result.current.data?.pages).toHaveLength(2))
+    // 第二页带上一页 next_cursor 作为 cursor。
+    expect(String(fetchMock.mock.calls[1][0])).toContain("cursor=a1")
+    // 第二页 next_cursor 空 → 到底。
+    expect(result.current.hasNextPage).toBe(false)
+    expect(result.current.data?.pages[1].items[0].id).toBe("a2")
   })
 })
 

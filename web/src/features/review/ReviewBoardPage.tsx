@@ -8,6 +8,7 @@ import { AssetPreviewActions } from "@/features/workflow/AssetPreviewActions"
 import { PromptBox } from "@/components/studio/PromptBox"
 import { LineageTrail, type LineageNode } from "@/components/studio/LineageTrail"
 import { ConfirmRejectDialog } from "./ConfirmRejectDialog"
+import { ConfirmRejectManyDialog } from "./ConfirmRejectManyDialog"
 import type { Asset, AssetDetail } from "@/lib/types"
 import {
   resolveReviewAction,
@@ -25,12 +26,18 @@ export interface ReviewBoardViewProps {
   isLoading: boolean
   isError: boolean
   onRetry: () => void
+  // P1：keyset 分页——还有下一页 / 正在拉下一页 / 加载更多。缺省 false = 不显示「加载更多」。
+  hasNextPage?: boolean
+  isFetchingNextPage?: boolean
+  onLoadMore?: () => void
   // HITL 三动作 admin-only。
   isAdmin: boolean
   // T4：当前项目筛选（?project=）；null = org 级全量队列。
   projectFilter: string | null
   // 项目筛选 chip 与闭环空态显示用的项目名（容器经 useProjects 解析）；解析不到回退 projectFilter id。
   projectName?: string
+  // P2：项目 id → 名映射。org 级混杂队列（跨多个项目）按项目分组时给每组表头一个可读来源名。
+  projectNames?: Record<string, string>
   // 清除项目筛选，回到 org 级队列。
   onClearProjectFilter: () => void
   // 当前选中资产（?asset= 控制）；null = Drawer 关闭。
@@ -45,6 +52,9 @@ export interface ReviewBoardViewProps {
   onRegenerate: (id: string, prompt: string) => void
   // 批量采纳（前端串行）：传入即启用多选复选框 + 底部批量条 + 每分镜「采纳本分镜」。仅 accept。
   onAcceptMany?: (ids: string[]) => void
+  // 批量退回（前端串行）：传入即在批量条加「退回选中(N)」+ 项目分组加「退回本项目」；
+  //   点击先经批量确认弹窗才提交（退回是终态，无 un-reject 端点）。
+  onRejectMany?: (ids: string[]) => void
   // 审完闭环 CTA（run 内抽屉场景注入）：返回作品 / 看成品预览。org 级无回调时空态纯文案。
   onBackToWork?: () => void
   onOpenPreview?: () => void
@@ -63,9 +73,13 @@ export function ReviewBoardView({
   isLoading,
   isError,
   onRetry,
+  hasNextPage = false,
+  isFetchingNextPage = false,
+  onLoadMore,
   isAdmin,
   projectFilter,
   projectName,
+  projectNames,
   onClearProjectFilter,
   selectedId,
   onSelect,
@@ -75,6 +89,7 @@ export function ReviewBoardView({
   onReject,
   onRegenerate,
   onAcceptMany,
+  onRejectMany,
   onBackToWork,
   onOpenPreview,
   actionPending = false,
@@ -85,6 +100,8 @@ export function ReviewBoardView({
   const [draftPrompt, setDraftPrompt] = useState("")
   // T7：退回确认弹窗——保存待确认退回的资产 id；null = 弹窗关闭。
   const [rejectTarget, setRejectTarget] = useState<string | null>(null)
+  // 批量退回确认弹窗——保存待确认退回的资产 id 集合；null = 弹窗关闭。
+  const [rejectManyTarget, setRejectManyTarget] = useState<string[] | null>(null)
   // 批量采纳勾选集（与详情高亮 selectedId 独立）。
   const [checkedIds, setCheckedIds] = useState<Set<string>>(() => new Set())
   // 选中变更 → 退出编辑态（render 期对比 prev，避免 setState-in-effect 级联渲染）。
@@ -99,25 +116,39 @@ export function ReviewBoardView({
     ? items.findIndex((a) => a.id === selectedId)
     : -1
 
-  // 变体 A 队列形态：资产带非空 shotId 时按分镜分组，保持各 shotId 首次出现的次序；
-  //   全空（org 级混杂）→ 回退扁平网格。分组纯视觉，键盘 ←→ 仍走扁平 items 顺序。
-  const hasShots = items.some((a) => a.shotId)
-  const groupOrder: string[] = []
-  const groupMap = new Map<string, Asset[]>()
-  for (const a of items) {
-    if (!groupMap.has(a.shotId)) {
-      groupMap.set(a.shotId, [])
-      groupOrder.push(a.shotId)
+  // 分组策略（纯视觉，键盘 ←→ 仍走扁平 items 顺序）：
+  //   1) org 级混杂队列（跨 ≥2 个项目）→ 按项目分组，每组表头显示项目名（P2 来源可见性：
+  //      不再让 15 个项目的 50 个分镜看着像一堆无名兄弟）。
+  //   2) 单项目 / run 内抽屉且资产带 shotId → 按分镜分组（变体 A，行为不变）。
+  //   3) 否则 → 扁平网格。
+  const projectSet = new Set(items.map((a) => a.projectId))
+  const groupByProject = projectSet.size > 1
+  const hasShots = !groupByProject && items.some((a) => a.shotId)
+
+  // 按 keyOf 分组，保持各 key 首次出现的次序。
+  function buildGroups(
+    keyOf: (a: Asset) => string,
+  ): { key: string; assets: Asset[] }[] {
+    const order: string[] = []
+    const map = new Map<string, Asset[]>()
+    for (const a of items) {
+      const k = keyOf(a)
+      if (!map.has(k)) {
+        map.set(k, [])
+        order.push(k)
+      }
+      map.get(k)!.push(a)
     }
-    groupMap.get(a.shotId)!.push(a)
+    return order.map((key) => ({ key, assets: map.get(key)! }))
   }
-  const groups = groupOrder.map((shotId) => ({
-    shotId,
-    assets: groupMap.get(shotId)!,
-  }))
+
+  const projectGroups = groupByProject ? buildGroups((a) => a.projectId) : []
+  const shotGroups = hasShots ? buildGroups((a) => a.shotId) : []
 
   // 批量采纳仅在 onAcceptMany 提供时启用（复选框 + 批量条 + 每分镜按钮）。
   const batchEnabled = onAcceptMany != null
+  // 批量退回仅在 onRejectMany 提供时启用（批量条「退回选中」+ 项目组「退回本项目」）。
+  const rejectManyEnabled = onRejectMany != null
   const checkedCount = items.reduce(
     (n, a) => n + (checkedIds.has(a.id) ? 1 : 0),
     0,
@@ -143,6 +174,12 @@ export function ReviewBoardView({
     if (items.length === 0) return
     onAcceptMany?.(items.map((a) => a.id))
     setCheckedIds(new Set())
+  }
+  // 退回勾选：不直接提交，先开批量确认弹窗（退回终态，无 un-reject 端点；确认后才串行退回）。
+  function rejectChecked(): void {
+    const ids = items.filter((a) => checkedIds.has(a.id)).map((a) => a.id)
+    if (ids.length === 0) return
+    setRejectManyTarget(ids)
   }
 
   // 切到上/下一个待审。
@@ -263,7 +300,9 @@ export function ReviewBoardView({
           )}
         </div>
         <span className="text-[12px] text-text-3">
-          待审 {items.length} · ←/→ 浏览{isAdmin ? " · A 采纳 R 退回 E 重生成" : ""}
+          {/* P1：还有下一页时不谎报总数（原来 items.length 只是当前页），加载完 = 真·待审总数。 */}
+          {hasNextPage ? `已加载 ${items.length}…` : `待审 ${items.length}`} · ←/→ 浏览
+          {isAdmin ? " · A 采纳 R 退回 E 重生成" : ""}
         </span>
       </header>
 
@@ -300,11 +339,52 @@ export function ReviewBoardView({
             </div>
           )}
         </div>
+      ) : groupByProject ? (
+        // P2：org 级混杂队列按项目分组，表头显示来源项目名 + 待审数；每组可整组采纳/退回。
+        <div className="flex flex-col gap-5">
+          {projectGroups.map((group) => (
+            <section key={group.key} className="flex flex-col gap-2">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-[13px] font-semibold text-text-2">
+                  {projectNames?.[group.key] ?? group.key}
+                  <span className="ml-2 font-normal text-text-3">
+                    {group.assets.length} 张待审
+                  </span>
+                </h2>
+                <div className="flex items-center gap-3">
+                  {batchEnabled && (
+                    <button
+                      type="button"
+                      onClick={() => onAcceptMany?.(group.assets.map((a) => a.id))}
+                      className="text-[12px] text-amber underline-offset-2 hover:underline"
+                    >
+                      采纳本项目
+                    </button>
+                  )}
+                  {rejectManyEnabled && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setRejectManyTarget(group.assets.map((a) => a.id))
+                      }
+                      className="text-[12px] text-danger underline-offset-2 hover:underline"
+                    >
+                      退回本项目
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3">
+                {group.assets.map(renderCard)}
+              </div>
+            </section>
+          ))}
+        </div>
       ) : hasShots ? (
         // 变体 A：按分镜分组网格。
         <div className="flex flex-col gap-5">
-          {groups.map((group, i) => (
-            <section key={group.shotId || `__none-${i}`} className="flex flex-col gap-2">
+          {shotGroups.map((group, i) => (
+            <section key={group.key || `__none-${i}`} className="flex flex-col gap-2">
               <div className="flex items-center justify-between">
                 <h2 className="text-[13px] font-semibold text-text-2">分镜 {i + 1}</h2>
                 {batchEnabled && (
@@ -329,9 +409,22 @@ export function ReviewBoardView({
         </div>
       )}
 
-      {/* 批量条：已选 N · 采纳选中(N) · 采纳全部待审(M)（仅 accept，前端串行）。 */}
+      {/* P1：keyset「加载更多」——待审积压 >50 时逐页拉，不再静默截断。 */}
+      {hasNextPage && (
+        <div className="mt-5 flex justify-center">
+          <Button
+            variant="ghost"
+            onClick={() => onLoadMore?.()}
+            disabled={isFetchingNextPage}
+          >
+            {isFetchingNextPage ? "加载中…" : "加载更多"}
+          </Button>
+        </div>
+      )}
+
+      {/* 批量条：已选 N · 采纳选中(N) · 退回选中(N) · 采纳全部待审(M)（前端串行）。 */}
       {batchEnabled && items.length > 0 && (
-        <div className="mt-4 flex items-center gap-3 border-t border-line pt-3">
+        <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-line pt-3">
           <span className="text-[12px] text-text-3">已选 {checkedCount}</span>
           <Button
             variant="green"
@@ -340,6 +433,16 @@ export function ReviewBoardView({
           >
             采纳选中({checkedCount})
           </Button>
+          {/* 退回选中：点击先开批量确认弹窗（退回终态）；仅 onRejectMany 提供时显示。 */}
+          {rejectManyEnabled && (
+            <Button
+              variant="red"
+              onClick={rejectChecked}
+              disabled={checkedCount === 0 || actionPending}
+            >
+              退回选中({checkedCount})
+            </Button>
+          )}
           <Button variant="ghost" onClick={acceptAll} disabled={actionPending}>
             采纳全部待审({items.length})
           </Button>
@@ -360,6 +463,25 @@ export function ReviewBoardView({
         const id = rejectTarget
         setRejectTarget(null)
         if (id) onReject(id)
+      }}
+    />
+  )
+
+  // 批量退回确认弹窗（同单张退回同款守卫，标题带张数）。确认 → 串行退回 + 清勾选。
+  const rejectManyDialog = (
+    <ConfirmRejectManyDialog
+      count={rejectManyTarget?.length ?? 0}
+      open={rejectManyTarget != null}
+      onOpenChange={(open) => {
+        if (!open) setRejectManyTarget(null)
+      }}
+      onConfirm={() => {
+        const ids = rejectManyTarget
+        setRejectManyTarget(null)
+        if (ids && ids.length > 0) {
+          onRejectMany?.(ids)
+          setCheckedIds(new Set())
+        }
       }}
     />
   )
@@ -385,6 +507,7 @@ export function ReviewBoardView({
           )}
         </aside>
         {rejectDialog}
+        {rejectManyDialog}
       </div>
     )
   }
@@ -410,6 +533,7 @@ export function ReviewBoardView({
       </Sheet>
 
       {rejectDialog}
+      {rejectManyDialog}
     </div>
   )
 }

@@ -65,6 +65,20 @@ function asset(over: Partial<Asset> = {}): Asset {
   }
 }
 
+// useReviewQueue 现为 infinite query：容器读 data.pages 并 flatten。测试里把资产数组
+// 包成单页信封（next_cursor 空 = 无下一页）。
+function queueResult(items: Asset[]) {
+  return {
+    data: { pages: [{ items, next_cursor: "" }], pageParams: [""] },
+    isLoading: false,
+    isError: false,
+    hasNextPage: false,
+    isFetchingNextPage: false,
+    fetchNextPage: vi.fn(),
+    refetch: vi.fn(),
+  }
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   useResolvedAssetUrlMock.mockReturnValue({ url: null, loading: false })
@@ -85,12 +99,7 @@ beforeEach(() => {
     mutateAsync: vi.fn().mockResolvedValue({}),
     isPending: false,
   })
-  hooks.useReviewQueue.mockReturnValue({
-    data: [],
-    isLoading: false,
-    isError: false,
-    refetch: vi.fn(),
-  })
+  hooks.useReviewQueue.mockReturnValue(queueResult([]))
 })
 
 describe("ReviewBoard container", () => {
@@ -119,12 +128,9 @@ describe("ReviewBoard container", () => {
       mutateAsync: acceptMutateAsync,
       isPending: false,
     })
-    hooks.useReviewQueue.mockReturnValue({
-      data: [asset({ id: "a1" }), asset({ id: "a2" })],
-      isLoading: false,
-      isError: false,
-      refetch: vi.fn(),
-    })
+    hooks.useReviewQueue.mockReturnValue(
+      queueResult([asset({ id: "a1" }), asset({ id: "a2" })]),
+    )
     const user = userEvent.setup()
     render(
       <ReviewBoard org="acme" projectFilter={null} selectedId={null} onSelect={vi.fn()} />,
@@ -149,12 +155,9 @@ describe("ReviewBoard container", () => {
       mutateAsync: acceptMutateAsync,
       isPending: false,
     })
-    hooks.useReviewQueue.mockReturnValue({
-      data: [asset({ id: "a1" }), asset({ id: "a2" })],
-      isLoading: false,
-      isError: false,
-      refetch: vi.fn(),
-    })
+    hooks.useReviewQueue.mockReturnValue(
+      queueResult([asset({ id: "a1" }), asset({ id: "a2" })]),
+    )
     const user = userEvent.setup()
     render(
       <ReviewBoard org="acme" projectFilter={null} selectedId={null} onSelect={vi.fn()} />,
@@ -167,6 +170,37 @@ describe("ReviewBoard container", () => {
     )
   })
 
+  it("serially rejects checked assets AFTER the batch confirm, toasting the summary", async () => {
+    const order: string[] = []
+    const rejectMutateAsync = vi.fn((id: string) => {
+      order.push(id)
+      return Promise.resolve({ id, status: "rejected" })
+    })
+    hooks.useReject.mockReturnValue({
+      mutate: vi.fn(),
+      mutateAsync: rejectMutateAsync,
+      isPending: false,
+    })
+    hooks.useReviewQueue.mockReturnValue(
+      queueResult([asset({ id: "a1" }), asset({ id: "a2" })]),
+    )
+    const user = userEvent.setup()
+    render(
+      <ReviewBoard org="acme" projectFilter={null} selectedId={null} onSelect={vi.fn()} />,
+    )
+    const checks = screen.getAllByRole("checkbox")
+    await user.click(checks[0])
+    await user.click(checks[1])
+    // 退回选中 → 先弹批量确认（终态守卫），确认前不提交。
+    await user.click(screen.getByRole("button", { name: /退回选中\(2\)/ }))
+    expect(rejectMutateAsync).not.toHaveBeenCalled()
+    await user.click(screen.getByRole("button", { name: "确认退回" }))
+
+    await waitFor(() => expect(rejectMutateAsync).toHaveBeenCalledTimes(2))
+    expect(order).toEqual(["a1", "a2"])
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith("已退回 2 张"))
+  })
+
   it("single accept toasts 已采纳 and clears the selection", async () => {
     const acceptMutate = vi.fn(
       (_id: string, opts: { onSuccess: () => void }) => opts.onSuccess(),
@@ -176,12 +210,7 @@ describe("ReviewBoard container", () => {
       mutateAsync: vi.fn().mockResolvedValue({}),
       isPending: false,
     })
-    hooks.useReviewQueue.mockReturnValue({
-      data: [asset({ id: "a1" })],
-      isLoading: false,
-      isError: false,
-      refetch: vi.fn(),
-    })
+    hooks.useReviewQueue.mockReturnValue(queueResult([asset({ id: "a1" })]))
     hooks.useAsset.mockReturnValue({
       data: { asset: asset({ id: "a1" }), versions: [] },
       isLoading: false,
