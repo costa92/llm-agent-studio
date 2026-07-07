@@ -76,6 +76,39 @@ describe("TaskCenterView", () => {
     expect(screen.getByText("产品定义")).toBeInTheDocument()
   })
 
+  it("surfaces 生成完成 as a signal separate from the review-gated 已交付 bucket", async () => {
+    const user = userEvent.setup()
+    render(
+      <TaskCenterView
+        {...baseProps()}
+        rows={[
+          // 进度打满但卡在审核（status=review）——「完成/已交付」桶恒为 0 会埋没它。
+          makeRow({
+            projectId: "p1",
+            name: "生成完毕待审",
+            status: "review",
+            progressDone: 5,
+            progressTotal: 5,
+          }),
+          makeRow({
+            projectId: "p2",
+            name: "还在跑",
+            status: "running",
+            progressDone: 2,
+            progressTotal: 5,
+          }),
+        ]}
+      />,
+    )
+    // 生成完成 tab 计数从 rows 现算 = 1（不依赖后端恒 0 的 completed 计数）。
+    const genTab = screen.getByRole("tab", { name: /生成完成/ })
+    expect(within(genTab).getByText("1")).toBeInTheDocument()
+    // 切到生成完成：只剩进度打满那行，无关它是否已过审。
+    await user.click(genTab)
+    expect(screen.getByText("生成完毕待审")).toBeInTheDocument()
+    expect(screen.queryByText("还在跑")).not.toBeInTheDocument()
+  })
+
   it("fires onAction with the clicked row", async () => {
     const user = userEvent.setup()
     const onAction = vi.fn()
