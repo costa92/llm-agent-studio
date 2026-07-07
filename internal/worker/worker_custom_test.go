@@ -402,9 +402,14 @@ func TestRunCustomHTTP_SecretNeverLeaks(t *testing.T) {
 			}
 			// Returned error must be one of the opaque enum values.
 			switch err.Error() {
-			case "request_failed", "host_not_allowed", "timeout", "body_too_large", "blocked_destination":
+			case "request_failed", "host_not_allowed", "timeout", "body_too_large", "blocked_destination", "bad_response_format":
 			default:
 				t.Fatalf("non-opaque error: %q", err.Error())
+			}
+			// 200 + 非声明格式（outputFormat=json 却非 JSON 正文）须单独报 bad_response_format，
+			// 与传输故障（request_failed/timeout）区分。
+			if f.name == "json-parse" && err.Error() != "bad_response_format" {
+				t.Fatalf("json-parse: want bad_response_format, got %q", err.Error())
 			}
 			// No node_outputs row should carry the sentinel.
 			var leaked int
@@ -714,5 +719,23 @@ func TestRunCustomScriptDirtySecretRejected(t *testing.T) {
 	_, err := w.runCustom(ctx, c)
 	if err == nil {
 		t.Fatal("dirty script secret must be rejected before dispatch")
+	}
+}
+
+// TestIsPermanentFailure 锁定「不可重试」分类（fix B）：SSRF 拦截（blocked_destination）
+// 与响应格式不符（bad_response_format）是确定性失败，须走终态分支；传输类失败（timeout /
+// request_failed / body_too_large 等 5xx/网络抖动）仍走正常重试。纯函数，无需 DB。
+func TestIsPermanentFailure(t *testing.T) {
+	permanent := []error{errBlockedDest, errBadResponseFormat}
+	for _, e := range permanent {
+		if !isPermanentFailure(e) {
+			t.Errorf("isPermanentFailure(%q) = false, want true", e)
+		}
+	}
+	transient := []error{errRequestFailed, errTimeout, errBodyTooLarge, errScriptFailed, nil}
+	for _, e := range transient {
+		if isPermanentFailure(e) {
+			t.Errorf("isPermanentFailure(%v) = true, want false (must keep retrying)", e)
+		}
 	}
 }
