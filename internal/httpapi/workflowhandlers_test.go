@@ -23,12 +23,13 @@ type stubWorkflows struct {
 		projectID, name string
 		nodes           json.RawMessage
 		inputsSchema    json.RawMessage
+		settings        json.RawMessage
 	}
 }
 
-func (s *stubWorkflows) Create(_ context.Context, projectID, name string, nodes, inputsSchema json.RawMessage) (workflows.Workflow, error) {
-	s.createIn.projectID, s.createIn.name, s.createIn.nodes, s.createIn.inputsSchema = projectID, name, nodes, inputsSchema
-	return workflows.Workflow{ID: "wf1", ProjectID: projectID, Name: name, Nodes: nodes, InputsSchema: inputsSchema}, nil
+func (s *stubWorkflows) Create(_ context.Context, projectID, name string, nodes, inputsSchema, settings json.RawMessage) (workflows.Workflow, error) {
+	s.createIn.projectID, s.createIn.name, s.createIn.nodes, s.createIn.inputsSchema, s.createIn.settings = projectID, name, nodes, inputsSchema, settings
+	return workflows.Workflow{ID: "wf1", ProjectID: projectID, Name: name, Nodes: nodes, InputsSchema: inputsSchema, Settings: settings}, nil
 }
 func (s *stubWorkflows) Get(_ context.Context, _, id string) (workflows.Workflow, error) {
 	if s.getErr != nil {
@@ -41,8 +42,8 @@ func (s *stubWorkflows) Get(_ context.Context, _, id string) (workflows.Workflow
 func (s *stubWorkflows) ListByProject(_ context.Context, _ string) ([]workflows.Workflow, error) {
 	return []workflows.Workflow{{ID: "wf1", Name: "a"}}, nil
 }
-func (s *stubWorkflows) Update(_ context.Context, projectID, id, name string, nodes, inputsSchema json.RawMessage) (workflows.Workflow, error) {
-	return workflows.Workflow{ID: id, ProjectID: projectID, Name: name, Nodes: nodes, InputsSchema: inputsSchema}, nil
+func (s *stubWorkflows) Update(_ context.Context, projectID, id, name string, nodes, inputsSchema, settings json.RawMessage) (workflows.Workflow, error) {
+	return workflows.Workflow{ID: id, ProjectID: projectID, Name: name, Nodes: nodes, InputsSchema: inputsSchema, Settings: settings}, nil
 }
 func (s *stubWorkflows) Delete(_ context.Context, _, _ string) error { return nil }
 
@@ -85,6 +86,48 @@ func TestCreateWorkflowHandlerHappy(t *testing.T) {
 	if ws.createIn.projectID != "p1" || ws.createIn.name != "工作流 A" {
 		t.Fatalf("create args mismatch: %+v", ws.createIn)
 	}
+}
+
+// TestCreateWorkflowSettings 验证工作流级 settings 的保存期校验 + 透传：合法 style
+// （prompt 库名或空）200 且原样传给 store；未知 style 400 且 Create 不被调用。
+func TestCreateWorkflowSettings(t *testing.T) {
+	t.Run("合法 style 透传", func(t *testing.T) {
+		ws := &stubWorkflows{}
+		h := createWorkflowHandler(stubProjects{orgID: "o1"}, ws, nil)
+		body := `{"name":"wf","settings":{"style":"皮克斯","contentType":"短视频"}}`
+		req := httptest.NewRequest("POST", "/api/projects/p1/workflows", strings.NewReader(body))
+		req.SetPathValue("id", "p1")
+		rr := httptest.NewRecorder()
+		h(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("create should 200, got %d: %s", rr.Code, rr.Body.String())
+		}
+		if !sameJSONBytes(ws.createIn.settings, json.RawMessage(`{"style":"皮克斯","contentType":"短视频"}`)) {
+			t.Fatalf("settings not passed through: %s", ws.createIn.settings)
+		}
+	})
+	t.Run("空 settings 合法", func(t *testing.T) {
+		ws := &stubWorkflows{}
+		h := createWorkflowHandler(stubProjects{orgID: "o1"}, ws, nil)
+		req := httptest.NewRequest("POST", "/api/projects/p1/workflows", strings.NewReader(`{"name":"wf","settings":{}}`))
+		req.SetPathValue("id", "p1")
+		rr := httptest.NewRecorder()
+		h(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("empty settings should 200, got %d: %s", rr.Code, rr.Body.String())
+		}
+	})
+	t.Run("未知 style 400", func(t *testing.T) {
+		ws := &cycleRejectingWorkflows{t: t} // Create must NOT be called
+		h := createWorkflowHandler(stubProjects{orgID: "o1"}, ws, nil)
+		req := httptest.NewRequest("POST", "/api/projects/p1/workflows", strings.NewReader(`{"name":"wf","settings":{"style":"不存在的风格"}}`))
+		req.SetPathValue("id", "p1")
+		rr := httptest.NewRecorder()
+		h(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("unknown style should 400, got %d: %s", rr.Code, rr.Body.String())
+		}
+	})
 }
 
 // TestCreateWorkflowRejectsInvalidInputsSchema verifies store-time schema
@@ -251,7 +294,7 @@ type cycleRejectingWorkflows struct {
 	t *testing.T
 }
 
-func (s *cycleRejectingWorkflows) Create(_ context.Context, _, _ string, _, _ json.RawMessage) (workflows.Workflow, error) {
+func (s *cycleRejectingWorkflows) Create(_ context.Context, _, _ string, _, _, _ json.RawMessage) (workflows.Workflow, error) {
 	s.t.Fatal("Create must not be called when the graph is invalid")
 	return workflows.Workflow{}, nil
 }
@@ -261,7 +304,7 @@ func (s *cycleRejectingWorkflows) Get(_ context.Context, _, id string) (workflow
 func (s *cycleRejectingWorkflows) ListByProject(_ context.Context, _ string) ([]workflows.Workflow, error) {
 	return nil, nil
 }
-func (s *cycleRejectingWorkflows) Update(_ context.Context, _, id, name string, nodes, inputsSchema json.RawMessage) (workflows.Workflow, error) {
+func (s *cycleRejectingWorkflows) Update(_ context.Context, _, id, name string, nodes, inputsSchema, settings json.RawMessage) (workflows.Workflow, error) {
 	s.t.Fatal("Update must not be called when the graph is invalid")
 	return workflows.Workflow{}, nil
 }
@@ -372,6 +415,106 @@ func TestRunWorkflowAppliesInputs(t *testing.T) {
 	}
 	if !sameJSONBytes(snap.Schema, json.RawMessage(schema)) {
 		t.Fatalf("runInputs.schema snapshot mismatch: %s", snap.Schema)
+	}
+}
+
+// TestRunWorkflowStylePrecedence 验证风格解析四级优先级（在 run handler 内一次解析）：
+// run-input override > workflow.settings > project 行 > 无。断言 PlanCustom 收到的
+// brief.Style 与每一级一致，且每次都正常 202（settings 叠加不改变翻转/校验时序）。
+func TestRunWorkflowStylePrecedence(t *testing.T) {
+	// styleSchema 声明一个 target=style 的运行期输入，供最高优先级（run-input）用例覆盖。
+	const styleSchema = `[{"name":"styleIn","type":"text","target":"style"}]`
+	cases := []struct {
+		name     string
+		project  stubProjects
+		settings string
+		body     string
+		want     string
+	}{
+		{
+			name:    "仅 project 行",
+			project: stubProjects{orgID: "o1", style: "国风"},
+			want:    "国风",
+		},
+		{
+			name:     "workflow.settings 覆盖 project",
+			project:  stubProjects{orgID: "o1", style: "国风"},
+			settings: `{"style":"皮克斯"}`,
+			want:     "皮克斯",
+		},
+		{
+			name:     "settings='{}' 落回 project 行（零回归）",
+			project:  stubProjects{orgID: "o1", style: "国风"},
+			settings: `{}`,
+			want:     "国风",
+		},
+		{
+			name:     "run-input 覆盖 workflow.settings（最高优先级）",
+			project:  stubProjects{orgID: "o1", style: "国风"},
+			settings: `{"style":"皮克斯"}`,
+			body:     `{"inputs":{"styleIn":"写实"}}`,
+			want:     "写实",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := &stubWorkflows{got: workflows.Workflow{
+				Name:         "wf",
+				Nodes:        json.RawMessage(scriptNode),
+				InputsSchema: json.RawMessage(styleSchema),
+				Settings:     json.RawMessage(tc.settings),
+			}}
+			rp := &recordingPlanner{}
+			ev := &trackingAppender{}
+			h := runWorkflowHandler(tc.project, ws, rp, ev, &stubCost{count: 0}, 100, nil)
+			var req *http.Request
+			if tc.body == "" {
+				req = httptest.NewRequest("POST", "/api/projects/p1/workflows/wfX/run", nil)
+			} else {
+				req = httptest.NewRequest("POST", "/api/projects/p1/workflows/wfX/run", strings.NewReader(tc.body))
+			}
+			req.SetPathValue("id", "p1")
+			req.SetPathValue("wfId", "wfX")
+			rr := httptest.NewRecorder()
+			h(rr, req)
+			if rr.Code != http.StatusAccepted {
+				t.Fatalf("run should 202, got %d: %s", rr.Code, rr.Body.String())
+			}
+			if rp.gotBrief.Style != tc.want {
+				t.Fatalf("brief.Style precedence: got %q want %q", rp.gotBrief.Style, tc.want)
+			}
+			// 时序不变式：planner_started 恰好一次（校验全通过后才翻转），PlanCustom 已触发。
+			if ev.count == 0 {
+				t.Fatalf("planner_started should fire once on a valid run")
+			}
+			if rp.gotWorkflowID == "" {
+				t.Fatalf("PlanCustom should fire on a valid run")
+			}
+		})
+	}
+}
+
+// TestRunWorkflowMalformedSettingsNoFailure：即便 settings 是坏 JSON（保存期校验兜不住
+// 的极端情形），叠加也只是跳过、不新增 TryBeginRun 之前/之后的失败点——run 仍 202，
+// 落回 project 行的风格。证明 settings 叠加是纯内存、不会把项目悬挂在 planning。
+func TestRunWorkflowMalformedSettingsNoFailure(t *testing.T) {
+	ws := &stubWorkflows{got: workflows.Workflow{
+		Name:     "wf",
+		Nodes:    json.RawMessage(scriptNode),
+		Settings: json.RawMessage(`{bad json`),
+	}}
+	rp := &recordingPlanner{}
+	h := runWorkflowHandler(stubProjects{orgID: "o1", style: "国风"}, ws, rp, stubAppender{}, &stubCost{count: 0}, 100, nil)
+	req := httptest.NewRequest("POST", "/api/projects/p1/workflows/wfX/run", nil)
+	req.SetPathValue("id", "p1")
+	req.SetPathValue("wfId", "wfX")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("malformed settings should not fail the run, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if rp.gotBrief.Style != "国风" {
+		t.Fatalf("malformed settings should fall back to project style, got %q", rp.gotBrief.Style)
 	}
 }
 
