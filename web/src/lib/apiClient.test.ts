@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   AuthError,
   apiFetch,
+  clearSessionMarker,
   getAccessToken,
   setAccessToken,
   tryRestoreSession,
@@ -9,11 +10,12 @@ import {
 import { installFetchRoutes, jsonResponse } from "@/test/helpers"
 
 beforeEach(() => {
-  setAccessToken("access-old")
+  setAccessToken("access-old") // 顺带置位会话标记（模拟已登录场景）
 })
 
 afterEach(() => {
   setAccessToken(null)
+  clearSessionMarker()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
@@ -154,5 +156,32 @@ describe("tryRestoreSession", () => {
 
     await expect(tryRestoreSession()).resolves.toBe(false)
     expect(getAccessToken()).toBeNull()
+  })
+
+  it("从未登录（无会话标记）→ 跳过刷新，直接返回 false 不打网络", async () => {
+    setAccessToken(null)
+    clearSessionMarker() // 抹掉 beforeEach 置的标记，模拟从未登录
+    const mock = installFetchRoutes({
+      "/api/auth/refresh": () =>
+        jsonResponse({ access_token: "should-not-happen", expires_in: 900 }),
+    })
+
+    await expect(tryRestoreSession()).resolves.toBe(false)
+    // 无标记时绝不触碰 /api/auth/refresh（消除未认证冷启动的 401 噪声）。
+    expect(mock).not.toHaveBeenCalled()
+    expect(getAccessToken()).toBeNull()
+  })
+
+  it("setAccessToken(token) 置位会话标记 → 冷启动会尝试恢复", async () => {
+    clearSessionMarker()
+    setAccessToken("tok") // 模拟登录成功
+    setAccessToken(null) // 冷启动：内存 token 丢失，但标记仍在
+    installFetchRoutes({
+      "/api/auth/refresh": () =>
+        jsonResponse({ access_token: "restored", expires_in: 900 }),
+    })
+
+    await expect(tryRestoreSession()).resolves.toBe(true)
+    expect(getAccessToken()).toBe("restored")
   })
 })

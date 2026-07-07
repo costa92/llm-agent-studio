@@ -5,8 +5,41 @@ import type { LoginResponse } from "./types"
 
 let accessToken: string | null = null
 
+// 会话存在标记（非 httpOnly，可被 JS 读）：登录成功后置位，登出/刷新彻底失败时清除。
+// 唯一用途——让冷启动的 tryRestoreSession 在「从未登录过」时跳过 /api/auth/refresh，
+// 消除未认证用户控制台里的 401 噪声。绝不存任何令牌，只是一个「可能有会话」的提示位。
+const SESSION_MARKER = "studio_has_session"
+
+function markSession(): void {
+  try {
+    localStorage.setItem(SESSION_MARKER, "1")
+  } catch {
+    // localStorage 不可用（隐私模式等）→ 退化为「无标记」，tryRestoreSession 走保守跳过。
+  }
+}
+
+// 清除会话标记：登出，或刷新令牌确认失效时调用（会话真的没了）。
+export function clearSessionMarker(): void {
+  try {
+    localStorage.removeItem(SESSION_MARKER)
+  } catch {
+    // 同上：不可用即视为已无标记。
+  }
+}
+
+function hasSessionMarker(): boolean {
+  try {
+    return localStorage.getItem(SESSION_MARKER) === "1"
+  } catch {
+    return false
+  }
+}
+
+// 置位内存 token。非空即视为「有会话」→ 记标记（登录/注册/刷新成功共用此入口）。
+// 传 null 只清内存 token，不动标记——冷启动内存丢 token 不等于登出，会话仍可能可恢复。
 export function setAccessToken(token: string | null): void {
   accessToken = token
+  if (token != null) markSession()
 }
 
 export function getAccessToken(): string | null {
@@ -49,6 +82,7 @@ async function refresh(): Promise<string> {
     })
     if (!res.ok) {
       setAccessToken(null)
+      clearSessionMarker() // 刷新令牌确认失效 → 会话真的没了，抹掉标记免得下次冷启动再打一次
       throw new AuthError("refresh failed")
     }
     const data = (await res.json()) as LoginResponse
@@ -68,6 +102,8 @@ async function refresh(): Promise<string> {
 // 任何失败返回 false（绝不抛）。幂等：已有 token 直接返回 true，不发请求——可安全反复调用。
 export async function tryRestoreSession(): Promise<boolean> {
   if (getAccessToken() != null) return true
+  // 从未登录过（无会话标记）→ 直接跳过刷新，避免未认证冷启动打出 401 噪声。
+  if (!hasSessionMarker()) return false
   try {
     await refresh()
     return true

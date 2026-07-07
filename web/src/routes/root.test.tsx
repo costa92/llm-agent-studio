@@ -4,11 +4,12 @@ import { createMemoryHistory, createRouter, RouterProvider } from "@tanstack/rea
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { routeTree } from "@/routeTree.gen"
 import { AuthProvider } from "@/app/auth"
-import { setAccessToken } from "@/lib/apiClient"
+import { setAccessToken, clearSessionMarker } from "@/lib/apiClient"
 import { installFetchRoutes, jsonResponse } from "@/test/helpers"
 
 afterEach(() => {
   setAccessToken(null)
+  clearSessionMarker()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
@@ -42,7 +43,9 @@ describe("root not found handling", () => {
 
 describe("silent session restore on cold boot", () => {
   it("keeps an authed deep link on-page when the refresh cookie is valid (token cleared)", async () => {
-    // 冷启动：内存无 token，但刷新 cookie 仍有效。
+    // 冷启动：内存无 token，但刷新 cookie 仍有效。曾登录过 → 会话标记仍在 localStorage
+    //（setAccessToken(token) 置位），故 tryRestoreSession 会尝试恢复而非直接跳过。
+    setAccessToken("prev-token")
     setAccessToken(null)
     installFetchRoutes({
       // __root beforeLoad 的 tryRestoreSession 命中这条 → 恢复内存 token。
