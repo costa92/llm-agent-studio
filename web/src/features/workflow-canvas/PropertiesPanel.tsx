@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { useCreatePrompt } from "@/features/prompt/api"
+import { usePromptStyles } from "@/features/projects/api"
 import { useModelConfigs } from "@/features/cost/api"
 import { useOrgSecrets } from "@/features/org-secrets/api"
 import type { BasicPrompt, HttpParams, LlmParams, Prompt, ScriptParams, WorkflowNode } from "@/lib/types"
@@ -21,6 +22,10 @@ import type { NodeTypeDescription, OutputField } from "./nodeDescTypes"
 // 字段选择器「整个输出」哨兵 value——Radix Select 禁止 value=""（mount 即抛），
 // 故整输出用非空哨兵；写回时映射回空 sourceField（= 整输出 / 向后兼容）。
 const WHOLE_OUTPUT = "__whole__"
+
+// 每节点风格「跟随工作流」哨兵——Radix Select 禁止 value=""；写回时映射回空串
+// （= 继承 workflow.settings → project，后端 planner 落回 b.Style）。
+const STYLE_INHERIT = "__inherit__"
 
 // 属性面板（Phase 2）：选中单个节点时编辑其字段。行为逐字移植自
 // features/projects/WorkflowNodesEditor.tsx——提示词选择哨兵
@@ -160,6 +165,9 @@ export function PropertiesPanel({
     }))
   const orgSecrets = useOrgSecrets(org)
   const secretNames = (orgSecrets.data ?? []).map((s) => s.name)
+  // 每节点风格 Select 的候选——与工作流设置面板同源（prompt-styles 库），保持口径一致。
+  // hook 始终调用（遵守 hooks 规则），仅内置 storyboard/asset 节点会渲染该 Select。
+  const { data: promptStyles } = usePromptStyles()
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState("")
   const [newContent, setNewContent] = useState("")
@@ -194,6 +202,11 @@ export function PropertiesPanel({
         : null
 
   const showPrompt = node.type === "script" || node.type === "storyboard"
+  // 每节点风格：内置 storyboard/asset 节点可选覆盖工作流风格（空 = 跟随工作流）。
+  // storyboard 的风格随 worker 扇出应用到整条资产分支；asset 为独立资产节点自身风格。
+  const showStyle = node.type === "storyboard" || node.type === "asset"
+  const nodeStyle =
+    typeof node.parameters?.style === "string" ? (node.parameters.style as string) : ""
 
   // typed 节点（node.typeId 非空 + 注入了 llm/http/script 参数）：展示参数摘要 + 变量绑定行。
   const isTypedLlm = !!(node.typeId && typedParams)
@@ -656,6 +669,41 @@ export function PropertiesPanel({
               />
             </div>
           )}
+        </div>
+      )}
+
+      {/* 每节点风格（仅内置 storyboard/asset，typed/自定义节点跳过）。空 = 跟随工作流。 */}
+      {!isCustomType(node.type) && !isTyped && showStyle && (
+        <div className="flex flex-col gap-1">
+          <Label className="text-[11px] text-text-2">风格</Label>
+          <Select
+            value={nodeStyle ? nodeStyle : STYLE_INHERIT}
+            onValueChange={(v) =>
+              onPatch({
+                parameters: {
+                  ...(node.parameters ?? {}),
+                  style: v === STYLE_INHERIT ? "" : v,
+                },
+              })
+            }
+          >
+            <SelectTrigger className="h-8 text-[12px]">
+              <SelectValue placeholder="跟随工作流" />
+            </SelectTrigger>
+            <SelectContent className="text-[12px]">
+              <SelectItem value={STYLE_INHERIT}>跟随工作流（不指定）</SelectItem>
+              {(promptStyles ?? []).map((s) => (
+                <SelectItem key={s.name} value={s.name}>
+                  {s.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-[11px] text-text-3">
+            {node.type === "storyboard"
+              ? "覆盖本分镜及其扇出资产的风格；留空则继承工作流。"
+              : "覆盖本资产节点的风格；留空则继承工作流。"}
+          </p>
         </div>
       )}
 

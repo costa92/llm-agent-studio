@@ -19,14 +19,21 @@ vi.mock("@/features/cost/api", () => ({
 vi.mock("@/features/org-secrets/api", () => ({
   useOrgSecrets: vi.fn(() => ({ data: undefined })),
 }))
+// 每节点风格 Select 的候选来自 prompt-styles 库——默认返回空，单测内按需 mockReturnValue。
+import { usePromptStyles } from "@/features/projects/api"
+vi.mock("@/features/projects/api", () => ({
+  usePromptStyles: vi.fn(() => ({ data: undefined })),
+}))
 const mockUseModelConfigs = vi.mocked(useModelConfigs)
 const mockUseOrgSecrets = vi.mocked(useOrgSecrets)
+const mockUsePromptStyles = vi.mocked(usePromptStyles)
 
 afterEach(() => {
   vi.restoreAllMocks()
   // restoreAllMocks 不重置 vi.mock 工厂返回值——显式恢复默认空态，避免跨用例泄漏。
   mockUseModelConfigs.mockReturnValue({ data: undefined } as ReturnType<typeof useModelConfigs>)
   mockUseOrgSecrets.mockReturnValue({ data: undefined } as ReturnType<typeof useOrgSecrets>)
+  mockUsePromptStyles.mockReturnValue({ data: undefined } as ReturnType<typeof usePromptStyles>)
 })
 
 function scriptNode(over: Partial<WorkflowNode> = {}): WorkflowNode {
@@ -86,6 +93,57 @@ describe("PropertiesPanel", () => {
       promptId: "", // 无 prompts → defaultPromptIdFor 返回 ""。
       promptText: "",
     })
+  })
+
+  it("per-node style: storyboard node renders 风格 Select and writes into parameters", async () => {
+    const user = userEvent.setup()
+    mockUsePromptStyles.mockReturnValue({
+      data: [{ name: "水彩" }, { name: "油画" }],
+    } as ReturnType<typeof usePromptStyles>)
+    const node: WorkflowNode = {
+      id: "board-1",
+      type: "storyboard",
+      promptId: "",
+      dependsOn: [],
+    }
+    const { onPatch } = renderPanel(node)
+
+    // 风格 Select 存在（内置 storyboard 节点），默认「跟随工作流」。
+    const styleLabel = screen.getByText("风格")
+    expect(styleLabel).toBeInTheDocument()
+
+    // 选一个风格 → onPatch 写入 parameters.style。
+    const styleSelect = within(styleLabel.closest("div")!).getByRole("combobox")
+    await user.click(styleSelect)
+    await user.click(screen.getByRole("option", { name: "油画" }))
+    expect(onPatch).toHaveBeenCalledWith({ parameters: { style: "油画" } })
+  })
+
+  it("per-node style: 跟随工作流 sentinel writes empty style; asset node also shows it", async () => {
+    const user = userEvent.setup()
+    mockUsePromptStyles.mockReturnValue({
+      data: [{ name: "水彩" }],
+    } as ReturnType<typeof usePromptStyles>)
+    const node: WorkflowNode = {
+      id: "asset-1",
+      type: "asset",
+      promptId: "",
+      dependsOn: [],
+      parameters: { style: "水彩" },
+    }
+    const { onPatch } = renderPanel(node)
+
+    const styleLabel = screen.getByText("风格")
+    const styleSelect = within(styleLabel.closest("div")!).getByRole("combobox")
+    await user.click(styleSelect)
+    await user.click(screen.getByRole("option", { name: "跟随工作流（不指定）" }))
+    // 清回继承 = 写空串（保留 parameters 其它键）。
+    expect(onPatch).toHaveBeenCalledWith({ parameters: { style: "" } })
+  })
+
+  it("per-node style: script node does NOT render the 风格 Select", () => {
+    renderPanel(scriptNode())
+    expect(screen.queryByText("风格")).not.toBeInTheDocument()
   })
 
   it("rejects duplicate id with an inline message and does not rename", async () => {
