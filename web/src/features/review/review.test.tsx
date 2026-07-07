@@ -540,6 +540,112 @@ describe("ReviewBoardView shot grouping + batch accept", () => {
   })
 })
 
+// ── P2 来源可见性：org 级混杂队列按项目分组 + 批量退回 ──────────────────
+describe("ReviewBoardView project grouping + batch reject", () => {
+  it("groups a cross-project queue by project and shows each source project name", () => {
+    render(
+      <ReviewBoardView
+        {...baseProps({
+          queue: [
+            makeAsset({ id: "a1", projectId: "p1", shotId: "" }),
+            makeAsset({ id: "a2", projectId: "p2", shotId: "" }),
+            makeAsset({ id: "a3", projectId: "p1", shotId: "" }),
+          ],
+          projectNames: { p1: "猫的冒险", p2: "产品定义" },
+        })}
+      />,
+    )
+    // 表头显示来源项目名（非无名「分镜 N」）。
+    expect(screen.getByText("猫的冒险")).toBeInTheDocument()
+    expect(screen.getByText("产品定义")).toBeInTheDocument()
+    expect(screen.queryByText(/分镜 /)).not.toBeInTheDocument()
+  })
+
+  it("falls back to the project id when the name is unresolved", () => {
+    render(
+      <ReviewBoardView
+        {...baseProps({
+          queue: [
+            makeAsset({ id: "a1", projectId: "p1", shotId: "" }),
+            makeAsset({ id: "a2", projectId: "p2", shotId: "" }),
+          ],
+          projectNames: { p1: "猫的冒险" },
+        })}
+      />,
+    )
+    expect(screen.getByText("猫的冒险")).toBeInTheDocument()
+    // p2 未解析 → 回退 id，不崩。
+    expect(screen.getByText("p2")).toBeInTheDocument()
+  })
+
+  it("退回本项目 opens the batch-confirm then rejects that project's assets", async () => {
+    const onRejectMany = vi.fn()
+    const user = userEvent.setup()
+    render(
+      <ReviewBoardView
+        {...baseProps({
+          queue: [
+            makeAsset({ id: "a1", projectId: "p1", shotId: "" }),
+            makeAsset({ id: "a2", projectId: "p2", shotId: "" }),
+            makeAsset({ id: "a3", projectId: "p1", shotId: "" }),
+          ],
+          projectNames: { p1: "猫的冒险", p2: "产品定义" },
+          onAcceptMany: vi.fn(),
+          onRejectMany,
+        })}
+      />,
+    )
+    // 项目 p1 有两个待退回资产。
+    await user.click(screen.getAllByRole("button", { name: "退回本项目" })[0])
+    expect(onRejectMany).not.toHaveBeenCalled()
+    await user.click(screen.getByRole("button", { name: "确认退回" }))
+    expect(onRejectMany).toHaveBeenCalledWith(["a1", "a3"])
+  })
+
+  it("退回选中 rejects the checked set through the batch confirm", async () => {
+    const onRejectMany = vi.fn()
+    const user = userEvent.setup()
+    render(
+      <ReviewBoardView
+        {...baseProps({
+          queue: [
+            makeAsset({ id: "a1", shotId: "" }),
+            makeAsset({ id: "a2", shotId: "" }),
+          ],
+          onAcceptMany: vi.fn(),
+          onRejectMany,
+        })}
+      />,
+    )
+    await user.click(screen.getAllByRole("checkbox")[0])
+    await user.click(screen.getByRole("button", { name: /退回选中\(1\)/ }))
+    await user.click(screen.getByRole("button", { name: "确认退回" }))
+    expect(onRejectMany).toHaveBeenCalledWith(["a1"])
+  })
+})
+
+// ── P1 分页：header 计数与「加载更多」──────────────────────────────────
+describe("ReviewBoardView pagination", () => {
+  it("labels the header 已加载 (not 待审) while more pages remain, and shows 加载更多", () => {
+    const onLoadMore = vi.fn()
+    render(
+      <ReviewBoardView
+        {...baseProps({ hasNextPage: true, onLoadMore })}
+      />,
+    )
+    // 还有下一页 → 不谎报总数。
+    expect(screen.getByText(/已加载 2…/)).toBeInTheDocument()
+    expect(screen.queryByText(/待审 2/)).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "加载更多" })).toBeInTheDocument()
+  })
+
+  it("labels the header 待审 and hides 加载更多 once fully loaded", () => {
+    render(<ReviewBoardView {...baseProps({ hasNextPage: false })} />)
+    expect(screen.getByText(/待审 2/)).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "加载更多" })).not.toBeInTheDocument()
+  })
+})
+
 // ── 审核路由 AdminGate（与成本/模型配置一致：路由级 admin 门禁）───────────
 // 路由 orgs.$org.review 现把 ReviewBoardView 包进 AdminGate；此处复现该组合，
 // 断言非 admin 见门禁文案而非看板，admin 见看板。

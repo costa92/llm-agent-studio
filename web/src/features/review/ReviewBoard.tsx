@@ -1,6 +1,7 @@
 import { toast } from "sonner"
 import { useRole } from "@/app/rbac"
 import { useProjects } from "@/features/projects/api"
+import { flattenPages } from "@/features/library/keyset"
 import { ReviewBoardView } from "./ReviewBoardPage"
 import {
   useAccept,
@@ -45,6 +46,8 @@ export function ReviewBoard({
 
   // ?project= 存在时把队列收窄到该项目；缺省即 org 级收件箱。
   const queue = useReviewQueue(org, projectFilter ?? undefined)
+  // keyset 多页累积成单个有序队列（去重防御同资产库）。
+  const queueItems = flattenPages(queue.data?.pages)
   const detail = useAsset(selectedId ?? "")
   const accept = useAccept(org)
   const reject = useReject(org)
@@ -55,6 +58,9 @@ export function ReviewBoard({
   const projectName = projectFilter
     ? projects.data?.find((p) => p.id === projectFilter)?.name
     : undefined
+  // 项目 id → 名映射：org 级混杂队列按项目分组时给每组表头一个可读来源名（P2 来源可见性）。
+  const projectNames: Record<string, string> = {}
+  for (const p of projects.data ?? []) projectNames[p.id] = p.name
 
   function handleAccept(id: string): void {
     accept.mutate(id, {
@@ -116,15 +122,41 @@ export function ReviewBoard({
     onSelect(null)
   }
 
+  // 批量退回（前端串行）：与批量采纳同构——后端无 bulk 端点（accept 也是前端串行），
+  //   故对称地逐个 await reject.mutateAsync，失败收集不中断，结束发汇总 toast。
+  //   退回是终态（无 un-reject 端点），故 View 侧先经批量确认弹窗才会调到这里。
+  async function handleRejectMany(ids: string[]): Promise<void> {
+    let ok = 0
+    let fail = 0
+    for (const id of ids) {
+      try {
+        await reject.mutateAsync(id)
+        ok += 1
+      } catch {
+        fail += 1
+      }
+    }
+    if (fail > 0) {
+      toast.error(`已退回 ${ok} 张 · ${fail} 张失败`)
+    } else {
+      toast.success(`已退回 ${ok} 张`)
+    }
+    onSelect(null)
+  }
+
   return (
     <ReviewBoardView
-      queue={queue.data}
+      queue={queueItems}
       isLoading={queue.isLoading}
       isError={queue.isError}
       onRetry={() => void queue.refetch()}
+      hasNextPage={queue.hasNextPage}
+      isFetchingNextPage={queue.isFetchingNextPage}
+      onLoadMore={() => void queue.fetchNextPage()}
       isAdmin={isAdmin}
       projectFilter={projectFilter ?? null}
       projectName={projectName}
+      projectNames={projectNames}
       onClearProjectFilter={onClearProjectFilter ?? (() => {})}
       selectedId={selectedId}
       onSelect={onSelect}
@@ -134,6 +166,7 @@ export function ReviewBoard({
       onReject={handleReject}
       onRegenerate={handleRegenerate}
       onAcceptMany={(ids) => void handleAcceptMany(ids)}
+      onRejectMany={(ids) => void handleRejectMany(ids)}
       onBackToWork={onBackToWork}
       onOpenPreview={onOpenPreview}
       inlineDetail={inlineDetail}
