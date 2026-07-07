@@ -40,6 +40,9 @@ type ScriptOutput struct {
 	Scenes  []Scene `json:"scenes"`
 	// CharacterSheet 仅绘本变体填充：主角固定外观（物种/主色/服饰/特征逐项）。
 	CharacterSheet string `json:"characterSheet,omitempty"`
+	// Tokens 是本次 LLM 调用消耗的 token 总数（模型响应回传的 usage）。json:"-"
+	// 使其不落入持久化的 scripts.content_json（该列只存脚本内容），仅供上层写成本账本。
+	Tokens int `json:"-"`
 }
 
 // ScriptAgent turns a brief into a structured script via a single LLM call
@@ -125,6 +128,7 @@ func (a *ScriptAgent) RunWith(ctx context.Context, model llm.ChatModel, in Scrip
 	if strings.TrimSpace(out.Title) == "" || len(out.Scenes) == 0 {
 		return ScriptOutput{}, fmt.Errorf("script: empty script (title or scenes missing)")
 	}
+	out.Tokens = res.Usage.Tokens
 	return out, nil
 }
 
