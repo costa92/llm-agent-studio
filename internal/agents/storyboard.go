@@ -38,6 +38,8 @@ type Shot struct {
 // StoryboardOutput is the parsed shot list.
 type StoryboardOutput struct {
 	Shots []Shot `json:"shots"`
+	// Tokens 是本次 LLM 调用消耗的 token 总数（模型响应回传的 usage），供上层写成本账本。
+	Tokens int `json:"-"`
 }
 
 // StoryboardAgent turns a script into a shot list via a single LLM call.
@@ -118,6 +120,7 @@ func (a *StoryboardAgent) RunWith(ctx context.Context, model llm.ChatModel, in S
 	if len(out.Shots) == 0 {
 		return StoryboardOutput{}, fmt.Errorf("storyboard: no shots produced")
 	}
+	out.Tokens = res.Usage.Tokens
 	// 绘本变体：对每页旁白按 rune 计数硬截断（模型可能超出 prompt 里给的上限）。
 	if in.PBMaxWordsPerSpread > 0 {
 		for i := range out.Shots {

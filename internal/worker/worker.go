@@ -461,9 +461,12 @@ func (w *Worker) runScript(ctx context.Context, c claimed) (string, error) {
 		SystemPrompt: in.SystemPrompt,
 	}
 	var out studioagents.ScriptOutput
+	var provider, model string
 	var err error
 	if m, ok := w.routedChatModel(ctx, c.projectID); ok {
 		out, err = w.cfg.Script.RunWith(ctx, m, scriptIn)
+		info := m.Info()
+		provider, model = info.Provider, info.Model
 	} else {
 		out, err = w.cfg.Script.Run(ctx, scriptIn)
 	}
@@ -476,6 +479,15 @@ func (w *Worker) runScript(ctx context.Context, c claimed) (string, error) {
 		`INSERT INTO scripts (id, project_id, todo_id, content_json, version) VALUES ($1,$2,$3,$4,1)`,
 		scriptID, c.projectID, c.todoID, contentJSON).Error; err != nil {
 		return "", fmt.Errorf("worker: insert script: %w", err)
+	}
+	// 文本生成同样要记账 token 用量 (spec §6 generations)：模型响应回传的 usage 经
+	// SimpleAgent 汇总到 out.Tokens，此处按 provider/model 定价落一条 kind=text 账本行。
+	// 缺此行则运行成本汇总只有图片/视频费用，Tokens 恒为 0。
+	if w.cfg.Cost != nil {
+		_ = w.cfg.Cost.RecordPriced(ctx, cost.Generation{
+			ProjectID: c.projectID, TodoID: c.todoID, Kind: "text",
+			Provider: provider, Model: model, Tokens: out.Tokens,
+		})
 	}
 	if err := w.emitItems(ctx, c, []Item{jsonItem(contentJSON)}); err != nil {
 		return "", err
@@ -514,9 +526,12 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 		SystemPrompt: storyboardInputJSON.SystemPrompt,
 	}
 	var out studioagents.StoryboardOutput
+	var provider, model string
 	var err error
 	if m, ok := w.routedChatModel(ctx, c.projectID); ok {
 		out, err = w.cfg.Storyboard.RunWith(ctx, m, storyboardIn)
+		info := m.Info()
+		provider, model = info.Provider, info.Model
 	} else {
 		out, err = w.cfg.Storyboard.Run(ctx, storyboardIn)
 	}
@@ -600,6 +615,15 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 	}
 	if earlyExisting {
 		return "shots:" + scriptID, nil
+	}
+	// 文本生成记账 (spec §6 generations)：分镜也是一次 LLM 调用，按 provider/model 定价
+	// 落一条 kind=text 账本行 (token 来自模型 usage，经 out.Tokens 透出)。仅在真正产出
+	// 新分镜时记 (earlyExisting 幂等重入上面已 return)，避免重跑重复计费。
+	if w.cfg.Cost != nil {
+		_ = w.cfg.Cost.RecordPriced(ctx, cost.Generation{
+			ProjectID: c.projectID, TodoID: c.todoID, Kind: "text",
+			Provider: provider, Model: model, Tokens: out.Tokens,
+		})
 	}
 	// Announce the fanned-out asset todos in the timeline (after commit so a
 	// reader following todo_ready can immediately read the rows).
@@ -1809,6 +1833,16 @@ func (w *Worker) runCustomLLM(ctx context.Context, c claimed, in llmParams) (str
 		 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 		outID, c.projectID, c.todoID, c.typ, content, format, items).Error; err != nil {
 		return "", fmt.Errorf("worker: insert node_output: %w", err)
+	}
+	// 文本生成记账 (spec §6 generations)：自定义 llm 节点是一次 deepseek/BYOK 文本调用，
+	// 按 provider/model 定价落一条 kind=text 账本行 (token 来自模型响应 usage，经
+	// SimpleAgent 汇总到 res.Usage.Tokens)。缺此行则该节点的费用/Tokens 全部漏记。
+	if w.cfg.Cost != nil {
+		info := model.Info()
+		_ = w.cfg.Cost.RecordPriced(ctx, cost.Generation{
+			ProjectID: c.projectID, TodoID: c.todoID, Kind: "text",
+			Provider: info.Provider, Model: info.Model, Tokens: res.Usage.Tokens,
+		})
 	}
 	return "custom:" + outID, nil
 }

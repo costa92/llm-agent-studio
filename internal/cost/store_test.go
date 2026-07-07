@@ -237,6 +237,55 @@ func TestByPlan(t *testing.T) {
 	}
 }
 
+// TestTextGenerationTokensSurfaceInPlanCost 复现并锁定「运行成本有费用但 Tokens=0」
+// 的修复：文本生成节点（script/storyboard/custom-llm）现在会按 provider/model 定价落
+// 一条 kind=text 账本行，token 来自模型响应 usage。此处用与 worker 相同的写入方式
+// (RecordPriced + Kind=text) 落库，再经 ByPlan 断言 tokens 非零地汇总出来 —— 修复前
+// 这些节点不落任何账本行，plan 汇总的 Tokens 恒为 0。
+func TestTextGenerationTokensSurfaceInPlanCost(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	s := New(db)
+	orgID := "org_text_" + time.Now().Format("150405.000000000")
+	pid := seedProject(t, db, orgID)
+	planID := "plan-text-" + time.Now().Format("150405.000000000")
+	// deepseek chat 按 token 计费（无 per-image）。
+	if err := db.WithContext(ctx).Exec(`INSERT INTO pricing (provider, model, kind, micros_per_1k_tokens)
+		VALUES ('deepseek','deepseek-chat','text',2000) ON CONFLICT (provider, model) DO NOTHING`).Error; err != nil {
+		t.Fatalf("seed pricing: %v", err)
+	}
+	tdText := planID + "-t-llm"
+	if err := db.WithContext(ctx).Exec(
+		`INSERT INTO todos (id, project_id, plan_id, type) VALUES ($1,$2,$3,$4)`,
+		tdText, pid, planID, "custom:llm").Error; err != nil {
+		t.Fatalf("seed todo: %v", err)
+	}
+	// worker 写入方式：无 image、无 asset，仅 token 用量。RecordPriced 依定价补 cost_micros。
+	if err := s.RecordPriced(ctx, Generation{
+		ProjectID: pid, TodoID: tdText, Kind: "text",
+		Provider: "deepseek", Model: "deepseek-chat", Tokens: 1500,
+	}); err != nil {
+		t.Fatalf("RecordPriced text: %v", err)
+	}
+	pc, err := s.ByPlan(ctx, pid, planID)
+	if err != nil {
+		t.Fatalf("ByPlan: %v", err)
+	}
+	// 关键断言：Tokens 非零地汇总到 plan 成本；cost 按 token 定价 = 1500 * 2000/1000。
+	if pc.Tokens != 1500 {
+		t.Fatalf("plan tokens = %d, want 1500 (text gen tokens must surface)", pc.Tokens)
+	}
+	if pc.CostMicros != 1500*2000/1000 {
+		t.Fatalf("plan cost_micros = %d, want %d", pc.CostMicros, 1500*2000/1000)
+	}
+	if pc.KindCounts["text"] != 1 || pc.ImageCount != 0 {
+		t.Fatalf("kind/image mismatch: kinds=%+v imageCount=%d", pc.KindCounts, pc.ImageCount)
+	}
+	if len(pc.Todos) != 1 || pc.Todos[0].Kind != "text" || pc.Todos[0].Tokens != 1500 {
+		t.Fatalf("per-todo breakdown mismatch: %+v", pc.Todos)
+	}
+}
+
 // TestRecentByOrgPagination pages the ledger with a keyset cursor: 5 rows,
 // 3 of them sharing the exact same created_at (tie broken by id DESC), limit=2
 // → 3 pages, no duplicate, no omission, no drift across the tie boundary.
