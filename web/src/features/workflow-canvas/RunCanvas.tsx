@@ -511,9 +511,9 @@ function RunCanvasInner({
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 bg-bg-base text-center">
         <p className="text-[13px] text-text-2">尚无运行</p>
-        <p className="text-[12px] text-text-3">点「运行」开始一次生产，状态将叠加到画布上</p>
+        <p className="text-[12px] text-text-3">点「开始运行」发起第一次生产，运行状态会实时叠加到节点上</p>
         <Button variant="amber" onClick={handleRun} disabled={isRunning || !workflowId}>
-          运行
+          开始运行
         </Button>
         {runInputsDialog}
       </div>
@@ -726,7 +726,7 @@ function RunCanvasInner({
             onClick={handleRun}
             disabled={isRunning || !workflowId}
           >
-            {runStatus === "idle" ? "运行" : "重新运行"}
+            {runStatus === "idle" ? "开始运行" : "重新运行"}
           </Button>
         </div>
       </div>

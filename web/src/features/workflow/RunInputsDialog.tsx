@@ -144,7 +144,7 @@ export function RunInputsDialog({
             取消
           </Button>
           <Button variant="amber" onClick={handleSubmit} disabled={submitting}>
-            {submitting ? "运行中…" : "运行"}
+            {submitting ? "运行中…" : "开始运行"}
           </Button>
         </DialogFooter>
       </DialogContent>

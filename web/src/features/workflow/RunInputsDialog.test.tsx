@@ -7,7 +7,7 @@ import type { InputField } from "@/lib/types"
 // {<name>: <value>} 交回调用方（调用方再 POST {inputs}）。
 
 function submitBtn() {
-  return screen.getByRole("button", { name: "运行" })
+  return screen.getByRole("button", { name: "开始运行" })
 }
 
 describe("RunInputsDialog", () => {
