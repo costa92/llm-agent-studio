@@ -135,6 +135,15 @@ export interface InputField {
   required?: boolean
 }
 
+// workflow/store.go 的 settings 列：工作流级生成设置。空对象 {} = 继承项目行。
+// run 时按 run-input > workflow.settings > project 覆盖解析（内容类型/风格解耦）。
+export interface WorkflowSettings {
+  // 风格名（须是 prompt 风格库里的名字，或空 = 继承项目行）。
+  style?: string
+  contentType?: string
+  targetPlatform?: string
+}
+
 // workflow/store.go。一个项目可有多条工作流；nodes 是 JSON 数组（非字符串）。
 // latestRunStatus 为最近一次 run 的项目状态串（从未跑过 = 空串）；latestPlanId 同理。
 export interface Workflow {
@@ -144,6 +153,8 @@ export interface Workflow {
   nodes: WorkflowNode[]
   // 运行期输入声明；旧工作流缺省（后端 DEFAULT '[]'）。
   inputsSchema?: InputField[]
+  // 工作流级生成设置；旧工作流缺省（后端 DEFAULT '{}'）。
+  settings?: WorkflowSettings
   createdAt: string
   updatedAt: string
   latestRunStatus?: string
@@ -156,6 +167,8 @@ export interface CreateWorkflowInput {
   nodes: WorkflowNode[]
   // 省略 = 不变更（后端按缺省 '[]' 处理）。
   inputsSchema?: InputField[]
+  // 省略 = 不变更（后端按缺省 '{}' 处理 = 继承项目行）。
+  settings?: WorkflowSettings
 }
 
 // runWorkflow 返回：POST /api/projects/{id}/workflows/{wfId}/run → 202。
