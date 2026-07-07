@@ -155,6 +155,8 @@ export interface Workflow {
   inputsSchema?: InputField[]
   // 工作流级生成设置；旧工作流缺省（后端 DEFAULT '{}'）。
   settings?: WorkflowSettings
+  // 乐观锁版本号（后端 DEFAULT 1）：保存时回传，服务端据此拦并发覆盖。
+  version: number
   createdAt: string
   updatedAt: string
   latestRunStatus?: string
@@ -169,6 +171,9 @@ export interface CreateWorkflowInput {
   inputsSchema?: InputField[]
   // 省略 = 不变更（后端按缺省 '{}' 处理 = 继承项目行）。
   settings?: WorkflowSettings
+  // 乐观锁版本号，仅更新（PUT）时携带 = 客户端读到的 version；服务端 WHERE version
+  // 守卫，漂移 → 409。创建（POST）忽略此字段。
+  version?: number
 }
 
 // runWorkflow 返回：POST /api/projects/{id}/workflows/{wfId}/run → 202。

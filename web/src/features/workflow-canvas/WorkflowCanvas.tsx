@@ -102,6 +102,8 @@ export interface WorkflowCanvasProps {
   inputsSchema?: InputField[]
   // 工作流级生成设置（设计期编辑；新建/旧工作流缺省 = {}）。
   settings?: WorkflowSettings
+  // 乐观锁版本号（编辑态从列表读到；新建缺省 = 1）。保存回传，服务端拦并发覆盖。
+  version?: number
   prompts?: Prompt[]
   basics?: BasicPrompt[]
   // 顶栏「← 返回」：后退到打开画布之前的那一页（由路由层注入 smart-back，
@@ -142,6 +144,7 @@ function CanvasInner({
   nodes,
   inputsSchema: initialInputsSchema,
   settings: initialSettings,
+  version: initialVersion,
   prompts,
   basics,
   onBack,
@@ -165,6 +168,9 @@ function CanvasInner({
   const [rightPanel, setRightPanel] = useState<"props" | "inputs" | "settings">(
     "props",
   )
+  // 乐观锁版本号：保存时回传服务端守卫，成功后按返回值前进（同一会话连续保存不误报
+  // 409）；捕获 409 时提示重载并阻止盲存。新建缺省 1。
+  const [version, setVersion] = useState<number>(initialVersion ?? 1)
   const { screenToFlowPosition, getNodes, getEdges, fitView } =
     useReactFlow<RFNode, RFEdge>()
   const { takeSnapshot, undo, redo, canUndo, canRedo } = useUndoRedo()
@@ -875,18 +881,27 @@ function CanvasInner({
       return
     }
     const studioNodes = toStudioNodes(rfNodes as RFNode[], rfEdges)
-    const input = { name: workflowName, nodes: studioNodes, inputsSchema, settings }
-    const done = (saved: { id: string }, created: boolean) => {
+    // 更新携带客户端读到的 version（乐观锁）；创建忽略。
+    const input = { name: workflowName, nodes: studioNodes, inputsSchema, settings, version }
+    const done = (saved: { id: string; version: number }, created: boolean) => {
       loadedSnapshot.current = snapshotOf(
         workflowName,
         studioNodes,
         inputsSchema,
         settings,
       )
+      // 版本前进到服务端返回值，避免同一会话再次保存拿陈旧 version 误触 409。
+      setVersion(saved.version)
       toast.success("工作流已保存")
       if (created) onCreated?.(saved.id)
     }
     const onErr = (err: unknown) => {
+      if (err instanceof ApiError && err.status === 409) {
+        // 并发编辑守卫：他人已保存导致 version 漂移。提示重载并阻止盲存
+        //（不更新 loadedSnapshot → 保持 dirty，用户重载后再改再存）。
+        toast.error("工作流已被他人修改，请重新加载")
+        return
+      }
       if (err instanceof ApiError && err.status === 400) {
         // 保留后端的精确原因（如 dependency cycle at "b"→"a" / node "x": ...），
         // 只剥掉通用前缀。有具体原因时带上，别塌回泛化文案吞掉细节。
@@ -917,6 +932,7 @@ function CanvasInner({
     workflowName,
     inputsSchema,
     settings,
+    version,
     workflowId,
     updateWorkflow,
     createWorkflow,

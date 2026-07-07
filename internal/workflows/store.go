@@ -23,6 +23,12 @@ import (
 // different project — Get/Update/Delete are scoped by (id AND project_id)).
 var ErrNotFound = errors.New("workflows: not found")
 
+// ErrVersionConflict is returned by Update when the row exists but at a different
+// version than the caller's expected one: a concurrent editor already saved. The
+// caller maps it to 409 so the stale writer reloads instead of blindly
+// overwriting the other edit (optimistic lock — mirrors project.TryBeginRun's CAS).
+var ErrVersionConflict = errors.New("workflows: version conflict")
+
 // Workflow is a workflows row. Nodes is the DAG definition (a JSON array of
 // planner.WorkflowNode {id,type,promptId,dependsOn}); kept as RawMessage so the
 // store stays decoupled from the planner type. LatestRunStatus / LatestPlanID
@@ -37,6 +43,9 @@ type Workflow struct {
 	// Settings 是工作流级生成设置 {style,contentType,targetPlatform}；空对象 '{}'
 	// 表示「继承项目行」。run 时按 run-input > workflow.settings > project 覆盖解析。
 	Settings        json.RawMessage `json:"settings"`
+	// Version 是乐观锁版本号（DEFAULT 1）：编辑保存的 PUT 回传客户端读到的 version，
+	// Update 以 WHERE version 守卫、命中即自增。前端据此发起 If-Match 式并发编辑守卫。
+	Version         int             `json:"version"`
 	CreatedAt       time.Time       `json:"createdAt"`
 	UpdatedAt       time.Time       `json:"updatedAt"`
 	LatestRunStatus string          `json:"latestRunStatus,omitempty"`
@@ -91,11 +100,12 @@ func (s *Store) Create(ctx context.Context, projectID, name string, nodes, input
 	}
 	w := Workflow{ID: newID(), ProjectID: projectID, Name: name, Nodes: normalizeNodes(nodes), InputsSchema: normalizeSchema(inputsSchema), Settings: normalizeSettings(settings)}
 	// JSONB columns bound via []byte (避免直接绑 json.RawMessage 的 NULL/编码问题).
+	// version 由列 DEFAULT 1 生成，回读进 w.Version（新工作流从 1 起）。
 	err := s.db.WithContext(ctx).Raw(
 		`INSERT INTO workflows (id, project_id, name, nodes, inputs_schema, settings)
 		 VALUES ($1,$2,$3,$4,$5,$6)
-		 RETURNING created_at, updated_at`,
-		w.ID, w.ProjectID, w.Name, []byte(w.Nodes), []byte(w.InputsSchema), []byte(w.Settings)).Row().Scan(&w.CreatedAt, &w.UpdatedAt)
+		 RETURNING version, created_at, updated_at`,
+		w.ID, w.ProjectID, w.Name, []byte(w.Nodes), []byte(w.InputsSchema), []byte(w.Settings)).Row().Scan(&w.Version, &w.CreatedAt, &w.UpdatedAt)
 	if err != nil {
 		return Workflow{}, fmt.Errorf("workflows: insert: %w", err)
 	}
@@ -108,9 +118,9 @@ func (s *Store) Get(ctx context.Context, projectID, id string) (Workflow, error)
 	var w Workflow
 	var nodesB, schemaB, settingsB []byte
 	err := s.db.WithContext(ctx).Raw(
-		`SELECT id, project_id, name, nodes, inputs_schema, settings, created_at, updated_at
+		`SELECT id, project_id, name, nodes, inputs_schema, settings, version, created_at, updated_at
 		 FROM workflows WHERE id=$1 AND project_id=$2`, id, projectID).Row().
-		Scan(&w.ID, &w.ProjectID, &w.Name, &nodesB, &schemaB, &settingsB, &w.CreatedAt, &w.UpdatedAt)
+		Scan(&w.ID, &w.ProjectID, &w.Name, &nodesB, &schemaB, &settingsB, &w.Version, &w.CreatedAt, &w.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Workflow{}, ErrNotFound
 	}
@@ -128,7 +138,7 @@ func (s *Store) Get(ctx context.Context, projectID, id string) (Workflow, error)
 // like project.ListPlans). Workflows that have never run get an empty status.
 func (s *Store) ListByProject(ctx context.Context, projectID string) ([]Workflow, error) {
 	rows, err := s.db.WithContext(ctx).Raw(`
-		SELECT w.id, w.project_id, w.name, w.nodes, w.inputs_schema, w.settings, w.created_at, w.updated_at,
+		SELECT w.id, w.project_id, w.name, w.nodes, w.inputs_schema, w.settings, w.version, w.created_at, w.updated_at,
 		       COALESCE(lp.plan_id, ''),
 		       COALESCE(t.total, 0),
 		       COALESCE(t.ready, 0),
@@ -174,7 +184,7 @@ func (s *Store) ListByProject(ctx context.Context, projectID string) ([]Workflow
 		var w Workflow
 		var nodesB, schemaB, settingsB []byte
 		var c project.TodoCounts
-		if err := rows.Scan(&w.ID, &w.ProjectID, &w.Name, &nodesB, &schemaB, &settingsB, &w.CreatedAt, &w.UpdatedAt,
+		if err := rows.Scan(&w.ID, &w.ProjectID, &w.Name, &nodesB, &schemaB, &settingsB, &w.Version, &w.CreatedAt, &w.UpdatedAt,
 			&w.LatestPlanID,
 			&c.Total, &c.Ready, &c.Running, &c.Blocked, &c.Done, &c.Failed, &c.Canceled, &c.PendingAssets); err != nil {
 			return nil, fmt.Errorf("workflows: list: scan: %w", err)
@@ -195,20 +205,29 @@ func (s *Store) ListByProject(ctx context.Context, projectID string) ([]Workflow
 	return out, nil
 }
 
-// Update changes a workflow's name + nodes, scoped by (id AND project_id).
-// 0 rows affected → ErrNotFound.
-func (s *Store) Update(ctx context.Context, projectID, id, name string, nodes, inputsSchema, settings json.RawMessage) (Workflow, error) {
+// Update changes a workflow's name + nodes + inputs_schema + settings, scoped by
+// (id AND project_id) AND guarded by expectedVersion (optimistic lock — mirrors
+// project.TryBeginRun's compare-and-swap). A hit bumps version by 1 so the next
+// stale writer's WHERE fails. 0 rows affected → either the row is gone
+// (ErrNotFound → 404) or another editor already saved and moved the version
+// (ErrVersionConflict → 409); a follow-up Get disambiguates the two.
+func (s *Store) Update(ctx context.Context, projectID, id, name string, expectedVersion int, nodes, inputsSchema, settings json.RawMessage) (Workflow, error) {
 	if name == "" {
 		return Workflow{}, fmt.Errorf("workflows: name required")
 	}
 	res := s.db.WithContext(ctx).Exec(
-		`UPDATE workflows SET name=$3, nodes=$4, inputs_schema=$5, settings=$6, updated_at=now()
-		 WHERE id=$1 AND project_id=$2`, id, projectID, name, []byte(normalizeNodes(nodes)), []byte(normalizeSchema(inputsSchema)), []byte(normalizeSettings(settings)))
+		`UPDATE workflows SET name=$4, nodes=$5, inputs_schema=$6, settings=$7, version=version+1, updated_at=now()
+		 WHERE id=$1 AND project_id=$2 AND version=$3`,
+		id, projectID, expectedVersion, name, []byte(normalizeNodes(nodes)), []byte(normalizeSchema(inputsSchema)), []byte(normalizeSettings(settings)))
 	if res.Error != nil {
 		return Workflow{}, fmt.Errorf("workflows: update: %w", res.Error)
 	}
 	if res.RowsAffected == 0 {
-		return Workflow{}, ErrNotFound
+		// 0 行可能是「行不存在」也可能是「version 漂移」——用 Get 分辨，映射到 404 / 409。
+		if _, gErr := s.Get(ctx, projectID, id); errors.Is(gErr, ErrNotFound) {
+			return Workflow{}, ErrNotFound
+		}
+		return Workflow{}, ErrVersionConflict
 	}
 	return s.Get(ctx, projectID, id)
 }

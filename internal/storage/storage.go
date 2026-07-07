@@ -547,7 +547,20 @@ func (s *Storage) goSteps() []migrationStep {
 		{version: "m29", run: m29ExpandOrgAlertSettings},
 		{version: "m30", run: m30CreateOrgInvites},
 		{version: "m31", run: m31AddWorkflowSettings},
+		{version: "m32", run: m32AddWorkflowVersion},
 	}
+}
+
+// m32AddWorkflowVersion 给 workflows 加 version INT 列（乐观锁版本号）：编辑保存时
+// PUT 携带客户端读到的 version，Store.Update 以 WHERE version 守卫、命中即自增，
+// 关掉「并发编辑后保存者无声覆盖前者」的数据丢失竞态。DEFAULT 1 让存量行回填 1、
+// 零回归。Forward-only、幂等（ADD COLUMN IF NOT EXISTS）。
+func m32AddWorkflowVersion(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx,
+		`ALTER TABLE workflows ADD COLUMN IF NOT EXISTS version INT NOT NULL DEFAULT 1`); err != nil {
+		return fmt.Errorf("add workflows.version: %w", err)
+	}
+	return nil
 }
 
 // m31AddWorkflowSettings 给 workflows 加 settings JSONB 列（工作流级生成设置：
