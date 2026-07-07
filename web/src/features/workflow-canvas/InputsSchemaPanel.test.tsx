@@ -64,6 +64,18 @@ describe("InputsSchemaPanel", () => {
     render(<Harness initial={[{ name: "heroName", type: "text", target: "variable" }]} />)
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
   })
+
+  it("新增空字段先不报错，失焦后才提示", async () => {
+    const user = userEvent.setup()
+    render(<Harness />)
+    await user.click(screen.getByRole("button", { name: "添加字段" }))
+    // 刚加出来、名称仍空且未失焦 → 不闪红。
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    // 名称输入失焦（仍空）→ 照常提示。
+    await user.click(screen.getByLabelText("字段名 1"))
+    await user.tab()
+    expect(screen.getByRole("alert").textContent).toMatch(/字段名/)
+  })
 })
 
 // ── 集成测试：保存路径携带 inputsSchema ────────────────────────────────
