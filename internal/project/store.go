@@ -11,7 +11,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/lib/pq"
 	"gorm.io/gorm"
@@ -19,12 +21,19 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/projectstate"
 )
 
+// ProjectNameMaxLen 是项目名的长度上限（Unicode 字符数），与前端 projectFormSchema 对齐。
+const ProjectNameMaxLen = 200
+
 // ErrNotFound is returned when a project row does not exist.
 var ErrNotFound = errors.New("project: not found")
 
 // ErrInvalidStorageConfig 表示传入的 storage_config_id 不属于项目所在 org（或不存在）。
 // 防跨租户存储写入：项目只能引用自身 org 的 scope='org' 存储配置（空 = 无 override，走默认）。
 var ErrInvalidStorageConfig = errors.New("project: storage config not found for org")
+
+// ErrEmptyName / ErrNameTooLong 是项目名校验错误（trim 后为空 / 超长）；handler 映射为 400。
+var ErrEmptyName = errors.New("项目名称不能为空")
+var ErrNameTooLong = fmt.Errorf("项目名称不能超过 %d 个字符", ProjectNameMaxLen)
 
 // Project is a projects row.
 type Project struct {
@@ -132,9 +141,18 @@ func (s *Store) storageConfigBelongsToOrg(ctx context.Context, configID, orgID s
 
 // Create inserts a project (status='draft').
 func (s *Store) Create(ctx context.Context, in CreateInput) (Project, error) {
-	if in.OrgID == "" || in.Name == "" || in.CreatedBy == "" {
-		return Project{}, fmt.Errorf("project: OrgID, Name, CreatedBy required")
+	if in.OrgID == "" || in.CreatedBy == "" {
+		return Project{}, fmt.Errorf("project: OrgID, CreatedBy required")
 	}
+	// 名称：trim 后拦空（含纯空白）并封顶长度；用 trim 后的值落库。
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		return Project{}, ErrEmptyName
+	}
+	if utf8.RuneCountInString(name) > ProjectNameMaxLen {
+		return Project{}, ErrNameTooLong
+	}
+	in.Name = name
 	// 存储配置 override 必须属于本 org（防跨租户存储写入）；空 = 无 override，走默认。
 	if in.StorageConfigID != "" {
 		ok, err := s.storageConfigBelongsToOrg(ctx, in.StorageConfigID, in.OrgID)

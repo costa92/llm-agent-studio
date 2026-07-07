@@ -28,6 +28,30 @@ describe("projectFormSchema", () => {
     }
   })
 
+  it("name 纯空白 → 必填错误", () => {
+    const r = projectFormSchema.safeParse({ ...base, name: "   " })
+    expect(r.success).toBe(false)
+    if (!r.success) {
+      expect(r.error.issues.some((i) => i.message === "请输入项目名称")).toBe(true)
+    }
+  })
+
+  it("name 超长（>200）→ 长度错误", () => {
+    const r = projectFormSchema.safeParse({ ...base, name: "a".repeat(201) })
+    expect(r.success).toBe(false)
+    if (!r.success) {
+      expect(r.error.issues.some((i) => i.message.includes("200"))).toBe(true)
+    }
+  })
+
+  it("name 前后空白被 trim", () => {
+    const r = projectFormSchema.safeParse({ ...base, name: "  我的项目  " })
+    expect(r.success).toBe(true)
+    if (r.success) {
+      expect(r.data.name).toBe("我的项目")
+    }
+  })
+
   it("brief 必填（仅 Create schema）", () => {
     const r = createProjectFormSchema.safeParse({ ...base, brief: "" })
     expect(r.success).toBe(false)
