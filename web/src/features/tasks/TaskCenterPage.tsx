@@ -6,15 +6,30 @@ import { Badge } from "@/components/studio/Badge"
 import { Button } from "@/components/studio/Button"
 import type { ProjectStatus, TaskRow } from "@/lib/types"
 import { useTaskBoard } from "./api"
-import { quickAction, statusLabel, statusVariant, taskBucket } from "./status"
+import {
+  isGenerationDone,
+  quickAction,
+  statusLabel,
+  statusVariant,
+  taskBucket,
+} from "./status"
 import { formatRelative } from "./relativeTime"
 
-// tab 定义：标签 + 对应 counts 键（全部不带桶过滤）。
-const TABS: { label: string; bucket: string | null; countKey: string }[] = [
+// tab 定义：多数按状态桶（bucket + counts 键）过滤；「生成完成」是跨桶的进度信号，
+// 用 predicate 过滤 + 前端从 rows 现算计数（rows 是 org 全量、无分页，故计数精确）。
+interface TaskTab {
+  label: string
+  bucket?: string | null
+  countKey?: string
+  predicate?: (row: TaskRow) => boolean
+}
+const TABS: TaskTab[] = [
   { label: "全部", bucket: null, countKey: "all" },
   { label: "运行中", bucket: "运行中", countKey: "running" },
+  // P3：生成完成 = 进度打满、无关审核门控——让 100% 进度的项目不再被恒 0 的「完成」桶埋没。
+  { label: "生成完成", predicate: isGenerationDone },
   { label: "待审核", bucket: "待审核", countKey: "review" },
-  { label: "完成", bucket: "完成", countKey: "completed" },
+  { label: "已交付", bucket: "完成", countKey: "completed" },
   { label: "失败", bucket: "失败", countKey: "failed" },
 ]
 
@@ -78,11 +93,20 @@ export function TaskCenterView({
 }: TaskCenterViewProps) {
   const [activeTab, setActiveTab] = useState<string>("全部")
 
-  const visible = (rows ?? []).filter((row) => {
+  const allRows = rows ?? []
+  const visible = allRows.filter((row) => {
     const tab = TABS.find((t) => t.label === activeTab)
-    if (!tab || tab.bucket == null) return true
+    if (!tab) return true
+    if (tab.predicate) return tab.predicate(row)
+    if (tab.bucket == null) return true
     return taskBucket(row.status) === tab.bucket
   })
+
+  // tab 计数：predicate tab 从 rows 现算（精确，rows 无分页）；桶 tab 用后端 counts。
+  function tabCount(tab: TaskTab): number | undefined {
+    if (tab.predicate) return allRows.filter(tab.predicate).length
+    return tab.countKey ? counts?.[tab.countKey] : undefined
+  }
 
   return (
     <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-5 p-6">
@@ -94,7 +118,7 @@ export function TaskCenterView({
       {/* tab 栏：全部/运行中/待审核/完成/失败，带 counts 数字。 */}
       <div role="tablist" aria-label="任务筛选" className="flex flex-wrap gap-2">
         {TABS.map((tab) => {
-          const count = counts?.[tab.countKey]
+          const count = tabCount(tab)
           const active = activeTab === tab.label
           return (
             <button

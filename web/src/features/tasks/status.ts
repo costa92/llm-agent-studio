@@ -14,6 +14,17 @@ export type TaskBucket =
   | "草稿"
   | "已取消"
 
+// 生成完成：一个项目最新 plan 的生成任务全部产出（progressDone===progressTotal 且
+// total>0），无关审核是否放行。把「生成完成」与「已交付」（status=completed，即审核
+// 队列已清空）拆成两个信号——否则 100% 进度的项目全卡在「待审核」桶，「完成」桶因
+// 审核门控恒为 0，吞吐看着像死了（P3）。生成完成 ⊇ 已交付。
+export function isGenerationDone(row: {
+  progressDone: number
+  progressTotal: number
+}): boolean {
+  return row.progressTotal > 0 && row.progressDone >= row.progressTotal
+}
+
 export function taskBucket(status: string): TaskBucket {
   switch (status) {
     case "planning":
