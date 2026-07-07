@@ -507,6 +507,6 @@ describe("ModelConfigView", () => {
       />,
     )
     expect(screen.getByText("尚未配置模型")).toBeInTheDocument()
-    expect(screen.getByText(/仅写入、加密存储/)).toBeInTheDocument()
+    expect(screen.getByText(/仅管理员可显式解密查看且会记入审计/)).toBeInTheDocument()
   })
 })

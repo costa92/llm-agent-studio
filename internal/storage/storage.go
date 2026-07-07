@@ -543,6 +543,7 @@ func (s *Storage) goSteps() []migrationStep {
 		{version: "m25", run: m25CreateOrgAlertSettings},
 		{version: "m26", run: m26AddProjectsDeletedAt},
 		{version: "m27", run: m27StripPBConfigInputs},
+		{version: "m28", run: m28CreateOrgAuditLog},
 	}
 }
 
@@ -742,6 +743,34 @@ func m27StripPBConfigInputs(ctx context.Context, tx pgx.Tx) error {
 			SELECT 1 FROM jsonb_array_elements(inputs_schema) AS f
 			 WHERE f->>'target' = 'pbConfig')`); err != nil {
 		return fmt.Errorf("strip pbConfig inputs: %w", err)
+	}
+	return nil
+}
+
+// m28CreateOrgAuditLog creates the org_audit_log table：安全敏感的管理操作审计流水
+// （append-only）。每行记一次管理动作：actor（当前登录用户 id / 可选 email）、action
+// （稳定字符串，如 model_key.reveal / model_config.update）、target（类型 + id）、detail
+// （最小化、非敏感的 JSON，绝不含明文密钥）。索引 (org_id, created_at DESC, id DESC)
+// 支撑「按 org 倒序 + keyset 翻页」的未来审计 UI。Forward-only、幂等
+// (CREATE TABLE / INDEX IF NOT EXISTS)。
+func m28CreateOrgAuditLog(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS org_audit_log (
+			id            TEXT PRIMARY KEY,
+			org_id        TEXT NOT NULL,
+			actor_user_id TEXT NOT NULL DEFAULT '',
+			actor_email   TEXT NOT NULL DEFAULT '',
+			action        TEXT NOT NULL,
+			target_type   TEXT NOT NULL DEFAULT '',
+			target_id     TEXT NOT NULL DEFAULT '',
+			detail        JSONB NOT NULL DEFAULT '{}',
+			created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`); err != nil {
+		return fmt.Errorf("create org_audit_log: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`CREATE INDEX IF NOT EXISTS org_audit_log_org_created_idx ON org_audit_log (org_id, created_at DESC, id DESC)`); err != nil {
+		return fmt.Errorf("create org_audit_log_org_created_idx: %w", err)
 	}
 	return nil
 }

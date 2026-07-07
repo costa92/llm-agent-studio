@@ -184,7 +184,7 @@ describe("ModelConfigView — create dialog form binding", () => {
     const key = screen.getByLabelText("密钥输入")
     expect(key).toHaveAttribute("type", "password")
     // 字段级 helper（区别于页头/对话框副标题里相近的文案）。
-    expect(screen.getByText(/密钥仅写入、加密存储，不会回显/)).toBeInTheDocument()
+    expect(screen.getByText(/密钥加密存储；仅管理员可显式解密查看，且会记入审计/)).toBeInTheDocument()
   })
 })
 
