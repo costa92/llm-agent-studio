@@ -545,6 +545,7 @@ func (s *Storage) goSteps() []migrationStep {
 		{version: "m27", run: m27StripPBConfigInputs},
 		{version: "m28", run: m28CreateOrgAuditLog},
 		{version: "m29", run: m29ExpandOrgAlertSettings},
+		{version: "m30", run: m30CreateOrgInvites},
 	}
 }
 
@@ -794,6 +795,39 @@ func m29ExpandOrgAlertSettings(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, ddl); err != nil {
 			return fmt.Errorf("expand org_alert_settings: %w", err)
 		}
+	}
+	return nil
+}
+
+// m30CreateOrgInvites 建 org_invites 表：邀请协作者入组织的待接受邀请。每行一封邀请：
+// 目标邮箱 + 拟授角色 + 唯一 token（构成邀请链接）+ 状态（pending/accepted/revoked）+
+// 邀请人 + 过期时间。被邀请人登录后凭 token 接受，届时才按 role 落 auth_membership。
+// 部分唯一索引保证同一 (org,email) 至多一封 pending（重复邀请先撤旧再发新，索引兜并发）。
+// 列表索引 (org_id, status, created_at DESC) 支撑「按 org 列待接受邀请」。
+// Forward-only、幂等（CREATE TABLE / INDEX IF NOT EXISTS）。
+func m30CreateOrgInvites(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS org_invites (
+			id          TEXT PRIMARY KEY,
+			org_id      TEXT NOT NULL,
+			email       TEXT NOT NULL,
+			role        TEXT NOT NULL,
+			token       TEXT NOT NULL UNIQUE,
+			status      TEXT NOT NULL DEFAULT 'pending',
+			invited_by  TEXT NOT NULL DEFAULT '',
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+			accepted_at TIMESTAMPTZ,
+			expires_at  TIMESTAMPTZ NOT NULL
+		)`); err != nil {
+		return fmt.Errorf("create org_invites: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`CREATE INDEX IF NOT EXISTS org_invites_org_status_idx ON org_invites (org_id, status, created_at DESC)`); err != nil {
+		return fmt.Errorf("create org_invites_org_status_idx: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`CREATE UNIQUE INDEX IF NOT EXISTS org_invites_pending_uniq ON org_invites (org_id, email) WHERE status='pending'`); err != nil {
+		return fmt.Errorf("create org_invites_pending_uniq: %w", err)
 	}
 	return nil
 }

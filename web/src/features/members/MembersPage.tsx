@@ -3,11 +3,14 @@ import { toast } from "sonner"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/studio/Button"
 import { ApiError } from "@/lib/apiClient"
-import type { OrgMember, OrgRole } from "@/lib/types"
+import type { OrgInvite, OrgMember, OrgRole } from "@/lib/types"
 import {
   useAddMember,
+  useCreateInvite,
+  useOrgInvites,
   useOrgMembers,
   useRemoveMember,
+  useRevokeInvite,
   useSetMemberRole,
 } from "./api"
 import { useCrudResource, CrudResourcePage, DataView, ConfirmDialog } from "../common/crud"
@@ -23,6 +26,19 @@ const ROLE_OPTIONS: { value: OrgRole; label: string }[] = [
 const selectClass =
   "rounded-md border border-line bg-bg-base px-2.5 py-2 text-[13px] text-text-1 focus-visible:outline-2 focus-visible:outline-amber"
 
+// 角色值 → 中文标签（邀请列表展示用）。
+const ROLE_LABELS: Record<OrgRole, string> = {
+  viewer: "查看者",
+  editor: "编辑者",
+  admin: "管理员",
+  org_admin: "组织管理员",
+}
+
+// 由 token 拼接可分享的接受链接（前端路由 /invites/{token}）。
+function inviteLinkOf(token: string): string {
+  return `${window.location.origin}/invites/${token}`
+}
+
 // 成员管理页（/orgs/{org}/members）：列出成员 + 按邮箱添加 + 行内改角色 + 移除二次确认。
 // 门禁由路由的 AdminGate 承担（useRole 探针）；后端对每个写操作仍强制 org-admin RBAC。
 export function MembersPage({ org }: { org: string }) {
@@ -31,8 +47,15 @@ export function MembersPage({ org }: { org: string }) {
   const setRole = useSetMemberRole(org)
   const remove = useRemoveMember(org)
 
+  const invites = useOrgInvites(org)
+  const createInvite = useCreateInvite(org)
+  const revokeInvite = useRevokeInvite(org)
+
   const [email, setEmail] = useState("")
   const [addRole, setAddRole] = useState<OrgRole>("viewer")
+
+  const [inviteEmail, setInviteEmail] = useState("")
+  const [inviteRole, setInviteRole] = useState<OrgRole>("viewer")
 
   const crud = useCrudResource<OrgMember>({
     getId: (m) => m.userId,
@@ -73,6 +96,55 @@ export function MembersPage({ org }: { org: string }) {
     )
   }
 
+  function handleInvite() {
+    const value = inviteEmail.trim()
+    if (value === "") return
+    createInvite.mutate(
+      { email: value, role: inviteRole },
+      {
+        onSuccess: (inv) => {
+          toast.success("邀请已创建")
+          setInviteEmail("")
+          setInviteRole("viewer")
+          void copyInviteLink(inv.token)
+        },
+        onError: (err: unknown) => {
+          if (err instanceof ApiError && err.status === 409) {
+            toast.error("该邮箱已是本组织成员")
+          } else if (err instanceof ApiError && err.status === 400) {
+            toast.error("邮箱或角色无效")
+          } else {
+            toast.error("邀请失败，请重试")
+          }
+        },
+      },
+    )
+  }
+
+  async function copyInviteLink(token: string) {
+    const link = inviteLinkOf(token)
+    try {
+      await navigator.clipboard.writeText(link)
+      toast.success("邀请链接已复制")
+    } catch {
+      // 剪贴板不可用（无 https / 权限）时，直接把链接展示在 toast 供手动复制。
+      toast.message("邀请链接", { description: link })
+    }
+  }
+
+  function handleRevokeInvite(inv: OrgInvite) {
+    revokeInvite.mutate(inv.id, {
+      onSuccess: () => toast.success("已撤销邀请"),
+      onError: (err: unknown) => {
+        if (err instanceof ApiError && err.status === 404) {
+          toast.error("邀请不存在或已处理")
+        } else {
+          toast.error("撤销失败，请重试")
+        }
+      },
+    })
+  }
+
   function handleSetRole(member: OrgMember, role: OrgRole) {
     if (role === member.role) return
     setRole.mutate(
@@ -102,51 +174,138 @@ export function MembersPage({ org }: { org: string }) {
       isEmpty={!members.data?.length}
       emptyHint="暂无成员。"
       headerExtra={
-        <section className="flex flex-col gap-3 rounded-xl border border-line bg-bg-surface p-5">
-          <header className="flex flex-col gap-1">
-            <h2 className="font-heading text-[15px] font-semibold text-text-1">添加成员</h2>
-            <p className="text-[12px] text-text-3">
-              按邮箱添加既有用户并赋角色；该邮箱无对应用户时不会添加。
-            </p>
-          </header>
+        <>
+          <section className="flex flex-col gap-3 rounded-xl border border-line bg-bg-surface p-5">
+            <header className="flex flex-col gap-1">
+              <h2 className="font-heading text-[15px] font-semibold text-text-1">添加成员</h2>
+              <p className="text-[12px] text-text-3">
+                按邮箱添加既有用户并赋角色；该邮箱无对应用户时不会添加（对方尚未注册请改用下方「邀请新成员」）。
+              </p>
+            </header>
 
-          {/* 添加：邮箱输入 + 角色选择 + 添加按钮。 */}
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="member-email">按邮箱添加</Label>
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <input
-                id="member-email"
-                type="email"
-                autoComplete="off"
-                placeholder="user@example.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="flex-1 rounded-md border border-line bg-bg-base px-2.5 py-2 text-[13px] text-text-1 focus-visible:outline-2 focus-visible:outline-amber"
-              />
-              <select
-                id="member-role"
-                aria-label="角色"
-                value={addRole}
-                onChange={(e) => setAddRole(e.target.value as OrgRole)}
-                className={selectClass}
-              >
-                {ROLE_OPTIONS.map((r) => (
-                  <option key={r.value} value={r.value}>
-                    {r.label}
-                  </option>
-                ))}
-              </select>
-              <Button
-                type="button"
-                variant="amber"
-                disabled={add.isPending || email.trim() === ""}
-                onClick={handleAdd}
-              >
-                添加
-              </Button>
+            {/* 添加：邮箱输入 + 角色选择 + 添加按钮。 */}
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="member-email">按邮箱添加</Label>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input
+                  id="member-email"
+                  type="email"
+                  autoComplete="off"
+                  placeholder="user@example.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="flex-1 rounded-md border border-line bg-bg-base px-2.5 py-2 text-[13px] text-text-1 focus-visible:outline-2 focus-visible:outline-amber"
+                />
+                <select
+                  id="member-role"
+                  aria-label="角色"
+                  value={addRole}
+                  onChange={(e) => setAddRole(e.target.value as OrgRole)}
+                  className={selectClass}
+                >
+                  {ROLE_OPTIONS.map((r) => (
+                    <option key={r.value} value={r.value}>
+                      {r.label}
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  type="button"
+                  variant="amber"
+                  disabled={add.isPending || email.trim() === ""}
+                  onClick={handleAdd}
+                >
+                  添加
+                </Button>
+              </div>
             </div>
-          </div>
-        </section>
+          </section>
+
+          <section className="flex flex-col gap-3 rounded-xl border border-line bg-bg-surface p-5">
+            <header className="flex flex-col gap-1">
+              <h2 className="font-heading text-[15px] font-semibold text-text-1">邀请新成员</h2>
+              <p className="text-[12px] text-text-3">
+                邀请尚未注册的协作者：填邮箱与拟授角色后生成邀请链接（并尝试发送邮件）。对方注册/登录后凭链接接受即入组织。
+              </p>
+            </header>
+
+            {/* 邀请：邮箱输入 + 角色选择 + 邀请按钮。 */}
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="invite-email">按邮箱邀请</Label>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input
+                  id="invite-email"
+                  type="email"
+                  autoComplete="off"
+                  placeholder="collaborator@example.com"
+                  value={inviteEmail}
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                  className="flex-1 rounded-md border border-line bg-bg-base px-2.5 py-2 text-[13px] text-text-1 focus-visible:outline-2 focus-visible:outline-amber"
+                />
+                <select
+                  id="invite-role"
+                  aria-label="邀请角色"
+                  value={inviteRole}
+                  onChange={(e) => setInviteRole(e.target.value as OrgRole)}
+                  className={selectClass}
+                >
+                  {ROLE_OPTIONS.map((r) => (
+                    <option key={r.value} value={r.value}>
+                      {r.label}
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  type="button"
+                  variant="amber"
+                  disabled={createInvite.isPending || inviteEmail.trim() === ""}
+                  onClick={handleInvite}
+                >
+                  邀请
+                </Button>
+              </div>
+            </div>
+
+            {/* 待接受邀请列表：邮箱 + 角色 + 复制链接 / 撤销。 */}
+            {invites.data && invites.data.length > 0 && (
+              <div className="flex flex-col gap-2">
+                <h3 className="text-[12.5px] font-semibold text-text-2">待接受邀请</h3>
+                <ul className="flex flex-col gap-1.5">
+                  {invites.data.map((inv) => (
+                    <li
+                      key={inv.id}
+                      className="flex flex-col gap-2 rounded-md border border-line bg-bg-base px-3 py-2 text-[13px] sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <span className="text-text-1">
+                        {inv.email}
+                        <span className="ml-2 text-[12px] text-text-3">
+                          {ROLE_LABELS[inv.role]}
+                        </span>
+                      </span>
+                      <span className="flex gap-2">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          onClick={() => void copyInviteLink(inv.token)}
+                        >
+                          复制链接
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          disabled={revokeInvite.isPending}
+                          onClick={() => handleRevokeInvite(inv)}
+                        >
+                          撤销
+                        </Button>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </section>
+        </>
       }
     >
       <DataView<OrgMember>

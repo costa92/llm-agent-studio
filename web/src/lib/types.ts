@@ -488,6 +488,34 @@ export interface AddMemberInput {
   role: OrgRole
 }
 
+// org 邀请（org_invites 待接受记录）。被邀请人凭 token 登录后接受，届时才落 membership。
+// GET /api/orgs/{org}/invites → {items: OrgInvite[]}（org-admin 网关；列出 pending）。
+export interface OrgInvite {
+  id: string
+  orgId: string
+  email: string
+  role: OrgRole
+  token: string
+  status: "pending" | "accepted" | "revoked"
+  invitedBy: string
+  createdAt: string
+  acceptedAt?: string
+  expiresAt: string
+}
+
+// POST /api/orgs/{org}/invites 入参：邀请新协作者（email + 拟授角色）。
+// 该邮箱已是成员 → 409；空邮箱/非法 role → 400。
+export interface CreateInviteInput {
+  email: string
+  role: OrgRole
+}
+
+// POST /api/invites/{token}/accept 响应：接受成功后被授予角色的 org 与角色。
+export interface AcceptInviteResult {
+  orgId: string
+  role: OrgRole
+}
+
 // cost/store.go Aggregate。GET /api/orgs/{org}/cost、GET /api/projects/{id}/cost。
 export interface Aggregate {
   generations: number
