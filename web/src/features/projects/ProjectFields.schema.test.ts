@@ -79,12 +79,15 @@ describe("projectFormSchema", () => {
     }
   })
 
-  it("style 必填", () => {
-    const r = projectFormSchema.safeParse({ ...base, style: "" })
-    expect(r.success).toBe(false)
-    if (!r.success) {
-      expect(r.error.issues.some((i) => i.message === "请选择风格")).toBe(true)
-    }
+  // 内容类型/风格解耦：style/contentType/targetPlatform 均可空（留空=由工作流决定）。
+  it("style/contentType/targetPlatform 可空（内容类型/风格解耦）", () => {
+    const r = projectFormSchema.safeParse({
+      ...base,
+      style: "",
+      contentType: "",
+      targetPlatform: "",
+    })
+    expect(r.success).toBe(true)
   })
 
   it("合法表单通过校验", () => {
@@ -94,10 +97,14 @@ describe("projectFormSchema", () => {
 })
 
 describe("defaultsFor", () => {
-  it("无 initial 时给空表单默认", () => {
+  it("无 initial 时给空表单默认（含 style/contentType/targetPlatform 皆空）", () => {
     const d = defaultsFor()
     expect(d.name).toBe("")
     expect(d.brief).toBe("")
+    // 不再预填生成默认——留空由工作流决定。
+    expect(d.style).toBe("")
+    expect(d.contentType).toBe("")
+    expect(d.targetPlatform).toBe("")
   })
 
   it("有 initial 时回填基本字段", () => {

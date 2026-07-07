@@ -7,7 +7,9 @@ export const CONTENT_TYPES = ["短视频", "广告片", "动画", "宣传片"] a
 export const TARGET_PLATFORMS = ["抖音", "视频号", "B 站", "小红书", "通用"] as const
 
 // 项目创建/编辑共享表单模型。
-// name/style 必填（后端缺则 400）；description（Edit 用）与各模型字段为可空字符串。
+// name 必填；contentType/targetPlatform/style 均可空——留空表示「不指定，由工作流决定」
+//（内容类型/风格解耦：生成风格由工作流的设置驱动，而非建项目时的隐藏默认）。
+// description（Edit 用）与各模型字段为可空字符串。
 // 注意：brief 在 base 里「放宽」（z.string()），不在此处必填——Edit 的 defaultsFor
 //   永远产出 brief:""（Project 类型无 brief），而 zodResolver v5 会校验整份
 //   form.getValues()；若 base 里 brief.min(1)，Edit resolver 必在 brief 上失败，
@@ -18,9 +20,9 @@ export const projectFormSchema = z.object({
   name: z.string().trim().min(1, "请输入项目名称").max(200, "项目名称不能超过 200 个字符"),
   brief: z.string(),
   description: z.string(),
-  contentType: z.string().min(1, "请选择内容类型"),
-  targetPlatform: z.string().min(1, "请选择目标平台"),
-  style: z.string().min(1, "请选择风格"),
+  contentType: z.string(),
+  targetPlatform: z.string(),
+  style: z.string(),
   plannerProvider: z.string(),
   plannerModel: z.string(),
   imageProvider: z.string(),
@@ -37,8 +39,8 @@ export const createProjectFormSchema = projectFormSchema.extend({
 export type ProjectFormValues = z.infer<typeof projectFormSchema>
 
 // initial 项目 → 表单默认值。无 initial = 空表单（新建）。
-// 注意：style 默认空串——CreateProjectForm 会在 initial.style 缺省时用 styles[0]?.name
-// 覆盖（保留现状「默认选首个风格」UX），故此处不擅自填首风格。
+// 注意：contentType/targetPlatform/style 默认空串——不再在建项目时预填任何生成默认，
+// 留空即「不指定，由工作流决定」（内容类型/风格解耦）。
 export function defaultsFor(
   initial?: Partial<Project> & { brief?: string },
 ): ProjectFormValues {
@@ -46,8 +48,8 @@ export function defaultsFor(
     name: initial?.name ?? "",
     brief: initial?.brief ?? "",
     description: initial?.description ?? "",
-    contentType: initial?.contentType ?? CONTENT_TYPES[0],
-    targetPlatform: initial?.targetPlatform ?? TARGET_PLATFORMS[0],
+    contentType: initial?.contentType ?? "",
+    targetPlatform: initial?.targetPlatform ?? "",
     style: initial?.style ?? "",
     plannerProvider: initial?.plannerProvider ?? "",
     plannerModel: initial?.plannerModel ?? "",

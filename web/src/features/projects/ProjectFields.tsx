@@ -97,7 +97,7 @@ export function ProjectFields({
           render={({ field }) => (
             <Select value={field.value} onValueChange={field.onChange}>
               <SelectTrigger id={pre("contentType")}>
-                <SelectValue />
+                <SelectValue placeholder="不指定" />
               </SelectTrigger>
               <SelectContent>
                 {CONTENT_TYPES.map((ct) => (
@@ -119,7 +119,7 @@ export function ProjectFields({
           render={({ field }) => (
             <Select value={field.value} onValueChange={field.onChange}>
               <SelectTrigger id={pre("targetPlatform")}>
-                <SelectValue />
+                <SelectValue placeholder="不指定" />
               </SelectTrigger>
               <SelectContent>
                 {TARGET_PLATFORMS.map((tp) => (
@@ -157,6 +157,7 @@ export function ProjectFields({
           )}
         />
         {errors.style && <p className="text-[12px] text-danger">{errors.style.message}</p>}
+        <p className="text-[11.5px] text-text-3">留空 = 不指定，由工作流决定。</p>
       </div>
 
       {/* 规划模型下拉：Edit 无条件显示（alwaysShowPlanner），Create 仅有 text 模型时显示。 */}

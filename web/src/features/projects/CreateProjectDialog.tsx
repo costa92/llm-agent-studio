@@ -77,8 +77,8 @@ export function CreateProjectForm({
   const resolver = zodResolver(createProjectFormSchema) as unknown as Resolver<ProjectFormValues>
   const form = useForm<ProjectFormValues>({
     resolver,
-    // 默认选中首个风格（保留现状 UX：免去必填空态）。
-    defaultValues: { ...defaultsFor(), style: styles[0]?.name ?? "" },
+    // 不再预填风格/内容类型/平台——留空 = 不指定，由工作流决定（内容类型/风格解耦）。
+    defaultValues: defaultsFor(),
   })
 
   const submit = form.handleSubmit(async (values) => {
