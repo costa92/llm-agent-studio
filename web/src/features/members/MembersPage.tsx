@@ -151,7 +151,7 @@ export function MembersPage({ org }: { org: string }) {
     >
       <DataView<OrgMember>
         layout="table"
-        minWidthClass="min-w-[560px]"
+        minWidthClass="min-w-[640px]"
         items={members.data ?? []}
         getId={(m) => m.userId}
         columns={[

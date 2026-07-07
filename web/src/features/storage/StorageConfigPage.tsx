@@ -1,7 +1,7 @@
 import { useFormContext, useForm, FormProvider } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useState } from "react"
-import { Loader2 } from "lucide-react"
+import { Database, Loader2, Plus } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/studio/Button"
 import { Button as UiButton } from "@/components/ui/button"
@@ -218,7 +218,18 @@ export function StorageConfigView({ org }: StorageConfigViewProps) {
         isError={configsQuery.isError}
         onRetry={() => void configsQuery.refetch()}
         isEmpty={(configsQuery.data ?? []).length === 0}
-        emptyHint="暂无存储配置，点击「新增配置」开始。"
+        emptyState={
+          <div className="flex flex-col items-center gap-3 py-20 text-center border border-dashed border-line rounded-xl bg-bg-surface">
+            <Database className="h-10 w-10 text-text-3 stroke-[1.5]" />
+            <p className="text-text-2 font-medium">暂无存储配置</p>
+            <p className="text-text-3 text-xs max-w-sm">
+              配置本组织专属的对象存储后端（本地磁盘 / S3 / OSS / COS / GitHub）；未配置时回退全局默认。
+            </p>
+            <Button variant="amber" className="mt-2" onClick={crud.openCreate}>
+              <Plus className="mr-1.5 h-4 w-4" /> 新增第一个配置
+            </Button>
+          </div>
+        }
       >
         <DataView
           layout="table"

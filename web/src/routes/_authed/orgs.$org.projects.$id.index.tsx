@@ -234,13 +234,14 @@ function RunsListPage() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
+            {/* min-width 让窄屏（375px）真的横向滚动而非挤压表头/裁掉行内操作。 */}
+            <table className="w-full min-w-[640px] text-left border-collapse">
               <thead>
                 <tr className="border-b border-line text-xs text-text-3">
-                  <th className="pb-3 font-semibold">名称</th>
-                  <th className="pb-3 font-semibold">节点数</th>
-                  <th className="pb-3 font-semibold">最近运行</th>
-                  <th className="pb-3 font-semibold text-right">操作</th>
+                  <th className="pb-3 font-semibold whitespace-nowrap">名称</th>
+                  <th className="pb-3 font-semibold whitespace-nowrap">节点数</th>
+                  <th className="pb-3 font-semibold whitespace-nowrap">最近运行</th>
+                  <th className="pb-3 font-semibold text-right whitespace-nowrap">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -257,7 +258,7 @@ function RunsListPage() {
                         <span className="text-text-3 text-xs">未运行</span>
                       )}
                     </td>
-                    <td className="py-3 text-right">
+                    <td className="py-3 text-right whitespace-nowrap">
                       <div className="flex items-center justify-end gap-1">
                         {/* 空工作流（0 节点）不可运行：禁用按钮并给提示（后端也会 400 兜底）。
                             title 挂在 span 上——disabled 按钮不触发 hover 事件，tooltip 需外层承载。 */}

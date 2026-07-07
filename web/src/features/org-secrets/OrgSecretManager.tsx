@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Loader2 } from "lucide-react"
+import { KeyRound, Loader2, Plus } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -200,7 +200,18 @@ export function OrgSecretManager({ org }: OrgSecretManagerProps) {
         isError={query.isError}
         onRetry={() => void query.refetch()}
         isEmpty={(query.data ?? []).length === 0}
-        emptyHint="暂无密钥，点击「新建密钥」开始。"
+        emptyState={
+          <div className="flex flex-col items-center gap-3 py-20 text-center border border-dashed border-line rounded-xl bg-bg-surface">
+            <KeyRound className="h-10 w-10 text-text-3 stroke-[1.5]" />
+            <p className="text-text-2 font-medium">暂无密钥</p>
+            <p className="text-text-3 text-xs max-w-sm">
+              保存第三方 API key 等组织级密钥，http 自定义节点即可用 {"{{secret:NAME}}"} 引用。
+            </p>
+            <Button variant="amber" className="mt-2" onClick={crud.openCreate}>
+              <Plus className="mr-1.5 h-4 w-4" /> 新建第一个密钥
+            </Button>
+          </div>
+        }
       >
         <DataView
           layout="table"
