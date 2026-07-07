@@ -109,6 +109,10 @@ export function HttpParamForm({ value, onChange, secretNames }: HttpParamFormPro
           onChange={(e) => patch({ url: e.target.value })}
           className="text-[13px]"
         />
+        {/* 常驻提示：URL 为空时创建按钮就已禁用，需说明约束，否则用户只见按钮不可点却不知原因。 */}
+        <p className="text-[11px] text-text-3">
+          必须是静态地址，不支持 <code className="font-mono">{"{{变量}}"}</code> 模板（SSRF 防护）。
+        </p>
         {urlInvalid && (
           <p className="text-[11px] text-danger">
             URL 不能包含 <code className="font-mono">{"{{...}}"}</code> 模板，必须是静态字面量地址。
