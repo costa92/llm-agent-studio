@@ -60,6 +60,7 @@ type Deps struct {
 	CustomNodeType CustomNodeTypeStore // org-scoped typed custom node registry; nil in focused unit tests
 	OrgSecret      OrgSecretStore      // org-scoped named-secret registry (roleAdmin); nil in focused unit tests
 	AlertSettings  AlertSettingsStore  // org-scoped run 失败邮件告警配置 (roleAdmin); nil in focused unit tests
+	Audit          AuditRecorder       // 安全敏感管理动作的 append-only 审计流水; nil → 不记审计 (focused unit tests skip)
 
 	// 工作流作品导出 (PDF/EPUB/ZIP). nil → 整组导出路由不挂载 (focused unit tests skip)。
 	Exports    ExportsStore   // export_jobs 队列读写 (satisfied by *exports.Store)
@@ -282,16 +283,16 @@ func NewMux(d Deps) *http.ServeMux {
 	// Model management (admin).
 	mux.Handle("GET /api/model-catalog", authOnly(modelCatalogHandler(d.ModelAvailable)))
 	mux.Handle("POST /api/orgs/{org}/model-configs/list-models", scoped(roleAdmin, orgScope, listModelsHandler(d.ModelKeyLookup)))
-	mux.Handle("POST /api/orgs/{org}/model-configs", scoped(roleAdmin, orgScope, createModelConfigHandler(d.Models)))
+	mux.Handle("POST /api/orgs/{org}/model-configs", scoped(roleAdmin, orgScope, audited(d.Audit, "model_config.create", "model_config", createModelConfigHandler(d.Models))))
 	mux.Handle("GET /api/orgs/{org}/model-configs", scoped(roleAdmin, orgScope, listModelConfigsHandler(d.Models)))
-	mux.Handle("PUT /api/orgs/{org}/model-configs/{id}", scoped(roleAdmin, orgScope, updateModelConfigHandler(d.Models)))
-	mux.Handle("DELETE /api/orgs/{org}/model-configs/{id}", scoped(roleAdmin, orgScope, deleteModelConfigHandler(d.Models)))
-	mux.Handle("GET /api/orgs/{org}/model-configs/{id}/reveal", scoped(roleAdmin, orgScope, revealModelKeyHandler(d.ModelKeyLookup)))
+	mux.Handle("PUT /api/orgs/{org}/model-configs/{id}", scoped(roleAdmin, orgScope, audited(d.Audit, "model_config.update", "model_config", updateModelConfigHandler(d.Models))))
+	mux.Handle("DELETE /api/orgs/{org}/model-configs/{id}", scoped(roleAdmin, orgScope, audited(d.Audit, "model_config.delete", "model_config", deleteModelConfigHandler(d.Models))))
+	mux.Handle("GET /api/orgs/{org}/model-configs/{id}/reveal", scoped(roleAdmin, orgScope, audited(d.Audit, "model_key.reveal", "model_config", revealModelKeyHandler(d.ModelKeyLookup))))
 	// Storage configs (对象存储后端，多配置 list/CRUD/default). Per-org: org_admin scoped. Global: any-org-admin gate.
 	mux.Handle("GET /api/orgs/{org}/storage-configs", scoped(roleAdmin, orgScope, listOrgStorageConfigsHandler(d.StorageConfig)))
-	mux.Handle("POST /api/orgs/{org}/storage-configs", scoped(roleAdmin, orgScope, createOrgStorageConfigHandler(d.StorageConfig)))
-	mux.Handle("PUT /api/orgs/{org}/storage-configs/{id}", scoped(roleAdmin, orgScope, updateOrgStorageConfigHandler(d.StorageConfig)))
-	mux.Handle("DELETE /api/orgs/{org}/storage-configs/{id}", scoped(roleAdmin, orgScope, deleteOrgStorageConfigHandler(d.StorageConfig)))
+	mux.Handle("POST /api/orgs/{org}/storage-configs", scoped(roleAdmin, orgScope, audited(d.Audit, "storage_config.create", "storage_config", createOrgStorageConfigHandler(d.StorageConfig))))
+	mux.Handle("PUT /api/orgs/{org}/storage-configs/{id}", scoped(roleAdmin, orgScope, audited(d.Audit, "storage_config.update", "storage_config", updateOrgStorageConfigHandler(d.StorageConfig))))
+	mux.Handle("DELETE /api/orgs/{org}/storage-configs/{id}", scoped(roleAdmin, orgScope, audited(d.Audit, "storage_config.delete", "storage_config", deleteOrgStorageConfigHandler(d.StorageConfig))))
 	mux.Handle("POST /api/orgs/{org}/storage-configs/{id}/default", scoped(roleAdmin, orgScope, setDefaultStorageConfigHandler(d.StorageConfig)))
 	if d.CustomNodeType != nil {
 		mux.Handle("GET /api/orgs/{org}/node-types", scoped(roleViewer, orgScope, nodeTypesHandler(d.CustomNodeType)))
@@ -303,9 +304,9 @@ func NewMux(d Deps) *http.ServeMux {
 	// Org 命名密钥注册表 (org-scoped). 与 model/storage configs 同列：密钥型资源全程 roleAdmin。
 	if d.OrgSecret != nil {
 		mux.Handle("GET /api/orgs/{org}/secrets", scoped(roleAdmin, orgScope, listOrgSecretsHandler(d.OrgSecret)))
-		mux.Handle("POST /api/orgs/{org}/secrets", scoped(roleAdmin, orgScope, createOrgSecretHandler(d.OrgSecret)))
+		mux.Handle("POST /api/orgs/{org}/secrets", scoped(roleAdmin, orgScope, audited(d.Audit, "org_secret.create", "org_secret", createOrgSecretHandler(d.OrgSecret))))
 		mux.Handle("PUT /api/orgs/{org}/secrets/{name}", scoped(roleAdmin, orgScope, updateOrgSecretHandler(d.OrgSecret)))
-		mux.Handle("DELETE /api/orgs/{org}/secrets/{name}", scoped(roleAdmin, orgScope, deleteOrgSecretHandler(d.OrgSecret)))
+		mux.Handle("DELETE /api/orgs/{org}/secrets/{name}", scoped(roleAdmin, orgScope, audited(d.Audit, "org_secret.delete", "org_secret", deleteOrgSecretHandler(d.OrgSecret))))
 	}
 	// Org run 失败邮件告警配置 (org-scoped, roleAdmin — 与其余 org 设置端点族同门禁)。
 	if d.AlertSettings != nil {
@@ -315,8 +316,8 @@ func NewMux(d Deps) *http.ServeMux {
 	// Org 成员管理 (org-scoped). 列出对任意 org 成员开放 (viewer)；增删改角色限 org_admin (admin).
 	mux.Handle("GET /api/orgs/{org}/members", scoped(roleViewer, orgScope, listMembersHandler(d.Members)))
 	mux.Handle("POST /api/orgs/{org}/members", scoped(roleAdmin, orgScope, addMemberHandler(d.Members)))
-	mux.Handle("PUT /api/orgs/{org}/members/{userId}", scoped(roleAdmin, orgScope, setMemberRoleHandler(d.Members)))
-	mux.Handle("DELETE /api/orgs/{org}/members/{userId}", scoped(roleAdmin, orgScope, removeMemberHandler(d.Members)))
+	mux.Handle("PUT /api/orgs/{org}/members/{userId}", scoped(roleAdmin, orgScope, audited(d.Audit, "member.role_change", "member", setMemberRoleHandler(d.Members))))
+	mux.Handle("DELETE /api/orgs/{org}/members/{userId}", scoped(roleAdmin, orgScope, audited(d.Audit, "member.remove", "member", removeMemberHandler(d.Members))))
 	// 平台超级管理员 (spec: 平台角色). whoami 仅 authOnly（前端据此决定是否展示平台导航，
 	// 不必吃 403）；其余路由经 platformAdmin 门禁。系统级 global 存储配置从旧的
 	// any-org-admin 门禁迁到此处，由专属平台角色守护。

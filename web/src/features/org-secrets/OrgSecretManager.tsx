@@ -193,7 +193,7 @@ export function OrgSecretManager({ org }: OrgSecretManagerProps) {
     <>
       <CrudResourcePage
         title="组织密钥"
-        description="管理组织级密钥（如第三方 API key），供 http 自定义节点以 {{secret:NAME}} 引用；密钥值加密存储、永不回显。"
+        description="管理组织级密钥（如第三方 API key），供 http 自定义节点以 {{secret:NAME}} 引用；密钥值加密存储、无解密端点、永不回显（区别于模型密钥：模型密钥可由管理员显式解密查看并记入审计）。"
         createLabel="新建密钥"
         onCreate={crud.openCreate}
         isLoading={query.isLoading}

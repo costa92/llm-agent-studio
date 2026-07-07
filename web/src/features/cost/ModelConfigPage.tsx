@@ -118,7 +118,7 @@ export function ModelConfigView({
     <>
       <CrudResourcePage
         title="模型配置"
-        description="可选用内置 provider 或 OpenAI 兼容端点；API key 仅写入、加密存储，不会回显。未填写密钥的配置回退服务端 env 密钥。"
+        description="可选用内置 provider 或 OpenAI 兼容端点；API key 加密存储，仅管理员可显式解密查看且会记入审计。未填写密钥的配置回退服务端 env 密钥。"
         createLabel="添加模型"
         onCreate={isLoading ? undefined : crud.openCreate}
         isLoading={isLoading}
@@ -188,7 +188,7 @@ export function ModelConfigView({
         description={
           crud.dialog?.mode === "edit"
             ? "修改 provider / 类型 / model / base_url 等；API key 留空保持不变，填写则替换。"
-            : "选择 provider（或 OpenAI 兼容端点）与类型，填写 model；可选填 base_url 与 API key（仅写入、加密存储）。"
+            : "选择 provider（或 OpenAI 兼容端点）与类型，填写 model；可选填 base_url 与 API key（加密存储，管理员可解密查看）。"
         }
         contentClassName="max-w-2xl"
         schema={formSchema}

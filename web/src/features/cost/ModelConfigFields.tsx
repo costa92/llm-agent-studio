@@ -269,7 +269,7 @@ export function ModelConfigFields({
         <p className="text-[11.5px] text-text-3">
           {isEdit && initial?.hasApiKey
             ? "留空保持不变（已配置密钥）；填写则替换为新密钥；点「显示已存」可解密回显。"
-            : "密钥仅写入、加密存储，不会回显；留空则回退服务端 env 密钥。"}
+            : "密钥加密存储；仅管理员可显式解密查看，且会记入审计。留空则回退服务端 env 密钥。"}
         </p>
       </div>
 

@@ -31,6 +31,7 @@ import (
 	studioagents "github.com/costa92/llm-agent-studio/internal/agents"
 	"github.com/costa92/llm-agent-studio/internal/alerts"
 	"github.com/costa92/llm-agent-studio/internal/assets"
+	"github.com/costa92/llm-agent-studio/internal/audit"
 	"github.com/costa92/llm-agent-studio/internal/blob"
 	blobgithub "github.com/costa92/llm-agent-studio/internal/blob/github"
 	"github.com/costa92/llm-agent-studio/internal/blob/localfs"
@@ -240,6 +241,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	// 返回 !ok，router 始终回落 localfsDefault → 全流程仍可跑 (内置默认)。
 	storageStore := storageconfig.New(st.GORM(), encBox)
 	orgSecretStore := orgsecret.New(st.GORM(), encBox)
+	auditStore := audit.New(st.GORM())
 	buildStorageStore := func(rs storageconfig.ResolvedStorage) (blob.BlobStore, error) {
 		switch rs.Mode {
 		case "localfs":
@@ -435,6 +437,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		CustomNodeType: customNodeTypeStore,
 		OrgSecret:      orgSecretStore,
 		AlertSettings:  alertStore,
+		Audit:          auditStore,
 		Exports:        exportStore,
 		ExportBook:     exports.NewBookData(st.GORM()),
 		Members:        membersSvc,
