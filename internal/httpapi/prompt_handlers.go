@@ -8,6 +8,19 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/prompt"
 )
 
+// validPromptKind 是提示词库 kind 的允许集。kind 用于 per-(org,kind) 默认命名空间与
+// 工作流内置节点（script/storyboard）按 kind 匹配库提示词——任意字符串会污染这两处并留下
+// 死 kind。空串合法（通用/与节点无关的提示词，前端「通用」哨兵）；非空只接受内置节点类型。
+// 允许集对齐 internal/prompt/builtin.go 的预设 kind 与前端 PromptListPage 的下拉选项。
+func validPromptKind(kind string) bool {
+	switch kind {
+	case "", "script", "storyboard":
+		return true
+	default:
+		return false
+	}
+}
+
 // promptPresetsHandler GET /api/prompt-presets — auth-only. Returns the built-in
 // basic prompt presets (code-defined, read-only) selectable in workflow nodes
 // when an org has no prompt-library entries of its own.
@@ -47,6 +60,10 @@ func createPromptHandler(s *prompt.Store) http.HandlerFunc {
 			http.Error(w, "name and content are required", http.StatusBadRequest)
 			return
 		}
+		if !validPromptKind(req.Kind) {
+			http.Error(w, "无效的提示词类型，仅支持 script / storyboard 或留空（通用）", http.StatusBadRequest)
+			return
+		}
 		p, err := s.Create(r.Context(), org, req.Name, req.Content, req.Style, req.Kind)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -72,6 +89,10 @@ func updatePromptHandler(s *prompt.Store) http.HandlerFunc {
 		}
 		if req.Name == "" || req.Content == "" {
 			http.Error(w, "name and content are required", http.StatusBadRequest)
+			return
+		}
+		if !validPromptKind(req.Kind) {
+			http.Error(w, "无效的提示词类型，仅支持 script / storyboard 或留空（通用）", http.StatusBadRequest)
 			return
 		}
 		p, err := s.Update(r.Context(), id, org, req.Name, req.Content, req.Style, req.Kind)

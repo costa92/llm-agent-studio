@@ -225,4 +225,24 @@ func TestCreatePromptHandlerValidation(t *testing.T) {
 			t.Fatalf("expected 400 for malformed json, got %d", rec.Code)
 		}
 	}
+
+	// Unknown kind → 400 (allowlist: "" | script | storyboard). Runs before the
+	// store, so nil store never dereferenced. Guards the per-(org,kind) namespace.
+	{
+		req := httptest.NewRequest("POST", "/api/orgs/o1/prompts", bytes.NewReader([]byte(`{"name":"X","content":"Y","kind":"bogus"}`)))
+		rec := httptest.NewRecorder()
+		h(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for unknown kind, got %d (body=%s)", rec.Code, rec.Body.String())
+		}
+	}
+
+	// Empty kind stays legal (通用 prompt) — but with nil store it would panic on
+	// Create, so we only assert the pure validator directly here.
+	if !validPromptKind("") || !validPromptKind("script") || !validPromptKind("storyboard") {
+		t.Fatal("validPromptKind must accept empty/script/storyboard")
+	}
+	if validPromptKind("image") || validPromptKind("bogus") {
+		t.Fatal("validPromptKind must reject non-allowlisted kinds")
+	}
 }
