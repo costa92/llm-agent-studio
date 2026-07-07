@@ -212,10 +212,10 @@ func (r *Runner) process(ctx context.Context, job ExportJob) {
 	}
 	hasStory := storyTitle != "" || story != ""
 
-	// 可导出守卫（handler 已守卫，runner 再防一层）：≥1 分镜 且 (≥1 导出可用图 或 有成品文本)。
-	// 保持宽松——不卡图数阈值；纯文本文档也合法。
+	// 可导出守卫（handler 已守卫，runner 再防一层）：≥1 分镜 且 (≥1 已采纳图 或 有成品文本)。
+	// assetList 已由 ExportAssets 收口为 status='accepted'（HITL accept 门禁）；纯文本成品也合法。
 	if len(shots) == 0 || (!picturebook.HasExportableImage(assetList) && !hasStory) {
-		r.fail(ctx, job.ID, errors.New("book not ready (no exportable image or story text)"))
+		r.fail(ctx, job.ID, errors.New("作品尚未就绪（无已采纳资产或成品文本）"))
 		return
 	}
 
@@ -473,8 +473,9 @@ func (b *BookData) Shots(ctx context.Context, projectID, planID string) ([]pictu
 }
 
 // ExportAssets 取某 plan 的导出可用资产（含 storage_config_id，供读字节阶梯解析后端）。
-// 状态放宽到 accepted/pending_acceptance/done——镜像前端成品预览 PREVIEW_IMAGE_STATUSES，
-// 因为工作流 fan-out 资产多停在 pending_acceptance（未走审核 accept）。
+// 仅取 status='accepted'：成品/成书是「已审核内容」的交付物，只能装订经审核台采纳的资产。
+// （前端成品预览层为便于审核会显示 pending_acceptance 图，那是预览语义；导出交付物必须
+// 严守 HITL accept 门禁——否则审核形同虚设：0 采纳也能导出整本。）
 func (b *BookData) ExportAssets(ctx context.Context, projectID, planID string) ([]picturebook.Asset, error) {
 	rows, err := b.db.WithContext(ctx).Raw(
 		`SELECT a.id, a.shot_id, a.type, a.blob_key, a.status, a.version,
@@ -482,7 +483,7 @@ func (b *BookData) ExportAssets(ctx context.Context, projectID, planID string) (
 		 FROM assets a
 		 JOIN todos t ON a.todo_id = t.id
 		 WHERE a.project_id=$1 AND t.plan_id=$2
-		   AND a.status IN ('accepted','pending_acceptance','done')
+		   AND a.status = 'accepted'
 		 ORDER BY a.created_at DESC`,
 		projectID, planID).Rows()
 	if err != nil {

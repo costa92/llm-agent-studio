@@ -123,8 +123,9 @@ func createExportHandler(projects exportProjectReader, store ExportsStore, book 
 			planID = plans[0].ID
 		}
 
-		// 可导出守卫（宽松）：≥1 分镜 且 (≥1 导出可用图 或 有 LLM 成品文本)。不卡图数阈值——
-		// 纯文本文档也合法。达不到就别入队（runner 会再防一层）。
+		// 可导出守卫：≥1 分镜 且 (≥1 已采纳图 或 有 LLM 成品文本)。ExportAssets 只回
+		// status='accepted' 的资产（HITL accept 门禁），故 HasExportableImage 此处即「有已采纳图」。
+		// 纯文本成品（无图，文本非 accept 门禁对象）仍合法——这是最小破坏的正确语义。
 		shots, err := book.Shots(r.Context(), projectID, planID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -141,8 +142,14 @@ func createExportHandler(projects exportProjectReader, store ExportsStore, book 
 			return
 		}
 		hasStory := title != "" || story != "" || lyrics != ""
-		if len(shots) == 0 || (!picturebook.HasExportableImage(assetList) && !hasStory) {
-			http.Error(w, "book not ready (no exportable image or story text)", http.StatusConflict)
+		if len(shots) == 0 {
+			http.Error(w, "项目还没有可导出的运行", http.StatusConflict)
+			return
+		}
+		// 无已采纳图 且 无成品文本：多半是资产都停在 pending_acceptance 未过审——
+		// 明确提示先去审核台采纳，别静默导出未审内容。
+		if !picturebook.HasExportableImage(assetList) && !hasStory {
+			http.Error(w, "还没有已采纳的资产，请先在审核台采纳后再导出", http.StatusConflict)
 			return
 		}
 
