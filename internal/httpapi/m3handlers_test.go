@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -183,7 +184,11 @@ func TestOrgGenerationsHandlerRejectsBadCursor(t *testing.T) {
 
 // --- quota stubs ---
 
-type stubProjects struct{ orgID string }
+type stubProjects struct {
+	orgID string
+	// runBusy=true 模拟项目已有在途 run（TryBeginRun 返 false → 运行入口 409）。
+	runBusy bool
+}
 
 func (s stubProjects) Create(_ context.Context, _ project.CreateInput) (project.Project, error) {
 	return project.Project{}, nil
@@ -198,6 +203,9 @@ func (s stubProjects) Update(_ context.Context, _ string, _ project.UpdateInput)
 	return project.Project{}, nil
 }
 func (s stubProjects) SetStatus(_ context.Context, _, _ string) error  { return nil }
+func (s stubProjects) TryBeginRun(_ context.Context, _ string) (bool, error) {
+	return !s.runBusy, nil
+}
 func (s stubProjects) SetCover(_ context.Context, _, _ string) error   { return nil }
 func (s stubProjects) Cancel(_ context.Context, _ string) error        { return nil }
 func (s stubProjects) Deleted(_ context.Context, _ string) (bool, error) { return false, nil }
@@ -247,6 +255,82 @@ func TestRunWorkflowHandler429WhenQuotaExhausted(t *testing.T) {
 	h(rr, req)
 	if rr.Code != http.StatusTooManyRequests {
 		t.Fatalf("quota-exhausted run should 429, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// recordingProjects 记录 SetStatus 调用，用于断言 PlanCustom 失败时项目状态被回滚
+// （不留在 planning，否则 TryBeginRun 会把项目永久 409 锁死）。
+type recordingProjects struct {
+	stubProjects
+	lastStatus *string
+}
+
+func (s recordingProjects) SetStatus(_ context.Context, _, status string) error {
+	*s.lastStatus = status
+	return nil
+}
+func (s recordingProjects) TryBeginRun(_ context.Context, _ string) (bool, error) {
+	*s.lastStatus = "planning" // 模拟 CAS 翻到 planning
+	return true, nil
+}
+
+// failPlanner 的 PlanCustom 恒失败（500 路径），用于验证状态回滚。
+type failPlanner struct{}
+
+func (failPlanner) PlanCustom(_ context.Context, _, _ string, _ planner.Brief, _ []planner.WorkflowNode, _ map[string]planner.ResolvedType, _ json.RawMessage) (planner.Result, error) {
+	return planner.Result{}, errors.New("boom")
+}
+
+func TestRunWorkflowHandlerRollsBackStatusOnPlanFailure(t *testing.T) {
+	// PlanCustom 失败（500）后，项目状态必须从 planning 回滚（这里到 failed），
+	// 否则 TryBeginRun 拒绝 planning，项目被永久锁死无法再运行。
+	last := "draft"
+	ps := recordingProjects{stubProjects: stubProjects{orgID: "o1"}, lastStatus: &last}
+	h := runWorkflowHandler(ps, quotaTestWorkflow(), failPlanner{}, stubAppender{}, &stubCost{count: 0}, 0, nil)
+	req := httptest.NewRequest("POST", "/api/projects/p1/workflows/wf1/run", nil)
+	req.SetPathValue("id", "p1")
+	req.SetPathValue("wfId", "wf1")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("plan failure should 500, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if last == "planning" {
+		t.Fatalf("project left stranded in planning after plan failure (would 409-lock future runs)")
+	}
+	if last != "failed" {
+		t.Fatalf("expected status rolled back to failed, got %q", last)
+	}
+}
+
+func TestRunWorkflowHandler409WhenRunInProgress(t *testing.T) {
+	// 项目已有在途 run（TryBeginRun 返 false）→ 并发门禁应 409，且不建 plan。
+	cs := &stubCost{count: 0}
+	h := runWorkflowHandler(stubProjects{orgID: "o1", runBusy: true}, quotaTestWorkflow(), stubPlanner{}, stubAppender{}, cs, 0, nil)
+	req := httptest.NewRequest("POST", "/api/projects/p1/workflows/wf1/run", nil)
+	req.SetPathValue("id", "p1")
+	req.SetPathValue("wfId", "wf1")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("in-progress run should 409, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRunWorkflowHandlerEmptyNodesLocalized(t *testing.T) {
+	// 空工作流（0 节点）→ 400，且中文文案（本地化，非 raw English）。
+	ws := &stubWorkflows{got: workflows.Workflow{Name: "wf", Nodes: json.RawMessage(`[]`)}}
+	h := runWorkflowHandler(stubProjects{orgID: "o1"}, ws, stubPlanner{}, stubAppender{}, &stubCost{count: 0}, 0, nil)
+	req := httptest.NewRequest("POST", "/api/projects/p1/workflows/wf1/run", nil)
+	req.SetPathValue("id", "p1")
+	req.SetPathValue("wfId", "wf1")
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("empty-workflow run should 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "工作流没有任何节点") {
+		t.Fatalf("empty-workflow 400 body should be localized Chinese, got %q", rr.Body.String())
 	}
 }
 

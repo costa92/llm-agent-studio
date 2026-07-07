@@ -259,16 +259,26 @@ function RunsListPage() {
                     </td>
                     <td className="py-3 text-right">
                       <div className="flex items-center justify-end gap-1">
-                        <Button
-                          variant="ghost"
-                          onClick={() => handleRunWorkflow(wf)}
-                          disabled={runWorkflow.isPending}
+                        {/* 空工作流（0 节点）不可运行：禁用按钮并给提示（后端也会 400 兜底）。
+                            title 挂在 span 上——disabled 按钮不触发 hover 事件，tooltip 需外层承载。 */}
+                        <span
+                          title={
+                            wf.nodes.length === 0
+                              ? "工作流为空，请先在编辑器添加节点"
+                              : undefined
+                          }
                         >
-                          {runWorkflow.isPending &&
-                          runWorkflow.variables?.wfId === wf.id
-                            ? "运行中…"
-                            : "开始运行"}
-                        </Button>
+                          <Button
+                            variant="ghost"
+                            onClick={() => handleRunWorkflow(wf)}
+                            disabled={runWorkflow.isPending || wf.nodes.length === 0}
+                          >
+                            {runWorkflow.isPending &&
+                            runWorkflow.variables?.wfId === wf.id
+                              ? "运行中…"
+                              : "开始运行"}
+                          </Button>
+                        </span>
                         <Button
                           variant="ghost"
                           onClick={() =>

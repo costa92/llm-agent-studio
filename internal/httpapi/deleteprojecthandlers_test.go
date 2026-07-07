@@ -38,6 +38,7 @@ func (s *delProjStub) Update(context.Context, string, project.UpdateInput) (proj
 	return project.Project{}, nil
 }
 func (s *delProjStub) SetStatus(context.Context, string, string) error { return nil }
+func (s *delProjStub) TryBeginRun(context.Context, string) (bool, error) { return true, nil }
 func (s *delProjStub) SetCover(context.Context, string, string) error  { return nil }
 func (s *delProjStub) Cancel(context.Context, string) error            { return nil }
 func (s *delProjStub) Deleted(context.Context, string) (bool, error)   { return s.deleted, nil }

@@ -60,6 +60,8 @@ type ProjectStore interface {
 	ListByOrg(ctx context.Context, orgID string, limit int, cursor string) ([]project.Project, string, error)
 	Update(ctx context.Context, id string, in project.UpdateInput) (project.Project, error)
 	SetStatus(ctx context.Context, id, status string) error
+	// TryBeginRun 原子 CAS 把项目翻到 planning（非在途→planning）；false=已有在途 run。
+	TryBeginRun(ctx context.Context, id string) (bool, error)
 	SetCover(ctx context.Context, projectID, assetID string) error
 	Cancel(ctx context.Context, projectID string) error
 	// Deleted 供 requireLiveProject 门禁探测软删（missing → project.ErrNotFound）。

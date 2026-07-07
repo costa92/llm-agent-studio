@@ -299,6 +299,13 @@ func deriveStatus(c counts) string {
 	return "running"
 }
 
+// runStatusFor 把 7 态项目状态压成 3 态运行灯（idle/running/done）。
+// 注意：done 是「运行已结束」的意思，把 completed/review/failed/canceled 都归到 done——
+// 它不区分成功与失败。判断一次 run 是否成功，务必读权威的 `status` 字段
+// （failed/canceled），不要把 runStatus==="done" 当成功信号（e2e pollState 曾因此把
+// 失败 run 误判为成功）。前端也依赖 runStatus==="done" 表示「已结束/可审核」（RunCanvas
+// live/readyForReview、RunSummary），故此处刻意不拆出 failed/canceled——拆了会破坏这些
+// 「是否结束」判断；区分成功与否统一交给 `status`。
 func runStatusFor(status string) string {
 	switch status {
 	case "completed", "review", "failed", "canceled":

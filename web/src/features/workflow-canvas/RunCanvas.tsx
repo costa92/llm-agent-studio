@@ -445,6 +445,13 @@ function RunCanvasInner({
   useEffect(() => {
     const was = prevRunStatus.current
     prevRunStatus.current = runStatus
+    // 运行落终态（runStatus 从非 done → done，含 completed/review/failed/canceled）时刷新
+    // 运行记录列表，令 RunSelector 下拉里的状态与摘要卡一致——否则 run_done 只刷新了摘要，
+    // 下拉项仍显陈旧的「生产中」，要手动刷新才纠正。plan.status 是 /plans 端按 todo 计数
+    // 现算的，refetch 即得终态。
+    if (was !== "done" && runStatus === "done") {
+      void plansQuery.refetch()
+    }
     if (
       was !== "done" &&
       runStatus === "done" &&
@@ -720,14 +727,19 @@ function RunCanvasInner({
               取消
             </Button>
           )}
-          {/* 完成态时「重新运行」降级为次要动作，让「开始审核」当主 CTA；非完成态维持 amber。 */}
-          <Button
-            variant={readyForReview ? "ghost" : "amber"}
-            onClick={handleRun}
-            disabled={isRunning || !workflowId}
+          {/* 完成态时「重新运行」降级为次要动作，让「开始审核」当主 CTA；非完成态维持 amber。
+              空工作流（0 节点）禁用运行——title 挂 span（disabled 按钮不触发 hover tooltip）。 */}
+          <span
+            title={nodes.length === 0 ? "工作流为空，请先在编辑器添加节点" : undefined}
           >
-            {runStatus === "idle" ? "开始运行" : "重新运行"}
-          </Button>
+            <Button
+              variant={readyForReview ? "ghost" : "amber"}
+              onClick={handleRun}
+              disabled={isRunning || !workflowId || nodes.length === 0}
+            >
+              {runStatus === "idle" ? "开始运行" : "重新运行"}
+            </Button>
+          </span>
         </div>
       </div>
 

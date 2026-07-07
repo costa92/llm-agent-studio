@@ -98,7 +98,15 @@ export async function apiLogin(apiBase, email, password) {
 
 // pollState(session, projectId, opts) -> final /state payload
 // Polls GET /api/projects/{id}/state until `until(state)` is true (default:
-// runStatus === "done"). Throws on a failed/error runStatus or on timeout.
+// runStatus === "done"). Throws on a failed/canceled run or on timeout.
+//
+// IMPORTANT: success/failure is judged on the AUTHORITATIVE `state.status`
+// field (7-state: failed/canceled/completed/review/...), NOT on `runStatus`.
+// runStatus collapses completed|review|failed|canceled ALL to "done" (see
+// projectstate/state.go runStatusFor), so a failed run also reports
+// runStatus==="done" — the old `runStatus==="failed"` branch was dead code and
+// let a FAILED run pass as success. We throw on status failed/canceled BEFORE
+// the `until` success check so a terminal failure can never false-green.
 export async function pollState(session, projectId, opts = {}) {
   const {
     timeoutMs = 15 * 60 * 1000,
@@ -111,11 +119,10 @@ export async function pollState(session, projectId, opts = {}) {
   while (Date.now() < deadline) {
     last = await session.json(`/api/projects/${projectId}/state`)
     if (onTick) onTick(last)
-    if (until(last)) return last
-    const status = last.runStatus
-    if (status === "failed" || status === "error") {
-      throw new Error(`run failed: ${JSON.stringify(last).slice(0, 400)}`)
+    if (last.status === "failed" || last.status === "canceled") {
+      throw new Error(`run ${last.status}: ${JSON.stringify(last).slice(0, 400)}`)
     }
+    if (until(last)) return last
     await sleep(intervalMs)
   }
   throw new Error(

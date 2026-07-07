@@ -50,6 +50,7 @@ func (s *coverProjStub) Update(context.Context, string, project.UpdateInput) (pr
 	return project.Project{}, nil
 }
 func (s *coverProjStub) SetStatus(context.Context, string, string) error { return nil }
+func (s *coverProjStub) TryBeginRun(context.Context, string) (bool, error) { return true, nil }
 func (s *coverProjStub) SetCover(_ context.Context, _, assetID string) error {
 	if s.setCoverErr != nil {
 		return s.setCoverErr

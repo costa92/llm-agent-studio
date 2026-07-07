@@ -210,6 +210,16 @@ export function PropertiesPanel({
         ? extractScriptTemplateVars(typedScriptParams!)
         : []
 
+  // 未绑定变量：模板里声明了 {{name}} 却没绑到任何上游节点的令牌（排除运行期输入
+  // {{input:...}} 与密钥 {{secret:...}}——它们不走节点变量绑定通道）。运行期这类
+  // 令牌不会被替换（worker 见 SourceTodoId 为空即跳过，原样残留在提示词里），run 仍报
+  // valid:true 静默跑，用户无从察觉——故在此做软告警，提示先补齐绑定。
+  const unboundVars = templateVars.filter((name) => {
+    if (name.startsWith("input:") || name.startsWith("secret:")) return false
+    const b = node.varBindings?.find((x) => x.name === name)
+    return !b?.sourceNodeId
+  })
+
   // varBindings 合并更新：按 name 替换/追加绑定，不清除其它已存在的绑定。
   // node 在此处一定非 null（早返回已在上方处理），断言为 WorkflowNode 避免 TS18047。
   function patchVarBinding(name: string, sourceNodeId: string, sourceField?: string) {
@@ -395,6 +405,17 @@ export function PropertiesPanel({
           {templateVars.length > 0 && (
             <div className="flex flex-col gap-2">
               <Label className="text-[11px] text-text-2">变量绑定</Label>
+              {/* 未绑定变量软告警：不阻断保存/运行，但提示这些 {{name}} 运行期不会被替换。 */}
+              {unboundVars.length > 0 && (
+                <p
+                  role="alert"
+                  className="rounded border border-amber/40 bg-amber/10 px-2 py-1 text-[10px] text-amber"
+                >
+                  {`${unboundVars.length} 个变量未绑定：`}
+                  {unboundVars.map((n) => `{{${n}}}`).join("、")}
+                  ，运行时不会被替换，请先绑定上游节点。
+                </p>
+              )}
               {templateVars.map((name) => {
                 const existing = node.varBindings?.find((b) => b.name === name)
                 // 选中上游节点的 OutputSchema 字段（字段级绑定候选）。仅当已选上游节点

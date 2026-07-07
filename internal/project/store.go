@@ -250,6 +250,21 @@ func (s *Store) SetStatus(ctx context.Context, id, status string) error {
 	return s.db.WithContext(ctx).Exec(`UPDATE projects SET status=$2, updated_at=now() WHERE id=$1`, id, status).Error
 }
 
+// TryBeginRun 原子地把项目状态从「非在途」翻到 planning，用于运行入口的并发/幂等门禁：
+// 一个项目同一时刻只允许一个在途 run（project.status 单值），故用条件 UPDATE
+// （compare-and-swap）而非「先读后写」，杜绝两个并发请求同时读到空闲态、双双建 plan 的
+// TOCTOU 竞态。返回 (false, nil) 表示项目已在 planning/running（调用方回 409）；
+// 0 行影响也可能是项目不存在，但运行入口已先 Get 过（404 已处理），这里的 0 行即视为在途。
+func (s *Store) TryBeginRun(ctx context.Context, id string) (bool, error) {
+	res := s.db.WithContext(ctx).Exec(
+		`UPDATE projects SET status='planning', updated_at=now()
+		 WHERE id=$1 AND status NOT IN ('planning','running')`, id)
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected > 0, nil
+}
+
 // SetCover links a project to its cover asset (M14). assetID="" clears the cover.
 // 0 rows affected = no such project → ErrNotFound (404 not 200).
 func (s *Store) SetCover(ctx context.Context, projectID, assetID string) error {
