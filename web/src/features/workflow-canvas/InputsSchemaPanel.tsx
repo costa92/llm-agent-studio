@@ -1,4 +1,4 @@
-import type { ReactNode } from "react"
+import { useState, type ReactNode } from "react"
 import { Plus, Trash2, X } from "lucide-react"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
@@ -29,6 +29,8 @@ const selectCls =
   "h-8 rounded-md border border-input bg-background px-2 text-[13px]"
 
 export function InputsSchemaPanel({ schema, onChange }: InputsSchemaPanelProps) {
+  // 被触碰过（失焦过名称输入）的字段索引：新加的空字段在用户动它之前不闪红。
+  const [touched, setTouched] = useState<Record<number, boolean>>({})
   function patch(i: number, p: Partial<InputField>) {
     onChange(schema.map((f, idx) => (idx === i ? { ...f, ...p } : f)))
   }
@@ -58,6 +60,9 @@ export function InputsSchemaPanel({ schema, onChange }: InputsSchemaPanelProps) 
       <div className="flex flex-col gap-3">
         {schema.map((f, i) => {
           const err = inputFieldError(f)
+          // 刚新增、名称仍空且未失焦的字段先不显示校验错误（避免一加字段就闪红）；
+          // 一旦填了名称（非空）或失焦过，即照常提示。后端 ValidateSchema 仍是兜底。
+          const showErr = err && (f.name !== "" || touched[i])
           const showOptions = f.type === "select"
           return (
             <div
@@ -83,6 +88,7 @@ export function InputsSchemaPanel({ schema, onChange }: InputsSchemaPanelProps) 
                   value={f.name}
                   placeholder="heroName"
                   onChange={(e) => patch(i, { name: e.target.value })}
+                  onBlur={() => setTouched((t) => ({ ...t, [i]: true }))}
                   className="text-[13px]"
                 />
               </Field>
@@ -154,7 +160,7 @@ export function InputsSchemaPanel({ schema, onChange }: InputsSchemaPanelProps) 
                 必填
               </label>
 
-              {err && (
+              {showErr && (
                 <p role="alert" className="text-[11px] text-danger">
                   {err}
                 </p>
