@@ -61,6 +61,7 @@ import { NodePalette, PALETTE_DND_TYPE, PALETTE_DND_TYPEID } from "./NodePalette
 import { NodeManagerModal } from "./NodeManagerModal"
 import { PropertiesPanel } from "./PropertiesPanel"
 import { InputsSchemaPanel } from "./InputsSchemaPanel"
+import { WorkflowSettingsPanel } from "./WorkflowSettingsPanel"
 import { useNodeTypes, useNodeTypesExprChannel } from "./api"
 import { isCustomType, slugify, descTypeFor } from "./nodeColor"
 import { RunCanvas } from "./RunCanvas"
@@ -80,6 +81,7 @@ import type {
   LlmParams,
   ScriptParams,
   UpsertCustomNodeTypeInput,
+  WorkflowSettings,
 } from "@/lib/types"
 
 export type CanvasMode = "edit" | "run"
@@ -98,6 +100,8 @@ export interface WorkflowCanvasProps {
   nodes: WorkflowNodeType[]
   // 运行期输入声明（设计期编辑；新建/旧工作流缺省 = []）。
   inputsSchema?: InputField[]
+  // 工作流级生成设置（设计期编辑；新建/旧工作流缺省 = {}）。
+  settings?: WorkflowSettings
   prompts?: Prompt[]
   basics?: BasicPrompt[]
   // 顶栏「← 返回」：后退到打开画布之前的那一页（由路由层注入 smart-back，
@@ -125,8 +129,9 @@ function snapshotOf(
   name: string,
   studioNodes: WorkflowNodeType[],
   inputsSchema: InputField[],
+  settings: WorkflowSettings,
 ): string {
-  return JSON.stringify({ name, nodes: studioNodes, inputsSchema })
+  return JSON.stringify({ name, nodes: studioNodes, inputsSchema, settings })
 }
 
 function CanvasInner({
@@ -136,6 +141,7 @@ function CanvasInner({
   workflowName: initialName,
   nodes,
   inputsSchema: initialInputsSchema,
+  settings: initialSettings,
   prompts,
   basics,
   onBack,
@@ -152,7 +158,13 @@ function CanvasInner({
   const [inputsSchema, setInputsSchema] = useState<InputField[]>(
     initialInputsSchema ?? [],
   )
-  const [rightPanel, setRightPanel] = useState<"props" | "inputs">("props")
+  // 工作流级生成设置（设计期编辑）。右栏在「节点属性 / 工作流输入 / 工作流设置」间切换。
+  const [settings, setSettings] = useState<WorkflowSettings>(
+    initialSettings ?? {},
+  )
+  const [rightPanel, setRightPanel] = useState<"props" | "inputs" | "settings">(
+    "props",
+  )
   const { screenToFlowPosition, getNodes, getEdges, fitView } =
     useReactFlow<RFNode, RFEdge>()
   const { takeSnapshot, undo, redo, canUndo, canRedo } = useUndoRedo()
@@ -284,6 +296,7 @@ function CanvasInner({
       initialName,
       toStudioNodes(initial.nodes, initial.edges),
       initialInputsSchema ?? [],
+      initialSettings ?? {},
     ),
   )
 
@@ -294,6 +307,7 @@ function CanvasInner({
     workflowName,
     toStudioNodes(rfNodes as RFNode[], rfEdges),
     inputsSchema,
+    settings,
   )
   const dirty = currentSnapshot !== loadedSnapshot.current
   const saving = createWorkflow.isPending || updateWorkflow.isPending
@@ -861,9 +875,14 @@ function CanvasInner({
       return
     }
     const studioNodes = toStudioNodes(rfNodes as RFNode[], rfEdges)
-    const input = { name: workflowName, nodes: studioNodes, inputsSchema }
+    const input = { name: workflowName, nodes: studioNodes, inputsSchema, settings }
     const done = (saved: { id: string }, created: boolean) => {
-      loadedSnapshot.current = snapshotOf(workflowName, studioNodes, inputsSchema)
+      loadedSnapshot.current = snapshotOf(
+        workflowName,
+        studioNodes,
+        inputsSchema,
+        settings,
+      )
       toast.success("工作流已保存")
       if (created) onCreated?.(saved.id)
     }
@@ -897,6 +916,7 @@ function CanvasInner({
     rfEdges,
     workflowName,
     inputsSchema,
+    settings,
     workflowId,
     updateWorkflow,
     createWorkflow,
@@ -979,6 +999,18 @@ function CanvasInner({
               }
             >
               工作流输入
+            </button>
+            <button
+              type="button"
+              aria-pressed={rightPanel === "settings"}
+              onClick={() => setRightPanel("settings")}
+              className={
+                rightPanel === "settings"
+                  ? "rounded bg-bg-surface px-2.5 py-1 font-medium text-text-1 shadow-sm"
+                  : "rounded px-2.5 py-1 text-text-3 transition-colors hover:text-text-1"
+              }
+            >
+              工作流设置
             </button>
           </div>
           <button
@@ -1149,7 +1181,9 @@ function CanvasInner({
             org={org}
           />
         </div>
-        {rightPanel === "inputs" ? (
+        {rightPanel === "settings" ? (
+          <WorkflowSettingsPanel settings={settings} onChange={setSettings} />
+        ) : rightPanel === "inputs" ? (
           <InputsSchemaPanel schema={inputsSchema} onChange={setInputsSchema} />
         ) : (
         <PropertiesPanel
