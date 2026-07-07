@@ -251,7 +251,8 @@ func TestProcessDiscardsAssetWhenTodoCanceledMidFlight(t *testing.T) {
 	pool := assetTestPool(t)
 	ctx := context.Background()
 	var pid string
-	_ = pool.QueryRow(ctx, `INSERT INTO projects (id,org_id,name,created_by) VALUES (md5(random()::text),'org_dc','p','u') RETURNING id`).Scan(&pid)
+	// status='running'：Cancel 仅对在途项目生效，本用例要触发取消扫帚，故建为 running 而非默认 draft。
+	_ = pool.QueryRow(ctx, `INSERT INTO projects (id,org_id,name,status,created_by) VALUES (md5(random()::text),'org_dc','p','running','u') RETURNING id`).Scan(&pid)
 	todoID := newID()
 	_, _ = pool.Exec(ctx,
 		`INSERT INTO todos (id,project_id,plan_id,type,status,input_json) VALUES ($1,$2,'plan','asset','running',$3)`,
