@@ -856,6 +856,10 @@ function CanvasInner({
 
   // ── 保存 ─────────────────────────────────────────────────
   const onSave = useCallback(() => {
+    if (!workflowName.trim()) {
+      toast.error("请填写工作流名称")
+      return
+    }
     const studioNodes = toStudioNodes(rfNodes as RFNode[], rfEdges)
     const input = { name: workflowName, nodes: studioNodes, inputsSchema }
     const done = (saved: { id: string }, created: boolean) => {
@@ -868,6 +872,7 @@ function CanvasInner({
         const msg = err.body
           .replace(/^invalid workflow:\s*/i, "")
           .replace(/^custom workflow:\s*/i, "")
+          .replace(/^bad request:\s*/i, "")
           .trim()
         toast.error(msg || "工作流配置无效")
         return

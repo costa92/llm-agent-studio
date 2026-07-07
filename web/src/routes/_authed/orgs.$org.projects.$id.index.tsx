@@ -267,7 +267,7 @@ function RunsListPage() {
                           {runWorkflow.isPending &&
                           runWorkflow.variables?.wfId === wf.id
                             ? "运行中…"
-                            : "运行"}
+                            : "开始运行"}
                         </Button>
                         <Button
                           variant="ghost"
