@@ -228,7 +228,7 @@ describe("CreateProjectForm", () => {
     await user.type(screen.getByLabelText("项目名称"), "新项目")
     await user.type(screen.getByLabelText("创意需求"), "一句创意")
 
-    // 风格默认选中首个（日漫）——无需与 radix Select 交互（jsdom 不支持指针捕获）。
+    // 内容类型/风格解耦：不再预填任何生成默认，风格/内容类型/平台皆空（由工作流决定）。
     await user.click(screen.getByRole("button", { name: "创建" }))
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
@@ -236,9 +236,9 @@ describe("CreateProjectForm", () => {
       expect.objectContaining({
         name: "新项目",
         brief: "一句创意",
-        style: "日漫",
-        contentType: "短视频",
-        targetPlatform: "抖音",
+        style: "",
+        contentType: "",
+        targetPlatform: "",
       }),
     )
     await waitFor(() => expect(onSuccess).toHaveBeenCalledWith(created))
