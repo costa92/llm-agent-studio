@@ -336,7 +336,9 @@ func createProjectHandler(ps ProjectStore, res CustomNodeTypeResolver) http.Hand
 			WorkflowNodes:         req.WorkflowNodes,
 			Kind:                  req.Kind,
 		})
-		if errors.Is(err, project.ErrInvalidStorageConfig) {
+		if errors.Is(err, project.ErrInvalidStorageConfig) ||
+			errors.Is(err, project.ErrEmptyName) ||
+			errors.Is(err, project.ErrNameTooLong) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		} else if err != nil {

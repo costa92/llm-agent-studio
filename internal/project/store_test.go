@@ -51,6 +51,43 @@ func newStoreG(t *testing.T) (*Store, *pgxpool.Pool, *gorm.DB) {
 	return New(st.GORM()), st.Pool(), st.GORM()
 }
 
+func TestCreateNameValidation(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	base := func(name string) CreateInput {
+		return CreateInput{
+			OrgID: "org_name_" + uniqueSuffix(), Name: name,
+			ContentType: "ad", TargetPlatform: "tiktok", Style: "x", CreatedBy: "u1",
+		}
+	}
+
+	// 空名 / 纯空白 → ErrEmptyName（trim 后为空）。
+	for _, name := range []string{"", "   ", "\t\n"} {
+		if _, err := s.Create(ctx, base(name)); !errors.Is(err, ErrEmptyName) {
+			t.Fatalf("Create(name=%q) err=%v, want ErrEmptyName", name, err)
+		}
+	}
+
+	// 超长（>200 字符）→ ErrNameTooLong。
+	long := bytes.Repeat([]byte("a"), ProjectNameMaxLen+1)
+	if _, err := s.Create(ctx, base(string(long))); !errors.Is(err, ErrNameTooLong) {
+		t.Fatalf("Create(overlong) err=%v, want ErrNameTooLong", err)
+	}
+
+	// 边界：恰好 200 字符可通过；前后空白被 trim 后落库。
+	ok := bytes.Repeat([]byte("a"), ProjectNameMaxLen)
+	if _, err := s.Create(ctx, base(string(ok))); err != nil {
+		t.Fatalf("Create(200 chars) err=%v, want nil", err)
+	}
+	p, err := s.Create(ctx, base("  修剪空白  "))
+	if err != nil {
+		t.Fatalf("Create(padded) err=%v", err)
+	}
+	if p.Name != "修剪空白" {
+		t.Fatalf("name=%q, want trimmed 修剪空白", p.Name)
+	}
+}
+
 func TestCreateGetListProject(t *testing.T) {
 	s, _ := newStore(t)
 	ctx := context.Background()
