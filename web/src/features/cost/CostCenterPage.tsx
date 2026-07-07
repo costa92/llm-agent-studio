@@ -18,7 +18,14 @@ import { Button } from "@/components/studio/Button"
 import { StatCard } from "@/components/studio/StatCard"
 import { BarRow } from "@/components/studio/BarRow"
 import type { Aggregate, LedgerEntry, ProjectAggregate } from "@/lib/types"
-import { RANGE_PRESETS, costRatio, formatCount, formatCurrency } from "./format"
+import {
+  RANGE_PRESETS,
+  costRatio,
+  formatCount,
+  formatCurrency,
+  isUnpriced,
+} from "./format"
+import { UnpricedBadge } from "./UnpricedBadge"
 
 // per-project 条色轮换 agent 色（设计 token §per-agent 语义色）。
 const BAR_COLORS = ["var(--asset)", "var(--script)", "var(--board)", "var(--review)"]
@@ -37,6 +44,9 @@ export interface CostCenterViewProps {
   // 时间范围预设（受控）。
   rangeValue: string
   onRangeChange: (value: string) => void
+  // 导出当前时间范围的生成明细为 CSV（宿主取全量分页 + 裁剪 + 触发下载）。
+  onExport: () => void
+  isExporting: boolean
 }
 
 // 成本中心（admin-only）：3 StatCard + 按项目 BarRow + 生成明细 DataTable + 时间范围下拉。
@@ -52,6 +62,8 @@ export function CostCenterView({
   onRetry,
   rangeValue,
   onRangeChange,
+  onExport,
+  isExporting,
 }: CostCenterViewProps) {
   const activePreset =
     RANGE_PRESETS.find((p) => p.value === rangeValue) ?? RANGE_PRESETS[1]
@@ -70,25 +82,34 @@ export function CostCenterView({
   const maxMicros = Math.max(0, ...(projects ?? []).map((p) => p.costMicros))
   const hasData =
     aggregate != null && (aggregate.generations > 0 || (projects?.length ?? 0) > 0)
+  // 有用量却计费 ¥0 的项目/台账行 → 页面提示这部分未计入 ¥ 合计。
+  const hasUnpriced =
+    (projects ?? []).some((p) => isUnpriced(p)) ||
+    (generations ?? []).some((r) => isUnpriced(r))
 
   return (
     <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-6 p-6">
       <header className="flex items-center justify-between">
         <h1 className="font-heading text-[22px] font-bold text-text-1">成本中心</h1>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost">{activePreset.label} ▾</Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuRadioGroup value={rangeValue} onValueChange={onRangeChange}>
-              {RANGE_PRESETS.map((p) => (
-                <DropdownMenuRadioItem key={p.value} value={p.value}>
-                  {p.label}
-                </DropdownMenuRadioItem>
-              ))}
-            </DropdownMenuRadioGroup>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" onClick={onExport} disabled={isExporting}>
+            {isExporting ? "导出中…" : "导出 CSV"}
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost">{activePreset.label} ▾</Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuRadioGroup value={rangeValue} onValueChange={onRangeChange}>
+                {RANGE_PRESETS.map((p) => (
+                  <DropdownMenuRadioItem key={p.value} value={p.value}>
+                    {p.label}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </header>
 
       {isLoading ? (
@@ -105,10 +126,20 @@ export function CostCenterView({
       ) : (
         <>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <StatCard label="本月成本" value={formatCurrency(aggregate.costMicros)} />
+            <StatCard
+              label={`${activePreset.label}成本`}
+              value={formatCurrency(aggregate.costMicros)}
+            />
             <StatCard label="生成次数" value={formatCount(aggregate.generations)} unit="次" />
             <StatCard label="Token 用量" value={formatCount(aggregate.tokens)} />
           </div>
+
+          {hasUnpriced && (
+            <p className="text-[12px] text-text-3">
+              部分模型未配置定价（<span className="text-amber">未定价</span>
+              ），其用量已记录但未计入上方 ¥ 成本合计。
+            </p>
+          )}
 
           {projects != null && projects.length > 0 && (
             <section className="rounded-xl border border-line bg-bg-surface p-[18px]">
@@ -120,7 +151,7 @@ export function CostCenterView({
                   key={p.projectId}
                   label={p.projectName || p.projectId}
                   ratio={costRatio(p.costMicros, maxMicros)}
-                  value={formatCurrency(p.costMicros)}
+                  value={isUnpriced(p) ? <UnpricedBadge /> : formatCurrency(p.costMicros)}
                   color={BAR_COLORS[i % BAR_COLORS.length]}
                 />
               ))}
@@ -188,7 +219,7 @@ function GenerationsTable({
                   {r.imageCount > 0 ? `${r.imageCount} 图` : formatCount(r.tokens)}
                 </TableCell>
                 <TableCell className="text-right font-mono text-text-1">
-                  {formatCurrency(r.costMicros)}
+                  {isUnpriced(r) ? <UnpricedBadge /> : formatCurrency(r.costMicros)}
                 </TableCell>
               </TableRow>
             ))}

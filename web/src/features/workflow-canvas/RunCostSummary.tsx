@@ -1,7 +1,8 @@
 import { useState } from "react"
 import { ChevronDown, ChevronRight } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { formatCount, formatCurrency } from "@/features/cost/format"
+import { formatCount, formatCurrency, isUnpriced } from "@/features/cost/format"
+import { UnpricedBadge } from "@/features/cost/UnpricedBadge"
 import { usePlanCost } from "@/features/workflow/api"
 import { todoTypeLabel } from "./nodeColor"
 
@@ -45,7 +46,9 @@ export function RunCostSummary({ projectId, planId, live, className }: RunCostSu
     <div data-slot="run-cost-summary" className={cn("flex flex-col gap-1.5", className)}>
       <div className="flex items-baseline justify-between">
         <span className="text-[12px] text-text-2">费用</span>
-        <span className="font-mono text-[13px] text-text-1">{formatCurrency(c.costMicros)}</span>
+        <span className="font-mono text-[13px] text-text-1">
+          {isUnpriced(c) ? <UnpricedBadge /> : formatCurrency(c.costMicros)}
+        </span>
       </div>
       <div className="flex items-baseline justify-between">
         <span className="text-[12px] text-text-2">Tokens</span>
@@ -75,7 +78,7 @@ export function RunCostSummary({ projectId, planId, live, className }: RunCostSu
                   {todoTypeLabel(t.todoType)}
                 </span>
                 <span className="shrink-0 font-mono text-[12px] text-text-1">
-                  {formatCurrency(t.costMicros)}
+                  {isUnpriced(t) ? <UnpricedBadge /> : formatCurrency(t.costMicros)}
                 </span>
               </div>
               <div className="flex items-baseline justify-between gap-2 text-[11px] text-text-3">

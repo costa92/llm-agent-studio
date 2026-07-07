@@ -12,8 +12,11 @@ import type {
 import {
   RANGE_PRESETS,
   costRatio,
+  filterLedgerByRange,
   formatCount,
   formatCurrency,
+  isUnpriced,
+  ledgerToCSV,
   rangeToParams,
 } from "./format"
 import { modelConfigErrorMessage } from "./configError"
@@ -24,6 +27,21 @@ import { AdminGate } from "./AdminGate"
 afterEach(() => {
   vi.restoreAllMocks()
 })
+
+// 台账基准行：导出 / 未定价用例按需覆盖字段。
+const LEDGER_ROW: LedgerEntry = {
+  id: "base",
+  projectId: "p1",
+  projectName: "夏日广告片",
+  kind: "image",
+  provider: "openai",
+  model: "gpt-image-1",
+  tokens: 0,
+  imageCount: 1,
+  costMicros: 400_000,
+  latencyMs: 1200,
+  createdAt: "2026-06-10T08:30:00.000Z",
+}
 
 // ── 货币 / 计数格式化（costMicros 换算）────────────────────────────────
 describe("formatCurrency", () => {
@@ -56,6 +74,69 @@ describe("costRatio", () => {
     expect(costRatio(50, 100)).toBe(0.5)
     expect(costRatio(100, 100)).toBe(1)
     expect(costRatio(10, 0)).toBe(0)
+  })
+})
+
+// ── 未定价判定（有用量却计费 ¥0）────────────────────────────────────
+describe("isUnpriced", () => {
+  it("flags usage>0 with costMicros==0", () => {
+    expect(isUnpriced({ costMicros: 0, tokens: 5000 })).toBe(true)
+    expect(isUnpriced({ costMicros: 0, tokens: 0, imageCount: 1 })).toBe(true)
+    expect(isUnpriced({ costMicros: 0, tokens: 0, generations: 2 })).toBe(true)
+  })
+
+  it("does not flag when priced or when there is no usage", () => {
+    expect(isUnpriced({ costMicros: 400_000, tokens: 5000 })).toBe(false)
+    expect(isUnpriced({ costMicros: 0, tokens: 0 })).toBe(false)
+    expect(isUnpriced({ costMicros: 0, tokens: 0, imageCount: 0, generations: 0 })).toBe(false)
+  })
+})
+
+// ── 导出：按范围裁剪 + CSV 构建 ──────────────────────────────────────
+describe("filterLedgerByRange", () => {
+  const rows: LedgerEntry[] = [
+    { ...LEDGER_ROW, id: "a", createdAt: "2026-06-01T00:00:00.000Z" },
+    { ...LEDGER_ROW, id: "b", createdAt: "2026-06-10T00:00:00.000Z" },
+    { ...LEDGER_ROW, id: "c", createdAt: "2026-06-20T00:00:00.000Z" },
+  ]
+
+  it("returns all rows when the range is open (all time)", () => {
+    expect(filterLedgerByRange(rows, {})).toHaveLength(3)
+  })
+
+  it("keeps only rows within [from, to)", () => {
+    const kept = filterLedgerByRange(rows, {
+      from: "2026-06-05T00:00:00.000Z",
+      to: "2026-06-15T00:00:00.000Z",
+    })
+    expect(kept.map((r) => r.id)).toEqual(["b"])
+  })
+})
+
+describe("ledgerToCSV", () => {
+  it("emits a header-only CSV for an empty ledger", () => {
+    expect(ledgerToCSV([])).toBe("时间,项目,Provider·Model,类型,用量,金额(¥)")
+  })
+
+  it("formats a priced image row and escapes commas/quotes", () => {
+    const csv = ledgerToCSV([
+      { ...LEDGER_ROW, id: "a", projectName: "夏日, 广告", model: 'gpt "image"', imageCount: 2, tokens: 0, costMicros: 400_000 },
+    ])
+    const line = csv.split("\n")[1]
+    // 含逗号/引号的单元格被整体包引号，内部引号翻倍；金额为货币单位数（无千分位）。
+    expect(line).toContain('"夏日, 广告"')
+    expect(line).toContain('"openai · gpt ""image"""')
+    expect(line).toContain("2 图")
+    expect(line).toContain("0.40")
+  })
+
+  it("marks unpriced rows as 未定价 and uses token usage for text rows", () => {
+    const csv = ledgerToCSV([
+      { ...LEDGER_ROW, id: "a", kind: "chat", tokens: 5000, imageCount: 0, costMicros: 0 },
+    ])
+    const line = csv.split("\n")[1]
+    expect(line).toContain("5000 tok")
+    expect(line.endsWith("未定价")).toBe(true)
   })
 })
 
@@ -185,16 +266,73 @@ function costViewProps() {
     onRetry: vi.fn(),
     rangeValue: "30d",
     onRangeChange: vi.fn(),
+    onExport: vi.fn(),
+    isExporting: false,
   }
 }
 
 describe("CostCenterView", () => {
-  it("renders the three stat cards with the cost formatted as currency", () => {
+  it("renders the three stat cards, labelling the cost by the active range", () => {
     render(<CostCenterView {...costViewProps()} />)
-    expect(screen.getByText("本月成本")).toBeInTheDocument()
+    // 抬头成本卡按活动预设标签命名（不再写死「本月成本」）。
+    expect(screen.getByText("近 30 天成本")).toBeInTheDocument()
+    expect(screen.queryByText("本月成本")).not.toBeInTheDocument()
     expect(screen.getByText("¥12.50")).toBeInTheDocument()
     expect(screen.getByText("42")).toBeInTheDocument()
     expect(screen.getByText("123,456")).toBeInTheDocument()
+  })
+
+  it("labels the cost card from a different active range", () => {
+    render(<CostCenterView {...costViewProps()} rangeValue="7d" />)
+    expect(screen.getByText("近 7 天成本")).toBeInTheDocument()
+  })
+
+  it("fires onExport when 导出 CSV is clicked", async () => {
+    const onExport = vi.fn()
+    const user = userEvent.setup()
+    render(<CostCenterView {...costViewProps()} onExport={onExport} />)
+    await user.click(screen.getByRole("button", { name: "导出 CSV" }))
+    expect(onExport).toHaveBeenCalledTimes(1)
+  })
+
+  it("disables 导出 CSV while exporting", () => {
+    render(<CostCenterView {...costViewProps()} isExporting />)
+    expect(screen.getByRole("button", { name: "导出中…" })).toBeDisabled()
+  })
+
+  it("flags 未定价 when a row/project has usage but zero cost, and notes the exclusion", () => {
+    // deepseek 文本生成：tokens>0 但 costMicros=0（无 pricing 行）→ 应标「未定价」。
+    const unpricedLedger: LedgerEntry = {
+      id: "g2",
+      projectId: "p3",
+      projectName: "文本项目",
+      kind: "chat",
+      provider: "deepseek",
+      model: "deepseek-chat",
+      tokens: 5000,
+      imageCount: 0,
+      costMicros: 0,
+      latencyMs: 800,
+      createdAt: "2026-06-10T09:00:00.000Z",
+    }
+    const unpricedProject: ProjectAggregate = {
+      projectId: "p3",
+      projectName: "文本项目",
+      generations: 3,
+      tokens: 5000,
+      imageCount: 0,
+      costMicros: 0,
+    }
+    render(
+      <CostCenterView
+        {...costViewProps()}
+        projects={[...PROJECTS, unpricedProject]}
+        generations={[...LEDGER, unpricedLedger]}
+      />,
+    )
+    // 台账行 + 项目条各一个未定价徽章 + 页面提示（含「未定价」字样）。
+    expect(screen.getAllByText("未定价").length).toBeGreaterThanOrEqual(2)
+    expect(screen.getByText(/未计入上方 ¥ 成本合计/)).toBeInTheDocument()
   })
 
   it("renders the per-project rollup and the generations ledger", () => {
