@@ -903,13 +903,27 @@ func (w *Worker) allDone(ctx context.Context, projectID string) bool {
 
 // fail reschedules with exponential backoff (attempts < max) or marks the todo
 // failed + emits todo_failed. Mirrors kb ingest fail().
+// isPermanentFailure 判定一个失败是否是确定性的——重试永远不会成功，故 fail() 应立即
+// 终态化该 todo，而非白白耗尽 MaxAttempts × 指数退避。当前覆盖 custom HTTP 节点的两类
+// 确定性失败：blocked_destination（SSRF 拦截，重试只会再探一次被封 IP）与
+// bad_response_format（响应格式是端点自身属性，与传输无关）。传输类失败（timeout、
+// request_failed 等 5xx/网络抖动）仍走正常重试，不受此影响。
+func isPermanentFailure(err error) bool {
+	return errors.Is(err, errBlockedDest) || errors.Is(err, errBadResponseFormat)
+}
+
 func (w *Worker) fail(ctx context.Context, c claimed, cause error) {
 	msg := "unknown error"
 	if cause != nil {
 		msg = cause.Error()
 	}
-	if c.attempts >= w.cfg.MaxAttempts {
-		w.cfg.Logger.Error("worker: task failed terminally (attempts exhausted)", "todo", c.todoID, "type", c.typ, "err", cause)
+	permanent := isPermanentFailure(cause)
+	if permanent || c.attempts >= w.cfg.MaxAttempts {
+		reason := "attempts exhausted"
+		if permanent {
+			reason = "permanent failure (no retry)"
+		}
+		w.cfg.Logger.Error("worker: task failed terminally", "todo", c.todoID, "type", c.typ, "reason", reason, "err", cause)
 		// Attempts exhausted: mark failed AND transitively cancel dependents so
 		// they leave 'blocked' (else DeriveStatus wedges the project in 'running'
 		// — spec §7.3 step 4: 耗尽 → failed + 阻断后继).
@@ -1598,6 +1612,10 @@ const (
 	errTimeout       httpError = "timeout"
 	errBodyTooLarge  httpError = "body_too_large"
 	errBlockedDest   httpError = "blocked_destination"
+	// errBadResponseFormat：请求成功（HTTP 200）但响应体不是声明的格式（如 outputFormat=json
+	// 却拿到非 JSON 正文）。与 request_failed（传输/端点故障）区分，让运维能分辨「端点挂了」
+	// 与「返回了错误的内容类型」。确定性失败——不可重试（见 isPermanentFailure）。
+	errBadResponseFormat httpError = "bad_response_format"
 )
 
 // scriptParams is the "script" kind's params. No Language (v1 Starlark only),
@@ -1967,7 +1985,8 @@ func (w *Worker) runCustomHTTP(ctx context.Context, c claimed, in httpParams) (s
 		if in.OutputFormat == "json" {
 			var probe any
 			if err := json.Unmarshal([]byte(strings.TrimSpace(content)), &probe); err != nil {
-				return "", errRequestFailed
+				// 请求成功但正文不是声明的 JSON：确定性失败（重试也一样），单独报 bad_response_format。
+				return "", errBadResponseFormat
 			}
 			content = strings.TrimSpace(content)
 			format = "json"
