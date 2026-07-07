@@ -12,6 +12,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/nodedesc"
 	"github.com/costa92/llm-agent-studio/internal/planner"
 	"github.com/costa92/llm-agent-studio/internal/project"
+	"github.com/costa92/llm-agent-studio/internal/prompt"
 	"github.com/costa92/llm-agent-studio/internal/runinputs"
 	"github.com/costa92/llm-agent-studio/internal/workflows"
 )
@@ -22,21 +23,55 @@ const maxRunInputsBody = 64 << 10
 
 // WorkflowStore is the workflows CRUD surface (satisfied by *workflows.Store).
 type WorkflowStore interface {
-	Create(ctx context.Context, projectID, name string, nodes, inputsSchema json.RawMessage) (workflows.Workflow, error)
+	Create(ctx context.Context, projectID, name string, nodes, inputsSchema, settings json.RawMessage) (workflows.Workflow, error)
 	Get(ctx context.Context, projectID, id string) (workflows.Workflow, error)
 	ListByProject(ctx context.Context, projectID string) ([]workflows.Workflow, error)
-	Update(ctx context.Context, projectID, id, name string, nodes, inputsSchema json.RawMessage) (workflows.Workflow, error)
+	Update(ctx context.Context, projectID, id, name string, nodes, inputsSchema, settings json.RawMessage) (workflows.Workflow, error)
 	Delete(ctx context.Context, projectID, id string) error
 }
 
 // workflowReq is the create/update body. nodes is the DAG (array of
 // planner.WorkflowNode shape); inputsSchema is the design-time run-input
-// declaration (array of runinputs.Field shape). Both kept raw so the store
-// stays decoupled.
+// declaration (array of runinputs.Field shape); settings is the workflow-level
+// generation settings {style,contentType,targetPlatform}. All kept raw so the
+// store stays decoupled.
 type workflowReq struct {
 	Name         string          `json:"name"`
 	Nodes        json.RawMessage `json:"nodes"`
 	InputsSchema json.RawMessage `json:"inputsSchema"`
+	Settings     json.RawMessage `json:"settings"`
+}
+
+// workflowSettings is the decoded shape of workflows.settings: the workflow-level
+// generation style/contentType/targetPlatform. Empty fields = 继承项目行（run 时
+// 不覆盖）。仅 style 有白名单（必须是 prompt.Styles() 里的名字或空）。
+type workflowSettings struct {
+	Style          string `json:"style"`
+	ContentType    string `json:"contentType"`
+	TargetPlatform string `json:"targetPlatform"`
+}
+
+// validateWorkflowSettings runs the save-time check on a raw settings payload: it
+// must decode to {style,contentType,targetPlatform} and, if style is non-empty,
+// style must be a known prompt-library style name. An empty/absent settings is
+// valid (= 继承项目行).
+func validateWorkflowSettings(raw json.RawMessage) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	var s workflowSettings
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return fmt.Errorf("invalid settings: %w", err)
+	}
+	if s.Style == "" {
+		return nil
+	}
+	for _, st := range prompt.Styles() {
+		if st.Name == s.Style {
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown style %q", s.Style)
 }
 
 // validateInputsSchema runs the design-time (save-time) check on a raw
@@ -164,6 +199,10 @@ func createWorkflowHandler(ps ProjectStore, ws WorkflowStore, res CustomNodeType
 			http.Error(w, "invalid inputs schema: "+err.Error(), http.StatusBadRequest)
 			return
 		}
+		if err := validateWorkflowSettings(req.Settings); err != nil {
+			http.Error(w, "invalid settings: "+err.Error(), http.StatusBadRequest)
+			return
+		}
 		if len(req.Nodes) > 0 {
 			var nodes []planner.WorkflowNode
 			if err := json.Unmarshal(req.Nodes, &nodes); err != nil {
@@ -186,7 +225,7 @@ func createWorkflowHandler(ps ProjectStore, ws WorkflowStore, res CustomNodeType
 				}
 			}
 		}
-		wf, err := ws.Create(r.Context(), r.PathValue("id"), req.Name, req.Nodes, req.InputsSchema)
+		wf, err := ws.Create(r.Context(), r.PathValue("id"), req.Name, req.Nodes, req.InputsSchema, req.Settings)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -207,6 +246,10 @@ func updateWorkflowHandler(ps ProjectStore, ws WorkflowStore, res CustomNodeType
 			http.Error(w, "invalid inputs schema: "+err.Error(), http.StatusBadRequest)
 			return
 		}
+		if err := validateWorkflowSettings(req.Settings); err != nil {
+			http.Error(w, "invalid settings: "+err.Error(), http.StatusBadRequest)
+			return
+		}
 		if len(req.Nodes) > 0 {
 			var nodes []planner.WorkflowNode
 			if err := json.Unmarshal(req.Nodes, &nodes); err != nil {
@@ -229,7 +272,7 @@ func updateWorkflowHandler(ps ProjectStore, ws WorkflowStore, res CustomNodeType
 				}
 			}
 		}
-		wf, err := ws.Update(r.Context(), r.PathValue("id"), r.PathValue("wfId"), req.Name, req.Nodes, req.InputsSchema)
+		wf, err := ws.Update(r.Context(), r.PathValue("id"), r.PathValue("wfId"), req.Name, req.Nodes, req.InputsSchema, req.Settings)
 		if errors.Is(err, workflows.ErrNotFound) {
 			http.Error(w, "workflow not found", http.StatusNotFound)
 			return
@@ -360,6 +403,24 @@ func runWorkflowHandler(ps ProjectStore, ws WorkflowStore, pl PlannerPort, ev Ev
 		brief := planner.Brief{
 			Brief: p.Description, ContentType: p.ContentType,
 			TargetPlatform: p.TargetPlatform, Style: p.Style,
+		}
+		// 优先级：run-input override > workflow.settings > project 行 > 无。此处叠加
+		// workflow.settings（覆盖 project 行）——纯内存操作、作用于已加载的 wf.Settings，
+		// 不新增 TryBeginRun 之前的失败点（本段已在翻转之后）；settings 非空字段才覆盖
+		//（'{}' / 空字段 = 继承项目行）。下方 BriefOverride 叠加保持在最后（run > workflow）。
+		if len(wf.Settings) > 0 {
+			var s workflowSettings
+			if json.Unmarshal(wf.Settings, &s) == nil {
+				if s.Style != "" {
+					brief.Style = s.Style
+				}
+				if s.ContentType != "" {
+					brief.ContentType = s.ContentType
+				}
+				if s.TargetPlatform != "" {
+					brief.TargetPlatform = s.TargetPlatform
+				}
+			}
 		}
 		// brief override：仅本 run 叠加，不写回 projects。
 		if v, ok := runResolved.BriefOverride["brief"]; ok {

@@ -188,13 +188,19 @@ type stubProjects struct {
 	orgID string
 	// runBusy=true 模拟项目已有在途 run（TryBeginRun 返 false → 运行入口 409）。
 	runBusy bool
+	// 项目行的 brief/风格字段（默认零值 ""）——供 run-handler 优先级测试注入 project 层。
+	description, contentType, targetPlatform, style string
 }
 
 func (s stubProjects) Create(_ context.Context, _ project.CreateInput) (project.Project, error) {
 	return project.Project{}, nil
 }
 func (s stubProjects) Get(_ context.Context, id string) (project.Project, error) {
-	return project.Project{ID: id, OrgID: s.orgID, Status: "draft"}, nil
+	return project.Project{
+		ID: id, OrgID: s.orgID, Status: "draft",
+		Description: s.description, ContentType: s.contentType,
+		TargetPlatform: s.targetPlatform, Style: s.style,
+	}, nil
 }
 func (s stubProjects) ListByOrg(_ context.Context, _ string, _ int, _ string) ([]project.Project, string, error) {
 	return nil, "", nil

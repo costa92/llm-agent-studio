@@ -546,7 +546,20 @@ func (s *Storage) goSteps() []migrationStep {
 		{version: "m28", run: m28CreateOrgAuditLog},
 		{version: "m29", run: m29ExpandOrgAlertSettings},
 		{version: "m30", run: m30CreateOrgInvites},
+		{version: "m31", run: m31AddWorkflowSettings},
 	}
+}
+
+// m31AddWorkflowSettings 给 workflows 加 settings JSONB 列（工作流级生成设置：
+// {style, contentType, targetPlatform}）。前向、无回填——空对象 '{}' 表示「继承
+// 项目行」，与历史行为一致（run 时 settings='{}' 落回 project.style）。幂等
+//（IF NOT EXISTS）。注：编号跳过 m30（并行 PR 占用 org_invites），保序合并即连续。
+func m31AddWorkflowSettings(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx,
+		`ALTER TABLE workflows ADD COLUMN IF NOT EXISTS settings JSONB NOT NULL DEFAULT '{}'`); err != nil {
+		return fmt.Errorf("add workflows.settings: %w", err)
+	}
+	return nil
 }
 
 // m21AddItemsColumn adds node_outputs.items (JSONB NOT NULL DEFAULT '[]') and
