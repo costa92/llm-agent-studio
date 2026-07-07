@@ -72,6 +72,38 @@ describe("RunCostSummary", () => {
     expect(screen.getByText(/image · img-1/)).toBeInTheDocument()
   })
 
+  it("flags 未定价 for the total and per-node when usage>0 but cost is 0", async () => {
+    // deepseek 文本节点：tokens>0 但 costMicros=0（无 pricing 行）→ 标「未定价」而非 ¥0.00。
+    const unpriced: PlanCost = {
+      generations: 1,
+      tokens: 5000,
+      imageCount: 0,
+      costMicros: 0,
+      kindCounts: { chat: 1 },
+      todos: [
+        {
+          todoId: "t-script",
+          todoType: "script",
+          kind: "chat",
+          provider: "deepseek",
+          model: "deepseek-chat",
+          generations: 1,
+          tokens: 5000,
+          imageCount: 0,
+          costMicros: 0,
+        },
+      ],
+    }
+    usePlanCost.mockReturnValue({ data: unpriced, isLoading: false, isError: false })
+    renderCost()
+    // 总费用行标未定价，且不出现 ¥0.00。
+    expect(screen.getByText("未定价")).toBeInTheDocument()
+    expect(screen.queryByText("¥0.00")).toBeNull()
+    // 展开后节点行也标未定价（总计 + 节点共两个）。
+    await userEvent.click(screen.getByRole("button", { name: /按节点分解 \(1\)/ }))
+    expect(screen.getAllByText("未定价")).toHaveLength(2)
+  })
+
   it("shows the empty state (not zeros) when the run has no ledger rows", () => {
     usePlanCost.mockReturnValue({
       data: { generations: 0, tokens: 0, imageCount: 0, costMicros: 0, kindCounts: {}, todos: [] },

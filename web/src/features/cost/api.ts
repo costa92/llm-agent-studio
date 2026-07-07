@@ -91,6 +91,28 @@ export function useGenerations(
   })
 }
 
+// 导出用：翻完 generations 全部 keyset 页并拼成单数组（明细端点不读 from/to，
+// 全量取回后由调用方按活动范围裁剪）。next_cursor 空即到底；page 上限兜底防
+// 异常游标死循环（limit=200 为端点上限，见 store.RecentByOrg）。
+export async function fetchAllGenerations(
+  org: string,
+  limit = 200,
+): Promise<LedgerEntry[]> {
+  const all: LedgerEntry[] = []
+  let cursor = ""
+  for (let page = 0; page < 1000; page++) {
+    const env = await apiJSON<ListEnvelope<LedgerEntry>>(
+      `/api/orgs/${org}/generations?limit=${limit}${
+        cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""
+      }`,
+    )
+    all.push(...env.items)
+    if (!env.next_cursor) break
+    cursor = env.next_cursor
+  }
+  return all
+}
+
 // 模型目录：GET /api/model-catalog → {catalog: CatalogEntry[]}（auth-only，modelCatalogHandler）。
 export function useModelCatalog(): UseQueryResult<CatalogEntry[]> {
   return useQuery({
