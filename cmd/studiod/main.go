@@ -54,6 +54,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/modelrouter"
 	"github.com/costa92/llm-agent-studio/internal/models"
 	"github.com/costa92/llm-agent-studio/internal/obs"
+	"github.com/costa92/llm-agent-studio/internal/orginvite"
 	"github.com/costa92/llm-agent-studio/internal/orgsecret"
 	"github.com/costa92/llm-agent-studio/internal/planner"
 	"github.com/costa92/llm-agent-studio/internal/project"
@@ -127,6 +128,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	// 平台超级管理员 (platform role)。哨兵 org (id='') 必须先于任何平台 membership 写入，
 	// 满足 auth_membership.org_id 的外键约束 (authz schema)。随后按 env 种子名单授予。
 	membersSvc := studiosvc.NewMembers(az, st.GORM())
+	invitesSvc := studiosvc.NewInvites(orginvite.New(st.GORM()), az, st.GORM())
 	platformSvc := studiosvc.NewPlatform(az, st.GORM())
 	if err := platformSvc.EnsureSentinelOrg(ctx); err != nil {
 		st.Close()
@@ -456,8 +458,11 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		Audit:          auditStore,
 		Exports:        exportStore,
 		ExportBook:     exports.NewBookData(st.GORM()),
-		Members:        membersSvc,
-		Platform:       platformSvc,
+		Members:         membersSvc,
+		Invites:         invitesSvc,
+		InviteMailer:    mailClient,
+		InvitePublicURL: cfg.PublicURL,
+		Platform:        platformSvc,
 		TaskBoard:      taskBoard,
 		Health:         healthStore,
 		Cost:           costStore,

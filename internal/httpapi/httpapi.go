@@ -50,6 +50,7 @@ type Deps struct {
 	Models         ModelStore
 	StorageConfig  StorageConfigStore // per-org / global 对象存储后端配置 (secret write-only)
 	Members        MemberService      // org 成员管理: 列出/按邮箱添加/改角色/移除 (org-scoped)
+	Invites        InviteService      // org 邀请: 邀请新协作者 (email+role) / 列出待接受 / 撤销 / 接受 (org-scoped + authOnly accept); nil → 邀请路由不挂载
 	Platform       PlatformService    // 平台超级管理员: 系统级存储配置 + 所有 org 视图 + 平台管理员名册
 	TaskBoard      TaskBoardReader    // 任务中心: 跨项目运行状态聚合 (org-scoped, viewer+)
 	Health         HealthReporter     // 平台健康/数据完整性监控 + 修复 (unauth probes + platformAdmin 报告/修复)
@@ -61,6 +62,11 @@ type Deps struct {
 	OrgSecret      OrgSecretStore      // org-scoped named-secret registry (roleAdmin); nil in focused unit tests
 	AlertSettings  AlertSettingsStore  // org-scoped run 失败邮件告警配置 (roleAdmin); nil in focused unit tests
 	Audit          AuditRecorder       // 安全敏感管理动作的 append-only 审计流水; nil → 不记审计 (focused unit tests skip)
+
+	// InviteMailer 用于创建邀请后 best-effort 投递邀请邮件; nil → 不发信 (邀请仍创建, 管理员用返回 token 手动分享)。
+	// InvitePublicURL 是控制台外部 base URL (env STUDIO_PUBLIC_URL), 用于拼接邀请链接 /invites/{token}; 空 → 邮件改带 token。
+	InviteMailer    InviteMailer
+	InvitePublicURL string
 
 	// 工作流作品导出 (PDF/EPUB/ZIP). nil → 整组导出路由不挂载 (focused unit tests skip)。
 	Exports    ExportsStore   // export_jobs 队列读写 (satisfied by *exports.Store)
@@ -318,6 +324,15 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("POST /api/orgs/{org}/members", scoped(roleAdmin, orgScope, addMemberHandler(d.Members)))
 	mux.Handle("PUT /api/orgs/{org}/members/{userId}", scoped(roleAdmin, orgScope, audited(d.Audit, "member.role_change", "member", setMemberRoleHandler(d.Members))))
 	mux.Handle("DELETE /api/orgs/{org}/members/{userId}", scoped(roleAdmin, orgScope, audited(d.Audit, "member.remove", "member", removeMemberHandler(d.Members))))
+	// Org 邀请 (org-scoped, roleAdmin). 邀请新协作者 (email+role) → pending 邀请 + best-effort 邮件；
+	// 列出待接受；撤销。接受走 /api/invites/{token}/accept (authOnly，接受者可能尚未是任何 org 成员)。
+	if d.Invites != nil {
+		mux.Handle("GET /api/orgs/{org}/invites", scoped(roleAdmin, orgScope, listInvitesHandler(d.Invites)))
+		mux.Handle("POST /api/orgs/{org}/invites", scoped(roleAdmin, orgScope, audited(d.Audit, "member.invite", "invite", createInviteHandler(d.Invites, d.InviteMailer, d.InvitePublicURL))))
+		mux.Handle("DELETE /api/orgs/{org}/invites/{id}", scoped(roleAdmin, orgScope, audited(d.Audit, "member.invite_revoke", "invite", revokeInviteHandler(d.Invites))))
+		// 接受邀请：任意登录用户 (接受者身份取自 ctx 的 UserID，与 token 双因子)。非 org-scoped。
+		mux.Handle("POST /api/invites/{token}/accept", authOnly(acceptInviteHandler(d.Invites)))
+	}
 	// 平台超级管理员 (spec: 平台角色). whoami 仅 authOnly（前端据此决定是否展示平台导航，
 	// 不必吃 403）；其余路由经 platformAdmin 门禁。系统级 global 存储配置从旧的
 	// any-org-admin 门禁迁到此处，由专属平台角色守护。
