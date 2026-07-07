@@ -507,22 +507,25 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 	if ierr != nil {
 		return "", ierr
 	}
-	// B1: style is sourced from the projects row, NOT the storyboard todo's
-	// input. The M1 planner only writes input to the script node; every other
-	// node (incl. storyboard) has input_json='{}', so reading style off c.input
-	// would silently disable the whole M2 style library. The project style feeds
-	// both the StoryboardAgent call and every fanned-out asset todo.
-	var projectStyle string
-	if err := w.cfg.DB.WithContext(ctx).Raw(
-		`SELECT style FROM projects WHERE id=$1`, c.projectID).Row().Scan(&projectStyle); err != nil {
-		return "", fmt.Errorf("worker: load project style: %w", err)
-	}
+	// 风格来源：优先读 storyboard todo 的 input.style（planner 现会写入，已把
+	// run-input/workflow.settings/project 的覆盖解析结果落到这里）。Style 是指针，
+	// 区分「缺键」与「空串」：非 nil 即用（空串 = 中性无风格，不再落回 projects）；
+	// nil（存量/在途 plan，input 无 style 键）才落回读 projects 行——零回归。
+	// 解析出的 style 同时喂给 StoryboardAgent 调用与每个扇出的资产 todo。
 	var storyboardInputJSON struct {
-		SystemPrompt string `json:"systemPrompt"`
+		SystemPrompt string  `json:"systemPrompt"`
+		Style        *string `json:"style"`
 	}
 	_ = json.Unmarshal(c.input, &storyboardInputJSON)
+	var style string
+	if storyboardInputJSON.Style != nil {
+		style = *storyboardInputJSON.Style
+	} else if err := w.cfg.DB.WithContext(ctx).Raw(
+		`SELECT style FROM projects WHERE id=$1`, c.projectID).Row().Scan(&style); err != nil {
+		return "", fmt.Errorf("worker: load project style: %w", err)
+	}
 	storyboardIn := studioagents.StoryboardInput{
-		ScriptJSON: string(contentJSON), Style: projectStyle,
+		ScriptJSON: string(contentJSON), Style: style,
 		SystemPrompt: storyboardInputJSON.SystemPrompt,
 	}
 	var out studioagents.StoryboardOutput
@@ -566,8 +569,8 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 				return fmt.Errorf("worker: insert shot: %w", err)
 			}
 			// Fan-out: one asset todo per shot (spec §15 M2). The shot's prompt + the
-			// PROJECT style (sourced from the projects row, NOT the storyboard todo's
-			// empty input — see B1) become the asset todo's input.
+			// resolved style (from the storyboard todo's input.style, else the projects
+			// row — see above) become the asset todo's input.
 			//
 			// I3: write the asset kind + media duration into the todo input. The kind
 			// is what the route reads via DefaultForOrg(kind); duration comes from
@@ -578,7 +581,7 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 			// here; the video/audio kind for M4 is driven by org model_config routing +
 			// e2e FakeAsync injection (T9), NOT read from the storyboard shot.
 			input, _ := json.Marshal(map[string]any{
-				"shotId": shotID, "shotPrompt": sh.Prompt, "style": projectStyle,
+				"shotId": shotID, "shotPrompt": sh.Prompt, "style": style,
 				"kind": "image", "duration": sh.Duration,
 			})
 			assetSpecs = append(assetSpecs, todos.DynamicSpec{Type: "asset", InputJSON: input})
@@ -1025,12 +1028,20 @@ func (w *Worker) runPrescreen(ctx context.Context, c claimed) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	var projectStyle string
-	if err := w.cfg.DB.WithContext(ctx).Raw(
-		`SELECT style FROM projects WHERE id=$1`, c.projectID).Row().Scan(&projectStyle); err != nil {
+	// 风格来源同 storyboard：优先 input.style（指针，区分缺键 vs 空串），nil 才落回
+	// 读 projects 行（存量/在途 plan 零回归）。
+	var prescreenInputJSON struct {
+		Style *string `json:"style"`
+	}
+	_ = json.Unmarshal(c.input, &prescreenInputJSON)
+	var style string
+	if prescreenInputJSON.Style != nil {
+		style = *prescreenInputJSON.Style
+	} else if err := w.cfg.DB.WithContext(ctx).Raw(
+		`SELECT style FROM projects WHERE id=$1`, c.projectID).Row().Scan(&style); err != nil {
 		return "", fmt.Errorf("worker: load project style: %w", err)
 	}
-	reviewIn := studioagents.ReviewInput{Prompt: text, Style: projectStyle}
+	reviewIn := studioagents.ReviewInput{Prompt: text, Style: style}
 	var res studioagents.ReviewOutput
 	if m, ok := w.routedChatModel(ctx, c.projectID); ok {
 		res, err = w.cfg.Review.RunWith(ctx, m, reviewIn)

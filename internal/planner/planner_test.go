@@ -214,6 +214,21 @@ func TestPlanCustom(t *testing.T) {
 		t.Fatalf("expected inputJSON to contain prompt template and brief, got %q", inputJSON)
 	}
 
+	// storyboard 节点现在也带 style（供 worker 从 input 取风格，而非直接读 projects 行）。
+	var sbInputJSON string
+	if err := st.Pool().QueryRow(ctx, `SELECT input_json FROM todos WHERE project_id=$1 AND type='storyboard'`, projID).Scan(&sbInputJSON); err != nil {
+		t.Fatalf("query storyboard input_json: %v", err)
+	}
+	var sbInput struct {
+		Style *string `json:"style"`
+	}
+	if err := json.Unmarshal([]byte(sbInputJSON), &sbInput); err != nil {
+		t.Fatalf("unmarshal storyboard input: %v (%s)", err, sbInputJSON)
+	}
+	if sbInput.Style == nil || *sbInput.Style != "custom style" {
+		t.Fatalf("storyboard input.style: want ptr to \"custom style\", got %v (%s)", sbInput.Style, sbInputJSON)
+	}
+
 	// An empty workflowID stores NULL (legacy project-level custom run).
 	res2, err := p.PlanCustom(ctx, projID, "", Brief{Brief: "legacy"}, nodes, nil, nil)
 	if err != nil {

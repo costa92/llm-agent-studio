@@ -434,3 +434,95 @@ func TestRunStoryboard_StandardOnlyImage(t *testing.T) {
 		t.Fatalf("standard: want 0 audio asset todos, got %d", nAudio)
 	}
 }
+
+// TestRunStoryboard_StyleSource 验证 worker 风格来源的「缺键 vs 空串」处理：
+//   (i)  新 plan：input.style 非空 → 用之，不读 projects 行；
+//   (ii) 存量/在途 plan：input='{}'（无 style 键）→ 落回读 projects 行（零回归）；
+//   (iii) input.style="" → 中性无风格（空串），不落回 projects。
+// 断言落在扇出的资产 todo 的 input_json.style 上（风格从 storyboard 传到 asset）。
+func TestRunStoryboard_StyleSource(t *testing.T) {
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run worker tests")
+	}
+	cases := []struct {
+		name            string
+		storyboardInput string
+		wantStyle       string
+	}{
+		{"new plan input.style used (no projects read)", `{"style":"从input"}`, "从input"},
+		{"legacy input={} falls back to projects", `{}`, "从projects"},
+		{"style empty neutral no fallback", `{"style":""}`, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			st, err := storage.Open(ctx, storage.Config{PGURL: dsn})
+			if err != nil {
+				t.Fatalf("open: %v", err)
+			}
+			defer st.Close()
+			if err := st.Migrate(ctx); err != nil {
+				t.Fatalf("migrate: %v", err)
+			}
+			pool := st.Pool()
+			projID := "sty_" + randHex3()
+			// 项目行 style='从projects'——只有落回分支才会用到它。
+			if _, err := pool.Exec(ctx,
+				`INSERT INTO projects (id, org_id, name, created_by, style) VALUES ($1,'o','n','u','从projects')`, projID); err != nil {
+				t.Fatalf("seed project: %v", err)
+			}
+			todoStore := todos.New(assetTestGorm(t))
+			ids, err := todoStore.CreateGraph(ctx, projID, "pl_sty_"+projID[4:], []todos.NodeSpec{
+				{LocalID: "s", Type: "script", DependsOn: nil, InputJSON: []byte(`{"brief":"coffee ad"}`)},
+				{LocalID: "b", Type: "storyboard", DependsOn: []string{"s"}, InputJSON: []byte(tc.storyboardInput)},
+			})
+			if err != nil {
+				t.Fatalf("create graph: %v", err)
+			}
+			scriptModel := llm.NewScriptedLLM(llm.WithResponses(llm.Response{
+				Text: `{"title":"Coffee","logline":"a cup","scenes":[{"heading":"INT. CAFE","description":"steam","dialogue":"hi"}]}`,
+			}))
+			storyboard := newStoryboardAgentWithShots(t, 2)
+			fakeGen := generate.NewFakeLooping(generate.GenResult{
+				Bytes: []byte("FAKE"), MimeType: "image/png", Provider: "fake", Model: "fake-img", ImageCount: 1,
+			})
+			w := New(Config{
+				DB:         assetTestGorm(t),
+				Todos:      todoStore,
+				Projects:   project.New(assetTestGorm(t)),
+				Events:     events.New(assetTestGorm(t)),
+				Script:     studioagents.NewScriptAgent(scriptModel),
+				Storyboard: storyboard,
+				Asset:      studioagents.NewAssetAgent(prompt.NewBuilder(), fakeGen),
+				Storage:    testStorage(),
+				Assets:     assets.New(assetTestGorm(t)),
+				Cost:       cost.New(assetTestGorm(t)),
+				WorkerID:   "test-sty",
+			})
+			for i := 0; i < 20; i++ {
+				ran, err := w.RunOnce(ctx)
+				if err != nil {
+					t.Fatalf("run once: %v", err)
+				}
+				if !ran {
+					break
+				}
+			}
+			// 所有扇出的资产 todo 的 style 都应等于期望值。
+			var total, match int
+			if err := pool.QueryRow(ctx,
+				`SELECT count(*), count(*) FILTER (WHERE input_json->>'style' = $3)
+				 FROM todos WHERE project_id=$1 AND type='asset' AND $2 = ANY(depends_on)`,
+				projID, ids["b"], tc.wantStyle).Scan(&total, &match); err != nil {
+				t.Fatalf("count asset todos: %v", err)
+			}
+			if total == 0 {
+				t.Fatalf("expected fanned-out asset todos, got 0")
+			}
+			if match != total {
+				t.Fatalf("style source: want all %d asset todos style=%q, got %d matching", total, tc.wantStyle, match)
+			}
+		})
+	}
+}

@@ -286,6 +286,12 @@ func (p *Planner) PlanCustom(ctx context.Context, projectID, workflowID string, 
 				inputMap["targetPlatform"] = b.TargetPlatform
 				inputMap["style"] = b.Style
 			}
+			// 分镜/预审节点：把已解析的 style 写进 input，让 worker 从 input 取风格
+			// （而非直接读 projects 行），这样 run-input/workflow.settings 覆盖能生效。
+			// 存量/在途 plan 的 input 无 style 键，worker 会落回读 projects（零回归）。
+			if n.Type == "storyboard" || n.Type == "prescreen" {
+				inputMap["style"] = b.Style
+			}
 
 			// Prompt precedence: inline custom text > PromptID (builtin/library) >
 			// the agent's built-in default (no systemPrompt set).
