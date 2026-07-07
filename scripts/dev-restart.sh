@@ -56,6 +56,10 @@ kill_old_studiod() {
   # 避免误杀命令行里恰好含 "studiod" 的无关进程（比如本脚本）。
   for pid in $(pgrep -f "$BIN" || true); do
     exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+    # 重编（go build -o "$BIN"）会替换 inode，运行中的旧进程 exe 读作
+    # "/tmp/studiod (deleted)"，与 "$BIN" 精确比对会 miss → 旧进程杀不掉、新进程
+    # 绑不上端口。剥掉 " (deleted)" 后缀再比对，才能真正认出旧真身。
+    exe="${exe% (deleted)}"
     if [ "$exe" = "$BIN" ]; then
       log "杀掉旧 studiod（pid=$pid, exe=$exe）"
       kill "$pid" 2>/dev/null || true
@@ -67,6 +71,7 @@ kill_old_studiod() {
     # 兜底：仍在则 KILL。
     for pid in $(pgrep -f "$BIN" || true); do
       exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+      exe="${exe% (deleted)}" # 同上：剥掉重编后的 " (deleted)" 后缀再比对
       [ "$exe" = "$BIN" ] && kill -9 "$pid" 2>/dev/null || true
     done
   else
