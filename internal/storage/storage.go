@@ -544,6 +544,7 @@ func (s *Storage) goSteps() []migrationStep {
 		{version: "m26", run: m26AddProjectsDeletedAt},
 		{version: "m27", run: m27StripPBConfigInputs},
 		{version: "m28", run: m28CreateOrgAuditLog},
+		{version: "m29", run: m29ExpandOrgAlertSettings},
 	}
 }
 
@@ -771,6 +772,28 @@ func m28CreateOrgAuditLog(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx,
 		`CREATE INDEX IF NOT EXISTS org_audit_log_org_created_idx ON org_audit_log (org_id, created_at DESC, id DESC)`); err != nil {
 		return fmt.Errorf("create org_audit_log_org_created_idx: %w", err)
+	}
+	return nil
+}
+
+// m29ExpandOrgAlertSettings 给 org_alert_settings 增加「运营告警」的分类型开关 + 阈值列
+// （在既有 run 失败邮件告警之外，追加成本超阈 / 卡顿运行 / 审核积压三类周期性告警）。
+// 全部新告警默认关闭（*_enabled DEFAULT false），阈值列取安全默认，故存量行零回归、
+// run 失败告警行为不变。成本阈值以 micros 存（对齐 generations.cost_micros，¥1=1e6），
+// 窗口 / 时长以小时 / 分钟存。Forward-only、幂等（ADD COLUMN IF NOT EXISTS）。
+func m29ExpandOrgAlertSettings(ctx context.Context, tx pgx.Tx) error {
+	for _, ddl := range []string{
+		`ALTER TABLE org_alert_settings ADD COLUMN IF NOT EXISTS budget_enabled BOOLEAN NOT NULL DEFAULT false`,
+		`ALTER TABLE org_alert_settings ADD COLUMN IF NOT EXISTS budget_threshold_micros BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE org_alert_settings ADD COLUMN IF NOT EXISTS budget_window_hours INT NOT NULL DEFAULT 24`,
+		`ALTER TABLE org_alert_settings ADD COLUMN IF NOT EXISTS stuck_enabled BOOLEAN NOT NULL DEFAULT false`,
+		`ALTER TABLE org_alert_settings ADD COLUMN IF NOT EXISTS stuck_threshold_minutes INT NOT NULL DEFAULT 30`,
+		`ALTER TABLE org_alert_settings ADD COLUMN IF NOT EXISTS backlog_enabled BOOLEAN NOT NULL DEFAULT false`,
+		`ALTER TABLE org_alert_settings ADD COLUMN IF NOT EXISTS backlog_threshold INT NOT NULL DEFAULT 50`,
+	} {
+		if _, err := tx.Exec(ctx, ddl); err != nil {
+			return fmt.Errorf("expand org_alert_settings: %w", err)
+		}
 	}
 	return nil
 }

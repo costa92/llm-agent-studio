@@ -234,6 +234,17 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		Mailer:     mailClient,
 		ConsoleURL: cfg.PublicURL,
 	})
+	// 运营告警评估器（周期性）：成本超阈 / 卡顿运行 / 审核积压，逐 org 评估条件并复用
+	// 同一封邮件路径投递。per-(org,类型) 内存冷却窗去重，避免每个 tick 重复告警同一条件
+	// （见 alerts.Evaluator，单实例部署假设）。成本聚合复用成本中心 costStore。
+	alertEvaluator := alerts.NewEvaluator(alerts.EvaluatorConfig{
+		Settings:   alertStore,
+		Cost:       costStore,
+		Stuck:      alertStore,
+		Backlog:    alertStore,
+		Mailer:     mailClient,
+		ConsoleURL: cfg.PublicURL,
+	})
 
 	// StorageRouter (Phase 3): per-org → global → 内置 localfs 默认 的对象存储路由。
 	// storageStore 复用 BYOK 同一把加密 box 解密 secret。buildStorageStore 复用 main 里
@@ -325,6 +336,11 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	go func() { defer wg.Done(); _ = cacheHub.Listen(workerCtx) }()
 	wg.Add(1)
 	go func() { defer wg.Done(); costStore.RunRefresh(workerCtx, cfg.CachePricingTTL) }()
+	// 运营告警周期评估（成本/卡顿/积压）。间隔固定 5min（对齐 export reaper 姿势——
+	// 无需 env 调参，冷却窗默认 6h 才是真正的去重维度）。评估同步跑在本 goroutine，
+	// 随 workerCtx 取消收尾，无独立 Wait。
+	wg.Add(1)
+	go func() { defer wg.Done(); alertEvaluator.Run(workerCtx, 5*time.Minute) }()
 
 	for i := 0; i < cfg.Workers; i++ {
 		w := worker.New(worker.Config{

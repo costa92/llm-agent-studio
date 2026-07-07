@@ -36,6 +36,21 @@ func (m *fakeMailer) count() int {
 	return len(m.sent)
 }
 
+// countTo counts mails sent to a specific address — the Evaluator scans the whole
+// (package-shared) DB, so a per-org unique email isolates a test's assertions from
+// orgs other tests seeded. Returns the matching mails too (for body assertions).
+func (m *fakeMailer) countTo(to string) (int, []sentMail) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []sentMail
+	for _, s := range m.sent {
+		if s.to == to {
+			out = append(out, s)
+		}
+	}
+	return len(out), out
+}
+
 func (m *fakeMailer) last() sentMail {
 	m.mu.Lock()
 	defer m.mu.Unlock()

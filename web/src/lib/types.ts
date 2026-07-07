@@ -569,12 +569,20 @@ export interface UpsertMailConfigInput {
   enabled: boolean
 }
 
-// org 级 run 失败邮件告警配置（GET/PUT /api/orgs/{org}/alert-settings，roleAdmin）。
-// 未配置的 org 返回零值默认（enabled=false, email=""）。
+// org 级告警配置（GET/PUT /api/orgs/{org}/alert-settings，roleAdmin）。
+// 未配置的 org 返回零值默认（所有开关=false, email=""）。所有告警共用同一 email 收件地址。
 export interface AlertSettings {
   orgId: string
   email: string
-  enabled: boolean
+  enabled: boolean // run 失败邮件告警总开关
+  // 运营告警（周期性评估）：成本超阈 / 卡顿运行 / 审核积压，各自独立开关 + 阈值。
+  budgetEnabled: boolean
+  budgetThresholdMicros: number // ¥ 阈值以 micros 存（¥1=1e6）
+  budgetWindowHours: number
+  stuckEnabled: boolean
+  stuckThresholdMinutes: number
+  backlogEnabled: boolean
+  backlogThreshold: number
 }
 
 // 平台监控 / 数据健康（平台超级管理员专属，/api/platform/health/*）。
