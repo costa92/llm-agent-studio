@@ -58,7 +58,9 @@ export function nodeDisplay(node: {
 }): { label: string; color: string } {
   if (isCustomType(node.type)) {
     return {
-      label: node.label || "自定义",
+      // 无显式 label 时回落到 type 的 slug（custom:<slug> 去前缀）——运行视图的图节点
+      // 往往只带 type 不带 label，泛化的「自定义」读不出是哪种节点；slug 对中文类型即为可读名。
+      label: node.label || node.type.slice(CUSTOM_PREFIX.length),
       color: node.color || DEFAULT_CUSTOM_COLOR,
     }
   }
