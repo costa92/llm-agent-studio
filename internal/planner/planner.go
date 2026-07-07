@@ -57,6 +57,20 @@ func newID() string {
 	return hex.EncodeToString(b)
 }
 
+// nodeParamStyle 从内置节点的 Parameters（自由表单 JSON）中读取可选的 style 覆盖。
+// 复用既有 Parameters 字段承载每节点风格，风格随 nodes JSONB 往返，不需数据库迁移。
+// 缺省/解析失败/空串一律返回空串（= 跟随工作流，交由调用方落回 b.Style）。
+func nodeParamStyle(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var p struct {
+		Style string `json:"style"`
+	}
+	_ = json.Unmarshal(raw, &p)
+	return p.Style
+}
+
 // WorkflowNode defines a node in a custom agent workflow.
 type WorkflowNode struct {
 	ID   string `json:"id"`
@@ -280,17 +294,32 @@ func (p *Planner) PlanCustom(ctx context.Context, projectID, workflowID string, 
 			inputMap["params"] = params
 		} else {
 			// Built-in node (script/storyboard/asset): existing prompt-precedence logic.
+			// 每节点风格（per-node style）：b.Style 已是 run-input/workflow.settings/project
+			// 的解析结果；节点 Parameters.style 非空则就地覆盖，得到本节点的有效风格。
+			// 优先级：node.Parameters.style > workflow.settings.style > project.style > 无。
+			// 空/缺键 = 跟随工作流（继承 b.Style），存量/在途 plan 无此键，零回归。
+			effStyle := b.Style
+			if s := nodeParamStyle(n.Parameters); s != "" {
+				effStyle = s
+			}
 			if n.Type == "script" {
 				inputMap["brief"] = b.Brief
 				inputMap["contentType"] = b.ContentType
 				inputMap["targetPlatform"] = b.TargetPlatform
-				inputMap["style"] = b.Style
+				inputMap["style"] = effStyle
 			}
 			// 分镜/预审节点：把已解析的 style 写进 input，让 worker 从 input 取风格
 			// （而非直接读 projects 行），这样 run-input/workflow.settings 覆盖能生效。
 			// 存量/在途 plan 的 input 无 style 键，worker 会落回读 projects（零回归）。
+			// 分镜节点的有效风格会被 worker 扇出时逐一盖到每个资产 todo 的 input.style 上，
+			// 故整条扇出继承该分镜节点的风格（worker 无需改动）。
 			if n.Type == "storyboard" || n.Type == "prescreen" {
-				inputMap["style"] = b.Style
+				inputMap["style"] = effStyle
+			}
+			// 独立资产节点（非分镜扇出）：同样注入本节点有效风格，供 worker runAsset 使用
+			//（其自身 > 工作流 > 项目 > 无）。
+			if n.Type == "asset" {
+				inputMap["style"] = effStyle
 			}
 
 			// Prompt precedence: inline custom text > PromptID (builtin/library) >

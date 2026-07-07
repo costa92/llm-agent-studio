@@ -264,6 +264,115 @@ func TestPlanCustomBuiltinPrompt(t *testing.T) {
 	}
 }
 
+// TestPlanCustomPerNodeStyle: 每节点风格（per-node style）。内置 storyboard/asset
+// 节点的 Parameters.style 非空时覆盖已解析的 workflow/project 风格 (b.Style)，逐节点
+// 独立；缺省则落回 b.Style（工作流 → 项目的解析结果），零回归。分镜节点的有效风格由
+// worker 扇出时逐一盖到资产 todo（此处只验证 planner 注入的 storyboard/asset 节点风格）。
+func TestPlanCustomPerNodeStyle(t *testing.T) {
+	p, st, projID := newPlanner(t)
+	ctx := context.Background()
+
+	nodes := []WorkflowNode{
+		{ID: "script-1", Type: "script"},
+		// 分镜 A：带每节点风格，覆盖工作流风格。
+		{ID: "board-a", Type: "storyboard", DependsOn: []string{"script-1"},
+			Parameters: json.RawMessage(`{"style":"水彩"}`)},
+		// 分镜 B：无每节点风格，落回工作流风格 (b.Style)。
+		{ID: "board-b", Type: "storyboard", DependsOn: []string{"script-1"}},
+		// 独立资产节点：带自身风格。
+		{ID: "asset-1", Type: "asset", DependsOn: []string{"board-b"},
+			Parameters: json.RawMessage(`{"style":"油画"}`)},
+	}
+
+	res, err := p.PlanCustom(ctx, projID, "",
+		Brief{Brief: "b", Style: "工作流风格"}, nodes, nil, nil)
+	if err != nil {
+		t.Fatalf("PlanCustom: %v", err)
+	}
+
+	// 收集某 type 的所有 todo 的 input.style。
+	stylesForType := func(typ string) []string {
+		rows, qerr := st.Pool().Query(ctx,
+			`SELECT input_json FROM todos WHERE plan_id=$1 AND type=$2`, res.PlanID, typ)
+		if qerr != nil {
+			t.Fatalf("query %s todos: %v", typ, qerr)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var raw string
+			if serr := rows.Scan(&raw); serr != nil {
+				t.Fatalf("scan %s input_json: %v", typ, serr)
+			}
+			var in struct {
+				Style *string `json:"style"`
+			}
+			if uerr := json.Unmarshal([]byte(raw), &in); uerr != nil {
+				t.Fatalf("unmarshal %s input: %v (%s)", typ, uerr, raw)
+			}
+			if in.Style == nil {
+				t.Fatalf("%s input missing style key (%s)", typ, raw)
+			}
+			out = append(out, *in.Style)
+		}
+		return out
+	}
+
+	// 两个分镜节点：一个带自身风格 "水彩"，一个落回工作流风格 "工作流风格"。
+	sbStyles := stylesForType("storyboard")
+	got := map[string]bool{}
+	for _, s := range sbStyles {
+		got[s] = true
+	}
+	if len(sbStyles) != 2 || !got["水彩"] || !got["工作流风格"] {
+		t.Fatalf("storyboard styles = %v, want {水彩, 工作流风格}", sbStyles)
+	}
+
+	// 独立资产节点：注入自身风格 "油画"。
+	asStyles := stylesForType("asset")
+	if len(asStyles) != 1 || asStyles[0] != "油画" {
+		t.Fatalf("asset styles = %v, want [油画]", asStyles)
+	}
+
+	// script 节点无每节点风格 → 落回工作流风格（零回归）。
+	scStyles := stylesForType("script")
+	if len(scStyles) != 1 || scStyles[0] != "工作流风格" {
+		t.Fatalf("script styles = %v, want [工作流风格]", scStyles)
+	}
+}
+
+// TestPlanCustomStyleFallback: 节点无每节点风格时，storyboard/asset 注入的是解析后的
+// b.Style（= 运行入口 workflow.settings → project 的结果），与 Option-a 行为一致。
+func TestPlanCustomStyleFallback(t *testing.T) {
+	p, st, projID := newPlanner(t)
+	ctx := context.Background()
+
+	nodes := []WorkflowNode{
+		{ID: "script-1", Type: "script"},
+		{ID: "board-1", Type: "storyboard", DependsOn: []string{"script-1"}},
+	}
+	// b.Style 为空 = 工作流/项目均未指定；planner 仍写空串 style 键（worker 视空串为
+	// 中性无风格，不再落回 projects——与 Option-a 精确一致）。
+	res, err := p.PlanCustom(ctx, projID, "", Brief{Brief: "b"}, nodes, nil, nil)
+	if err != nil {
+		t.Fatalf("PlanCustom: %v", err)
+	}
+	var sbInputJSON string
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT input_json FROM todos WHERE plan_id=$1 AND type='storyboard'`, res.PlanID).Scan(&sbInputJSON); err != nil {
+		t.Fatalf("query storyboard input_json: %v", err)
+	}
+	var sbInput struct {
+		Style *string `json:"style"`
+	}
+	if err := json.Unmarshal([]byte(sbInputJSON), &sbInput); err != nil {
+		t.Fatalf("unmarshal storyboard input: %v (%s)", err, sbInputJSON)
+	}
+	if sbInput.Style == nil || *sbInput.Style != "" {
+		t.Fatalf("storyboard input.style: want ptr to \"\", got %v (%s)", sbInput.Style, sbInputJSON)
+	}
+}
+
 func TestHasUnboundCustomNode(t *testing.T) {
 	annotated := []WorkflowNode{{ID: "a", Type: "custom:note"}}
 	if !HasUnboundCustomNode(annotated) {
