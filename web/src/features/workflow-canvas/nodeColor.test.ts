@@ -45,8 +45,9 @@ describe("nodeDisplay", () => {
   })
   it("custom → own label/color, with fallbacks", () => {
     expect(nodeDisplay({ type: "custom:x", label: "翻译", color: "#7c93ff" })).toEqual({ label: "翻译", color: "#7c93ff" })
-    const fb = nodeDisplay({ type: "custom:x" })
-    expect(fb.label).toBe("自定义")
+    // 无 label 时回落到去前缀的 slug（不再是泛化的「自定义」）。
+    const fb = nodeDisplay({ type: "custom:科普讲师" })
+    expect(fb.label).toBe("科普讲师")
     expect(fb.color).toMatch(/^#/)
   })
 })
