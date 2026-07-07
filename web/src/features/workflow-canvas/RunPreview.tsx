@@ -20,6 +20,7 @@ import { ExportDialog } from "@/features/workflow/ExportDialog"
 import {
   classifyPreviewMode,
   extractStoryDoc,
+  hasMusicOutput,
   pairPages,
   type PreviewMode,
   type StoryDoc,
@@ -77,6 +78,10 @@ export function RunPreview({
   const projectQuery = useProject(open ? projectId : "")
   const doc = extractStoryDoc(nodes)
   const pages = pairPages(shotsQuery.data ?? [], assetsQuery.data ?? [])
+  // 音乐 tab 门控：仅当该 run 真的产出音频/歌词时才露出，否则纯图文工作流会看到空壳音乐页。
+  const hasMusic = hasMusicOutput(doc, assetsQuery.data ?? [], audioAssetId)
+  // 无音乐产物时强制回落阅读模式（即便启发式/受控值判成 music）。
+  const effectiveMode: PreviewMode = hasMusic ? activeMode : "reader"
   // 专属封面：project.coverAssetId（不在 /state、不在 /assets 列表里，须单独拉项目）。
   // 空串/纯空白 → undefined，回退借用首分镜图（reader 借用时须把该镜排除出内容页，防重复）。
   const dedicatedCover = projectQuery.data?.coverAssetId?.trim() || undefined
@@ -95,24 +100,26 @@ export function RunPreview({
               <Download className="mr-1 h-4 w-4" />
               导出
             </Button>
-            {/* 模式切换：启发式默认，用户可覆盖。 */}
-            <div className="flex items-center gap-1 rounded-md border border-line bg-bg-base p-0.5">
-              {(["reader", "music"] as const).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => setMode(m)}
-                  aria-pressed={activeMode === m}
-                  className={
-                    activeMode === m
-                      ? "rounded px-2.5 py-1 text-[12px] text-primary-foreground bg-amber"
-                      : "rounded px-2.5 py-1 text-[12px] text-text-2 hover:text-text-1"
-                  }
-                >
-                  {m === "reader" ? "阅读" : "音乐"}
-                </button>
-              ))}
-            </div>
+            {/* 模式切换：启发式默认，用户可覆盖。仅在该 run 真有音频/歌词产物时才提供切换。 */}
+            {hasMusic && (
+              <div className="flex items-center gap-1 rounded-md border border-line bg-bg-base p-0.5">
+                {(["reader", "music"] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setMode(m)}
+                    aria-pressed={effectiveMode === m}
+                    className={
+                      effectiveMode === m
+                        ? "rounded px-2.5 py-1 text-[12px] text-primary-foreground bg-amber"
+                        : "rounded px-2.5 py-1 text-[12px] text-text-2 hover:text-text-1"
+                    }
+                  >
+                    {m === "reader" ? "阅读" : "音乐"}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </DialogHeader>
 
@@ -123,7 +130,7 @@ export function RunPreview({
           onClose={() => setExportOpen(false)}
         />
 
-        {activeMode === "music" ? (
+        {effectiveMode === "music" ? (
           <MusicView
             doc={doc}
             pages={pages}
@@ -133,7 +140,12 @@ export function RunPreview({
             audioAssetId={audioAssetId}
           />
         ) : (
-          <ReaderView doc={doc} pages={pages} dedicatedCover={dedicatedCover} />
+          <ReaderView
+            doc={doc}
+            pages={pages}
+            dedicatedCover={dedicatedCover}
+            workflowName={workflowName}
+          />
         )}
       </DialogContent>
     </Dialog>
@@ -145,10 +157,12 @@ function ReaderView({
   doc,
   pages,
   dedicatedCover,
+  workflowName,
 }: {
   doc: StoryDoc | null
   pages: PreviewPage[]
   dedicatedCover?: string
+  workflowName?: string
 }) {
   // 封面：优先专属封面；无则借用首分镜图。借用时首镜须排除出内容页，
   // 否则封面与内容第 1 页会显示同一张图（"封面与分镜图重复" bug）。
@@ -198,7 +212,7 @@ function ReaderView({
                 className="max-h-[46vh] w-auto border-0 object-contain"
               />
             )}
-            <h2 className="text-[22px] font-semibold text-text-1">{doc?.title ?? "成品预览"}</h2>
+            <h2 className="text-[22px] font-semibold text-text-1">{doc?.title ?? workflowName ?? "作品"}</h2>
             {doc?.story && (
               <p className="max-w-[60ch] whitespace-pre-wrap break-words text-[14px] leading-relaxed text-text-2">
                 {doc.story}
@@ -218,11 +232,10 @@ function ReaderView({
                 配图暂无产物
               </div>
             )}
-            {page?.text && (
-              <p className="max-w-[60ch] whitespace-pre-wrap break-words text-center text-[15px] leading-relaxed text-text-1">
-                {page.text}
-              </p>
-            )}
+            {/* 配图说明：绑定该分镜的脚本文案；缺省回落「镜头 N」，绝不用弹窗标题占位。 */}
+            <p className="max-w-[60ch] whitespace-pre-wrap break-words text-center text-[15px] leading-relaxed text-text-1">
+              {page?.text || `镜头 ${index}`}
+            </p>
           </div>
         )}
 

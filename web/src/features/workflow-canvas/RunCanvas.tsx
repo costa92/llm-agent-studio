@@ -93,6 +93,10 @@ const nodeTypes = { studio: WorkflowNode, groupRun: GroupNode }
 // 运行态用只读 RunEdge（活动边渲流动粒子）；不复用编辑态 StudioEdge 的 +/× 控制簇。
 const edgeTypes = { studio: RunEdge }
 
+// 「生成完成」toast 稳定 id：打开任一全屏模态时按此 id 主动收起，避免 sonner 高 z-index
+// 浮层压在预览/审核弹窗之上（sonner 默认层级高于 Radix Dialog 的 z-50）。
+const RUN_COMPLETE_TOAST = "run-complete"
+
 // SseConnState → SseIndicator 可视态。
 const CONN_TO_STATUS: Record<SseConnState, SseStatus> = {
   idle: "disconnected",
@@ -110,6 +114,8 @@ export interface RunCanvasProps {
   nodes: WorkflowNodeType[]
   // 该工作流 id：运行入口走 POST /workflows/{wfId}/run；缺省 → 运行按钮禁用。
   workflowId?: string
+  // 工作流名：成品预览无标题产物时作阅读页封面标题回落（避免用弹窗标题占位）。
+  workflowName?: string
   // 运行期输入声明：非空则点「运行」先弹 RunInputsDialog，填完再发起 run。
   inputsSchema?: InputField[]
   onSelectRun: (runId: string) => void
@@ -131,6 +137,7 @@ function RunCanvasInner({
   runId,
   nodes,
   workflowId,
+  workflowName,
   inputsSchema,
   onSelectRun,
 }: RunCanvasProps) {
@@ -153,6 +160,13 @@ function RunCanvasInner({
   // 变体 A：run 内融合审核抽屉（全屏 Dialog）开合 + 抽屉内选中资产（本地态，与画布选中独立）。
   const [reviewOpen, setReviewOpen] = useState(false)
   const [reviewSelectedId, setReviewSelectedId] = useState<string | null>(null)
+
+  // 打开任一全屏模态时收起「生成完成」toast，防其高层浮层盖在弹窗之上（z-order）。
+  useEffect(() => {
+    if (galleryOpen || previewOpen || reviewOpen) {
+      toast.dismiss(RUN_COMPLETE_TOAST)
+    }
+  }, [galleryOpen, previewOpen, reviewOpen])
   // 大功能容器折叠/展开（视图态，按画布节点 id）。绝不回写 dependsOn。
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   const onToggleGroup = useCallback((nodeId: string) => {
@@ -459,6 +473,7 @@ function RunCanvasInner({
       status !== "canceled"
     ) {
       toast.success(`生成完成 · ${wfState.assets.pending} 张待审`, {
+        id: RUN_COMPLETE_TOAST,
         action: { label: "开始审核", onClick: () => setReviewOpen(true) },
         duration: 8000,
       })
@@ -790,6 +805,7 @@ function RunCanvasInner({
           projectId={projectId}
           planId={runId}
           nodes={wfState.nodes}
+          workflowName={workflowName}
         />
       )}
 

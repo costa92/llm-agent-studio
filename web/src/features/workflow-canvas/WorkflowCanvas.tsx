@@ -1251,6 +1251,7 @@ function RunShell({
         runId={runId}
         nodes={nodes}
         workflowId={workflowId}
+        workflowName={workflowName}
         inputsSchema={inputsSchema}
         onSelectRun={(rid) => onSelectRun?.(rid)}
       />
