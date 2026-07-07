@@ -104,7 +104,11 @@ export function LibraryView({
         <SlidersHorizontal className="h-[14px] w-[14px]" />
         筛选
       </button>
-      <span className="text-[12px] text-text-3">{assets.length} 个资产</span>
+      {/* P3：无限滚动只加载了一部分时不谎报总数——还有下一页显「已加载 N」，
+          加载到底（无下一页）时 N 即真·总数，显「共 N 个资产」。 */}
+      <span className="text-[12px] text-text-3">
+        {hasNextPage ? `已加载 ${assets.length}` : `共 ${assets.length} 个资产`}
+      </span>
     </>
   )
 

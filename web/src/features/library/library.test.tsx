@@ -115,6 +115,16 @@ describe("LibraryView", () => {
     expect(onRetry).toHaveBeenCalledTimes(1)
   })
 
+  it("labels the count 已加载 while paging, and 共 N 个资产 once fully loaded (P3)", () => {
+    // 还有下一页 → 只是「已加载」这么多，不谎报为总数。
+    const { rerender } = render(<LibraryView {...baseProps({ hasNextPage: true })} />)
+    expect(screen.getByText("已加载 2")).toBeInTheDocument()
+    expect(screen.queryByText("共 2 个资产")).not.toBeInTheDocument()
+    // 加载到底 → N 即真·总数。
+    rerender(<LibraryView {...baseProps({ hasNextPage: false })} />)
+    expect(screen.getByText("共 2 个资产")).toBeInTheDocument()
+  })
+
   it("shows load-more only when hasNextPage and fires onLoadMore", async () => {
     const onLoadMore = vi.fn()
     const user = userEvent.setup()
