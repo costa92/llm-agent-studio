@@ -9,6 +9,7 @@ import {
 import {
   getAccessToken,
   setAccessToken,
+  clearSessionMarker,
   ApiError,
 } from "@/lib/apiClient"
 import type { LoginResponse } from "@/lib/types"
@@ -101,6 +102,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // 登出请求失败也无所谓——本地 token 仍要清，会话即作废。
     } finally {
       setAccessToken(null)
+      clearSessionMarker() // 显式登出 → 抹掉会话标记，下次冷启动不再尝试恢复
       setIsAuthenticated(false)
     }
   }, [])
