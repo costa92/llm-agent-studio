@@ -291,7 +291,7 @@ func runWorkflowHandler(ps ProjectStore, ws WorkflowStore, pl PlannerPort, ev Ev
 			}
 		}
 		if len(nodes) == 0 {
-			http.Error(w, "workflow has no nodes", http.StatusBadRequest)
+			http.Error(w, "工作流没有任何节点，请先添加节点", http.StatusBadRequest)
 			return
 		}
 		if err := planner.ValidateCustomGraph(nodes); err != nil {
@@ -325,6 +325,19 @@ func runWorkflowHandler(ps ProjectStore, ws WorkflowStore, pl PlannerPort, ev Ev
 			http.Error(w, "invalid run inputs: "+verr.Error(), http.StatusBadRequest)
 			return
 		}
+		// 注册表解析：只读 org 注册表、不依赖状态翻转，其 resolved 结果供下方 PlanCustom。
+		// 必须放在 TryBeginRun（翻 planning）之前——它可能 400，若在翻转之后失败会把项目
+		// 悬挂在 planning，而 TryBeginRun 又拒绝 planning，导致该项目被永久 409 锁死无法再跑。
+		resolved, rerr := resolveCustomTypes(r.Context(), customTypeResolver, p.OrgID, nodes)
+		if rerr != nil {
+			http.Error(w, rerr.Error(), http.StatusBadRequest)
+			return
+		}
+		// 配额检查是「先读后判」，跨请求仍有 TOCTOU（同 org 不同项目并发可竞争过闸）。
+		// 默认 quota=0（不限）；把每-org 配额做成原子（advisory lock / 条件插入）成本高，
+		// 且成本账本由 worker 逐次生成时写、运行入口无单一插入点——故此处不改配额原子性。
+		// 但下方 TryBeginRun 的单项目并发门禁已把「同一项目双跑」这条主要竞态关掉。
+		// TODO(quota-atomicity)：若将来 per-org 配额需强一致，改为 org 级 advisory lock。
 		if over, err := quotaExceeded(r.Context(), cs, quota, p.OrgID); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -332,8 +345,15 @@ func runWorkflowHandler(ps ProjectStore, ws WorkflowStore, pl PlannerPort, ev Ev
 			http.Error(w, "generation quota exceeded for org", http.StatusTooManyRequests)
 			return
 		}
-		if err := ps.SetStatus(r.Context(), id, "planning"); err != nil {
+		// 并发/幂等门禁：原子 CAS 把项目翻到 planning。项目已在 planning/running 时
+		// 返回 409（一个项目同一时刻只允许一个在途 run）。所有会 400 的校验（含上面的
+		// resolveCustomTypes）都在此之前完成——校验失败不翻状态，不会悬挂在 planning。
+		// 翻转之后唯一还会失败的步骤是 PlanCustom（500），失败时下方回滚状态以免锁死。
+		if ok, err := ps.TryBeginRun(r.Context(), id); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			http.Error(w, "该项目已有运行进行中，请等待其完成或取消后再运行", http.StatusConflict)
 			return
 		}
 		_, _ = ev.Append(r.Context(), id, "planner_started", "", nil)
@@ -354,13 +374,11 @@ func runWorkflowHandler(ps ProjectStore, ws WorkflowStore, pl PlannerPort, ev Ev
 		if v, ok := runResolved.BriefOverride["style"]; ok {
 			brief.Style = v
 		}
-		resolved, rerr := resolveCustomTypes(r.Context(), customTypeResolver, p.OrgID, nodes)
-		if rerr != nil {
-			http.Error(w, rerr.Error(), http.StatusBadRequest)
-			return
-		}
 		result, err := pl.PlanCustom(r.Context(), id, wfID, brief, nodes, resolved, buildRunInputs(runReq.Inputs, wf.InputsSchema))
 		if err != nil {
+			// 建 plan 失败：把项目从 planning 回滚到 failed（非在途终态），否则 TryBeginRun
+			// 会一直拒绝，项目被永久 409 锁死无法再跑。failed 不属于 planning/running，可再运行。
+			_ = ps.SetStatus(r.Context(), id, "failed")
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

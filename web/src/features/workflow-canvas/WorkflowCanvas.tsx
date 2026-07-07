@@ -869,12 +869,14 @@ function CanvasInner({
     }
     const onErr = (err: unknown) => {
       if (err instanceof ApiError && err.status === 400) {
+        // 保留后端的精确原因（如 dependency cycle at "b"→"a" / node "x": ...），
+        // 只剥掉通用前缀。有具体原因时带上，别塌回泛化文案吞掉细节。
         const msg = err.body
           .replace(/^invalid workflow:\s*/i, "")
           .replace(/^custom workflow:\s*/i, "")
           .replace(/^bad request:\s*/i, "")
           .trim()
-        toast.error(msg || "工作流配置无效")
+        toast.error(msg ? `工作流配置无效：${msg}` : "工作流配置无效")
         return
       }
       toast.error("保存失败")
