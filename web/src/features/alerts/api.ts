@@ -8,11 +8,18 @@ import {
 import { apiJSON } from "@/lib/apiClient"
 import type { AlertSettings } from "@/lib/types"
 
-// 告警配置写入入参：{email, enabled}。开启告警时后端要求 email 形似邮箱（400），
-// 关闭时允许留空/保留旧值。
+// 告警配置写入入参。开启任一类告警时后端要求 email 形似邮箱（400），且开启的运营告警
+// 需正阈值；全部关闭时允许留空/保留旧值。
 export interface UpdateAlertSettingsInput {
   email: string
   enabled: boolean
+  budgetEnabled: boolean
+  budgetThresholdMicros: number
+  budgetWindowHours: number
+  stuckEnabled: boolean
+  stuckThresholdMinutes: number
+  backlogEnabled: boolean
+  backlogThreshold: number
 }
 
 // org 级 run 失败告警配置：GET /api/orgs/{org}/alert-settings → AlertSettings（roleAdmin）。

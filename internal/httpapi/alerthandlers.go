@@ -19,6 +19,15 @@ type AlertSettingsStore interface {
 type alertSettingsBody struct {
 	Email   string `json:"email"`
 	Enabled bool   `json:"enabled"`
+
+	// 运营告警（成本超阈 / 卡顿运行 / 审核积压），各自独立开关 + 阈值。
+	BudgetEnabled         bool  `json:"budgetEnabled"`
+	BudgetThresholdMicros int64 `json:"budgetThresholdMicros"`
+	BudgetWindowHours     int   `json:"budgetWindowHours"`
+	StuckEnabled          bool  `json:"stuckEnabled"`
+	StuckThresholdMinutes int   `json:"stuckThresholdMinutes"`
+	BacklogEnabled        bool  `json:"backlogEnabled"`
+	BacklogThreshold      int   `json:"backlogThreshold"`
 }
 
 func getAlertSettingsHandler(s AlertSettingsStore) http.HandlerFunc {
@@ -40,8 +49,9 @@ func putAlertSettingsHandler(s AlertSettingsStore) http.HandlerFunc {
 			return
 		}
 		b.Email = strings.TrimSpace(b.Email)
-		// 开启告警必须带一个形似邮箱的地址；关闭时允许留空/保留旧值。
-		if b.Enabled && !looksLikeEmail(b.Email) {
+		// 开启任一类告警都必须带一个形似邮箱的地址；全部关闭时允许留空/保留旧值。
+		anyEnabled := b.Enabled || b.BudgetEnabled || b.StuckEnabled || b.BacklogEnabled
+		if anyEnabled && !looksLikeEmail(b.Email) {
 			http.Error(w, "开启告警需要有效的告警邮箱", http.StatusBadRequest)
 			return
 		}
@@ -49,7 +59,30 @@ func putAlertSettingsHandler(s AlertSettingsStore) http.HandlerFunc {
 			http.Error(w, "告警邮箱格式不正确", http.StatusBadRequest)
 			return
 		}
-		st, err := s.Upsert(r.Context(), r.PathValue("org"), alerts.UpsertInput{Email: b.Email, Enabled: b.Enabled})
+		// 开启某类运营告警时阈值必须为正（关闭时不校验，允许留存旧值/零）。
+		if b.BudgetEnabled && b.BudgetThresholdMicros <= 0 {
+			http.Error(w, "开启成本告警需要设置正的成本阈值", http.StatusBadRequest)
+			return
+		}
+		if b.StuckEnabled && b.StuckThresholdMinutes <= 0 {
+			http.Error(w, "开启卡顿告警需要设置正的时长阈值", http.StatusBadRequest)
+			return
+		}
+		if b.BacklogEnabled && b.BacklogThreshold <= 0 {
+			http.Error(w, "开启审核积压告警需要设置正的条数阈值", http.StatusBadRequest)
+			return
+		}
+		st, err := s.Upsert(r.Context(), r.PathValue("org"), alerts.UpsertInput{
+			Email:                 b.Email,
+			Enabled:               b.Enabled,
+			BudgetEnabled:         b.BudgetEnabled,
+			BudgetThresholdMicros: b.BudgetThresholdMicros,
+			BudgetWindowHours:     b.BudgetWindowHours,
+			StuckEnabled:          b.StuckEnabled,
+			StuckThresholdMinutes: b.StuckThresholdMinutes,
+			BacklogEnabled:        b.BacklogEnabled,
+			BacklogThreshold:      b.BacklogThreshold,
+		})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

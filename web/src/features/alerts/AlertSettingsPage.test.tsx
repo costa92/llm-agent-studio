@@ -27,6 +27,24 @@ const SETTINGS: AlertSettings = {
   orgId: "acme",
   email: "ops@example.com",
   enabled: true,
+  budgetEnabled: false,
+  budgetThresholdMicros: 0,
+  budgetWindowHours: 24,
+  stuckEnabled: false,
+  stuckThresholdMinutes: 30,
+  backlogEnabled: false,
+  backlogThreshold: 50,
+}
+
+// 全部运营告警关闭时的 payload 片段（阈值解析为 0）。
+const OPS_OFF = {
+  budgetEnabled: false,
+  budgetThresholdMicros: 0,
+  budgetWindowHours: 0,
+  stuckEnabled: false,
+  stuckThresholdMinutes: 0,
+  backlogEnabled: false,
+  backlogThreshold: 0,
 }
 
 function renderView() {
@@ -61,7 +79,41 @@ describe("AlertSettingsView", () => {
     await user.click(screen.getByRole("button", { name: "保存告警设置" }))
 
     await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1))
-    expect(mutate.mock.calls[0][0]).toEqual({ email: "alert@corp.io", enabled: true })
+    expect(mutate.mock.calls[0][0]).toEqual({ email: "alert@corp.io", enabled: true, ...OPS_OFF })
+  })
+
+  it("enables budget alert and converts ¥ threshold to micros", async () => {
+    const user = userEvent.setup()
+    renderView()
+
+    await user.click(screen.getByLabelText("成本超阈告警"))
+    const yuan = screen.getByLabelText("成本阈值（元）")
+    await user.clear(yuan)
+    await user.type(yuan, "50")
+    await user.click(screen.getByRole("button", { name: "保存告警设置" }))
+
+    await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1))
+    expect(mutate.mock.calls[0][0]).toEqual({
+      email: "ops@example.com",
+      enabled: true,
+      ...OPS_OFF,
+      budgetEnabled: true,
+      budgetThresholdMicros: 50_000_000,
+      budgetWindowHours: 24,
+    })
+  })
+
+  it("blocks enabling backlog alert with empty threshold", async () => {
+    const user = userEvent.setup()
+    renderView()
+
+    await user.click(screen.getByLabelText("审核积压告警"))
+    // 留空阈值（原生 min 校验只在有值时触发，空值走我们的镜像校验 → toast）。
+    await user.clear(screen.getByLabelText("审核积压阈值（条）"))
+    await user.click(screen.getByRole("button", { name: "保存告警设置" }))
+
+    await screen.findByText("审核积压告警的阈值需为正整数（条）")
+    expect(mutate).not.toHaveBeenCalled()
   })
 
   it("blocks save when enabled without email (no mutation, toast error)", async () => {
@@ -97,7 +149,7 @@ describe("AlertSettingsView", () => {
     await user.click(screen.getByRole("button", { name: "保存告警设置" }))
 
     await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1))
-    expect(mutate.mock.calls[0][0]).toEqual({ email: "", enabled: false })
+    expect(mutate.mock.calls[0][0]).toEqual({ email: "", enabled: false, ...OPS_OFF })
   })
 
   it("disables submit while saving (anti double-click)", () => {
