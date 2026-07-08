@@ -18,7 +18,7 @@ import {
   type FinalConnectionState,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
-import { Redo2, Undo2 } from "lucide-react"
+import { PanelLeft, PanelRight, Redo2, Undo2 } from "lucide-react"
 import { toast } from "sonner"
 import "./canvasTheme.css"
 import { ApiError } from "@/lib/apiClient"
@@ -75,6 +75,8 @@ import { type FormDraft, type NodeKind } from "@/features/custom-node-types/type
 import { useOrgSecrets } from "@/features/org-secrets/api"
 import { useOrgTextModels } from "@/features/cost/api"
 import { useRole } from "@/app/rbac"
+import { useMediaQuery } from "@/lib/useMediaQuery"
+import { Sheet, SheetContent } from "@/components/ui/sheet"
 import type {
   CustomNodeType,
   HttpParams,
@@ -173,6 +175,10 @@ function CanvasInner({
   const [rightPanel, setRightPanel] = useState<"props" | "inputs" | "settings">(
     "props",
   )
+  // <lg 窄屏：左节点面板 / 右属性面板收进抽屉（桌面 ≥lg 仍是内联三栏，不受影响）。
+  const isDesktop = useMediaQuery("(min-width: 1024px)")
+  const [leftDrawerOpen, setLeftDrawerOpen] = useState(false)
+  const [rightDrawerOpen, setRightDrawerOpen] = useState(false)
   // 乐观锁版本号：保存时回传服务端守卫，成功后按返回值前进（同一会话连续保存不误报
   // 409）；捕获 409 时提示重载并阻止盲存。新建缺省 1。
   const [version, setVersion] = useState<number>(initialVersion ?? 1)
@@ -950,15 +956,91 @@ function CanvasInner({
     .filter((n) => n.id !== selectedId)
     .map((n) => n.id)
 
+  // 右栏内容（属性 / 输入 / 设置）——桌面内联渲染、窄屏塞进抽屉，抽一份共用避免重复。
+  const rightPanelContent =
+    rightPanel === "settings" ? (
+      <WorkflowSettingsPanel settings={settings} onChange={setSettings} />
+    ) : rightPanel === "inputs" ? (
+      <InputsSchemaPanel schema={inputsSchema} onChange={setInputsSchema} />
+    ) : (
+      <PropertiesPanel
+        node={selected}
+        prompts={prompts}
+        basics={basics}
+        org={org}
+        otherIds={otherIds}
+        onPatch={patchSelected}
+        onRename={renameSelected}
+        onDelete={deleteSelected}
+        typedParams={(() => {
+          const ct = selected?.typeId ? typedTypeById.get(selected.typeId) : undefined
+          return ct?.kind === "llm" ? (ct.params as LlmParams) : undefined
+        })()}
+        typedHttpParams={(() => {
+          const ct = selected?.typeId ? typedTypeById.get(selected.typeId) : undefined
+          return ct?.kind === "http" ? (ct.params as HttpParams) : undefined
+        })()}
+        typedScriptParams={(() => {
+          const ct = selected?.typeId ? typedTypeById.get(selected.typeId) : undefined
+          return ct?.kind === "script" ? (ct.params as ScriptParams) : undefined
+        })()}
+        upstreamNodes={
+          selected
+            ? (() => {
+                // 直接上游 id 集合从 EDGES 推导（单一真源），而非 selected.dependsOn——
+                // 后者对会话内新建/连线的节点是陈旧的 []（dependsOn 仅在保存时由边回填）。
+                const upstreamIds = new Set(
+                  directUpstreamIds(rfEdges, selected.id),
+                )
+                return (rfNodes as RFNode[])
+                  .filter((n) => upstreamIds.has(n.id))
+                  .map((n) => {
+                    // P5：按上游 node.type 在已持目录解析其 OutputSchema（字段选择器候选源）。
+                    // descTypeFor 桥接 bare 内置名→studio.* desc 类型（否则裸 script 撞无 schema 的
+                    // Starlark script 条目 → 字段选择器永不渲染，见 nodeColor.descTypeFor）。
+                    const t = descTypeFor(n.data.node.type)
+                    const desc = nodeTypeDescs.find((d) => d.type === t)
+                    return {
+                      id: n.id,
+                      label: n.data.node.label ?? n.id,
+                      outputSchema: desc?.outputSchema ?? [],
+                    }
+                  })
+              })()
+            : []
+        }
+        exprChannel={exprChannel}
+        description={nodeDesc}
+        onEditType={
+          selected && isCustomType(selected.type)
+            ? () => {
+                const c = customTypes.find((x) => x.type === selected.type)
+                if (c) setTypeDialog({ mode: "edit", type: selected.type, initial: { label: c.label, color: c.color } })
+              }
+            : undefined
+        }
+      />
+    )
+
   return (
     <div className="flex h-full flex-col bg-bg-base">
       {/* 顶栏：返回 / 工作流名 / 保存（仅 dirty 时可点）。 */}
-      <header className="flex items-center justify-between border-b border-line bg-bg-surface px-4 py-2.5">
-        <div className="flex items-center gap-3">
+      <header className="flex items-center justify-between gap-2 overflow-x-auto border-b border-line bg-bg-surface px-4 py-2.5">
+        <div className="flex shrink-0 items-center gap-3">
+          {/* 窄屏（<lg）：唤出左侧节点面板抽屉；桌面隐藏（面板已内联）。 */}
+          <button
+            type="button"
+            aria-label="节点面板"
+            title="节点面板"
+            onClick={() => setLeftDrawerOpen(true)}
+            className="text-text-3 hover:text-text-1 lg:hidden"
+          >
+            <PanelLeft className="h-4 w-4" aria-hidden />
+          </button>
           <button
             type="button"
             onClick={onBack}
-            className="text-[12px] text-text-3 hover:text-text-1"
+            className="whitespace-nowrap text-[12px] text-text-3 hover:text-text-1"
           >
             ← 返回
           </button>
@@ -988,14 +1070,14 @@ function CanvasInner({
             )
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           {/* 右栏切换：节点属性 / 工作流输入（设计期输入 schema 编辑器）。
               与 ModeToggle 同款段控形态（内嵌容器 p-0.5 + rounded 段）保持一致；
               作为次级切换用中性高亮（bg-bg-surface），区别于 ModeToggle 的 amber 主切换。 */}
           <div
             role="group"
             aria-label="右栏视图"
-            className="inline-flex items-center rounded-md border border-line bg-bg-base p-0.5 text-[12px]"
+            className="inline-flex shrink-0 items-center whitespace-nowrap rounded-md border border-line bg-bg-base p-0.5 text-[12px]"
           >
             <button
               type="button"
@@ -1062,20 +1144,46 @@ function CanvasInner({
           >
             {saving ? "保存中…" : "保存"}
           </button>
+          {/* 窄屏（<lg）：唤出右侧属性/输入/设置面板抽屉；桌面隐藏（面板已内联）。 */}
+          <button
+            type="button"
+            aria-label="属性面板"
+            title="属性面板"
+            onClick={() => setRightDrawerOpen(true)}
+            className="text-text-3 hover:text-text-1 lg:hidden"
+          >
+            <PanelRight className="h-4 w-4" aria-hidden />
+          </button>
         </div>
       </header>
 
-      {/* 主区：三栏。 */}
+      {/* 主区：三栏。桌面（≥lg）左右面板内联；窄屏（<lg）收进抽屉，画布占满宽度。 */}
       <div className="flex min-h-0 flex-1">
-        <NodePalette
-          onStandardPipeline={onStandardPipeline}
-          onAutoTidy={onAutoTidy}
-          customTypes={customTypes}
-          onQuickCreate={(kind) => { setQuickSubmitError(null); setQuickCreate(kind) }}
-          onAddCustomType={() => setTypeDialog({ mode: "create" })}
-          onEditCustomType={(type) => { const c = customTypes.find((x) => x.type === type); if (c) setTypeDialog({ mode: "edit", type, initial: { label: c.label, color: c.color } }) }}
-          onOpenManager={() => setNodeManagerOpen(true)}
-        />
+        {isDesktop ? (
+          <NodePalette
+            onStandardPipeline={onStandardPipeline}
+            onAutoTidy={onAutoTidy}
+            customTypes={customTypes}
+            onQuickCreate={(kind) => { setQuickSubmitError(null); setQuickCreate(kind) }}
+            onAddCustomType={() => setTypeDialog({ mode: "create" })}
+            onEditCustomType={(type) => { const c = customTypes.find((x) => x.type === type); if (c) setTypeDialog({ mode: "edit", type, initial: { label: c.label, color: c.color } }) }}
+            onOpenManager={() => setNodeManagerOpen(true)}
+          />
+        ) : (
+          <Sheet open={leftDrawerOpen} onOpenChange={setLeftDrawerOpen}>
+            <SheetContent side="left" className="w-48 max-w-[85vw] gap-0 p-0 [&>aside]:h-full [&>aside]:w-full [&>aside]:border-r-0">
+              <NodePalette
+                onStandardPipeline={onStandardPipeline}
+                onAutoTidy={onAutoTidy}
+                customTypes={customTypes}
+                onQuickCreate={(kind) => { setQuickSubmitError(null); setQuickCreate(kind); setLeftDrawerOpen(false) }}
+                onAddCustomType={() => { setTypeDialog({ mode: "create" }); setLeftDrawerOpen(false) }}
+                onEditCustomType={(type) => { const c = customTypes.find((x) => x.type === type); if (c) setTypeDialog({ mode: "edit", type, initial: { label: c.label, color: c.color } }); setLeftDrawerOpen(false) }}
+                onOpenManager={() => { setNodeManagerOpen(true); setLeftDrawerOpen(false) }}
+              />
+            </SheetContent>
+          </Sheet>
+        )}
         <div
           className="workflow-canvas relative flex-1"
           onDragOver={onDragOver}
@@ -1202,68 +1310,14 @@ function CanvasInner({
             org={org}
           />
         </div>
-        {rightPanel === "settings" ? (
-          <WorkflowSettingsPanel settings={settings} onChange={setSettings} />
-        ) : rightPanel === "inputs" ? (
-          <InputsSchemaPanel schema={inputsSchema} onChange={setInputsSchema} />
+        {isDesktop ? (
+          rightPanelContent
         ) : (
-        <PropertiesPanel
-          node={selected}
-          prompts={prompts}
-          basics={basics}
-          org={org}
-          otherIds={otherIds}
-          onPatch={patchSelected}
-          onRename={renameSelected}
-          onDelete={deleteSelected}
-          typedParams={(() => {
-            const ct = selected?.typeId ? typedTypeById.get(selected.typeId) : undefined
-            return ct?.kind === "llm" ? (ct.params as LlmParams) : undefined
-          })()}
-          typedHttpParams={(() => {
-            const ct = selected?.typeId ? typedTypeById.get(selected.typeId) : undefined
-            return ct?.kind === "http" ? (ct.params as HttpParams) : undefined
-          })()}
-          typedScriptParams={(() => {
-            const ct = selected?.typeId ? typedTypeById.get(selected.typeId) : undefined
-            return ct?.kind === "script" ? (ct.params as ScriptParams) : undefined
-          })()}
-          upstreamNodes={
-            selected
-              ? (() => {
-                  // 直接上游 id 集合从 EDGES 推导（单一真源），而非 selected.dependsOn——
-                  // 后者对会话内新建/连线的节点是陈旧的 []（dependsOn 仅在保存时由边回填）。
-                  const upstreamIds = new Set(
-                    directUpstreamIds(rfEdges, selected.id),
-                  )
-                  return (rfNodes as RFNode[])
-                    .filter((n) => upstreamIds.has(n.id))
-                    .map((n) => {
-                      // P5：按上游 node.type 在已持目录解析其 OutputSchema（字段选择器候选源）。
-                      // descTypeFor 桥接 bare 内置名→studio.* desc 类型（否则裸 script 撞无 schema 的
-                      // Starlark script 条目 → 字段选择器永不渲染，见 nodeColor.descTypeFor）。
-                      const t = descTypeFor(n.data.node.type)
-                      const desc = nodeTypeDescs.find((d) => d.type === t)
-                      return {
-                        id: n.id,
-                        label: n.data.node.label ?? n.id,
-                        outputSchema: desc?.outputSchema ?? [],
-                      }
-                    })
-                })()
-              : []
-          }
-          exprChannel={exprChannel}
-          description={nodeDesc}
-          onEditType={
-            selected && isCustomType(selected.type)
-              ? () => {
-                  const c = customTypes.find((x) => x.type === selected.type)
-                  if (c) setTypeDialog({ mode: "edit", type: selected.type, initial: { label: c.label, color: c.color } })
-                }
-              : undefined
-          }
-        />
+          <Sheet open={rightDrawerOpen} onOpenChange={setRightDrawerOpen}>
+            <SheetContent side="right" className="w-64 max-w-[85vw] gap-0 p-0 [&>aside]:h-full [&>aside]:w-full [&>aside]:border-l-0">
+              {rightPanelContent}
+            </SheetContent>
+          </Sheet>
         )}
       </div>
     </div>
@@ -1286,17 +1340,17 @@ function RunShell({
 }: WorkflowCanvasProps) {
   return (
     <div className="flex h-full flex-col bg-bg-base">
-      <header className="flex items-center justify-between border-b border-line bg-bg-surface px-4 py-2.5">
-        <div className="flex items-center gap-3">
+      <header className="flex items-center justify-between gap-2 overflow-x-auto border-b border-line bg-bg-surface px-4 py-2.5">
+        <div className="flex shrink-0 items-center gap-3">
           <button
             type="button"
             onClick={onBack}
-            className="text-[12px] text-text-3 hover:text-text-1"
+            className="whitespace-nowrap text-[12px] text-text-3 hover:text-text-1"
           >
             ← 返回
           </button>
           <span className="text-[12px] text-text-3">/</span>
-          <h1 className="text-[14px] font-semibold text-text-1">{workflowName}</h1>
+          <h1 className="whitespace-nowrap text-[14px] font-semibold text-text-1">{workflowName}</h1>
           {onModeChange && <ModeToggle mode="run" onChange={onModeChange} />}
         </div>
       </header>

@@ -156,16 +156,19 @@ export function ModelConfigView({
             },
           ]}
           renderCard={(c, actions) => (
-            <div className="flex items-center justify-between border-b border-line px-4 py-2.5 text-[12.5px]">
-              <span className="flex flex-col gap-0.5">
-                <span className="text-text-1">
+            // 窄屏（如手机 390）：整行 flex-wrap 换行，让「徽标 + 编辑/删除」在放不下时
+            // 折到第二行，避免被祖先 overflow-hidden 卡片横向裁掉、编辑按钮够不到。
+            // 宽屏内容一行放得下、不触发换行，布局与原先一致。
+            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-b border-line px-4 py-2.5 text-[12.5px]">
+              <span className="flex min-w-0 flex-col gap-0.5">
+                <span className="text-text-1 break-words">
                   {c.provider} · {c.model}
                 </span>
                 {c.baseUrl && (
-                  <span className="text-[11px] text-text-3">{c.baseUrl}</span>
+                  <span className="text-[11px] text-text-3 break-all">{c.baseUrl}</span>
                 )}
               </span>
-              <span className="flex items-center gap-2">
+              <span className="flex flex-wrap items-center gap-2 ml-auto">
                 <Badge variant={c.hasApiKey ? "done" : "pending"}>
                   {c.hasApiKey ? "已配置密钥" : "用服务端密钥"}
                 </Badge>
