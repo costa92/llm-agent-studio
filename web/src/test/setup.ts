@@ -27,11 +27,14 @@ if (typeof Element !== "undefined") {
   }
 }
 
-// jsdom 不实现 matchMedia；ThemeProvider 用它探测 prefers-color-scheme。
-// 默认 matches:false（系统暗），单测可按用例 stub 覆盖（见 theme.test.tsx）。
+// jsdom 不实现 matchMedia；ThemeProvider 用它探测 prefers-color-scheme，
+// 画布/响应式布局用它探测视口宽度（useMediaQuery）。
+// 默认：min-width 视口查询按桌面（≥lg）匹配 true，与 jsdom 默认宽度一致，
+// 保证画布三栏内联渲染；其余（prefers-color-scheme 等）保持 false（系统暗）。
+// 单测可按用例 stub 覆盖（见 theme.test.tsx）。
 if (typeof window !== "undefined" && typeof window.matchMedia === "undefined") {
   window.matchMedia = ((query: string) => ({
-    matches: false,
+    matches: /min-width/.test(query),
     media: query,
     onchange: null,
     addListener: () => {},

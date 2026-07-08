@@ -24,6 +24,8 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
+import { PanelLeft, PanelRight } from "lucide-react"
+import { useMediaQuery } from "@/lib/useMediaQuery"
 import { EventLog } from "@/components/studio/EventLog"
 import { ApiError, getAccessToken } from "@/lib/apiClient"
 import { statusLabel, statusVariant } from "@/features/projects/status"
@@ -150,6 +152,12 @@ function RunCanvasInner({
   const cancel = useCancel(projectId)
   // 运行期输入弹窗开合：inputsSchema 非空时点「运行」先弹表单，填完再发起 run。
   const [runInputsOpen, setRunInputsOpen] = useState(false)
+
+  // <lg 窄屏：左（运行记录/日志）与右（选中工件）栏收进抽屉，画布占满宽度。
+  // 桌面（≥lg）仍是内联三栏，布局不变。
+  const isDesktop = useMediaQuery("(min-width: 1024px)")
+  const [leftDrawerOpen, setLeftDrawerOpen] = useState(false)
+  const [rightDrawerOpen, setRightDrawerOpen] = useState(false)
 
   // 选中态：点节点 → 看工件（剧本/分镜抽屉 或 右栏资产预览 或大功能容器 Run Matrix）。
   const [selection, setSelection] = useState<RunSelection>(null)
@@ -384,7 +392,14 @@ function RunCanvasInner({
     const node = nodes.find((n) => n.id === canvasNodeId)
     if (!node) return
     const sel = resolveSelection(node.type, overlay.get(canvasNodeId))
-    if (sel) setSelection(sel)
+    if (sel) {
+      setSelection(sel)
+      // 窄屏：非 script/storyboard 的工件显示在右栏抽屉——点节点即唤出。
+      // script/storyboard 走各自的专用抽屉（drawerKind），不重复开右栏。
+      if (!isDesktop && sel.kind !== "script" && sel.kind !== "storyboard") {
+        setRightDrawerOpen(true)
+      }
+    }
   }
 
   // 运行控制。
@@ -547,47 +562,114 @@ function RunCanvasInner({
     )
   }
 
-  return (
-    <div className="flex min-h-0 flex-1">
-      {/* 左栏：运行选择器 + 运行汇总 + 事件日志。 */}
-      <aside className="flex w-[240px] shrink-0 flex-col gap-4 overflow-y-auto border-r border-line bg-bg-surface p-4">
+  // 左栏（运行记录 / 汇总 / 成本 / 日志）——桌面内联、窄屏塞进抽屉，抽一份共用避免重复。
+  const leftPanelContent = (
+    <aside className="flex w-[240px] shrink-0 flex-col gap-4 overflow-y-auto border-r border-line bg-bg-surface p-4">
+      <section>
+        <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
+          运行记录
+        </h4>
+        <RunSelector
+          plans={plansQuery.data ?? []}
+          currentRunId={runId}
+          onSelectRun={onSelectRun}
+        />
+      </section>
+      <section>
+        <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
+          运行汇总
+        </h4>
+        <RunSummary state={wfState} className="rounded-lg border border-line bg-bg-base px-3 py-2" />
+      </section>
+      {/* 本次运行成本：admin 门控（成本端点是 admin 门槛，非 admin 不发请求不吃 403）。 */}
+      {isAdmin && (
         <section>
           <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
-            运行记录
+            本次成本
           </h4>
-          <RunSelector
-            plans={plansQuery.data ?? []}
-            currentRunId={runId}
-            onSelectRun={onSelectRun}
+          <RunCostSummary
+            projectId={projectId}
+            planId={runId}
+            live={live}
+            className="rounded-lg border border-line bg-bg-base px-3 py-2"
           />
         </section>
-        <section>
-          <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
-            运行汇总
-          </h4>
-          <RunSummary state={wfState} className="rounded-lg border border-line bg-bg-base px-3 py-2" />
-        </section>
-        {/* 本次运行成本：admin 门控（成本端点是 admin 门槛，非 admin 不发请求不吃 403）。 */}
-        {isAdmin && (
-          <section>
-            <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
-              本次成本
-            </h4>
-            <RunCostSummary
-              projectId={projectId}
-              planId={runId}
-              live={live}
-              className="rounded-lg border border-line bg-bg-base px-3 py-2"
-            />
-          </section>
-        )}
-        <section>
-          <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
-            事件日志
-          </h4>
-          <EventLog lines={log} />
-        </section>
-      </aside>
+      )}
+      <section>
+        <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
+          事件日志
+        </h4>
+        <EventLog lines={log} />
+      </section>
+    </aside>
+  )
+
+  // 右栏（选中工件预览）——桌面内联、窄屏塞进抽屉，抽一份共用避免重复。
+  const rightPanelContent = (
+    <aside className="flex w-[260px] shrink-0 flex-col overflow-y-auto border-l border-line bg-bg-surface p-4">
+      <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
+        选中工件
+      </h4>
+      {/* 选中大功能容器 → Run Matrix（逐页状态格 + 选中页产物）。取代 storyboard 旧 ItemInspector。
+          P5d：其余选中态有 items → per-item inspector；items 缺省/空 → 回落标量面板。 */}
+      {selection?.kind === "group" ? (
+        <RunMatrix
+          group={runGroups.get(selection.groupId)}
+          selectedPageKey={selection.selectedPageKey}
+          onSelectPage={(page) =>
+            setSelection({
+              kind: "group",
+              groupId: selection.groupId,
+              selectedPageKey: page.key,
+            })
+          }
+          org={org}
+          isAdmin={isAdmin}
+          assetDetail={previewDetailQuery.data}
+        />
+      ) : selection?.items && selection.items.length > 0 ? (
+        <ItemInspector items={selection.items} />
+      ) : selection?.kind === "custom" ? (
+        selection.outputFormat === "http-status" ? (
+          <SuppressedBodyPanel content={selection.output} />
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            <p className="text-[11px] text-text-3">
+              {selection.outputFormat === "json" ? "JSON 产物" : "文本产物"}
+            </p>
+            <pre className="overflow-auto rounded-md border border-line bg-bg-base p-2 text-[11px] leading-relaxed text-text-1 whitespace-pre-wrap break-words">
+              {selection.output}
+            </pre>
+          </div>
+        )
+      ) : previewAssetId ? (
+        <SelectedAssetPanel
+          org={org}
+          assetId={previewAssetId}
+          isAdmin={isAdmin}
+          detail={previewDetailQuery.data}
+        />
+      ) : (
+        <div className="flex flex-1 flex-col items-center justify-center gap-1.5 py-16 text-center">
+          <p className="text-[13px] text-text-2">选择一个节点查看产物</p>
+          <p className="text-[12px] text-text-3">点剧本/分镜节点看文本，点图片节点看素材</p>
+        </div>
+      )}
+    </aside>
+  )
+
+  return (
+    <div className="flex min-h-0 flex-1">
+      {/* 左栏：桌面（≥lg）内联；窄屏（<lg）收进抽屉。 */}
+      {isDesktop ? (
+        leftPanelContent
+      ) : (
+        <Sheet open={leftDrawerOpen} onOpenChange={setLeftDrawerOpen}>
+          <SheetContent side="left" className="w-[240px] max-w-[85vw] gap-0 p-0 [&>aside]:h-full [&>aside]:w-full [&>aside]:border-r-0">
+            {leftPanelContent}
+          </SheetContent>
+        </Sheet>
+      )}
 
       {/* 中：只读画布。点节点 → 选中工件。 */}
       <div className="workflow-canvas relative flex-1">
@@ -631,6 +713,8 @@ function RunCanvasInner({
             // 右栏渲 Run Matrix（不预选某页）。
             if (node.type === "groupRun") {
               setSelection({ kind: "group", groupId: node.id })
+              // 窄屏：选中大功能容器 → 右栏抽屉唤出 Run Matrix。
+              if (!isDesktop) setRightDrawerOpen(true)
               return
             }
             handleSelectNode(node.id)
@@ -679,60 +763,44 @@ function RunCanvasInner({
         )}
       </div>
 
-      {/* 右：选中工件预览（资产 或 自定义节点文本产物）。无选中则回落最近 done 资产。 */}
-      <aside className="flex w-[260px] shrink-0 flex-col overflow-y-auto border-l border-line bg-bg-surface p-4">
-        <h4 className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-text-3">
-          选中工件
-        </h4>
-        {/* 选中大功能容器 → Run Matrix（逐页状态格 + 选中页产物）。取代 storyboard 旧 ItemInspector。
-            P5d：其余选中态有 items → per-item inspector；items 缺省/空 → 回落标量面板。 */}
-        {selection?.kind === "group" ? (
-          <RunMatrix
-            group={runGroups.get(selection.groupId)}
-            selectedPageKey={selection.selectedPageKey}
-            onSelectPage={(page) =>
-              setSelection({
-                kind: "group",
-                groupId: selection.groupId,
-                selectedPageKey: page.key,
-              })
-            }
-            org={org}
-            isAdmin={isAdmin}
-            assetDetail={previewDetailQuery.data}
-          />
-        ) : selection?.items && selection.items.length > 0 ? (
-          <ItemInspector items={selection.items} />
-        ) : selection?.kind === "custom" ? (
-          selection.outputFormat === "http-status" ? (
-            <SuppressedBodyPanel content={selection.output} />
-          ) : (
-            <div className="flex flex-col gap-1.5">
-              <p className="text-[11px] text-text-3">
-                {selection.outputFormat === "json" ? "JSON 产物" : "文本产物"}
-              </p>
-              <pre className="overflow-auto rounded-md border border-line bg-bg-base p-2 text-[11px] leading-relaxed text-text-1 whitespace-pre-wrap break-words">
-                {selection.output}
-              </pre>
-            </div>
-          )
-        ) : previewAssetId ? (
-          <SelectedAssetPanel
-            org={org}
-            assetId={previewAssetId}
-            isAdmin={isAdmin}
-            detail={previewDetailQuery.data}
-          />
-        ) : (
-          <div className="flex flex-1 flex-col items-center justify-center gap-1.5 py-16 text-center">
-            <p className="text-[13px] text-text-2">选择一个节点查看产物</p>
-            <p className="text-[12px] text-text-3">点剧本/分镜节点看文本，点图片节点看素材</p>
-          </div>
-        )}
-      </aside>
+      {/* 右栏：桌面（≥lg）内联；窄屏（<lg）收进抽屉，点节点自动唤出。 */}
+      {isDesktop ? (
+        rightPanelContent
+      ) : (
+        <Sheet open={rightDrawerOpen} onOpenChange={setRightDrawerOpen}>
+          <SheetContent side="right" className="w-[260px] max-w-[85vw] gap-0 p-0 [&>aside]:h-full [&>aside]:w-full [&>aside]:border-l-0">
+            {rightPanelContent}
+          </SheetContent>
+        </Sheet>
+      )}
 
-      {/* 运行顶栏控制：徽标 / SSE / 去审核 / 运行控制——挂在主区右上浮层，与编辑顶栏区分。 */}
-      <div className="pointer-events-none absolute right-[280px] top-[56px] z-10 flex items-center gap-2">
+      {/* 窄屏（<lg）浮动抽屉唤出按钮：左=运行记录/日志，右=选中工件。桌面隐藏（面板已内联）。 */}
+      {!isDesktop && (
+        <>
+          <button
+            type="button"
+            aria-label="运行记录与日志"
+            title="运行记录与日志"
+            onClick={() => setLeftDrawerOpen(true)}
+            className="absolute left-3 top-3 z-10 rounded-md border border-line bg-bg-surface/90 p-1.5 text-text-3 shadow-sm hover:text-text-1"
+          >
+            <PanelLeft className="h-4 w-4" aria-hidden />
+          </button>
+          <button
+            type="button"
+            aria-label="选中工件"
+            title="选中工件"
+            onClick={() => setRightDrawerOpen(true)}
+            className="absolute right-3 top-3 z-10 rounded-md border border-line bg-bg-surface/90 p-1.5 text-text-3 shadow-sm hover:text-text-1"
+          >
+            <PanelRight className="h-4 w-4" aria-hidden />
+          </button>
+        </>
+      )}
+
+      {/* 运行顶栏控制：徽标 / SSE / 去审核 / 运行控制——挂在主区右上浮层，与编辑顶栏区分。
+          桌面（≥lg）贴右侧栏左缘（right-[280px]）；窄屏无右栏，改贴视口右侧（顶部让位浮动按钮）。 */}
+      <div className="pointer-events-none absolute right-3 top-[52px] z-10 flex items-center gap-2 lg:right-[280px] lg:top-[56px]">
         <div className="pointer-events-auto flex items-center gap-2 rounded-md border border-line bg-bg-surface/90 px-3 py-1.5 shadow-sm">
           {/* 流动效果开关已并入 TopologySettingsPanel（settings.flowAnimation），不再单列。 */}
           <TopologySettingsPanel settings={settings} update={update} />
