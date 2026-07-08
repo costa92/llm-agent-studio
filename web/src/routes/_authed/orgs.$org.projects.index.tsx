@@ -14,6 +14,7 @@ import {
 } from "@/features/cost/api"
 import { useStorageConfigs } from "@/features/storage/api"
 import { ProjectListView } from "@/features/projects/ProjectListPage"
+import { ApiError } from "@/lib/apiClient"
 
 // T9：项目列表 + 建项目视图。org 校验由父段布局 orgs.$org.projects.tsx 的 beforeLoad 承担。
 export const Route = createFileRoute("/_authed/orgs/$org/projects/")({
@@ -42,11 +43,18 @@ function ProjectsPage() {
   const imageModelsQuery = useOrgImageModels(org)
   const storageConfigsQuery = useStorageConfigs(org)
 
+  // 403 = 该 org 不存在或当前用户无权访问（跨租户/不存在 org）。渲染 access-denied 空态并
+  // 隐藏「新建项目」等动作，而非把假 org 当真实工作区渲染完整壳。
+  const isForbidden =
+    projectsQuery.error instanceof ApiError &&
+    projectsQuery.error.status === 403
+
   return (
     <ProjectListView
       projects={projectsQuery.data}
       isLoading={projectsQuery.isLoading}
       isError={projectsQuery.isError}
+      isForbidden={isForbidden}
       onRetry={() => void projectsQuery.refetch()}
       org={org}
       needsModelConfig={needsModelConfig}

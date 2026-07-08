@@ -202,6 +202,23 @@ describe("ProjectListView", () => {
     expect(onRetry).toHaveBeenCalledTimes(1)
   })
 
+  it("renders an access-denied state and hides create CTAs when forbidden (403)", () => {
+    renderWithClient(
+      <ProjectListView
+        {...baseViewProps()}
+        projects={undefined}
+        isForbidden
+      />,
+    )
+
+    expect(screen.getByText("无权访问")).toBeInTheDocument()
+    // 无权访问不给「重试」，也不露任何「新建项目」入口（header + 空态）。
+    expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "新建项目" }),
+    ).not.toBeInTheDocument()
+  })
+
   it("renders loading skeletons", () => {
     const { container } = renderWithClient(
       <ProjectListView {...baseViewProps()} projects={undefined} isLoading />,
