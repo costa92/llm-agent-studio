@@ -231,7 +231,10 @@ func revealModelKeyHandler(keyLookup func(ctx context.Context, orgID, configID s
 				http.Error(w, "model config not found", http.StatusNotFound)
 				return
 			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			// 解密失败等内部错误：原始 error（含 NaCl secretbox 实现细节）只记服务端日志，
+			// 绝不原文回传客户端——否则会泄漏底层加密实现。返回脱敏可操作消息。
+			slog.Error("model key reveal failed", "org", r.PathValue("org"), "config", r.PathValue("id"), "err", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"message": "密钥解密失败，请重新保存该模型配置"})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"hasApiKey": key != "", "apiKey": key})

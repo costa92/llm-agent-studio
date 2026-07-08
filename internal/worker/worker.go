@@ -41,6 +41,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/modelrouter"
 	"github.com/costa92/llm-agent-studio/internal/models"
 	"github.com/costa92/llm-agent-studio/internal/project"
+	"github.com/costa92/llm-agent-studio/internal/projectstate"
 	"github.com/costa92/llm-agent-studio/internal/runinputs"
 	"github.com/costa92/llm-agent-studio/internal/scriptengine"
 	"github.com/costa92/llm-agent-studio/internal/storagerouter"
@@ -949,7 +950,10 @@ func (w *Worker) fail(ctx context.Context, c claimed, cause error) {
 		if err := w.cfg.Todos.MarkFailed(ctx, c.todoID, msg); err != nil {
 			w.cfg.Logger.Error("worker: mark failed failed", "todo", c.todoID, "err", err)
 		}
-		_, _ = w.cfg.Events.Append(ctx, c.projectID, "todo_failed", c.todoID, map[string]any{"type": c.typ, "error": msg})
+		// Client boundary: sanitize the SSE payload so no viewer sees internal package
+		// paths / object-store key layout / backend endpoints. Raw msg is preserved in
+		// the Logger.Error above and the todos.error audit column (MarkFailed).
+		_, _ = w.cfg.Events.Append(ctx, c.projectID, "todo_failed", c.todoID, map[string]any{"type": c.typ, "error": projectstate.SanitizeFailureMessage(msg)})
 		if _, err := w.cfg.Projects.RefreshStatus(ctx, c.projectID); err != nil {
 			w.cfg.Logger.Warn("worker: refresh status failed", "project", c.projectID, "err", err)
 		}
@@ -1386,10 +1390,13 @@ func (w *Worker) pollAsync(ctx, cctx context.Context, c claimed, asset assets.As
 	pr, perr := ag.Poll(ctx, asset.ExternalJobID)
 	terminalFail := func(reason string) (string, error) {
 		_ = w.cfg.Assets.SetAsyncFailed(cctx, asset.ID)
+		w.cfg.Logger.Error("worker: async task failed terminally", "todo", c.todoID, "type", c.typ, "reason", reason)
 		if err := w.cfg.Todos.MarkFailed(cctx, c.todoID, reason); err != nil {
 			w.cfg.Logger.Error("worker: async mark failed", "todo", c.todoID, "err", err)
 		}
-		_, _ = w.cfg.Events.Append(cctx, c.projectID, "todo_failed", c.todoID, map[string]any{"type": c.typ, "error": reason})
+		// Client boundary: sanitize the SSE payload (see fail()). Raw reason is preserved
+		// in the Logger.Error above and the todos.error audit column (MarkFailed).
+		_, _ = w.cfg.Events.Append(cctx, c.projectID, "todo_failed", c.todoID, map[string]any{"type": c.typ, "error": projectstate.SanitizeFailureMessage(reason)})
 		if _, err := w.cfg.Projects.RefreshStatus(cctx, c.projectID); err == nil && w.allDone(cctx, c.projectID) {
 			_, _, _ = w.cfg.Events.AppendRunDone(cctx, c.projectID)
 		}

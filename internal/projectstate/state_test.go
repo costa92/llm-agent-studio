@@ -105,8 +105,13 @@ func TestCompute_LastFailureSurfaces(t *testing.T) {
 		Todos: []Todo{{ID: "t-sb", Type: "storyboard", Status: "failed", Error: "EOF from provider"}},
 	}
 	got := Compute(in)
-	if got.Error == nil || got.Error.Message != "EOF from provider" || got.Error.Role != "storyboard" {
-		t.Fatalf("error = %+v, want storyboard/EOF", got.Error)
+	// Role + TodoID still surface for the workbench error strip; Message is the
+	// sanitized (client-safe) copy — the raw todos.Error never crosses the boundary.
+	if got.Error == nil || got.Error.Role != "storyboard" || got.Error.TodoID != "t-sb" {
+		t.Fatalf("error = %+v, want storyboard/t-sb", got.Error)
+	}
+	if got.Error.Message != SanitizeFailureMessage("EOF from provider") {
+		t.Fatalf("message = %q, want sanitized", got.Error.Message)
 	}
 	if got.RunStatus != "done" {
 		t.Fatalf("runStatus = %q, want done (terminal)", got.RunStatus)
@@ -468,5 +473,36 @@ func TestGraphNode_ItemsOmittedWhenNil(t *testing.T) {
 	}
 	if !bytes.Contains(b2, []byte(`"items":[{"json":{"a":1}}]`)) {
 		t.Fatalf("present Items must serialize verbatim, got %s", b2)
+	}
+}
+
+// TestSanitizeFailureMessage: the raw internal error must NEVER cross the client
+// boundary — no package paths (worker/blob.s3), object-store key layout, or
+// backend endpoints. Each category maps to an operator-actionable Chinese message.
+func TestSanitizeFailureMessage(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"blob put dial refused", `worker: blob put: blob.s3: put: Post "http://127.0.0.1:1/gap3b/assets/54a5.../c922.jpg?uploads=": dial tcp 127.0.0.1:1: connect: connection refused`, "素材写入存储失败：存储后端不可达，请检查存储配置"},
+		{"decrypt secretbox", `models: decrypt key: secretbox: open: cipher: message authentication failed`, "模型密钥无效或未配置，请检查模型配置"},
+		{"empty input", `agents: empty input`, "节点输入为空，请检查上游节点绑定"},
+		{"unknown", `some weird internal panic`, "生成失败，请查看运行日志"},
+		{"empty", ``, "生成失败，请查看运行日志"},
+	}
+	leaks := []string{"blob.s3", "worker:", "secretbox", "cipher", "127.0.0.1", "assets/", "dial tcp"}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SanitizeFailureMessage(tc.raw)
+			if got != tc.want {
+				t.Fatalf("SanitizeFailureMessage(%q) = %q, want %q", tc.raw, got, tc.want)
+			}
+			for _, leak := range leaks {
+				if bytes.Contains([]byte(got), []byte(leak)) {
+					t.Fatalf("sanitized message leaked internal token %q: %q", leak, got)
+				}
+			}
+		})
 	}
 }

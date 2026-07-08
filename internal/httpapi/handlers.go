@@ -307,7 +307,11 @@ func createProjectHandler(ps ProjectStore, res CustomNodeTypeResolver) http.Hand
 			WorkflowNodes         json.RawMessage `json:"workflowNodes"`
 			Kind                  string          `json:"kind"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request: invalid JSON body", http.StatusBadRequest)
+			return
+		}
+		if req.Name == "" {
 			http.Error(w, "bad request: name required", http.StatusBadRequest)
 			return
 		}

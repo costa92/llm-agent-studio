@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -96,6 +97,36 @@ type ProblemError struct {
 	TodoID  string `json:"todoId"`
 	Role    string `json:"role,omitempty"`
 	Message string `json:"message"`
+}
+
+// SanitizeFailureMessage maps a raw internal failure error to an operator-facing
+// message safe to deliver to ANY project viewer. The raw error still goes to the
+// server log and the todos.error audit column — this only sanitizes the copy that
+// crosses the client boundary (/state error.message and /events todo_failed
+// payload.error), stripping internal package paths (worker/blob.s3), object-store
+// key layout (assets/{projectId}/{assetId}.jpg) and backend endpoints, while
+// keeping enough category signal for an operator to know WHICH class of failure it
+// is and WHAT to check. Categories: 存储写入 / 模型密钥 / 空输入 / 兜底.
+func SanitizeFailureMessage(raw string) string {
+	low := strings.ToLower(raw)
+	switch {
+	case strings.Contains(low, "blob put"),
+		strings.Contains(low, "blob.s3"),
+		strings.Contains(low, "connection refused"),
+		strings.Contains(low, "dial tcp"),
+		strings.Contains(low, "no such host"):
+		return "素材写入存储失败：存储后端不可达，请检查存储配置"
+	case strings.Contains(low, "decrypt"),
+		strings.Contains(low, "secretbox"),
+		strings.Contains(low, "cipher"),
+		strings.Contains(low, "api key"),
+		strings.Contains(low, "apikey"):
+		return "模型密钥无效或未配置，请检查模型配置"
+	case strings.Contains(low, "empty input"):
+		return "节点输入为空，请检查上游节点绑定"
+	default:
+		return "生成失败，请查看运行日志"
+	}
 }
 
 // Plan mirrors the run's plan identity (valid / fallbackUsed warnings).
@@ -277,7 +308,7 @@ func Compute(in Input) ProjectState {
 	// Last failed todo → error strip.
 	for i := len(in.Todos) - 1; i >= 0; i-- {
 		if in.Todos[i].Status == "failed" {
-			st.Error = &ProblemError{TodoID: in.Todos[i].ID, Role: in.Todos[i].Type, Message: in.Todos[i].Error}
+			st.Error = &ProblemError{TodoID: in.Todos[i].ID, Role: in.Todos[i].Type, Message: SanitizeFailureMessage(in.Todos[i].Error)}
 			break
 		}
 	}
