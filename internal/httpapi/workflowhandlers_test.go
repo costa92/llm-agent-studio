@@ -42,8 +42,8 @@ func (s *stubWorkflows) Get(_ context.Context, _, id string) (workflows.Workflow
 func (s *stubWorkflows) ListByProject(_ context.Context, _ string) ([]workflows.Workflow, error) {
 	return []workflows.Workflow{{ID: "wf1", Name: "a"}}, nil
 }
-func (s *stubWorkflows) Update(_ context.Context, projectID, id, name string, nodes, inputsSchema, settings json.RawMessage) (workflows.Workflow, error) {
-	return workflows.Workflow{ID: id, ProjectID: projectID, Name: name, Nodes: nodes, InputsSchema: inputsSchema, Settings: settings}, nil
+func (s *stubWorkflows) Update(_ context.Context, projectID, id, name string, expectedVersion int, nodes, inputsSchema, settings json.RawMessage) (workflows.Workflow, error) {
+	return workflows.Workflow{ID: id, ProjectID: projectID, Name: name, Version: expectedVersion, Nodes: nodes, InputsSchema: inputsSchema, Settings: settings}, nil
 }
 func (s *stubWorkflows) Delete(_ context.Context, _, _ string) error { return nil }
 
@@ -304,7 +304,7 @@ func (s *cycleRejectingWorkflows) Get(_ context.Context, _, id string) (workflow
 func (s *cycleRejectingWorkflows) ListByProject(_ context.Context, _ string) ([]workflows.Workflow, error) {
 	return nil, nil
 }
-func (s *cycleRejectingWorkflows) Update(_ context.Context, _, id, name string, nodes, inputsSchema, settings json.RawMessage) (workflows.Workflow, error) {
+func (s *cycleRejectingWorkflows) Update(_ context.Context, _, id, name string, expectedVersion int, nodes, inputsSchema, settings json.RawMessage) (workflows.Workflow, error) {
 	s.t.Fatal("Update must not be called when the graph is invalid")
 	return workflows.Workflow{}, nil
 }

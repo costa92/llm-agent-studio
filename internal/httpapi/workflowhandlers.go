@@ -26,7 +26,7 @@ type WorkflowStore interface {
 	Create(ctx context.Context, projectID, name string, nodes, inputsSchema, settings json.RawMessage) (workflows.Workflow, error)
 	Get(ctx context.Context, projectID, id string) (workflows.Workflow, error)
 	ListByProject(ctx context.Context, projectID string) ([]workflows.Workflow, error)
-	Update(ctx context.Context, projectID, id, name string, nodes, inputsSchema, settings json.RawMessage) (workflows.Workflow, error)
+	Update(ctx context.Context, projectID, id, name string, expectedVersion int, nodes, inputsSchema, settings json.RawMessage) (workflows.Workflow, error)
 	Delete(ctx context.Context, projectID, id string) error
 }
 
@@ -40,6 +40,10 @@ type workflowReq struct {
 	Nodes        json.RawMessage `json:"nodes"`
 	InputsSchema json.RawMessage `json:"inputsSchema"`
 	Settings     json.RawMessage `json:"settings"`
+	// Version 是编辑保存（PUT）时客户端读到的乐观锁版本号；Store.Update 以它守卫，
+	// 版本漂移 → 409。create 忽略此字段。缺省 0 —— 由于版本从 1 起，0 永不命中，
+	// 缺省 version 的陈旧客户端会被 409 兜住而非无声覆盖（fail-closed）。
+	Version int `json:"version"`
 }
 
 // workflowSettings is the decoded shape of workflows.settings: the workflow-level
@@ -272,9 +276,18 @@ func updateWorkflowHandler(ps ProjectStore, ws WorkflowStore, res CustomNodeType
 				}
 			}
 		}
-		wf, err := ws.Update(r.Context(), r.PathValue("id"), r.PathValue("wfId"), req.Name, req.Nodes, req.InputsSchema, req.Settings)
+		wf, err := ws.Update(r.Context(), r.PathValue("id"), r.PathValue("wfId"), req.Name, req.Version, req.Nodes, req.InputsSchema, req.Settings)
 		if errors.Is(err, workflows.ErrNotFound) {
 			http.Error(w, "workflow not found", http.StatusNotFound)
+			return
+		}
+		if errors.Is(err, workflows.ErrVersionConflict) {
+			// 并发编辑守卫：他人已保存导致 version 漂移。机器可读 code + 人话中文提示，
+			// 前端据此提示重载并阻止盲存（外科手术式关掉 last-write-wins 数据丢失）。
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"code":    "stale_version",
+				"message": "工作流已被他人修改，请重新加载",
+			})
 			return
 		}
 		if err != nil {

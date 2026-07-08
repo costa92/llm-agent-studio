@@ -40,6 +40,7 @@ const WF: Workflow = {
   projectId: "p1",
   name: "默认工作流",
   nodes: [{ id: "script-1", type: "script", promptId: "", dependsOn: [] }],
+  version: 1,
   createdAt: "2026-06-01T00:00:00Z",
   updatedAt: "2026-06-01T00:00:00Z",
 }

@@ -144,7 +144,7 @@ func TestWorkflowInputsSchemaRoundTrip(t *testing.T) {
 
 	// Update replaces the schema.
 	schema2 := json.RawMessage(`[{"name":"voice","type":"select","target":"variable","options":[{"value":"warm"}]}]`)
-	upd, err := s.Update(ctx, pid, w.ID, "带 schema", json.RawMessage(`[]`), schema2, nil)
+	upd, err := s.Update(ctx, pid, w.ID, "带 schema", w.Version, json.RawMessage(`[]`), schema2, nil)
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestWorkflowSettingsRoundTrip(t *testing.T) {
 
 	// Update replaces settings; ListByProject also carries it.
 	settings2 := json.RawMessage(`{"style":"写实"}`)
-	upd, err := s.Update(ctx, pid, w.ID, "带 settings", json.RawMessage(`[]`), nil, settings2)
+	upd, err := s.Update(ctx, pid, w.ID, "带 settings", w.Version, json.RawMessage(`[]`), nil, settings2)
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestUpdateWorkflow(t *testing.T) {
 	pid := newProject(t, pool)
 
 	w, _ := s.Create(ctx, pid, "old", json.RawMessage(`[]`), nil, nil)
-	updated, err := s.Update(ctx, pid, w.ID, "new", json.RawMessage(`[{"id":"x","type":"asset","promptId":"","dependsOn":[]}]`), nil, nil)
+	updated, err := s.Update(ctx, pid, w.ID, "new", w.Version, json.RawMessage(`[{"id":"x","type":"asset","promptId":"","dependsOn":[]}]`), nil, nil)
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -278,8 +278,50 @@ func TestUpdateWorkflow(t *testing.T) {
 		t.Fatalf("updated_at not bumped: %v -> %v", w.UpdatedAt, updated.UpdatedAt)
 	}
 	// Wrong project → ErrNotFound.
-	if _, err := s.Update(ctx, "other-project", w.ID, "n", nil, nil, nil); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Update(ctx, "other-project", w.ID, "n", w.Version, nil, nil, nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("cross-project update: want ErrNotFound, got %v", err)
+	}
+}
+
+// TestUpdateWorkflowOptimisticLock 复现并发编辑的数据丢失竞态并证明守卫关掉它：
+// 会话 A 与 B 读到同一 base 快照（version=1）。A 以 version=1 保存 → 成功、version→2。
+// B 拿陈旧 version=1 保存 → ErrVersionConflict（映射 409），而非无声覆盖 A 的改动。
+// B 重新加载拿到 version=2 后再存 → 成功。
+func TestUpdateWorkflowOptimisticLock(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	pid := newProject(t, pool)
+
+	base, _ := s.Create(ctx, pid, "wf", json.RawMessage(`[]`), nil, nil)
+	if base.Version != 1 {
+		t.Fatalf("new workflow version: want 1, got %d", base.Version)
+	}
+
+	// 会话 A：以 base 版本保存成功，版本自增。
+	a, err := s.Update(ctx, pid, base.ID, "A 改", base.Version, json.RawMessage(`[{"id":"a","type":"asset","promptId":"","dependsOn":[]}]`), nil, nil)
+	if err != nil {
+		t.Fatalf("session A update: %v", err)
+	}
+	if a.Version != base.Version+1 {
+		t.Fatalf("version not bumped on A: want %d, got %d", base.Version+1, a.Version)
+	}
+
+	// 会话 B：拿陈旧 base 版本保存 → 冲突（修复前是无声覆盖 A）。
+	if _, err := s.Update(ctx, pid, base.ID, "B 改", base.Version, json.RawMessage(`[{"id":"b","type":"asset","promptId":"","dependsOn":[]}]`), nil, nil); !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("stale session B update: want ErrVersionConflict, got %v", err)
+	}
+	// A 的改动仍在（未被 B 覆盖）。
+	cur, err := s.Get(ctx, pid, base.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if cur.Name != "A 改" || cur.Version != a.Version {
+		t.Fatalf("A's edit was clobbered: name=%q version=%d", cur.Name, cur.Version)
+	}
+
+	// B 重新加载后以最新版本保存 → 成功。
+	if _, err := s.Update(ctx, pid, base.ID, "B 改", cur.Version, json.RawMessage(`[{"id":"b","type":"asset","promptId":"","dependsOn":[]}]`), nil, nil); err != nil {
+		t.Fatalf("session B reload+update: %v", err)
 	}
 }
 
