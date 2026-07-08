@@ -32,12 +32,12 @@ export function CrudResourcePage({
   return (
     <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-6 p-6">
       <header className="flex items-start justify-between gap-4">
-        <div className="flex flex-col gap-1.5">
+        <div className="flex min-w-0 flex-col gap-1.5">
           <h1 className="font-heading text-[22px] font-bold text-text-1">{title}</h1>
-          {description != null && <p className="text-[12px] text-text-3">{description}</p>}
+          {description != null && <p className="min-w-0 text-[12px] text-text-3">{description}</p>}
         </div>
         {onCreate && (
-          <Button variant="amber" onClick={onCreate}>{createLabel ?? "新增"}</Button>
+          <Button variant="amber" className="shrink-0" onClick={onCreate}>{createLabel ?? "新增"}</Button>
         )}
       </header>
       {headerExtra}

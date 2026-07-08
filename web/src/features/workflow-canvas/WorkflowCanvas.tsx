@@ -4,6 +4,7 @@ import {
   ReactFlowProvider,
   Background,
   Controls,
+  MiniMap,
   useNodesState,
   useEdgesState,
   useReactFlow,
@@ -88,6 +89,10 @@ export type CanvasMode = "edit" | "run"
 
 // 吸附网格步长（snap-to-grid + Background 点距 共用，保证视觉对齐）。
 const GRID = 16
+
+// 编辑画布挂 MiniMap 的节点数阈值：小工作流不挂（minimap 会压节点、被右侧属性面板裁切），
+// 大工作流（超此阈值）需要概览导航，收益盖过遮挡。
+const MINIMAP_NODE_THRESHOLD = 30
 
 // Phase 2：可编辑工作流画布。三栏布局（节点面板 / 画布 / 属性面板）。
 // EDGES 是 dependsOn 的唯一真源（见 canvasModel.toStudioNodes）：连线/断线/重命名
@@ -1128,9 +1133,9 @@ function CanvasInner({
             >
               <Background gap={GRID} />
               <Controls />
-              {/* 编辑画布不挂 MiniMap：工作流节点少、画布夹在两侧面板间较窄，
-                  默认右下角 minimap 会压住节点、被右侧属性面板裁切。运行画布保留
-                  minimap（承载 run 状态着色）。 */}
+              {/* 编辑画布默认不挂 MiniMap（节点少时 minimap 压节点、被右侧属性面板裁切）；
+                  节点数超阈值的大工作流才挂，用概览换取导航——收益盖过遮挡。 */}
+              {rfNodes.length > MINIMAP_NODE_THRESHOLD && <MiniMap pannable zoomable />}
             </ReactFlow>
             {/* 对齐辅助线覆盖层（C3）：读视口 transform 在屏幕空间画引导线。 */}
             <HelperLines {...helperLines} />

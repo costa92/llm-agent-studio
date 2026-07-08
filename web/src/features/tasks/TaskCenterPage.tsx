@@ -5,6 +5,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Badge } from "@/components/studio/Badge"
 import { Button } from "@/components/studio/Button"
 import type { ProjectStatus, TaskRow } from "@/lib/types"
+import { projectDisplayName } from "@/lib/projectName"
 import { useTaskBoard } from "./api"
 import {
   isGenerationDone,
@@ -166,8 +167,11 @@ export function TaskCenterView({
                 key={row.projectId}
                 className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-line bg-bg-surface px-[18px] py-3.5"
               >
-                <span className="font-heading text-[15px] font-medium text-text-1">
-                  {row.name}
+                <span
+                  title={projectDisplayName(row.name, row.projectId)}
+                  className="min-w-0 max-w-[280px] truncate font-heading text-[15px] font-medium text-text-1"
+                >
+                  {projectDisplayName(row.name, row.projectId)}
                 </span>
                 <Badge variant={statusVariant(row.status as ProjectStatus)}>
                   {statusLabel(row.status as ProjectStatus)}

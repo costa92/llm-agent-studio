@@ -283,8 +283,8 @@ export function ReviewBoardView({
   const queueContent = (
     <>
       <header className="mb-5 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <h1 className="font-heading text-[22px] font-bold text-text-1">审核看板</h1>
+        <div className="flex min-w-0 items-center gap-3">
+          <h1 className="shrink-0 font-heading text-[22px] font-bold text-text-1">审核看板</h1>
           {/* T4：?project= 时显示筛选 chip + 「查看全部」清除入口（优先显示项目名，回退 id）。 */}
           {projectFilter != null && (
             <span className="inline-flex items-center gap-2 rounded-full border border-line bg-bg-raised px-3 py-1 text-[12px] text-text-2">
@@ -299,10 +299,14 @@ export function ReviewBoardView({
             </span>
           )}
         </div>
-        <span className="text-[12px] text-text-3">
+        <span className="shrink-0 text-[12px] text-text-3">
           {/* P1：还有下一页时不谎报总数（原来 items.length 只是当前页），加载完 = 真·待审总数。 */}
-          {hasNextPage ? `已加载 ${items.length}…` : `待审 ${items.length}`} · ←/→ 浏览
-          {isAdmin ? " · A 采纳 R 退回 E 重生成" : ""}
+          {hasNextPage ? `已加载 ${items.length}…` : `待审 ${items.length}`}
+          {/* 键盘快捷键提示在触屏是死提示：窄屏（<sm）隐藏，卡片上的采纳/退回按钮已覆盖触屏操作。 */}
+          <span className="hidden sm:inline">
+            {" · ←/→ 浏览"}
+            {isAdmin ? " · A 采纳 R 退回 E 重生成" : ""}
+          </span>
         </span>
       </header>
 
@@ -345,18 +349,18 @@ export function ReviewBoardView({
           {projectGroups.map((group) => (
             <section key={group.key} className="flex flex-col gap-2">
               <div className="flex items-center justify-between gap-3">
-                <h2 className="text-[13px] font-semibold text-text-2">
-                  {projectNames?.[group.key] ?? group.key}
-                  <span className="ml-2 font-normal text-text-3">
+                <h2 className="flex min-w-0 items-baseline text-[13px] font-semibold text-text-2">
+                  <span className="truncate">{projectNames?.[group.key] ?? group.key}</span>
+                  <span className="ml-2 shrink-0 font-normal text-text-3">
                     {group.assets.length} 张待审
                   </span>
                 </h2>
-                <div className="flex items-center gap-3">
+                <div className="flex shrink-0 items-center gap-3">
                   {batchEnabled && (
                     <button
                       type="button"
                       onClick={() => onAcceptMany?.(group.assets.map((a) => a.id))}
-                      className="text-[12px] text-amber underline-offset-2 hover:underline"
+                      className="whitespace-nowrap text-[12px] text-amber underline-offset-2 hover:underline"
                     >
                       采纳本项目
                     </button>
@@ -367,7 +371,7 @@ export function ReviewBoardView({
                       onClick={() =>
                         setRejectManyTarget(group.assets.map((a) => a.id))
                       }
-                      className="text-[12px] text-danger underline-offset-2 hover:underline"
+                      className="whitespace-nowrap text-[12px] text-danger underline-offset-2 hover:underline"
                     >
                       退回本项目
                     </button>
