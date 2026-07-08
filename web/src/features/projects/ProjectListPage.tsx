@@ -3,6 +3,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Badge } from "@/components/studio/Badge"
 import { Button } from "@/components/studio/Button"
 import { AssetThumb } from "@/features/workflow/AssetThumb.tsx"
+import { projectDisplayName } from "@/lib/projectName"
 import type { CreateProjectInput, ModelConfig, Project, StorageConfig, Style } from "@/lib/types"
 import { statusLabel, statusVariant } from "./status"
 import { CreateProjectDialog } from "./CreateProjectDialog"
@@ -142,15 +143,18 @@ export function ProjectListView({
                 </div>
               )}
 
-              {/* 主体：点击进项目工作台。 */}
+              {/* 主体：点击进项目工作台。hover 高亮 + cursor-pointer 明确整卡可点。 */}
               <button
                 type="button"
                 onClick={() => onOpenProject(project)}
-                className="flex flex-1 flex-col gap-3 p-[18px] text-left"
+                className="flex flex-1 cursor-pointer flex-col gap-3 p-[18px] text-left transition-colors hover:bg-bg-raised/40"
               >
                 <div className="flex items-start justify-between gap-3">
-                  <span className="font-heading text-[15px] font-medium text-text-1">
-                    {project.name}
+                  <span
+                    title={projectDisplayName(project.name, project.id)}
+                    className="min-w-0 truncate font-heading text-[15px] font-medium text-text-1"
+                  >
+                    {projectDisplayName(project.name, project.id)}
                   </span>
                   <Badge variant={statusVariant(project.status)}>
                     {statusLabel(project.status)}

@@ -100,8 +100,9 @@ export function AppShell({
     if (!shouldShowSection(section, visible)) return null
     return (
       <div key={section.id} className={isCollapsed ? "mb-2 flex flex-col items-center gap-0.5" : "mb-4"}>
+        {/* 分区标题：前景色调深一档（text-3 → text-2）以过 WCAG AA 对比度；10px 保留视觉层级。 */}
         {!isCollapsed && (
-          <div className="px-2.5 mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-text-3">
+          <div className="px-2.5 mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-text-2">
             {section.title}
           </div>
         )}

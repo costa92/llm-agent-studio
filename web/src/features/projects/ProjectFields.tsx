@@ -71,7 +71,7 @@ export function ProjectFields({
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <div className="flex flex-col gap-1.5 sm:col-span-2">
         <Label htmlFor={pre("name")}>项目名称</Label>
-        <Input id={pre("name")} aria-invalid={errors.name != null} {...register("name")} />
+        <Input id={pre("name")} maxLength={80} aria-invalid={errors.name != null} {...register("name")} />
         {errors.name && <p className="text-[12px] text-danger">{errors.name.message}</p>}
       </div>
 

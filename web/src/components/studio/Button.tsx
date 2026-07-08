@@ -6,7 +6,7 @@ import { Kbd } from "./Kbd"
 // 原型 .btn: padding 7px 16px; radius 8px; font 13px/500
 // 变体: btn-amber / btn-ghost / btn-green / btn-red
 const buttonVariants = cva(
-  "inline-flex items-center justify-center rounded-md px-4 py-[7px] text-[13px] font-medium transition duration-150 disabled:pointer-events-none disabled:opacity-50",
+  "inline-flex items-center justify-center whitespace-nowrap rounded-md px-4 py-[7px] text-[13px] font-medium transition duration-150 disabled:pointer-events-none disabled:opacity-50",
   {
     variants: {
       variant: {

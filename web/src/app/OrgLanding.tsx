@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useNavigate } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
@@ -45,6 +45,28 @@ export function OrgLanding() {
   }
 
   const items = orgs.data ?? []
+
+  // 单一 org 自动进入：恰好属于 1 个组织时，「进入组织」选择页是多余的一次点击——
+  // 直接跳该 org 项目页（replace 不留历史，避免后退又回到落地页）。多 org 保留选择页。
+  const soleOrg = items.length === 1 ? items[0] : undefined
+  useEffect(() => {
+    if (soleOrg) {
+      void navigate({
+        to: "/orgs/$org/projects",
+        params: { org: soleOrg.id },
+        replace: true,
+      })
+    }
+  }, [soleOrg, navigate])
+
+  // 自动进入进行中：不闪现列表/新建表单，只给一句过渡文案。
+  if (soleOrg) {
+    return (
+      <div className="grid h-full min-h-[520px] place-items-center px-6">
+        <p className="text-[12.5px] text-text-3">正在进入 {soleOrg.name}…</p>
+      </div>
+    )
+  }
 
   return (
     <div className="grid h-full min-h-[520px] place-items-center px-6">

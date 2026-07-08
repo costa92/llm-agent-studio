@@ -65,6 +65,21 @@ describe("OrgLanding", () => {
     )
   })
 
+  it("auto-enters the sole org (no selection click) when the user has exactly one", async () => {
+    apiJSON.mockImplementation((path: string) => {
+      if (path === "/api/orgs")
+        return Promise.resolve({
+          items: [{ id: "org_only_1", name: "SoloCo", role: "org_admin" }],
+        })
+      throw new Error("unexpected " + path)
+    })
+    const router = renderLanding()
+
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe("/orgs/org_only_1/projects"),
+    )
+  })
+
   it("shows an empty state when the user has no orgs", async () => {
     apiJSON.mockResolvedValue({ items: [] })
     renderLanding()
