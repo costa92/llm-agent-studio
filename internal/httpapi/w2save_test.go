@@ -11,6 +11,32 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/customnodetype"
 )
 
+// TestCreateProjectHandlerBadJSON: malformed JSON body and a missing name take
+// two separate branches — decode failure → "invalid JSON body"; decoded-but-empty
+// name → "name required" (no DB needed; the handler returns before the store).
+func TestCreateProjectHandlerBadJSON(t *testing.T) {
+	t.Run("坏 JSON", func(t *testing.T) {
+		h := createProjectHandler(stubProjects{orgID: "o1"}, nil)
+		req := httptest.NewRequest("POST", "/api/orgs/o1/projects", strings.NewReader(`{not json`))
+		req.SetPathValue("org", "o1")
+		rr := httptest.NewRecorder()
+		h(rr, req)
+		if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "invalid JSON body") {
+			t.Fatalf("bad JSON should 400 invalid JSON body, got %d: %s", rr.Code, rr.Body.String())
+		}
+	})
+	t.Run("缺 name", func(t *testing.T) {
+		h := createProjectHandler(stubProjects{orgID: "o1"}, nil)
+		req := httptest.NewRequest("POST", "/api/orgs/o1/projects", strings.NewReader(`{"name":""}`))
+		req.SetPathValue("org", "o1")
+		rr := httptest.NewRecorder()
+		h(rr, req)
+		if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "name required") {
+			t.Fatalf("empty name should 400 name required, got %d: %s", rr.Code, rr.Body.String())
+		}
+	})
+}
+
 // TestCreateProjectRejectsRegistryOnlyOverlay (W2 createProject) [DB]: a custom
 // workflow node that smuggles a RegistryOnly overlay (script code carrying a
 // {{secret:}} ref) must be rejected with 400 at SAVE, before project create.

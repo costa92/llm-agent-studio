@@ -50,32 +50,42 @@ type workflowReq struct {
 // generation style/contentType/targetPlatform. Empty fields = 继承项目行（run 时
 // 不覆盖）。仅 style 有白名单（必须是 prompt.Styles() 里的名字或空）。
 type workflowSettings struct {
-	Style          string `json:"style"`
-	ContentType    string `json:"contentType"`
-	TargetPlatform string `json:"targetPlatform"`
+	Style          string `json:"style,omitempty"`
+	ContentType    string `json:"contentType,omitempty"`
+	TargetPlatform string `json:"targetPlatform,omitempty"`
 }
 
 // validateWorkflowSettings runs the save-time check on a raw settings payload: it
 // must decode to {style,contentType,targetPlatform} and, if style is non-empty,
 // style must be a known prompt-library style name. An empty/absent settings is
-// valid (= 继承项目行).
-func validateWorkflowSettings(raw json.RawMessage) error {
+// valid (= 继承项目行). 校验通过后返回 canonical 版本——仅保留已知字段、丢弃任意
+// 未知键（如 exprChannel/junk），避免未知键原样落库。空/缺省 settings 原样透传。
+func validateWorkflowSettings(raw json.RawMessage) (json.RawMessage, error) {
 	if len(raw) == 0 {
-		return nil
+		return raw, nil
 	}
 	var s workflowSettings
 	if err := json.Unmarshal(raw, &s); err != nil {
-		return fmt.Errorf("invalid settings: %w", err)
+		return nil, fmt.Errorf("invalid settings: %w", err)
 	}
-	if s.Style == "" {
-		return nil
-	}
-	for _, st := range prompt.Styles() {
-		if st.Name == s.Style {
-			return nil
+	if s.Style != "" {
+		known := false
+		for _, st := range prompt.Styles() {
+			if st.Name == s.Style {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return nil, fmt.Errorf("unknown style %q", s.Style)
 		}
 	}
-	return fmt.Errorf("unknown style %q", s.Style)
+	// typed 重序列化：只回写已知字段，未知键被丢弃。
+	canonical, err := json.Marshal(s)
+	if err != nil {
+		return nil, fmt.Errorf("invalid settings: %w", err)
+	}
+	return canonical, nil
 }
 
 // validateInputsSchema runs the design-time (save-time) check on a raw
@@ -195,7 +205,11 @@ func orgIDForProject(ctx context.Context, ps ProjectStore, projectID string) (st
 func createWorkflowHandler(ps ProjectStore, ws WorkflowStore, res CustomNodeTypeResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req workflowReq
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request: invalid JSON body", http.StatusBadRequest)
+			return
+		}
+		if req.Name == "" {
 			http.Error(w, "bad request: name required", http.StatusBadRequest)
 			return
 		}
@@ -203,10 +217,12 @@ func createWorkflowHandler(ps ProjectStore, ws WorkflowStore, res CustomNodeType
 			http.Error(w, "invalid inputs schema: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		if err := validateWorkflowSettings(req.Settings); err != nil {
+		canonicalSettings, err := validateWorkflowSettings(req.Settings)
+		if err != nil {
 			http.Error(w, "invalid settings: "+err.Error(), http.StatusBadRequest)
 			return
 		}
+		req.Settings = canonicalSettings
 		if len(req.Nodes) > 0 {
 			var nodes []planner.WorkflowNode
 			if err := json.Unmarshal(req.Nodes, &nodes); err != nil {
@@ -242,7 +258,11 @@ func createWorkflowHandler(ps ProjectStore, ws WorkflowStore, res CustomNodeType
 func updateWorkflowHandler(ps ProjectStore, ws WorkflowStore, res CustomNodeTypeResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req workflowReq
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request: invalid JSON body", http.StatusBadRequest)
+			return
+		}
+		if req.Name == "" {
 			http.Error(w, "bad request: name required", http.StatusBadRequest)
 			return
 		}
@@ -250,10 +270,12 @@ func updateWorkflowHandler(ps ProjectStore, ws WorkflowStore, res CustomNodeType
 			http.Error(w, "invalid inputs schema: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		if err := validateWorkflowSettings(req.Settings); err != nil {
+		canonicalSettings, err := validateWorkflowSettings(req.Settings)
+		if err != nil {
 			http.Error(w, "invalid settings: "+err.Error(), http.StatusBadRequest)
 			return
 		}
+		req.Settings = canonicalSettings
 		if len(req.Nodes) > 0 {
 			var nodes []planner.WorkflowNode
 			if err := json.Unmarshal(req.Nodes, &nodes); err != nil {

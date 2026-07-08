@@ -128,6 +128,51 @@ func TestCreateWorkflowSettings(t *testing.T) {
 			t.Fatalf("unknown style should 400, got %d: %s", rr.Code, rr.Body.String())
 		}
 	})
+	// 未知键（exprChannel/junk）被 typed 重序列化剥离：200 但落库只保留已知字段。
+	t.Run("未知键被剥离", func(t *testing.T) {
+		ws := &stubWorkflows{}
+		h := createWorkflowHandler(stubProjects{orgID: "o1"}, ws, nil)
+		body := `{"name":"wf","settings":{"style":"皮克斯","exprChannel":"not-a-bool","junk":123}}`
+		req := httptest.NewRequest("POST", "/api/projects/p1/workflows", strings.NewReader(body))
+		req.SetPathValue("id", "p1")
+		rr := httptest.NewRecorder()
+		h(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("settings with unknown keys should 200, got %d: %s", rr.Code, rr.Body.String())
+		}
+		stored := string(ws.createIn.settings)
+		if strings.Contains(stored, "exprChannel") || strings.Contains(stored, "junk") {
+			t.Fatalf("unknown keys leaked into stored settings: %s", stored)
+		}
+		if !sameJSONBytes(ws.createIn.settings, json.RawMessage(`{"style":"皮克斯"}`)) {
+			t.Fatalf("stored settings should keep only known fields, got: %s", stored)
+		}
+	})
+}
+
+// TestCreateWorkflowHandlerBadJSON 验证坏 JSON body 与缺 name 走两条独立分支：
+// 解码失败 → invalid JSON body；解码成功但 name 空 → name required。
+func TestCreateWorkflowHandlerBadJSON(t *testing.T) {
+	t.Run("坏 JSON", func(t *testing.T) {
+		h := createWorkflowHandler(stubProjects{orgID: "o1"}, &stubWorkflows{}, nil)
+		req := httptest.NewRequest("POST", "/api/projects/p1/workflows", strings.NewReader(`{not json`))
+		req.SetPathValue("id", "p1")
+		rr := httptest.NewRecorder()
+		h(rr, req)
+		if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "invalid JSON body") {
+			t.Fatalf("bad JSON should 400 invalid JSON body, got %d: %s", rr.Code, rr.Body.String())
+		}
+	})
+	t.Run("缺 name", func(t *testing.T) {
+		h := createWorkflowHandler(stubProjects{orgID: "o1"}, &stubWorkflows{}, nil)
+		req := httptest.NewRequest("POST", "/api/projects/p1/workflows", strings.NewReader(`{"name":""}`))
+		req.SetPathValue("id", "p1")
+		rr := httptest.NewRecorder()
+		h(rr, req)
+		if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "name required") {
+			t.Fatalf("empty name should 400 name required, got %d: %s", rr.Code, rr.Body.String())
+		}
+	})
 }
 
 // TestCreateWorkflowRejectsInvalidInputsSchema verifies store-time schema

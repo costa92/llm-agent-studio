@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -152,5 +153,28 @@ func TestRevealModelKeyHandlerNotFound(t *testing.T) {
 	revealModelKeyHandler(keyLookup)(rr, revealReq("org1", "missing"))
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("missing config should be 404, got %d", rr.Code)
+	}
+}
+
+// TestRevealModelKeyHandlerDecryptFailureSanitized: a decrypt error (e.g. an
+// enc-key rotation left the ciphertext undecryptable) returns 500 with a redacted
+// operator message — the raw NaCl secretbox internals must NEVER cross the wire.
+func TestRevealModelKeyHandlerDecryptFailureSanitized(t *testing.T) {
+	keyLookup := func(_ context.Context, _, _ string) (string, error) {
+		return "", errors.New("decrypt key: secretbox: open: cipher: message authentication failed")
+	}
+	rr := httptest.NewRecorder()
+	revealModelKeyHandler(keyLookup)(rr, revealReq("org1", "cfg1"))
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("decrypt failure should be 500, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, leak := range []string{"secretbox", "cipher", "authentication failed", "decrypt key"} {
+		if strings.Contains(body, leak) {
+			t.Fatalf("reveal leaked NaCl internal %q to client: %s", leak, body)
+		}
+	}
+	if !strings.Contains(body, "密钥解密失败") {
+		t.Fatalf("want redacted operator message, got: %s", body)
 	}
 }
