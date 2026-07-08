@@ -123,9 +123,24 @@ function RunsListPage() {
   }
 
   if (projectQuery.isError || project == null) {
+    // 403/404 = 项目不存在或跨租户越权 → 与 /runs、/workflow 子页一致给友好降级
+    //（而非静默空白内容区）；其余错误保留通用「加载失败」文案。
+    const denied =
+      projectQuery.error instanceof ApiError &&
+      (projectQuery.error.status === 403 || projectQuery.error.status === 404)
     return (
-      <div className="grid h-full place-items-center text-text-2">
-        <p>项目加载失败</p>
+      <div className="grid h-full place-items-center">
+        <div className="flex flex-col items-center gap-3 text-center">
+          <p className="text-sm text-text-2">
+            {denied ? "项目不存在或无权访问" : "项目加载失败"}
+          </p>
+          <Button
+            variant="ghost"
+            onClick={() => void navigate({ to: "/orgs/$org/projects", params: { org } })}
+          >
+            返回项目列表
+          </Button>
+        </div>
       </div>
     )
   }

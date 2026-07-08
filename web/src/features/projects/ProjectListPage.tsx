@@ -29,6 +29,8 @@ export interface ProjectListViewProps {
   projects: Project[] | undefined
   isLoading: boolean
   isError: boolean
+  /** 403：该 org 不存在或无访问权限 → 渲染 access-denied 空态并隐藏建项目动作。 */
+  isForbidden?: boolean
   onRetry: () => void
   /** 当前 org（封面对话框失效 ["projects", org] 用）。 */
   org: string
@@ -61,6 +63,7 @@ export function ProjectListView({
   projects,
   isLoading,
   isError,
+  isForbidden = false,
   onRetry,
   org,
   canCreate,
@@ -84,7 +87,7 @@ export function ProjectListView({
     <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-5 p-6">
       <header className="flex items-center justify-between">
         <h1 className="font-heading text-[22px] font-bold text-text-1">项目</h1>
-        {canCreate && (
+        {canCreate && !isForbidden && (
           <CreateProjectDialog
             trigger={newButton}
             styles={styles}
@@ -101,6 +104,14 @@ export function ProjectListView({
           {Array.from({ length: 6 }).map((_, i) => (
             <Skeleton key={i} className="h-[120px] rounded-xl" />
           ))}
+        </div>
+      ) : isForbidden ? (
+        // 403：跨租户 / 不存在的 org。不给「重试」（无权访问重试无意义），只说明状况。
+        <div className="flex flex-col items-center gap-3 py-20 text-center">
+          <p className="text-text-1">无权访问</p>
+          <p className="text-[12.5px] text-text-3">
+            该组织不存在，或你没有访问权限。
+          </p>
         </div>
       ) : isError ? (
         <div className="flex flex-col items-center gap-3 py-20 text-center">
