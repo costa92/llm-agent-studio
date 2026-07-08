@@ -305,6 +305,10 @@ func TestCancelSweepsGeneratingAssets(t *testing.T) {
 		(md5(random()::text), $1, 'pending_acceptance')`, p.ID); err != nil {
 		t.Fatalf("seed assets: %v", err)
 	}
+	// Cancel 仅对在途项目生效（planning/running）；新建为 draft，先置 running 再取消。
+	if err := s.SetStatus(ctx, p.ID, "running"); err != nil {
+		t.Fatalf("set running: %v", err)
+	}
 	if err := s.Cancel(ctx, p.ID); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
@@ -617,6 +621,10 @@ func TestCancelSweepsSubmittedAssets(t *testing.T) {
 		(md5(random()::text), $1, 'generating'),
 		(md5(random()::text), $1, 'pending_acceptance')`, p.ID); err != nil {
 		t.Fatalf("seed assets: %v", err)
+	}
+	// Cancel 仅对在途项目生效（planning/running）；新建为 draft，先置 running 再取消。
+	if err := s.SetStatus(ctx, p.ID, "running"); err != nil {
+		t.Fatalf("set running: %v", err)
 	}
 	if err := s.Cancel(ctx, p.ID); err != nil {
 		t.Fatalf("cancel: %v", err)
@@ -1412,5 +1420,119 @@ func TestSoftDeleteMissingProject(t *testing.T) {
 	s, _ := newStore(t)
 	if err := s.SoftDelete(context.Background(), "no_such_"+uniqueSuffix()); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("soft delete missing: err=%v want ErrNotFound", err)
+	}
+}
+
+// TestRefreshStatusDoesNotResurrectCanceled 保护 Bug1 的核心不变式：canceled 是终态，
+// worker 的自动回刷 RefreshStatus 绝不能把已取消项目移出 canceled。复现取消-扇出竞态的
+// 后果：一个逃逸的子 asset todo（status='ready'）留在最新 plan 里，DeriveStatus 会算出
+// "running"；若 RefreshStatus 无条件写就把 canceled 复活成 running。守卫后应保持 canceled。
+func TestRefreshStatusDoesNotResurrectCanceled(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	p, err := s.Create(ctx, CreateInput{OrgID: "org_resurrect_" + uniqueSuffix(), Name: "P", CreatedBy: "u"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// 项目已取消（终态）。
+	if err := s.SetStatus(ctx, p.ID, "canceled"); err != nil {
+		t.Fatalf("set canceled: %v", err)
+	}
+	// 最新 plan 里留一个逃逸子 todo（ready）——DeriveStatus 会据此算出 "running"。
+	pln := "pln_res_" + p.ID
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO plans (id, project_id, status, valid, fallback_used, created_at)
+		 VALUES ($1, $2, 'running', true, false, now())`, pln, p.ID); err != nil {
+		t.Fatalf("insert plan: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO todos (id, project_id, plan_id, type, status) VALUES ($1, $2, $3, 'asset', 'ready')`,
+		"todo_escaped_"+p.ID, p.ID, pln); err != nil {
+		t.Fatalf("insert escaped todo: %v", err)
+	}
+	// RefreshStatus 算出的 DeriveStatus 是 "running"，但守卫必须拒绝把 canceled 写回 running。
+	got, err := s.RefreshStatus(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if got != "canceled" {
+		t.Fatalf("RefreshStatus returned %q, want canceled (canceled must not resurrect to running)", got)
+	}
+	// DB 里也必须仍是 canceled（守卫是条件 UPDATE，不是只改返回值）。
+	cur, err := s.currentStatus(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("currentStatus: %v", err)
+	}
+	if cur != "canceled" {
+		t.Fatalf("db status after refresh = %q, want canceled", cur)
+	}
+}
+
+// TestTryBeginRunResurrectsFromCanceled 保护「retry 不被守卫误伤」：显式重跑走 TryBeginRun
+// 的独立 CAS，从 canceled→planning 是合法的（前几轮已实证）。RefreshStatus 的 canceled 守卫
+// 不得挡这条路径。
+func TestTryBeginRunResurrectsFromCanceled(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	p, err := s.Create(ctx, CreateInput{OrgID: "org_retry_" + uniqueSuffix(), Name: "P", CreatedBy: "u"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := s.SetStatus(ctx, p.ID, "canceled"); err != nil {
+		t.Fatalf("set canceled: %v", err)
+	}
+	ok, err := s.TryBeginRun(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("try begin run: %v", err)
+	}
+	if !ok {
+		t.Fatalf("TryBeginRun from canceled returned false, want true (explicit re-run is legal)")
+	}
+	cur, err := s.currentStatus(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("currentStatus: %v", err)
+	}
+	if cur != "planning" {
+		t.Fatalf("status after TryBeginRun = %q, want planning (canceled→planning re-run)", cur)
+	}
+}
+
+// TestCancelNoOpOnNonInflight 保护 Bug2：对非在途项目（draft/review/completed/failed）
+// POST /cancel 必须 no-op 并返 ErrNotCancelable（handler → 409），既不翻 canceled 也不扫
+// 在途资产。用条件 UPDATE(status IN planning/running) 实现，与 TryBeginRun 的 CAS 对齐。
+func TestCancelNoOpOnNonInflight(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	for _, st := range []string{"draft", "review", "completed", "failed"} {
+		p, err := s.Create(ctx, CreateInput{OrgID: "org_cancel_noop_" + uniqueSuffix(), Name: "P", CreatedBy: "u"})
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if st != "draft" {
+			if err := s.SetStatus(ctx, p.ID, st); err != nil {
+				t.Fatalf("set %s: %v", st, err)
+			}
+		}
+		// 种一个在途资产，验证 no-op 时它没被扫成 canceled。
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO assets (id, project_id, status) VALUES (md5(random()::text), $1, 'generating')`, p.ID); err != nil {
+			t.Fatalf("seed asset: %v", err)
+		}
+		err = s.Cancel(ctx, p.ID)
+		if !errors.Is(err, ErrNotCancelable) {
+			t.Fatalf("Cancel on %s: err=%v, want ErrNotCancelable", st, err)
+		}
+		cur, err := s.currentStatus(ctx, p.ID)
+		if err != nil {
+			t.Fatalf("currentStatus: %v", err)
+		}
+		if cur != st {
+			t.Fatalf("status after no-op cancel on %s = %q, want unchanged", st, cur)
+		}
+		var generating int
+		_ = pool.QueryRow(ctx, `SELECT count(*) FROM assets WHERE project_id=$1 AND status='generating'`, p.ID).Scan(&generating)
+		if generating != 1 {
+			t.Fatalf("in-flight asset swept on no-op cancel (%s): generating=%d, want 1", st, generating)
+		}
 	}
 }

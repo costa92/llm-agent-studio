@@ -451,6 +451,11 @@ func deleteProjectHandler(ps ProjectStore) http.HandlerFunc {
 func cancelHandler(ps ProjectStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := ps.Cancel(r.Context(), r.PathValue("id")); err != nil {
+			// 项目不在途（draft/review/completed/已 canceled）→ 409，而非强翻 canceled。
+			if errors.Is(err, project.ErrNotCancelable) {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

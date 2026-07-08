@@ -35,6 +35,10 @@ var ErrInvalidStorageConfig = errors.New("project: storage config not found for 
 var ErrEmptyName = errors.New("项目名称不能为空")
 var ErrNameTooLong = fmt.Errorf("项目名称不能超过 %d 个字符", ProjectNameMaxLen)
 
+// ErrNotCancelable 表示项目不在「在途」态（planning/running），无法取消；handler 映射为 409。
+// 只有在途 run 可取消，静止态（draft/review/completed/failed/已 canceled）POST /cancel 是 no-op。
+var ErrNotCancelable = errors.New("project: not in a cancelable state")
+
 // Project is a projects row.
 type Project struct {
 	ID             string `json:"id"`
@@ -411,8 +415,19 @@ func (s *Store) RefreshStatus(ctx context.Context, projectID string) (string, er
 		return "", fmt.Errorf("project: tally latest plan in-flight regenerate descendants: %w", err)
 	}
 	status := DeriveStatus(c)
-	if err := s.SetStatus(ctx, projectID, status); err != nil {
-		return "", err
+	// canceled 终态守卫：worker 的自动回刷（本函数）绝不能把已取消项目移出 canceled。
+	// 取消-扇出竞态里逃逸的子 asset todo 出图后 MarkDone→RefreshStatus 会算出非终态→"running"，
+	// 无条件写就把 canceled 覆盖回 running（canceled 自我复活）。用条件 UPDATE 排除 canceled 行
+	// 即可。显式重跑走 TryBeginRun 的独立 CAS（canceled→planning，不经此路径），不受此守卫影响。
+	res := s.db.WithContext(ctx).Exec(
+		`UPDATE projects SET status=$2, updated_at=now() WHERE id=$1 AND status <> 'canceled'`,
+		projectID, status)
+	if res.Error != nil {
+		return "", res.Error
+	}
+	if res.RowsAffected == 0 {
+		// 0 行 = 项目已处于 canceled 终态（被 WHERE 排除）→ 不改写，返回真实当前值。
+		return s.currentStatus(ctx, projectID)
 	}
 	return status, nil
 }
@@ -439,6 +454,21 @@ func (s *Store) currentStatus(ctx context.Context, projectID string) (string, er
 // money and HITL accept/reject still applies; DeriveStatus's Canceled branch
 // outranks the review branch so the project status stays canceled.
 func (s *Store) Cancel(ctx context.Context, projectID string) error {
+	// 仅「在途」项目可取消：先用条件 UPDATE 做 CAS，把 planning/running 翻到 canceled。
+	// 非在途态（draft/review/completed/failed/已 canceled）0 行影响 → 返回 ErrNotCancelable，
+	// 由 handler 映射 409，杜绝 API 直连把静止项目强打 canceled（前端 canCancel 已门控 UI，但
+	// API 须 fail-safe）。与 TryBeginRun 的 CAS 风格对齐。projects 行的排他锁也与扇出事务的
+	// SELECT ... FOR UPDATE 串行化：本 UPDATE 一旦提交，随后的 todo 扫帚必能扫到扇出刚落库的子 todo。
+	res := s.db.WithContext(ctx).Exec(
+		`UPDATE projects SET status='canceled', updated_at=now()
+		 WHERE id=$1 AND status IN ('planning','running')`, projectID)
+	if res.Error != nil {
+		return fmt.Errorf("project: cancel: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotCancelable
+	}
+	// 已翻 canceled，扫在途 todo/asset（原语义）。
 	if err := s.db.WithContext(ctx).Exec(
 		`UPDATE todos SET status='canceled', locked_by='', locked_until=NULL, updated_at=now()
 		 WHERE project_id=$1 AND status IN ('pending','ready','blocked','running')`, projectID).Error; err != nil {
@@ -448,7 +478,7 @@ func (s *Store) Cancel(ctx context.Context, projectID string) error {
 		`UPDATE assets SET status='canceled' WHERE project_id=$1 AND status IN ('generating','submitted')`, projectID).Error; err != nil {
 		return fmt.Errorf("project: cancel assets: %w", err)
 	}
-	return s.SetStatus(ctx, projectID, "canceled")
+	return nil
 }
 
 // Deleted reports whether a project row is soft-deleted (deleted_at 非空)。

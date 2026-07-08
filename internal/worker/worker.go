@@ -543,6 +543,7 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 	}
 	var newTodoIDs []string
 	earlyExisting := false
+	canceledDuringFanout := false
 	err = w.cfg.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Idempotency guard (C1): a re-claimed/re-run storyboard todo must not insert
 		// a second batch of shots + asset todos. depends_on is TEXT[]; the prior
@@ -556,6 +557,20 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 		}
 		if existing > 0 {
 			earlyExisting = true // commit (nothing written), success
+			return nil
+		}
+
+		// 取消-扇出竞态守卫（Bug1 止血计费）：cancel 的扫帚只扫「已存在」的在途 todo；若本事务
+		// 提交前项目已被取消，这里插入的子 asset todo 会以 status='ready' 逃过取消 → 被后续
+		// worker 领取真实出图继续计费。提交前用 FOR UPDATE 复查项目状态，与 Cancel 的 projects
+		// UPDATE 在同一 projects 行上串行化：已取消则一个子 todo 都不插（no-op 提交），随后
+		// MarkDone 因分镜 todo 已被 cancel 扫成 canceled 而返 false → discardCanceledAsset 收口。
+		var projStatus string
+		if err := tx.Raw(`SELECT status FROM projects WHERE id=$1 FOR UPDATE`, c.projectID).Row().Scan(&projStatus); err != nil {
+			return fmt.Errorf("worker: fan-out cancel recheck: %w", err)
+		}
+		if projStatus == "canceled" {
+			canceledDuringFanout = true // 已取消：不插子 todo，跳过 cost/announce（同 earlyExisting 出口）
 			return nil
 		}
 
@@ -616,7 +631,8 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if earlyExisting {
+	if earlyExisting || canceledDuringFanout {
+		// 无写入出口：幂等重入 or 取消途中 → 不记账、不宣告 todo_ready。
 		return "shots:" + scriptID, nil
 	}
 	// 文本生成记账 (spec §6 generations)：分镜也是一次 LLM 调用，按 provider/model 定价
