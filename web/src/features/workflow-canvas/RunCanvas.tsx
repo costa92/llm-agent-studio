@@ -444,7 +444,12 @@ function RunCanvasInner({
 
   const status = wfState.status
   const runStatus = wfState.runStatus
-  const readyForReview = runStatus === "done" || status === "review"
+  // 失败/取消是终态但不是「可审核完成」。runStatus==="done" 把 failed/canceled 也折叠进
+  // done（见后端 runStatusFor 注释），故必须显式排除——否则失败 run 会亮出「完成」横幅 +
+  // 「开始审核」CTA，运营误读为成功。审核 CTA 一律走这个门控，不直接用 runStatus。
+  const isFailedRun = status === "failed" || status === "canceled"
+  const readyForReview = (runStatus === "done" || status === "review") && !isFailedRun
+  const failedAssets = wfState.assets.failed ?? 0
   const showReviewBadge =
     runStatus === "done" && status !== "failed" && status !== "canceled"
   const badge = showReviewBadge ? (
@@ -586,6 +591,18 @@ function RunCanvasInner({
 
       {/* 中：只读画布。点节点 → 选中工件。 */}
       <div className="workflow-canvas relative flex-1">
+        {/* 失败/取消终态：显失败细条，不显完成横幅/审核 CTA。素材写入失败数从权威 state 取。 */}
+        {isFailedRun && (
+          <div className="pointer-events-none absolute left-1/2 top-4 z-10 -translate-x-1/2">
+            <div className="pointer-events-auto flex items-center gap-3 rounded-full border border-danger/40 bg-bg-surface px-4 py-2 shadow-sm">
+              <span className="text-[12.5px] text-danger">
+                {status === "canceled" ? "✕ 本次运行已取消" : "✕ 本次运行失败"}
+                {failedAssets > 0 &&
+                  ` · ${failedAssets}/${wfState.assets.total} 素材写入失败`}
+              </span>
+            </div>
+          </div>
+        )}
         {/* 完成 banner：生成完成且抽屉未开时常驻细条，画布顶居中；pointer-events 只落在细条本身，
             不遮挡画布拖拽/缩放。点「开始审核」就地开融合抽屉。 */}
         {readyForReview && !reviewOpen && (

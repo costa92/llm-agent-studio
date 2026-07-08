@@ -64,6 +64,9 @@ export interface GraphEdge {
 export interface AssetsState {
   total: number
   done: number
+  // 失败/取消的 asset todo 数(写存储失败等)。失败 run 据此显「N/M 素材写入失败」。
+  // additive：旧后端不下发时按 0 处理。
+  failed?: number
   pending: number
 }
 

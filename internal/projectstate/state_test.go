@@ -180,6 +180,54 @@ func TestCompute_AssetDone_CountsAssetRecordNotTodoStatus(t *testing.T) {
 	}
 }
 
+// A failed asset todo must NOT count toward Assets.Done even if an asset record
+// was created before it failed (e.g. the storage write failed after the row was
+// inserted). Otherwise a run whose asset todos all failed reports done==total
+// and reads as success. The failure count surfaces via Assets.Failed instead.
+func TestCompute_FailedAssetTodo_NotCountedDone(t *testing.T) {
+	in := Input{
+		ProjectID: "p1", ProjectStatus: "failed", HasPlan: true,
+		Plan: &Plan{PlanID: "pl1"},
+		Todos: []Todo{
+			{ID: "a1", Type: "asset", Status: "failed"},
+			{ID: "a2", Type: "asset", Status: "failed"},
+		},
+		// Records exist (write-to-storage failed after the asset row was created).
+		Assets: []Asset{
+			{ID: "as1", TodoID: "a1", Status: "generating"},
+			{ID: "as2", TodoID: "a2", Status: "generating"},
+		},
+	}
+	got := Compute(in)
+	if got.Assets.Total != 2 || got.Assets.Done != 0 || got.Assets.Failed != 2 {
+		t.Fatalf("assets = %+v, want total=2 done=0 failed=2", got.Assets)
+	}
+	if got.Status != "failed" {
+		t.Fatalf("status = %q, want failed", got.Status)
+	}
+}
+
+// Mixed batch: 1 asset done (record) + 1 asset failed (record present but todo
+// failed). Done counts only the successful one; Failed counts the failed one.
+func TestCompute_MixedAssetTodos_DoneAndFailedSplit(t *testing.T) {
+	in := Input{
+		ProjectID: "p1", ProjectStatus: "review", HasPlan: true,
+		Plan: &Plan{PlanID: "pl1"},
+		Todos: []Todo{
+			{ID: "a1", Type: "asset", Status: "done"},
+			{ID: "a2", Type: "asset", Status: "failed"},
+		},
+		Assets: []Asset{
+			{ID: "as1", TodoID: "a1", Status: "pending_acceptance"},
+			{ID: "as2", TodoID: "a2", Status: "generating"},
+		},
+	}
+	got := Compute(in)
+	if got.Assets.Total != 2 || got.Assets.Done != 1 || got.Assets.Failed != 1 {
+		t.Fatalf("assets = %+v, want total=2 done=1 failed=1", got.Assets)
+	}
+}
+
 func tAt(sec int) time.Time { return time.Unix(int64(sec), 0).UTC() }
 
 func TestBuildGraph_LinearChain(t *testing.T) {
