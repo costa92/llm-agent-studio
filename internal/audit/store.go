@@ -8,6 +8,7 @@ package audit
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -84,6 +85,25 @@ func (s *Store) Record(ctx context.Context, e Entry) error {
 		return fmt.Errorf("audit: record: %w", err)
 	}
 	return nil
+}
+
+// ActorEmail 反查 userID 的邮箱 (auth_user，与 invites.emailByUserID 同源查询)，供
+// audited 包装器在写审计行前回填 actor_email。查不到 (无此用户 / 已软删) → 返回 ""，nil
+// error：审计写入是 best-effort，缺 email 不该拦下管理动作。
+func (s *Store) ActorEmail(ctx context.Context, userID string) (string, error) {
+	if strings.TrimSpace(userID) == "" {
+		return "", nil
+	}
+	var email string
+	err := s.db.WithContext(ctx).Raw(
+		`SELECT email FROM auth_user WHERE id=$1 AND deleted_at IS NULL`, userID).Row().Scan(&email)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("audit: actor email: %w", err)
+	}
+	return email, nil
 }
 
 // auditCursor encodes a keyset position as "<created_at RFC3339Nano UTC>_<id>"
