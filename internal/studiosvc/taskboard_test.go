@@ -112,6 +112,42 @@ func TestTaskBoardBoard(t *testing.T) {
 	}
 }
 
+// When the failing todo carries no agent (asset-generation todos never set the
+// agent column), FailingAgent falls back to the todo type (node/role) so the
+// task board shows "asset" rather than an empty string on a real failure.
+func TestTaskBoardFailingAgentFallsBackToType(t *testing.T) {
+	dsn := os.Getenv("LLM_AGENT_STUDIO_PG_URL")
+	if dsn == "" {
+		t.Skipf("set LLM_AGENT_STUDIO_PG_URL to run studiosvc tests")
+	}
+	ctx := context.Background()
+	st, _ := storage.Open(ctx, storage.Config{PGURL: dsn})
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	pool := st.Pool()
+	org := "tb_fb_" + randHexSvc()
+	p := "p_fb_" + randHexSvc()
+	pl := "pl_fb_" + randHexSvc()
+	_, _ = pool.Exec(ctx, `INSERT INTO projects (id,org_id,name,status,created_by) VALUES ($1,$2,'FB','failed','u')`, p, org)
+	_, _ = pool.Exec(ctx, `INSERT INTO plans (id,project_id,status,valid,fallback_used) VALUES ($1,$2,'failed',false,false)`, pl, p)
+	// failed asset todo with empty agent (the common real case).
+	if _, err := pool.Exec(ctx, `INSERT INTO todos (id,project_id,plan_id,type,status,agent) VALUES ($1,$2,$3,'asset','failed','')`, "tfb_"+randHexSvc(), p, pl); err != nil {
+		t.Fatalf("seed failed asset todo: %v", err)
+	}
+	rows, err := NewTaskBoard(st.GORM()).Board(ctx, org)
+	if err != nil {
+		t.Fatalf("board: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("want 1 row, got %d", len(rows))
+	}
+	if rows[0].FailingAgent != "asset" {
+		t.Fatalf("failingAgent want 'asset' (fallback to type), got %q", rows[0].FailingAgent)
+	}
+}
+
 // M5.2: TaskBoard 行的 progressDone / progressTotal / pendingReview 必须按"最新
 // plan 维度"算，与 RefreshStatus 一致（status 也已经按最新 plan）。否则重跑项目
 // 之后任务中心会一直显示历史所有失败的 done 数 + 历史所有资产的 pendingReview

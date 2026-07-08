@@ -68,7 +68,9 @@ func (b *TaskBoard) Board(ctx context.Context, orgID string) ([]TaskRow, error) 
 		  SELECT project_id, max(ts) AS last_ts FROM run_events GROUP BY project_id
 		) e ON e.project_id = p.id
 		LEFT JOIN LATERAL (
-		  SELECT agent AS failing_agent FROM todos
+		  -- agent 列常为空(asset 生成 todo 不写 agent),回落到 todo 的 type(节点/角色)
+		  -- 才能在真实失败时浮出「哪个节点失败」,而不是空字符串。
+		  SELECT COALESCE(NULLIF(agent, ''), type) AS failing_agent FROM todos
 		  WHERE project_id = p.id AND status='failed'
 		  ORDER BY updated_at DESC LIMIT 1
 		) f ON true

@@ -432,6 +432,28 @@ describe("RunCanvas completion summons in-run review (variant A)", () => {
     // 抽屉内融合审核容器渲染（空队列 → 空态文案），证明就地开抽屉而非跳走。
     expect(await screen.findByText("没有待审资产")).toBeInTheDocument()
   })
+
+  // 失败终态（runStatus=done 但 status=failed）：不显完成横幅/开始审核，改显失败细条。
+  const FAILED_STATE: ProjectState = {
+    ...RUNNING_STATE,
+    status: "failed",
+    runStatus: "done",
+    assets: { total: 7, done: 0, failed: 7, pending: 0 },
+  }
+
+  it("failed run: no 完成 banner / 开始审核, shows failure strip with N/M failed", () => {
+    renderWith(FAILED_STATE)
+    expect(screen.queryByText(/本次生成完成/)).toBeNull()
+    expect(screen.queryByRole("button", { name: "开始审核" })).toBeNull()
+    expect(toast.success).not.toHaveBeenCalled()
+    expect(screen.getByText(/本次运行失败 · 7\/7 素材写入失败/)).toBeInTheDocument()
+  })
+
+  it("does NOT fire the summon toast when the run ends failed", () => {
+    const { rerender, qc } = renderWith(RUNNING_STATE)
+    rerenderWith(rerender, qc, FAILED_STATE)
+    expect(toast.success).not.toHaveBeenCalled()
+  })
 })
 
 // 运行入口收敛：RunCanvas 走工作流端点（useRunWorkflow）；有必填 inputsSchema 时

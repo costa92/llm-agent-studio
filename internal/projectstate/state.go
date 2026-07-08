@@ -78,9 +78,16 @@ type GraphEdge struct {
 type Assets struct {
 	Total int `json:"total"`
 	// Done counts asset todos that have at least one generated asset record
-	// (not todo Status==done). An asset todo is "done" when assetByTodo[todo.ID]
-	// exists, regardless of the todo's own status field.
-	Done    int `json:"done"`
+	// (not todo Status==done) AND whose todo did NOT end failed/canceled. An
+	// asset todo counts as "done" when assetByTodo[todo.ID] exists and the todo
+	// is still in-flight or done — a failed/canceled asset todo never counts as
+	// done even if a record was created before the failure (e.g. storage write
+	// failed after the asset row was inserted). Otherwise a run whose asset
+	// todos all failed would report done==total and read as success.
+	Done int `json:"done"`
+	// Failed counts asset todos whose status is failed/canceled. Surfaces the
+	// real write-failure count so a failed run shows N failed rather than N done.
+	Failed  int `json:"failed"`
 	Pending int `json:"pending"`
 }
 
@@ -241,7 +248,17 @@ func Compute(in Input) ProjectState {
 			pip := Pip{TodoID: t.ID, Status: todoStatusToPip(t.Status)}
 			if a, ok := assetByTodo[t.ID]; ok {
 				pip.AssetID = a.ID
-				st.Assets.Done++
+			}
+			// 失败/取消的 asset todo 不计入 done——即便存储写入前已建 asset 记录
+			// (assetByTodo 命中,如「写存储失败」),它仍是失败产物,当 done 会让
+			// 全失败 run 显 done==total 被误读为成功。失败数单独计入 Failed。
+			switch t.Status {
+			case "failed", "canceled":
+				st.Assets.Failed++
+			default:
+				if _, ok := assetByTodo[t.ID]; ok {
+					st.Assets.Done++
+				}
 			}
 			st.Pips = append(st.Pips, pip)
 		}
