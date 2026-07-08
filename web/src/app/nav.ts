@@ -11,6 +11,7 @@ import {
   Image,
   KeyRound,
   ListChecks,
+  ScrollText,
   ShieldCheck,
   SlidersHorizontal,
   Users,
@@ -63,6 +64,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { to: "/orgs/$org/secrets", params: {}, icon: createElement(KeyRound), label: "密钥", adminOnly: true, orgScoped: true },
       { to: "/orgs/$org/alerts", params: {}, icon: createElement(Bell), label: "告警", adminOnly: true, orgScoped: true },
       { to: "/orgs/$org/members", params: {}, icon: createElement(Users), label: "成员", adminOnly: true, orgScoped: true },
+      { to: "/orgs/$org/audit", params: {}, icon: createElement(ScrollText), label: "审计", adminOnly: true, orgScoped: true },
     ],
   },
   {

@@ -567,6 +567,21 @@ export interface LedgerEntry {
   createdAt: string
 }
 
+// audit/store.go Record。GET /api/orgs/{org}/audit-log → {items, next_cursor}（keyset 分页）。
+// 安全敏感管理操作的 append-only 审计流水（只读）。actorEmail 可空（历史行或缺 email 用户）；
+// detail 为最小化非敏感键值（JSON 对象，绝不含明文密钥）。
+export interface AuditRecord {
+  id: string
+  orgId: string
+  actorUserId: string
+  actorEmail: string
+  action: string
+  targetType: string
+  targetId: string
+  detail: unknown
+  createdAt: string
+}
+
 // authz 登录/刷新返回：POST /api/auth/login、POST /api/auth/refresh → 200。
 export interface LoginResponse {
   access_token: string

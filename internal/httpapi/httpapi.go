@@ -62,6 +62,7 @@ type Deps struct {
 	OrgSecret      OrgSecretStore      // org-scoped named-secret registry (roleAdmin); nil in focused unit tests
 	AlertSettings  AlertSettingsStore  // org-scoped run 失败邮件告警配置 (roleAdmin); nil in focused unit tests
 	Audit          AuditRecorder       // 安全敏感管理动作的 append-only 审计流水; nil → 不记审计 (focused unit tests skip)
+	AuditLog       AuditLister         // 只读审计流水读取 (satisfied by *audit.Store); nil → audit-log 读取路由不挂载
 
 	// InviteMailer 用于创建邀请后 best-effort 投递邀请邮件; nil → 不发信 (邀请仍创建, 管理员用返回 token 手动分享)。
 	// InvitePublicURL 是控制台外部 base URL (env STUDIO_PUBLIC_URL), 用于拼接邀请链接 /invites/{token}; 空 → 邮件改带 token。
@@ -299,7 +300,7 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("POST /api/orgs/{org}/storage-configs", scoped(roleAdmin, orgScope, audited(d.Audit, "storage_config.create", "storage_config", createOrgStorageConfigHandler(d.StorageConfig))))
 	mux.Handle("PUT /api/orgs/{org}/storage-configs/{id}", scoped(roleAdmin, orgScope, audited(d.Audit, "storage_config.update", "storage_config", updateOrgStorageConfigHandler(d.StorageConfig))))
 	mux.Handle("DELETE /api/orgs/{org}/storage-configs/{id}", scoped(roleAdmin, orgScope, audited(d.Audit, "storage_config.delete", "storage_config", deleteOrgStorageConfigHandler(d.StorageConfig))))
-	mux.Handle("POST /api/orgs/{org}/storage-configs/{id}/default", scoped(roleAdmin, orgScope, setDefaultStorageConfigHandler(d.StorageConfig)))
+	mux.Handle("POST /api/orgs/{org}/storage-configs/{id}/default", scoped(roleAdmin, orgScope, audited(d.Audit, "storage_config.set_default", "storage_config", setDefaultStorageConfigHandler(d.StorageConfig))))
 	if d.CustomNodeType != nil {
 		mux.Handle("GET /api/orgs/{org}/node-types", scoped(roleViewer, orgScope, nodeTypesHandler(d.CustomNodeType)))
 		mux.Handle("GET /api/orgs/{org}/custom-node-types", scoped(roleViewer, orgScope, listCustomNodeTypesHandler(d.CustomNodeType)))
@@ -311,7 +312,7 @@ func NewMux(d Deps) *http.ServeMux {
 	if d.OrgSecret != nil {
 		mux.Handle("GET /api/orgs/{org}/secrets", scoped(roleAdmin, orgScope, listOrgSecretsHandler(d.OrgSecret)))
 		mux.Handle("POST /api/orgs/{org}/secrets", scoped(roleAdmin, orgScope, audited(d.Audit, "org_secret.create", "org_secret", createOrgSecretHandler(d.OrgSecret))))
-		mux.Handle("PUT /api/orgs/{org}/secrets/{name}", scoped(roleAdmin, orgScope, updateOrgSecretHandler(d.OrgSecret)))
+		mux.Handle("PUT /api/orgs/{org}/secrets/{name}", scoped(roleAdmin, orgScope, audited(d.Audit, "org_secret.update", "org_secret", updateOrgSecretHandler(d.OrgSecret))))
 		mux.Handle("DELETE /api/orgs/{org}/secrets/{name}", scoped(roleAdmin, orgScope, audited(d.Audit, "org_secret.delete", "org_secret", deleteOrgSecretHandler(d.OrgSecret))))
 	}
 	// Org run 失败邮件告警配置 (org-scoped, roleAdmin — 与其余 org 设置端点族同门禁)。
@@ -319,9 +320,13 @@ func NewMux(d Deps) *http.ServeMux {
 		mux.Handle("GET /api/orgs/{org}/alert-settings", scoped(roleAdmin, orgScope, getAlertSettingsHandler(d.AlertSettings)))
 		mux.Handle("PUT /api/orgs/{org}/alert-settings", scoped(roleAdmin, orgScope, putAlertSettingsHandler(d.AlertSettings)))
 	}
+	// Org 审计流水 (org-scoped, roleAdmin — 与其余管理端点族同门禁). 只读、keyset 翻页。
+	if d.AuditLog != nil {
+		mux.Handle("GET /api/orgs/{org}/audit-log", scoped(roleAdmin, orgScope, auditLogHandler(d.AuditLog)))
+	}
 	// Org 成员管理 (org-scoped). 列出对任意 org 成员开放 (viewer)；增删改角色限 org_admin (admin).
 	mux.Handle("GET /api/orgs/{org}/members", scoped(roleViewer, orgScope, listMembersHandler(d.Members)))
-	mux.Handle("POST /api/orgs/{org}/members", scoped(roleAdmin, orgScope, addMemberHandler(d.Members)))
+	mux.Handle("POST /api/orgs/{org}/members", scoped(roleAdmin, orgScope, audited(d.Audit, "member.add", "member", addMemberHandler(d.Members))))
 	mux.Handle("PUT /api/orgs/{org}/members/{userId}", scoped(roleAdmin, orgScope, audited(d.Audit, "member.role_change", "member", setMemberRoleHandler(d.Members))))
 	mux.Handle("DELETE /api/orgs/{org}/members/{userId}", scoped(roleAdmin, orgScope, audited(d.Audit, "member.remove", "member", removeMemberHandler(d.Members))))
 	// Org 邀请 (org-scoped, roleAdmin). 邀请新协作者 (email+role) → pending 邀请 + best-effort 邮件；

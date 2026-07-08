@@ -456,6 +456,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		OrgSecret:      orgSecretStore,
 		AlertSettings:  alertStore,
 		Audit:          auditStore,
+		AuditLog:       auditStore,
 		Exports:        exportStore,
 		ExportBook:     exports.NewBookData(st.GORM()),
 		Members:         membersSvc,

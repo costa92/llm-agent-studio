@@ -162,3 +162,34 @@ func TestBadCursor(t *testing.T) {
 		t.Fatalf("want ErrBadCursor")
 	}
 }
+
+// TestActorEmail 验证 ActorEmail 反查 auth_user：命中返回 email；未知 id / 空 id / 已软删
+// 均返回 ("", nil)（best-effort，缺 email 不拦审计写入）。
+func TestActorEmail(t *testing.T) {
+	db := testGorm(t)
+	ctx := context.Background()
+	// auth_user 由 authz 库 own；studio storage.Migrate 不建它。测试里自备最小表 + 一行。
+	if err := db.WithContext(ctx).Exec(`CREATE TABLE IF NOT EXISTS auth_user (
+		id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL DEFAULT '',
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now(), deleted_at TIMESTAMPTZ)`).Error; err != nil {
+		t.Fatalf("create auth_user: %v", err)
+	}
+	uid := randID(t)
+	email := uid + "@example.com"
+	if err := db.WithContext(ctx).Exec(
+		`INSERT INTO auth_user (id, email) VALUES ($1, $2)`, uid, email).Error; err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	s := New(db)
+
+	got, err := s.ActorEmail(ctx, uid)
+	if err != nil || got != email {
+		t.Fatalf("resolve: got %q err %v, want %q", got, err, email)
+	}
+	if got, err := s.ActorEmail(ctx, "no-such-user"); err != nil || got != "" {
+		t.Fatalf("unknown id: got %q err %v, want empty", got, err)
+	}
+	if got, err := s.ActorEmail(ctx, ""); err != nil || got != "" {
+		t.Fatalf("empty id: got %q err %v, want empty", got, err)
+	}
+}
