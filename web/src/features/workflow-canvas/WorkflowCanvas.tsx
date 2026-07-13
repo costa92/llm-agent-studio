@@ -61,6 +61,7 @@ import { HelperLines } from "./HelperLines"
 import { NodePalette, PALETTE_DND_TYPE, PALETTE_DND_TYPEID } from "./NodePalette"
 import { NodeManagerModal } from "./NodeManagerModal"
 import { TemplatePicker } from "./TemplatePicker"
+import { SaveTemplateDialog } from "./SaveTemplateDialog"
 import { PropertiesPanel } from "./PropertiesPanel"
 import { InputsSchemaPanel } from "./InputsSchemaPanel"
 import { WorkflowSettingsPanel } from "./WorkflowSettingsPanel"
@@ -263,6 +264,8 @@ function CanvasInner({
   const [nodeManagerOpen, setNodeManagerOpen] = useState(false)
   // 案例模板选择器（「从模板开始」入口打开），选中模板 → 后端新建工作流 → 跳转打开。
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false)
+  // 「存为模板」对话框：把当前已保存工作流快照存为组织模板（仅已保存工作流 + 有写权时可入口）。
+  const [saveTemplateOpen, setSaveTemplateOpen] = useState(false)
   const [quickSubmitError, setQuickSubmitError] = useState<string | null>(null)
   const createTypedType = useCreateCustomNodeType(org)
   // http secret-bearing 类型守卫：密钥名（「插入密钥」下拉 + 判定）+ admin 角色（前端镜像，后端权威）。
@@ -1151,6 +1154,17 @@ function CanvasInner({
           >
             <Redo2 className="h-4 w-4" aria-hidden />
           </button>
+          {/* 存为模板：仅已保存工作流（workflowId 非空）且有写权时可入口；
+              新建未落库的工作流没有可快照的 id，故不渲染。 */}
+          {canWrite && workflowId && (
+            <button
+              type="button"
+              onClick={() => setSaveTemplateOpen(true)}
+              className="whitespace-nowrap rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-text-2 hover:border-amber hover:text-amber"
+            >
+              存为模板
+            </button>
+          )}
           {/* viewer（无写权）：只读徽标替代保存按钮，避免点了必 403 的死胡同。 */}
           {canWrite ? (
             <button
@@ -1368,6 +1382,17 @@ function CanvasInner({
               projectId={projectId}
               onCreated={(wfId) => { setTemplatePickerOpen(false); onCreated(wfId) }}
               onCancel={() => setTemplatePickerOpen(false)}
+            />
+          )}
+          {/* 存为模板对话框：条件渲染（每次打开重新挂载 useState 从最新 defaultName 起）。 */}
+          {saveTemplateOpen && workflowId && (
+            <SaveTemplateDialog
+              org={org}
+              projectId={projectId}
+              workflowId={workflowId}
+              defaultName={workflowName}
+              open
+              onOpenChange={setSaveTemplateOpen}
             />
           )}
         </div>

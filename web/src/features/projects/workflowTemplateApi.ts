@@ -5,7 +5,7 @@ import {
   type UseMutationResult,
   type UseQueryResult,
 } from "@tanstack/react-query"
-import { apiJSON } from "@/lib/apiClient"
+import { ApiError, apiFetch, apiJSON } from "@/lib/apiClient"
 import type {
   ItemsEnvelope,
   Workflow,
@@ -50,6 +50,60 @@ export function useInstantiateTemplate(
     onSuccess: () => {
       void queryClient.invalidateQueries({
         queryKey: ["workflows", projectId],
+      })
+    },
+  })
+}
+
+// POST /api/orgs/{org}/workflow-templates body {name,description,projectId,workflowId} → 201
+//（editor+）。服务端从该 workflow 快照建 org 级模板。成功后失效 ["workflow-templates", org]。
+export function useSaveTemplate(
+  org: string,
+): UseMutationResult<
+  WorkflowTemplateMeta,
+  Error,
+  { name: string; description: string; projectId: string; workflowId: string }
+> {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: {
+      name: string
+      description: string
+      projectId: string
+      workflowId: string
+    }) =>
+      apiJSON<WorkflowTemplateMeta>(`/api/orgs/${org}/workflow-templates`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["workflow-templates", org],
+      })
+    },
+  })
+}
+
+// DELETE /api/orgs/{org}/workflow-templates/{id} → 204（editor+）。响应无 body，
+// 故走底层 apiFetch 手动校验状态（apiJSON 会对空 body 解析失败）。成功后失效模板列表。
+export function useDeleteTemplate(
+  org: string,
+): UseMutationResult<void, Error, string> {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (templateId: string) => {
+      const res = await apiFetch(
+        `/api/orgs/${org}/workflow-templates/${templateId}`,
+        { method: "DELETE" },
+      )
+      if (!res.ok) {
+        throw new ApiError(res.status, await res.text())
+      }
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["workflow-templates", org],
       })
     },
   })
