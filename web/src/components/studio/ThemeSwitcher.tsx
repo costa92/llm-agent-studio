@@ -6,7 +6,7 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { useTheme, type ThemeChoice } from "@/app/theme"
+import { useTheme, type ThemeChoice } from "@/app/theme-context"
 
 // 四个选择的菜单元数据（图标 + 中文名）。顺序即菜单展示顺序；auto=跟随系统 居首。
 const OPTIONS: { value: ThemeChoice; label: string; icon: typeof Moon }[] = [

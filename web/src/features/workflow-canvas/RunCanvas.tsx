@@ -55,6 +55,7 @@ import {
 } from "@/features/workflow/useProductionTimeline"
 import { useQueryClient } from "@tanstack/react-query"
 import { toReactFlow, type RFEdge, type StudioNodeData } from "./canvasModel"
+import { parseHttpStatus } from "./httpStatus"
 import { overlayRunStatus } from "./runOverlay"
 import {
   buildRunGroups,
@@ -925,16 +926,6 @@ function RunCanvasInner({
       {runInputsDialog}
     </div>
   )
-}
-
-// 从 http-status 产物内容 {"status":N} 解析状态码；解析失败返回 null。
-export function parseHttpStatus(content: string): number | null {
-  try {
-    const obj = JSON.parse(content) as { status?: unknown }
-    return typeof obj.status === "number" ? obj.status : null
-  } catch {
-    return null
-  }
 }
 
 // http 节点响应体被安全策略抑制时的产物面板：只展示「已完成 + 状态码」，绝不 dump body。

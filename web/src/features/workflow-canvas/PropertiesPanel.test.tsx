@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { PropertiesPanel, extractTemplateVars } from "./PropertiesPanel"
+import { PropertiesPanel } from "./PropertiesPanel"
+import { extractTemplateVars } from "./templateVars"
 import type { NodeTypeDescription } from "./nodeDescTypes"
 import type { LlmParams, WorkflowNode } from "@/lib/types"
 
