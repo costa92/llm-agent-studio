@@ -41,7 +41,7 @@ describe("streamRunEvents", () => {
       },
     ])
 
-    await streamRunEvents("p1", "tok", handlers, client)
+    await streamRunEvents("p1", () => "tok", handlers, client)
 
     expect(got.map((f) => f.seq)).toEqual([1, 2, 3])
     expect(got.map((f) => f.kind)).toEqual([
@@ -53,17 +53,36 @@ describe("streamRunEvents", () => {
     expect(got[1].payload).toEqual({ type: "script" })
   })
 
-  it("opens a GET request with the Authorization: Bearer header + openWhenHidden", async () => {
+  it("opens a GET stream (openWhenHidden) whose injected fetch stamps a FRESH Bearer on each (re)connect", async () => {
+    // 注入的 fetch 在每次（重）连时从 getToken() 现取 token —— 模拟 token 刷新后
+    // fetch-event-source 自动重连须带新 token（R2 SSE 隐患①）。用 mock 全局 fetch 观察 header。
+    // 泛型标注调用签名（实现不带形参，避免 no-unused-vars），使 mock.calls[i][1] 类型为 RequestInit。
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+      async () => new Response(null, { status: 200 }),
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    let token = "tok-1"
     const { client, calls } = fakeClient([])
 
-    await streamRunEvents("proj-42", "tok", { onEvent: () => {} }, client)
+    await streamRunEvents("proj-42", () => token, { onEvent: () => {} }, client)
 
     expect(calls).toHaveLength(1)
     const { input, init } = calls[0]
     expect(input).toBe("/api/projects/proj-42/events/stream")
     expect(init.method ?? "GET").toBe("GET")
-    expect(init.headers?.Authorization).toBe("Bearer tok")
     expect(init.openWhenHidden).toBe(true)
+    // 首连：注入的 fetch 用当前 token。
+    await init.fetch!("/api/projects/proj-42/events/stream", {})
+    expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({
+      Authorization: "Bearer tok-1",
+    })
+    // token 刷新后重连：再次调用注入的 fetch，必须带刷新后的 token（非首连时捕获的旧值）。
+    token = "tok-2"
+    await init.fetch!("/api/projects/proj-42/events/stream", {})
+    expect(fetchMock.mock.calls[1][1]?.headers).toMatchObject({
+      Authorization: "Bearer tok-2",
+    })
+    vi.unstubAllGlobals()
   })
 
   it("fires onDone when the terminal run_done frame arrives", async () => {
@@ -76,7 +95,7 @@ describe("streamRunEvents", () => {
 
     await streamRunEvents(
       "p1",
-      "tok",
+      () => "tok",
       { onEvent: (f) => events.push(f), onDone },
       client,
     )
@@ -98,7 +117,7 @@ describe("streamRunEvents", () => {
 
     await streamRunEvents(
       "p1",
-      "tok",
+      () => "tok",
       { onEvent: (f) => events.push(f), onMessage: (f) => messages.push(f) },
       client,
     )
@@ -114,7 +133,7 @@ describe("streamRunEvents", () => {
 
     await streamRunEvents(
       "p1",
-      "tok",
+      () => "tok",
       {
         onEvent: () => {},
         onOpen: () => phases.push("open"),
@@ -132,7 +151,7 @@ describe("streamRunEvents", () => {
 
     await streamRunEvents(
       "p1",
-      "tok",
+      () => "tok",
       { onEvent: () => {} },
       client,
       controller.signal,

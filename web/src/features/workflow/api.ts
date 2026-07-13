@@ -72,6 +72,16 @@ export function useProjectState(id: string, planId?: string): UseQueryResult<Pro
     queryFn: () => fetchProjectState(id, planId),
     enabled: id !== "",
     staleTime: 5_000,
+    // REST 兜底轮询（修 R2 SSE 隐患②）：运行期（running/planning）每 15s 拉一次权威
+    // state。SSE 才是主更新源，但它一旦断连/静默卡死（token 过期、网络抖动、服务端重启、
+    // fetch-event-source 不翻 conn 态的静默停流）就没有兜底，UI 会冻在最后一帧。这条轮询
+    // 保证运行期的活性。SSE 正常时是廉价冗余（version 单调、staleTime 抑制聚焦重取）；
+    // 终态/草稿（status 非 running/planning）不轮询，零常态开销。
+    // refetchInterval 回调（react-query v5：接收 query 实例）读 query.state.data.status。
+    refetchInterval: (query) => {
+      const s = query.state.data?.status
+      return s === "running" || s === "planning" ? 15_000 : false
+    },
   })
 }
 

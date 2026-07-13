@@ -50,9 +50,14 @@ export interface SseHandlers {
 
 // 开 SSE 流并解析帧。client 默认 fetchEventSource，可注入 fake 供单测。
 // 取消：传入 AbortController.signal，abort() 即断流。
+//
+// getToken 是「取当前 access token」的取值器（非静态字符串）：fetch-event-source 每次
+// （重）连都会调用下方注入的 fetch，从 getToken() 现取最新 token 拼 Authorization 头。
+// 这样长 run 跨 access-token TTL（默认 15min）后自动重连不再带首连时捕获的过期 token
+// （否则 401 重连失败 → 流永久断开 → UI 冻结在旧进度）——修 R2 SSE 隐患①。
 export function streamRunEvents(
   projectId: string,
-  accessToken: string,
+  getToken: () => string,
   handlers: SseHandlers,
   client: SseClient = fetchEventSource,
   signal?: AbortSignal,
@@ -63,7 +68,12 @@ export function streamRunEvents(
     : `/api/projects/${projectId}/events/stream`
   return client(url, {
     method: "GET",
-    headers: { Authorization: `Bearer ${accessToken}` },
+    // 不写死 Authorization：改由注入的 fetch 每次（重）连时从 getToken() 现取。
+    fetch: (input, init) =>
+      fetch(input, {
+        ...init,
+        headers: { ...(init?.headers ?? {}), Authorization: `Bearer ${getToken()}` },
+      }),
     // 标签页隐藏时仍保持连接（默认会断流）。
     openWhenHidden: true,
     signal,

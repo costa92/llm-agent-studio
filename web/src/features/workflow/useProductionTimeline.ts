@@ -103,12 +103,17 @@ export function useProductionTimeline({
   const onStateRef = useRef(onState)
   const onReplayRef = useRef(onReplay)
   const onFrameRef = useRef(onFrame)
-  // ref 仅在异步 SSE 回调里读取（提交后才可能有帧），故写入放进无依赖 effect
+  // token 也走 ref：不进主 effect deps（token 刷新轮换不重起整条流、不重放日志），
+  // 但下方 streamRunEvents 拿 () => tokenRef.current，令 fetch-event-source 的每次
+  // 自动重连都取到刷新后的最新 token（修 R2 SSE 隐患①：长 run 跨 TTL 后重连不带过期 token）。
+  const tokenRef = useRef(accessToken)
+  // ref 仅在异步 SSE 回调 / 重连里读取（提交后才可能有帧/重连），故写入放进无依赖 effect
   // （每次提交后运行）以满足 react-hooks/refs；读取点为异步，行为与 render 期赋值等价。
   useEffect(() => {
     onStateRef.current = onState
     onReplayRef.current = onReplay
     onFrameRef.current = onFrame
+    tokenRef.current = accessToken
   })
 
   useEffect(() => {
@@ -161,7 +166,7 @@ export function useProductionTimeline({
       try {
         await streamRunEvents(
           projectId,
-          accessToken,
+          () => tokenRef.current ?? "",
           {
             onEvent: (frame) => {
               if (!cancelled) {
