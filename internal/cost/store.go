@@ -411,13 +411,18 @@ func (s *Store) RecentByOrg(ctx context.Context, orgID string, limit int, cursor
 	return out, next, nil
 }
 
-// CountByOrgSince counts the org's generations since a timestamp (rolling-24h
-// quota check, spec §12 配额).
+// CountByOrgSince counts the org's MEDIA generations since a timestamp
+// (rolling-24h quota check, spec §12 配额). **只算媒体（kind<>'text'）**：配额是
+// 「防成本失控的扇出 backstop」(worker.go I1 image-only scoping)——script/storyboard/
+// custom-llm 三类中间文本节点记的 kind='text' 账本行是每 run 固定开销、非扇出成本，
+// 不该吃媒体配额。这一口径在文本节点开始记账（PR#188）前隐式成立（表里只有媒体行），
+// 此处显式化，与 async 路径 submit-tx 里的 image-only 配额守卫对齐（否则同一 org 的有效
+// 配额会因 sync/async 路径而异）。
 func (s *Store) CountByOrgSince(ctx context.Context, orgID string, since time.Time) (int, error) {
 	var n int
 	if err := s.db.WithContext(ctx).Raw(`
 		SELECT count(*) FROM generations g JOIN projects p ON g.project_id=p.id
-		WHERE p.org_id=$1 AND g.created_at >= $2`, orgID, since).Row().Scan(&n); err != nil {
+		WHERE p.org_id=$1 AND g.created_at >= $2 AND g.kind <> 'text'`, orgID, since).Row().Scan(&n); err != nil {
 		return 0, fmt.Errorf("cost: count since: %w", err)
 	}
 	return n, nil
