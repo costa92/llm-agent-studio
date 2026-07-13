@@ -187,6 +187,15 @@ export interface RunWorkflowResponse {
   workflowId: string
 }
 
+// 工作流案例模板元数据：GET /api/orgs/{org}/workflow-templates → {items:[...]}。
+// group 用于前端按分组渲染（通用/创作/科普/营销…）。
+export interface WorkflowTemplateMeta {
+  id: string
+  name: string
+  description: string
+  group: string
+}
+
 // events/store.go。GET /events 列表元素 = {seq, kind, todoId?, payload?}。
 export interface StudioEvent {
   seq: number

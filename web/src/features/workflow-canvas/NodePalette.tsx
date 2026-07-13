@@ -35,6 +35,8 @@ const QUICK_CREATE_CHIPS: { kind: QuickCreateKind; label: string; title: string 
 export interface NodePaletteProps {
   // 点「标准管线」一键把画布填充为 脚本→分镜（由画布层实现，含确认替换）。
   onStandardPipeline: () => void
+  // 点「从模板开始」打开案例模板选择器（由画布层实现，选中后新建工作流并跳转）。
+  onOpenTemplates?: () => void
   // 点「自动整理」按分层种子坐标重排现有节点（由画布层实现，可撤销 + fitView）。
   onAutoTidy?: () => void
   customTypes?: PaletteCustomType[]
@@ -47,7 +49,7 @@ export interface NodePaletteProps {
   onOpenManager?: () => void
 }
 
-export function NodePalette({ onStandardPipeline, onAutoTidy, customTypes, onQuickCreate, onAddCustomType, onEditCustomType, onOpenManager }: NodePaletteProps) {
+export function NodePalette({ onStandardPipeline, onOpenTemplates, onAutoTidy, customTypes, onQuickCreate, onAddCustomType, onEditCustomType, onOpenManager }: NodePaletteProps) {
   const { data: builtins = [] } = useBuiltinNodeTypes()
   // 搜索过滤（系统节点按 label/type/职责描述；自定义节点按 label/type），纯派生（禁 effect setState）。
   const [query, setQuery] = useState("")
@@ -234,6 +236,16 @@ export function NodePalette({ onStandardPipeline, onAutoTidy, customTypes, onQui
       >
         标准管线
       </button>
+      {onOpenTemplates && (
+        <button
+          type="button"
+          onClick={onOpenTemplates}
+          className="rounded-md border border-amber/30 px-2.5 py-1.5 text-[12px] font-medium text-amber hover:border-amber"
+          title="从案例模板快速创建一条工作流"
+        >
+          从模板开始
+        </button>
+      )}
       {onAutoTidy && (
         <button
           type="button"
