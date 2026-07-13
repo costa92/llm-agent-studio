@@ -1,3 +1,4 @@
+import { useState } from "react"
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router"
 import { z } from "zod"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -60,6 +61,12 @@ function WorkflowCanvasPage() {
     })
   })
 
+  // 跨会话陈旧感知的「重新加载」入口：bump 该 nonce → WorkflowCanvas 的 key 变化
+  // → 强制 remount，其 useState 基线用刷新后的 workflow（version/nodes/name/settings）
+  // 重新初始化。仅在用户点击 banner 的「重新加载」时 bump，绝不自动 remount，
+  // 否则会静默丢弃当前会话未保存的编辑。
+  const [reloadNonce, setReloadNonce] = useState(0)
+
   if (workflowsQuery.isLoading) {
     return (
       <div className="p-6 space-y-4">
@@ -99,6 +106,8 @@ function WorkflowCanvasPage() {
   return (
     <div className="h-full">
       <WorkflowCanvas
+        // reloadNonce 变化 → remount，用刷新后的 workflow 重新初始化编辑基线。
+        key={`${wf ?? "new"}-${reloadNonce}`}
         workflowId={workflow?.id}
         projectId={id}
         org={org}
@@ -107,6 +116,10 @@ function WorkflowCanvasPage() {
         inputsSchema={workflow?.inputsSchema}
         settings={workflow?.settings}
         version={workflow?.version}
+        // latestVersion 是 live 值：随 useWorkflows 聚焦刷新更新（区别于一次性基线 version）。
+        // 领先于编辑基线 version 时说明工作流已在别处被保存 → canvas 显示非破坏性 banner。
+        latestVersion={workflow?.version}
+        onReload={() => setReloadNonce((n) => n + 1)}
         prompts={prompts}
         basics={basics}
         mode={mode}
