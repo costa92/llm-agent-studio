@@ -383,6 +383,14 @@ func assetContentHandler(lib AssetLibrary, router BlobRouter, ps ProjectReader) 
 			http.Redirect(w, r, a.URL, http.StatusFound)
 			return
 		}
+		// 无字节资产（生成 failed/canceled，或异步提交未完成）：blobKey 与外链皆空。
+		// 绝不能签空 key——那会 302 到 /api/blob/?exp=&sig=（key 段为空）→ 后端必然
+		// 404，且前端每张这样的缩略图都白跑一次重定向 + 刷 console 错误。直接 404，
+		// 前端 resolveAssetUrl 收到即降级为「图片不可用」占位（无二次请求）。
+		if a.BlobKey == "" {
+			http.Error(w, "asset has no content", http.StatusNotFound)
+			return
+		}
 		orgID, err := lib.OrgIDForAsset(r.Context(), a.ID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)

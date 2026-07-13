@@ -127,6 +127,39 @@ func TestAssetContentHandlerRoutesByConfigID(t *testing.T) {
 	}
 }
 
+// TestAssetContentHandlerNoBytes404 verifies that an asset with NO bytes
+// (blobKey=="" AND url=="", e.g. a failed/canceled generation) yields a clean
+// 404 — NOT a 302 to /api/blob/?sig=… with an empty key (which always 404s and
+// makes the frontend fire a doomed redirect + console error per thumbnail).
+func TestAssetContentHandlerNoBytes404(t *testing.T) {
+	router := &recordingBlobRouter{bs: &signedURLOnlyFake{}}
+	lib := &fixedAssetLib{a: assets.Asset{
+		ID:        "a3",
+		ProjectID: "p3",
+		BlobKey:   "", // no blob
+		URL:       "", // no external url either
+		Status:    "failed",
+	}}
+	ps := &fixedProjectReader{proj: project.Project{ID: "p3", StorageMode: "localfs"}}
+
+	h := assetContentHandler(lib, router, ps)
+	req := httptest.NewRequest(http.MethodGet, "/api/assets/a3/content", nil)
+	req.SetPathValue("id", "a3")
+	rec := httptest.NewRecorder()
+	h(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("want 404 for a no-bytes asset, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	// Must NOT have signed an empty key (no redirect, no blob-store routing).
+	if loc := rec.Header().Get("Location"); loc != "" {
+		t.Fatalf("no-bytes asset must not 302, got Location=%q", loc)
+	}
+	if router.calledConfigID != "" || router.calledMode != "" {
+		t.Fatalf("no-bytes asset must not resolve a blob store, got configID=%q mode=%q", router.calledConfigID, router.calledMode)
+	}
+}
+
 // TestAssetContentHandlerLegacyFallback verifies that an asset with an empty
 // StorageConfigID (pre-m15 row) falls back to BlobStoreForMode, NOT
 // BlobStoreForConfigID.
