@@ -164,6 +164,32 @@ func TestAggregatesByRangePerProjectAndRecent(t *testing.T) {
 	}
 }
 
+// TestCountByOrgSinceExcludesText 锁住配额口径：CountByOrgSince 只算媒体生成，
+// kind='text'（script/storyboard/custom-llm 中间文本节点）不吃媒体配额。回归守卫——
+// 文本节点开始记账（PR#188）后这条不变式一度被打破，导致内置工作流首个 asset 未产出前
+// 就被自身的文本账本行顶到配额上限（cmd/studiod TestEndToEndGenerationQuota429）。
+func TestCountByOrgSinceExcludesText(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	s := New(db)
+	orgID := "org_qtext_" + time.Now().Format("150405.000000000")
+	pid := seedProject(t, db, orgID)
+	// 2 个文本中间节点 + 1 个媒体生成，全在窗口内。
+	for i := 0; i < 2; i++ {
+		if err := s.Record(ctx, Generation{ProjectID: pid, Kind: "text", Provider: "p", Model: "m", Tokens: 100, CostMicros: 50}); err != nil {
+			t.Fatalf("record text: %v", err)
+		}
+	}
+	if err := s.Record(ctx, Generation{ProjectID: pid, Kind: "image", Provider: "p", Model: "m", ImageCount: 1, CostMicros: 2000}); err != nil {
+		t.Fatalf("record image: %v", err)
+	}
+	// 配额只数媒体：3 条账本行里只有 1 条媒体。
+	n, err := s.CountByOrgSince(ctx, orgID, time.Now().Add(-24*time.Hour))
+	if err != nil || n != 1 {
+		t.Fatalf("CountByOrgSince = %d err=%v, want 1 (media only, text excluded)", n, err)
+	}
+}
+
 // TestByPlan aggregates one run's ledger via the generations→todos join:
 // multi-todo multi-kind seed data → totals + per-kind counts + per-todo
 // breakdown; other-plan rows, other-project rows and todo-less rows (empty todo_id)
