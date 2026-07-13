@@ -111,6 +111,12 @@ export interface WorkflowCanvasProps {
   settings?: WorkflowSettings
   // 乐观锁版本号（编辑态从列表读到；新建缺省 = 1）。保存回传，服务端拦并发覆盖。
   version?: number
+  // 服务端最新版本号（live：随 useWorkflows 聚焦刷新更新）。领先于编辑基线 version
+  // 时说明工作流已在其他会话被保存 → 显示非破坏性「已在别处修改」banner。
+  latestVersion?: number
+  // 「重新加载」入口：由路由层 bump remount key 实现（用刷新后的数据重建编辑基线）。
+  // 只在用户点击 banner 时触发，绝不自动调用——否则会丢弃当前会话未保存的编辑。
+  onReload?: () => void
   prompts?: Prompt[]
   basics?: BasicPrompt[]
   // 顶栏「← 返回」：后退到打开画布之前的那一页（由路由层注入 smart-back，
@@ -152,6 +158,8 @@ function CanvasInner({
   inputsSchema: initialInputsSchema,
   settings: initialSettings,
   version: initialVersion,
+  latestVersion,
+  onReload,
   prompts,
   basics,
   onBack,
@@ -330,6 +338,11 @@ function CanvasInner({
   )
   const dirty = currentSnapshot !== loadedSnapshot
   const saving = createWorkflow.isPending || updateWorkflow.isPending
+  // 跨会话陈旧感知（读侧）：服务端最新版本领先于本会话编辑基线 version 时，说明工作流
+  // 已在其他会话被保存。纯 render 期比对 props/state（无副作用）。latestVersion 为
+  // undefined（加载中）时 != null 守卫防误报；本会话自身保存后 setVersion(saved.version)
+  // + 列表失效使 latestVersion 同步刷到同值 → 比对为假 → 无 banner。
+  const staleRemote = latestVersion != null && latestVersion > version
 
   // ── 选中节点 ──────────────────────────────────────────────
   const onSelectionChange = useCallback(
@@ -1165,6 +1178,30 @@ function CanvasInner({
           </button>
         </div>
       </header>
+
+      {/* 跨会话陈旧 banner：工作流已在其他会话被保存。非破坏性——只提示 + 提供重载入口，
+          不禁用保存、不自动重载（保存仍走乐观锁，真撞返 409 由现有处理接管）。 */}
+      {staleRemote && (
+        <div
+          role="alert"
+          className="flex items-center justify-between gap-3 border-b border-amber/40 bg-amber/10 px-4 py-2 text-[12px] text-amber"
+        >
+          <span>⚠ 此工作流已在其他会话中被修改</span>
+          {onReload && (
+            <button
+              type="button"
+              onClick={onReload}
+              title="将丢弃你未保存的改动"
+              className="shrink-0 rounded border border-amber/40 px-2.5 py-1 font-medium text-amber hover:border-amber"
+            >
+              重新加载
+              <span className="ml-1.5 text-[11px] font-normal text-amber/70">
+                将丢弃你未保存的改动
+              </span>
+            </button>
+          )}
+        </div>
+      )}
 
       {/* 主区：三栏。桌面（≥lg）左右面板内联；窄屏（<lg）收进抽屉，画布占满宽度。 */}
       <div className="flex min-h-0 flex-1">
