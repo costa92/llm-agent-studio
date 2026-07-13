@@ -307,8 +307,10 @@ function CanvasInner({
     | null
   >(null)
 
-  // 载入时的 studio-model 快照，作为 dirty 比较基线。
-  const loadedSnapshot = useRef(
+  // 载入时的 studio-model 快照，作为 dirty 比较基线。用 state 而非 ref：它参与派生
+  // 渲染输出（下方 dirty），render 期直接读 ref.current 会触发 react-hooks 告警；只在
+  // init（惰性初始化）与保存成功两处离散写入，不会引发渲染循环。
+  const [loadedSnapshot, setLoadedSnapshot] = useState(() =>
     snapshotOf(
       initialName,
       toStudioNodes(initial.nodes, initial.edges),
@@ -326,7 +328,7 @@ function CanvasInner({
     inputsSchema,
     settings,
   )
-  const dirty = currentSnapshot !== loadedSnapshot.current
+  const dirty = currentSnapshot !== loadedSnapshot
   const saving = createWorkflow.isPending || updateWorkflow.isPending
 
   // ── 选中节点 ──────────────────────────────────────────────
@@ -895,11 +897,8 @@ function CanvasInner({
     // 更新携带客户端读到的 version（乐观锁）；创建忽略。
     const input = { name: workflowName, nodes: studioNodes, inputsSchema, settings, version }
     const done = (saved: { id: string; version: number }, created: boolean) => {
-      loadedSnapshot.current = snapshotOf(
-        workflowName,
-        studioNodes,
-        inputsSchema,
-        settings,
+      setLoadedSnapshot(
+        snapshotOf(workflowName, studioNodes, inputsSchema, settings),
       )
       // 版本前进到服务端返回值，避免同一会话再次保存拿陈旧 version 误触 409。
       setVersion(saved.version)
