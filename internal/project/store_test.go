@@ -138,6 +138,16 @@ func TestCreateGetListProject(t *testing.T) {
 	if items[0].StorageMode != "oss" {
 		t.Fatalf("list: storage mode missing in projection: %+v", items[0])
 	}
+	// created_at/updated_at 须在三条路径都非零(Create RETURNING / Get / List 投影)。
+	if p.CreatedAt.IsZero() || p.UpdatedAt.IsZero() {
+		t.Fatalf("create: timestamps not returned: %+v", p)
+	}
+	if got.CreatedAt.IsZero() || got.UpdatedAt.IsZero() {
+		t.Fatalf("get: timestamps not round-tripped: %+v", got)
+	}
+	if items[0].CreatedAt.IsZero() || items[0].UpdatedAt.IsZero() {
+		t.Fatalf("list: timestamps missing in projection: %+v", items[0])
+	}
 }
 
 // TestProjectKindRoundTrip: kind 经 Create 写入，经 Get 读回。绘本/standard 管线

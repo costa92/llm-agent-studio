@@ -11,6 +11,16 @@ import { CoverDialog } from "./CoverDialog"
 import { DeleteProjectDialog } from "./DeleteProjectDialog"
 import { EditProjectDialog } from "./EditProjectDialog"
 
+// RFC3339 时间串 → 本地绝对日期 YYYY-MM-DD。无效/缺失返回空串（调用方据此不渲染）。
+function fmtDate(iso: string | undefined): string {
+  if (!iso) return ""
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ""
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  return `${d.getFullYear()}-${m}-${day}`
+}
+
 // 「编辑」按钮提交的项目信息（= useUpdateProject 载荷去掉 id）。
 export type UpdateProjectFields = {
   name: string
@@ -165,10 +175,22 @@ export function ProjectListView({
                     {project.description}
                   </p>
                 )}
-                <div className="mt-auto flex gap-2 text-[11px] text-text-3">
-                  {project.contentType && <span>{project.contentType}</span>}
-                  {project.targetPlatform && <span>· {project.targetPlatform}</span>}
-                  {project.style && <span>· {project.style}</span>}
+                <div className="mt-auto flex flex-col gap-1 text-[11px] text-text-3">
+                  {(project.contentType || project.targetPlatform || project.style) && (
+                    <div className="flex gap-2">
+                      {project.contentType && <span>{project.contentType}</span>}
+                      {project.targetPlatform && <span>· {project.targetPlatform}</span>}
+                      {project.style && <span>· {project.style}</span>}
+                    </div>
+                  )}
+                  {fmtDate(project.createdAt) && (
+                    <div className="flex flex-wrap gap-x-2">
+                      <span>创建 {fmtDate(project.createdAt)}</span>
+                      {fmtDate(project.updatedAt) && (
+                        <span>· 更新 {fmtDate(project.updatedAt)}</span>
+                      )}
+                    </div>
+                  )}
                 </div>
               </button>
 

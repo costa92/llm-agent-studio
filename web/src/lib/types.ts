@@ -44,6 +44,9 @@ export interface Project {
   coverAssetId?: string
   // 项目类型（后端字段；工作流化后统一为 'custom'）。
   kind?: string
+  // 创建时间 / 最新更新时间（后端 RFC3339；列表卡片按绝对日期展示）。
+  createdAt?: string
+  updatedAt?: string
 }
 
 // UI-spec §7.2。
