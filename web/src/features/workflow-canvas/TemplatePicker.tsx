@@ -1,5 +1,5 @@
 import { useMemo } from "react"
-import { LayoutTemplate } from "lucide-react"
+import { LayoutTemplate, X } from "lucide-react"
 import { toast } from "sonner"
 import {
   Dialog,
@@ -11,6 +11,7 @@ import {
 import {
   useWorkflowTemplates,
   useInstantiateTemplate,
+  useDeleteTemplate,
 } from "@/features/projects/workflowTemplateApi"
 import type { WorkflowTemplateMeta } from "@/lib/types"
 
@@ -35,6 +36,7 @@ export function TemplatePicker({
 }: TemplatePickerProps) {
   const { data: templates = [], isLoading, isError } = useWorkflowTemplates(org)
   const instantiate = useInstantiateTemplate(projectId)
+  const del = useDeleteTemplate(org)
 
   // 纯派生：按 group 分组、保持首次出现顺序（禁 effect setState）。
   const groups = useMemo(() => {
@@ -60,6 +62,15 @@ export function TemplatePicker({
         onError: () => toast.error("从模板创建工作流失败，请重试"),
       },
     )
+  }
+
+  const remove = (t: WorkflowTemplateMeta) => {
+    if (del.isPending) return
+    if (!window.confirm(`删除模板「${t.name}」？此操作不可撤销。`)) return
+    del.mutate(t.id, {
+      onSuccess: () => toast.success("模板已删除"),
+      onError: () => toast.error("删除模板失败，请重试"),
+    })
   }
 
   return (
@@ -95,25 +106,43 @@ export function TemplatePicker({
                   {group}
                 </h5>
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {items.map((t) => (
-                    <button
-                      key={t.id}
-                      type="button"
-                      data-slot="template-card"
-                      disabled={instantiate.isPending}
-                      onClick={() => pick(t.id)}
-                      className="flex flex-col items-start gap-1 rounded-md border border-line bg-bg-base px-3 py-2.5 text-left hover:border-amber disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      <span className="text-[13px] font-medium text-text-1">
-                        {t.name}
-                      </span>
-                      {t.description && (
-                        <span className="line-clamp-2 text-[11.5px] leading-snug text-text-3">
-                          {t.description}
-                        </span>
-                      )}
-                    </button>
-                  ))}
+                  {items.map((t) => {
+                    const deletable = t.source === "org" || t.deletable === true
+                    return (
+                      <div key={t.id} className="relative">
+                        <button
+                          type="button"
+                          data-slot="template-card"
+                          disabled={instantiate.isPending}
+                          onClick={() => pick(t.id)}
+                          className="flex w-full flex-col items-start gap-1 rounded-md border border-line bg-bg-base px-3 py-2.5 text-left hover:border-amber disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          <span className="text-[13px] font-medium text-text-1">
+                            {t.name}
+                          </span>
+                          {t.description && (
+                            <span className="line-clamp-2 text-[11.5px] leading-snug text-text-3">
+                              {t.description}
+                            </span>
+                          )}
+                        </button>
+                        {deletable && (
+                          <button
+                            type="button"
+                            aria-label={`删除模板 ${t.name}`}
+                            disabled={del.isPending}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              remove(t)
+                            }}
+                            className="absolute right-1.5 top-1.5 rounded p-0.5 text-text-3 hover:bg-danger/10 hover:text-danger disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <X className="h-3.5 w-3.5" aria-hidden />
+                          </button>
+                        )}
+                      </div>
+                    )
+                  })}
                 </div>
               </section>
             ))}

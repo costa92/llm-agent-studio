@@ -194,6 +194,12 @@ export interface WorkflowTemplateMeta {
   name: string
   description: string
   group: string
+  // Phase 2：来源判别。builtin = 内置只读；org = 本组织保存的模板（可删）。
+  source: "builtin" | "org"
+  // org 模板可删除；内置为 false/缺省。
+  deletable?: boolean
+  // org 模板的创建者（内置缺省）。
+  createdBy?: string
 }
 
 // events/store.go。GET /events 列表元素 = {seq, kind, todoId?, payload?}。

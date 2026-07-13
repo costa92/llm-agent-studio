@@ -5,6 +5,7 @@ import { TemplatePicker } from "./TemplatePicker"
 import {
   useWorkflowTemplates,
   useInstantiateTemplate,
+  useDeleteTemplate,
 } from "@/features/projects/workflowTemplateApi"
 import type { WorkflowTemplateMeta } from "@/lib/types"
 
@@ -12,16 +13,19 @@ import type { WorkflowTemplateMeta } from "@/lib/types"
 vi.mock("@/features/projects/workflowTemplateApi", () => ({
   useWorkflowTemplates: vi.fn(),
   useInstantiateTemplate: vi.fn(),
+  useDeleteTemplate: vi.fn(),
 }))
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
 
 const mockTemplates = vi.mocked(useWorkflowTemplates)
 const mockInstantiate = vi.mocked(useInstantiateTemplate)
+const mockDelete = vi.mocked(useDeleteTemplate)
 
 const TEMPLATES: WorkflowTemplateMeta[] = [
-  { id: "standard", name: "通用管线", description: "脚本→分镜", group: "通用" },
-  { id: "music", name: "音乐创作", description: "歌词→编曲", group: "创作" },
-  { id: "poem", name: "写诗", description: "意象→成诗", group: "创作" },
+  { id: "standard", name: "通用管线", description: "脚本→分镜", group: "通用", source: "builtin" },
+  { id: "music", name: "音乐创作", description: "歌词→编曲", group: "创作", source: "builtin" },
+  { id: "poem", name: "写诗", description: "意象→成诗", group: "创作", source: "builtin" },
+  { id: "mine-1", name: "我的科普", description: "自定义", group: "我的模板", source: "org", deletable: true },
 ]
 
 function withTemplates(
@@ -50,6 +54,10 @@ function withMutation(
 beforeEach(() => {
   mockTemplates.mockReturnValue(withTemplates(TEMPLATES))
   mockInstantiate.mockReturnValue(withMutation(vi.fn()))
+  mockDelete.mockReturnValue(
+    withMutation(vi.fn()) as unknown as ReturnType<typeof useDeleteTemplate>,
+  )
+  vi.spyOn(window, "confirm").mockReturnValue(true)
 })
 
 afterEach(() => {
@@ -116,5 +124,46 @@ describe("TemplatePicker", () => {
     )
     await user.click(screen.getByText("通用管线"))
     expect(mutate).not.toHaveBeenCalled()
+  })
+
+  it("org 模板（我的模板）渲染删除按钮，内置模板没有", () => {
+    render(
+      <TemplatePicker
+        org="org1"
+        projectId="p1"
+        onCreated={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+    // org 项分组标题 + 删除按钮
+    expect(screen.getByText("我的模板")).toBeInTheDocument()
+    expect(screen.getByLabelText("删除模板 我的科普")).toBeInTheDocument()
+    // 内置项无删除按钮
+    expect(screen.queryByLabelText("删除模板 通用管线")).not.toBeInTheDocument()
+  })
+
+  it("点删除 → useDeleteTemplate.mutate(id)，且不触发 pick", async () => {
+    const delMutate = vi.fn()
+    mockDelete.mockReturnValue(
+      withMutation(delMutate) as unknown as ReturnType<typeof useDeleteTemplate>,
+    )
+    const pickMutate = vi.fn()
+    mockInstantiate.mockReturnValue(withMutation(pickMutate))
+
+    const user = userEvent.setup()
+    render(
+      <TemplatePicker
+        org="org1"
+        projectId="p1"
+        onCreated={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+    await user.click(screen.getByLabelText("删除模板 我的科普"))
+
+    expect(delMutate).toHaveBeenCalledTimes(1)
+    expect(delMutate.mock.calls[0][0]).toBe("mine-1")
+    // 删除不应触发从模板创建（pick）
+    expect(pickMutate).not.toHaveBeenCalled()
   })
 })
