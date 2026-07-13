@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 
+	authzhttp "github.com/costa92/llm-agent-authz/httpapi"
 	authzrole "github.com/costa92/llm-agent-authz/role"
 
 	"github.com/costa92/llm-agent-studio/internal/studiosvc"
@@ -32,6 +33,21 @@ func listMembersHandler(s MemberService) http.HandlerFunc {
 			items = []studiosvc.OrgMember{}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
+// meRoleHandler (GET /api/orgs/{org}/members/me): viewer+，返回调用者在该 org 的有效角色。
+// 前端角色感知层用它区分 viewer/editor/admin（替代对 admin-only 端点的 200/403 二元探针），
+// 从而正确门控写 CTA（viewer 不显示新建/保存/设封面）。非成员由路由 scoped(roleViewer) 拦为 403。
+func meRoleHandler(rr authzhttp.RoleResolver) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		uid := authzhttp.UserID(r.Context())
+		eff, err := rr.ResolveRole(r.Context(), uid, r.PathValue("org"), "org", "")
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"userId": uid, "role": string(eff)})
 	}
 }
 

@@ -22,49 +22,71 @@ function wrapper() {
   )
 }
 
-describe("useRole", () => {
-  it("infers isAdmin=true when the admin-only probe returns 200", async () => {
-    setAccessToken("tok")
-    installFetchRoutes({
-      "/api/orgs/acme/model-configs": () => jsonResponse({ items: [] }),
-    })
-
-    const { result } = renderHook(() => useRole("acme"), {
-      wrapper: wrapper(),
-    })
-
-    await waitFor(() => expect(result.current.isLoading).toBe(false))
-    expect(result.current.isAdmin).toBe(true)
+// meRoute 装一个返回指定角色的 /members/me 探针。
+function meRoute(org: string, role: string) {
+  return installFetchRoutes({
+    [`/api/orgs/${org}/members/me`]: () => jsonResponse({ userId: "u1", role }),
   })
+}
 
-  it("infers isAdmin=false when the admin-only probe returns 403", async () => {
+describe("useRole", () => {
+  it("viewer → canWrite=false, isAdmin=false", async () => {
     setAccessToken("tok")
-    installFetchRoutes({
-      "/api/orgs/acme/model-configs": () =>
-        jsonResponse({ error: "forbidden" }, { status: 403 }),
-    })
-
-    const { result } = renderHook(() => useRole("acme"), {
-      wrapper: wrapper(),
-    })
-
+    meRoute("acme", "viewer")
+    const { result } = renderHook(() => useRole("acme"), { wrapper: wrapper() })
     await waitFor(() => expect(result.current.isLoading).toBe(false))
+    expect(result.current.role).toBe("viewer")
+    expect(result.current.canWrite).toBe(false)
     expect(result.current.isAdmin).toBe(false)
   })
 
-  it("hits the model-configs probe for the given org", async () => {
+  it("editor → canWrite=true, isAdmin=false", async () => {
     setAccessToken("tok")
-    const mock = installFetchRoutes({
-      "/api/orgs/beta/model-configs": () => jsonResponse({ items: [] }),
-    })
+    meRoute("acme", "editor")
+    const { result } = renderHook(() => useRole("acme"), { wrapper: wrapper() })
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+    expect(result.current.canWrite).toBe(true)
+    expect(result.current.isAdmin).toBe(false)
+  })
 
-    const { result } = renderHook(() => useRole("beta"), {
-      wrapper: wrapper(),
-    })
+  it("admin → canWrite=true, isAdmin=true", async () => {
+    setAccessToken("tok")
+    meRoute("acme", "admin")
+    const { result } = renderHook(() => useRole("acme"), { wrapper: wrapper() })
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+    expect(result.current.canWrite).toBe(true)
+    expect(result.current.isAdmin).toBe(true)
+  })
 
+  it("org_admin → canWrite=true, isAdmin=true", async () => {
+    setAccessToken("tok")
+    meRoute("acme", "org_admin")
+    const { result } = renderHook(() => useRole("acme"), { wrapper: wrapper() })
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+    expect(result.current.canWrite).toBe(true)
+    expect(result.current.isAdmin).toBe(true)
+  })
+
+  it("treats a 403 (non-member) as the most restrictive viewer", async () => {
+    setAccessToken("tok")
+    installFetchRoutes({
+      "/api/orgs/acme/members/me": () =>
+        jsonResponse({ error: "forbidden" }, { status: 403 }),
+    })
+    const { result } = renderHook(() => useRole("acme"), { wrapper: wrapper() })
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+    expect(result.current.role).toBe("")
+    expect(result.current.canWrite).toBe(false)
+    expect(result.current.isAdmin).toBe(false)
+  })
+
+  it("hits the members/me probe for the given org", async () => {
+    setAccessToken("tok")
+    const mock = meRoute("beta", "viewer")
+    const { result } = renderHook(() => useRole("beta"), { wrapper: wrapper() })
     await waitFor(() => expect(result.current.isLoading).toBe(false))
     const probed = mock.mock.calls.some(([url]) =>
-      String(url).includes("/api/orgs/beta/model-configs"),
+      String(url).includes("/api/orgs/beta/members/me"),
     )
     expect(probed).toBe(true)
   })
@@ -74,10 +96,9 @@ describe("useRole", () => {
     const mock = installFetchRoutes({
       "/api/orgs": () => jsonResponse({ items: [] }),
     })
-
     const { result } = renderHook(() => useRole(""), { wrapper: wrapper() })
-
     await waitFor(() => expect(result.current.isLoading).toBe(false))
+    expect(result.current.canWrite).toBe(false)
     expect(result.current.isAdmin).toBe(false)
     expect(mock).not.toHaveBeenCalled()
   })

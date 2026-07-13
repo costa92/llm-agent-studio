@@ -185,7 +185,7 @@ describe("modelConfigErrorMessage", () => {
 describe("AdminGate", () => {
   it("renders children for admin", () => {
     render(
-      <AdminGate role={{ isAdmin: true, isLoading: false }}>
+      <AdminGate role={{ role: "admin", isAdmin: true, canWrite: true, isLoading: false }}>
         <p>secret content</p>
       </AdminGate>,
     )
@@ -194,7 +194,7 @@ describe("AdminGate", () => {
 
   it("blocks non-admin with a permission message", () => {
     render(
-      <AdminGate role={{ isAdmin: false, isLoading: false }}>
+      <AdminGate role={{ role: "viewer", isAdmin: false, canWrite: false, isLoading: false }}>
         <p>secret content</p>
       </AdminGate>,
     )
@@ -204,7 +204,7 @@ describe("AdminGate", () => {
 
   it("shows a placeholder while the role probe is loading", () => {
     render(
-      <AdminGate role={{ isAdmin: false, isLoading: true }}>
+      <AdminGate role={{ role: "", isAdmin: false, canWrite: false, isLoading: true }}>
         <p>secret content</p>
       </AdminGate>,
     )

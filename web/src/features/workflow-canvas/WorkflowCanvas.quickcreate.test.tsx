@@ -33,8 +33,9 @@ vi.mock("@/features/custom-node-types/api", () => ({
 vi.mock("@/features/org-secrets/api", () => ({
   useOrgSecrets: () => ({ data: [] }),
 }))
+const roleState = { value: { role: "admin", isAdmin: true, canWrite: true, isLoading: false } }
 vi.mock("@/app/rbac", () => ({
-  useRole: () => ({ isAdmin: true, isLoading: false }),
+  useRole: () => roleState.value,
 }))
 
 function renderCanvas(nodes: WorkflowNode[] = []) {
@@ -54,6 +55,7 @@ function renderCanvas(nodes: WorkflowNode[] = []) {
 }
 
 beforeEach(() => {
+  roleState.value = { role: "admin", isAdmin: true, canWrite: true, isLoading: false }
   typedTypes.value = []
   createMutateAsync.mockResolvedValue({
     id: "cnt-new",
@@ -112,5 +114,14 @@ describe("WorkflowCanvas quick-create", () => {
     expect(screen.getByRole("alert").textContent).toMatch(/已被占用|slug/)
     // 对话框仍打开（未 dead-end）。
     expect(screen.getByRole("dialog")).toBeInTheDocument()
+  })
+})
+
+describe("WorkflowCanvas viewer 只读", () => {
+  it("viewer（canWrite=false）不显示「保存」按钮，改出「只读」徽标", async () => {
+    roleState.value = { role: "viewer", isAdmin: false, canWrite: false, isLoading: false }
+    renderCanvas()
+    expect(await screen.findByTitle(/只读：你在本组织是 viewer/)).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "保存" })).not.toBeInTheDocument()
   })
 })
