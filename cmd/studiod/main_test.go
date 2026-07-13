@@ -977,6 +977,21 @@ func TestEndToEndGenerationQuota429(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	// 第二次 run 前须等第一次 run 离开在途态：并发守卫 TryBeginRun 拒绝
+	// status ∈ {planning,running}（返 409），它先于配额检查发生。资产到
+	// pending_acceptance / 账本落库都早于 RefreshStatus 把项目翻成 review，
+	// 负载下若不等，第二次 run 会撞 409 而非期望的配额 429（CI 满负载偶发假失败）。
+	for i := 0; i < 150; i++ {
+		_, sb := do("GET", "/api/projects/"+projID+"/state", token, "")
+		st, _ := sb["status"].(string)
+		if st != "running" && st != "planning" {
+			break
+		}
+		if i == 149 {
+			t.Fatalf("first run never left running/planning (project status stuck: %v)", sb)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 	// Second run: the org is at quota (1/1 in the rolling window) → 429.
 	code, body := do("POST", "/api/projects/"+projID+"/workflows/"+wfID+"/run", token, "")
 	if code != http.StatusTooManyRequests {
@@ -1087,25 +1102,36 @@ func TestEndToEndFakeAsyncVideoSubmitPoll(t *testing.T) {
 
 	// Timeline (spec §9.5 M2): asset_submitted + asset_generated are emitted;
 	// asset_polling is NEVER emitted (deliberately not whitelisted — poll noise).
-	_, eb := do("GET", "/api/projects/"+projID+"/events", token, "")
-	items, _ := eb["items"].([]any)
+	// asset_generated 的 Events.Append 在 SetBlob(pending_acceptance) 之后单独落库，
+	// 负载下会滞后于 pollAssetWithStatus 看到的资产状态翻转 —— 故轮询 /events 直到它出现，
+	// 而非单次读（否则 CI 满负载下偶发「timeline missing asset_generated」假失败）。
 	var sawSubmitted, sawGenerated, sawPolling bool
-	for _, it := range items {
-		m, _ := it.(map[string]any)
-		switch m["kind"] {
-		case "asset_submitted":
-			sawSubmitted = true
-		case "asset_generated":
-			sawGenerated = true
-		case "asset_polling":
-			sawPolling = true
+	var lastItems []any
+	for i := 0; i < 150; i++ {
+		_, eb := do("GET", "/api/projects/"+projID+"/events", token, "")
+		lastItems, _ = eb["items"].([]any)
+		sawSubmitted, sawGenerated, sawPolling = false, false, false
+		for _, it := range lastItems {
+			m, _ := it.(map[string]any)
+			switch m["kind"] {
+			case "asset_submitted":
+				sawSubmitted = true
+			case "asset_generated":
+				sawGenerated = true
+			case "asset_polling":
+				sawPolling = true
+			}
 		}
+		if sawGenerated {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	if !sawSubmitted {
-		t.Fatalf("timeline missing asset_submitted: %v", items)
+		t.Fatalf("timeline missing asset_submitted: %v", lastItems)
 	}
 	if !sawGenerated {
-		t.Fatalf("timeline missing asset_generated: %v", items)
+		t.Fatalf("timeline missing asset_generated: %v", lastItems)
 	}
 	if sawPolling {
 		t.Fatalf("asset_polling must never be emitted (M4 DEFER)")
