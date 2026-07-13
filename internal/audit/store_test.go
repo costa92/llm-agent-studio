@@ -176,8 +176,11 @@ func TestActorEmail(t *testing.T) {
 	}
 	uid := randID(t)
 	email := uid + "@example.com"
+	// password_hash 必须显式给：全量 DB-backed 跑（-p 1 ./...）时真实 authz auth_user
+	// （password_hash NOT NULL、无 default）已由别的包先建，上面的 CREATE ... IF NOT
+	// EXISTS 成 no-op，只给 (id,email) 会撞 NOT NULL。给 '' 在自备最小表与真表下都合法。
 	if err := db.WithContext(ctx).Exec(
-		`INSERT INTO auth_user (id, email) VALUES ($1, $2)`, uid, email).Error; err != nil {
+		`INSERT INTO auth_user (id, email, password_hash) VALUES ($1, $2, '')`, uid, email).Error; err != nil {
 		t.Fatalf("insert user: %v", err)
 	}
 	s := New(db)
