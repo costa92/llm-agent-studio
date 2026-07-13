@@ -326,6 +326,8 @@ func NewMux(d Deps) *http.ServeMux {
 	}
 	// Org 成员管理 (org-scoped). 列出对任意 org 成员开放 (viewer)；增删改角色限 org_admin (admin).
 	mux.Handle("GET /api/orgs/{org}/members", scoped(roleViewer, orgScope, listMembersHandler(d.Members)))
+	// 调用者自身在该 org 的角色（前端角色感知层用；viewer+ 均可查自己）。
+	mux.Handle("GET /api/orgs/{org}/members/me", scoped(roleViewer, orgScope, meRoleHandler(d.RoleResolver)))
 	mux.Handle("POST /api/orgs/{org}/members", scoped(roleAdmin, orgScope, audited(d.Audit, "member.add", "member", addMemberHandler(d.Members))))
 	mux.Handle("PUT /api/orgs/{org}/members/{userId}", scoped(roleAdmin, orgScope, audited(d.Audit, "member.role_change", "member", setMemberRoleHandler(d.Members))))
 	mux.Handle("DELETE /api/orgs/{org}/members/{userId}", scoped(roleAdmin, orgScope, audited(d.Audit, "member.remove", "member", removeMemberHandler(d.Members))))

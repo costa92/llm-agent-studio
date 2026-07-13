@@ -101,7 +101,7 @@ vi.mock("@/features/org-secrets/api", () => ({
   useOrgSecrets: () => ({ data: [] }),
 }))
 vi.mock("@/app/rbac", () => ({
-  useRole: () => ({ isAdmin: true, isLoading: false }),
+  useRole: () => ({ role: "admin", isAdmin: true, canWrite: true, isLoading: false }),
 }))
 
 function renderCanvas(nodes: WorkflowNode[] = []) {

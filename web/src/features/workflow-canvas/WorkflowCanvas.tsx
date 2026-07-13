@@ -266,7 +266,7 @@ function CanvasInner({
     () => (textModelsQuery.data ?? []).map((m) => ({ value: m.model, label: `${m.provider} · ${m.model}` })),
     [textModelsQuery.data],
   )
-  const { isAdmin } = useRole(org)
+  const { isAdmin, canWrite } = useRole(org)
 
   const onQuickCreateSubmit = useCallback(
     (draft: FormDraft) => {
@@ -1135,14 +1135,24 @@ function CanvasInner({
           >
             <Redo2 className="h-4 w-4" aria-hidden />
           </button>
-          <button
-            type="button"
-            disabled={!dirty || saving}
-            onClick={onSave}
-            className="rounded-md border border-amber/30 px-3 py-1.5 text-[12px] font-medium text-amber hover:border-amber disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {saving ? "保存中…" : "保存"}
-          </button>
+          {/* viewer（无写权）：只读徽标替代保存按钮，避免点了必 403 的死胡同。 */}
+          {canWrite ? (
+            <button
+              type="button"
+              disabled={!dirty || saving}
+              onClick={onSave}
+              className="rounded-md border border-amber/30 px-3 py-1.5 text-[12px] font-medium text-amber hover:border-amber disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {saving ? "保存中…" : "保存"}
+            </button>
+          ) : (
+            <span
+              title="只读：你在本组织是 viewer 角色，无法编辑工作流"
+              className="whitespace-nowrap rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-text-3"
+            >
+              只读
+            </span>
+          )}
           {/* 窄屏（<lg）：唤出右侧属性/输入/设置面板抽屉；桌面隐藏（面板已内联）。 */}
           <button
             type="button"

@@ -652,7 +652,7 @@ describe("ReviewBoardView pagination", () => {
 describe("review board admin gate (route-level)", () => {
   it("non-admin sees the admin-required message instead of the board", () => {
     render(
-      <AdminGate role={{ isAdmin: false, isLoading: false }}>
+      <AdminGate role={{ role: "viewer", isAdmin: false, canWrite: false, isLoading: false }}>
         <ReviewBoardView {...baseProps({ isAdmin: false })} />
       </AdminGate>,
     )
@@ -662,7 +662,7 @@ describe("review board admin gate (route-level)", () => {
 
   it("admin sees the board through the gate", () => {
     render(
-      <AdminGate role={{ isAdmin: true, isLoading: false }}>
+      <AdminGate role={{ role: "admin", isAdmin: true, canWrite: true, isLoading: false }}>
         <ReviewBoardView {...baseProps()} />
       </AdminGate>,
     )

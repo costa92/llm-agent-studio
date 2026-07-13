@@ -61,9 +61,9 @@ function ProjectsPage() {
       onConfigureModel={() =>
         navigate({ to: "/orgs/$org/model-configs", params: { org } })
       }
-      // 角色门禁：rbac 仅提供 admin 探针；editor 无可探测的只读端点（后端无 editor-gated GET）。
-      // 故按 rbac 文档的"乐观显示 + 后端强制"策略乐观显示新建入口，editor+ 由后端 createProjectHandler 强制。
-      canCreate
+      // 角色门禁：editor+ 才显示新建/编辑/封面入口（viewer 隐藏，避免点了必 403 的死胡同）；
+      // 后端 createProjectHandler 仍以 roleEditor 强制。
+      canCreate={role.canWrite}
       styles={stylesQuery.data ?? []}
       textModels={textModelsQuery.data}
       imageModels={imageModelsQuery.data}

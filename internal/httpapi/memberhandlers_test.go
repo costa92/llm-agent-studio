@@ -65,6 +65,27 @@ func TestListMembersHandler(t *testing.T) {
 	}
 }
 
+// TestMeRoleHandler proves GET /members/me echoes the caller's resolved role
+// string for viewer/editor/admin (userId="" absent test auth ctx, role is the
+// load-bearing field the frontend reads). 非成员 403 由 scoped(roleViewer) 路由层保证。
+func TestMeRoleHandler(t *testing.T) {
+	for _, role := range []authzrole.Role{authzrole.RoleViewer, authzrole.RoleEditor, authzrole.RoleAdmin} {
+		rr := httptest.NewRecorder()
+		req := storageReq("GET", "/api/orgs/o1/members/me", "")
+		req.SetPathValue("org", "o1")
+		meRoleHandler(stubRoleResolver{role: role})(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("me role want 200, got %d", rr.Code)
+		}
+		if !strings.Contains(rr.Body.String(), `"role":"`+string(role)+`"`) {
+			t.Fatalf("me role want role=%q in body, got %s", string(role), rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), `"userId"`) {
+			t.Fatalf("me role missing userId key: %s", rr.Body.String())
+		}
+	}
+}
+
 // TestAddMemberHandler proves POST happy → 201 OrgMember, missing email → 400,
 // bad role → 400, ErrUserNotFound → 404.
 func TestAddMemberHandler(t *testing.T) {
