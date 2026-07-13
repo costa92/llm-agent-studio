@@ -549,13 +549,42 @@ func (s *Storage) goSteps() []migrationStep {
 		{version: "m31", run: m31AddWorkflowSettings},
 		{version: "m32", run: m32AddWorkflowVersion},
 		{version: "m33", run: m33AddCostActor},
+		{version: "m34", run: m34CreateWorkflowTemplates},
 	}
+}
+
+// m34CreateWorkflowTemplates 建 workflow_templates 表：用户把一个工作流存为「组织私有
+// 模板」（org 隔离的快照）。nodes/inputs_schema/settings 是保存时刻工作流定义的 JSONB
+// 快照，from-template 实例化时逐字复制成新工作流（无 provision）。created_by 记保存者。
+// 索引 (org_id, updated_at DESC) 支撑「按 org 列模板、最近在前」。Forward-only、additive、
+// 幂等（CREATE TABLE / INDEX IF NOT EXISTS）。
+func m34CreateWorkflowTemplates(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS workflow_templates (
+			id            TEXT PRIMARY KEY,
+			org_id        TEXT NOT NULL,
+			name          TEXT NOT NULL,
+			description   TEXT NOT NULL DEFAULT '',
+			nodes         JSONB NOT NULL DEFAULT '[]',
+			inputs_schema JSONB NOT NULL DEFAULT '[]',
+			settings      JSONB NOT NULL DEFAULT '{}',
+			created_by    TEXT NOT NULL DEFAULT '',
+			created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`); err != nil {
+		return fmt.Errorf("create workflow_templates: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`CREATE INDEX IF NOT EXISTS workflow_templates_org_idx ON workflow_templates (org_id, updated_at DESC)`); err != nil {
+		return fmt.Errorf("create workflow_templates_org_idx: %w", err)
+	}
+	return nil
 }
 
 // m33AddCostActor 给成本中心补「按成员」口径：plans 记录触发 run 的成员
 // （created_by），generations 记录归属成员（actor_user_id），并给 actor 建
 // (actor_user_id, created_at) 索引供 PerActorByOrg 聚合走。二者均 TEXT NOT NULL
-// DEFAULT ''——存量 plan/generation 回填空串，落「未归属（历史）」桶，零回归。
+// DEFAULT ”——存量 plan/generation 回填空串，落「未归属（历史）」桶，零回归。
 // Forward-only、additive、幂等（ADD COLUMN / CREATE INDEX IF NOT EXISTS）。
 func m33AddCostActor(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx,
@@ -588,7 +617,7 @@ func m32AddWorkflowVersion(ctx context.Context, tx pgx.Tx) error {
 // m31AddWorkflowSettings 给 workflows 加 settings JSONB 列（工作流级生成设置：
 // {style, contentType, targetPlatform}）。前向、无回填——空对象 '{}' 表示「继承
 // 项目行」，与历史行为一致（run 时 settings='{}' 落回 project.style）。幂等
-//（IF NOT EXISTS）。注：编号跳过 m30（并行 PR 占用 org_invites），保序合并即连续。
+// （IF NOT EXISTS）。注：编号跳过 m30（并行 PR 占用 org_invites），保序合并即连续。
 func m31AddWorkflowSettings(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx,
 		`ALTER TABLE workflows ADD COLUMN IF NOT EXISTS settings JSONB NOT NULL DEFAULT '{}'`); err != nil {

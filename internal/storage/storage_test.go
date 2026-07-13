@@ -555,3 +555,47 @@ func TestM27StripsPBConfigInputs(t *testing.T) {
 		t.Fatalf("migrate 2 (idempotent): %v", err)
 	}
 }
+
+// TestMigrateCreatesWorkflowTemplates 断言 m34 建 workflow_templates 表 + org 索引，
+// 且二次 Migrate 幂等（不报错、表/索引仍在）。
+func TestMigrateCreatesWorkflowTemplates(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, Config{PGURL: testDSN(t)})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate 1: %v", err)
+	}
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate 2 (idempotent): %v", err)
+	}
+	var tblExists bool
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='workflow_templates')`).Scan(&tblExists); err != nil {
+		t.Fatalf("check table: %v", err)
+	}
+	if !tblExists {
+		t.Fatalf("workflow_templates not created")
+	}
+	// 关键列在。
+	for _, col := range []string{"id", "org_id", "name", "description", "nodes", "inputs_schema", "settings", "created_by"} {
+		var exists bool
+		if err := st.Pool().QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='workflow_templates' AND column_name=$1)`, col).Scan(&exists); err != nil {
+			t.Fatalf("check col %s: %v", col, err)
+		}
+		if !exists {
+			t.Fatalf("workflow_templates.%s missing", col)
+		}
+	}
+	var idxExists bool
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname='workflow_templates_org_idx')`).Scan(&idxExists); err != nil {
+		t.Fatalf("check index: %v", err)
+	}
+	if !idxExists {
+		t.Fatalf("workflow_templates_org_idx not created")
+	}
+}

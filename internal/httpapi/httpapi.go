@@ -59,6 +59,7 @@ type Deps struct {
 	PromptStore    *prompt.Store
 	GenQuota       int                 // rolling-24h per-org generation quota; 0 = unlimited
 	CustomNodeType CustomNodeTypeStore // org-scoped typed custom node registry; nil in focused unit tests
+	OrgTemplate    OrgTemplateStore    // org-scoped 私有工作流模板注册表; nil → 只暴露内置模板, save/delete 500
 	OrgSecret      OrgSecretStore      // org-scoped named-secret registry (roleAdmin); nil in focused unit tests
 	AlertSettings  AlertSettingsStore  // org-scoped run 失败邮件告警配置 (roleAdmin); nil in focused unit tests
 	Audit          AuditRecorder       // 安全敏感管理动作的 append-only 审计流水; nil → 不记审计 (focused unit tests skip)
@@ -204,8 +205,10 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("GET /api/orgs/{org}/projects", scoped(roleViewer, orgScope, listProjectsHandler(d.Projects)))
 	// Task center (任务中心): cross-project run dashboard (org-scoped, viewer+).
 	mux.Handle("GET /api/orgs/{org}/tasks", scoped(roleViewer, orgScope, taskboardHandler(d.TaskBoard)))
-	// 工作流模板目录（纯静态，不依赖任何 store）：viewer+。
-	mux.Handle("GET /api/orgs/{org}/workflow-templates", scoped(roleViewer, orgScope, listWorkflowTemplatesHandler()))
+	// 工作流模板目录：内置模板 + org 私有模板合并（viewer+）。存/删私有模板 editor+。
+	mux.Handle("GET /api/orgs/{org}/workflow-templates", scoped(roleViewer, orgScope, listWorkflowTemplatesHandler(d.OrgTemplate)))
+	mux.Handle("POST /api/orgs/{org}/workflow-templates", scoped(roleEditor, orgScope, saveWorkflowTemplateHandler(d.Projects, d.Workflows, d.OrgTemplate)))
+	mux.Handle("DELETE /api/orgs/{org}/workflow-templates/{id}", scoped(roleEditor, orgScope, deleteWorkflowTemplateHandler(d.OrgTemplate)))
 
 	// Project-scoped routes ({id}).
 	mux.Handle("GET /api/projects/{id}", proj(roleViewer, getProjectHandler(d.Projects)))
@@ -226,7 +229,7 @@ func NewMux(d Deps) *http.ServeMux {
 	if d.Workflows != nil {
 		mux.Handle("GET /api/projects/{id}/workflows", proj(roleViewer, listWorkflowsHandler(d.Workflows)))
 		mux.Handle("POST /api/projects/{id}/workflows", proj(roleEditor, createWorkflowHandler(d.Projects, d.Workflows, d.CustomNodeType)))
-		mux.Handle("POST /api/projects/{id}/workflows/from-template", proj(roleEditor, instantiateTemplateHandler(d.Projects, d.Workflows, d.CustomNodeType)))
+		mux.Handle("POST /api/projects/{id}/workflows/from-template", proj(roleEditor, instantiateTemplateHandler(d.Projects, d.Workflows, d.CustomNodeType, d.OrgTemplate)))
 		mux.Handle("PUT /api/projects/{id}/workflows/{wfId}", proj(roleEditor, updateWorkflowHandler(d.Projects, d.Workflows, d.CustomNodeType)))
 		mux.Handle("DELETE /api/projects/{id}/workflows/{wfId}", proj(roleEditor, deleteWorkflowHandler(d.Workflows)))
 		mux.Handle("POST /api/projects/{id}/workflows/{wfId}/run", proj(roleEditor, runWorkflowHandler(d.Projects, d.Workflows, d.Planner, d.Events, d.Cost, d.GenQuota, d.CustomNodeType)))

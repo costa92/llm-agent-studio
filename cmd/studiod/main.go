@@ -40,7 +40,6 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/config"
 	"github.com/costa92/llm-agent-studio/internal/cost"
 	"github.com/costa92/llm-agent-studio/internal/customnodetype"
-	"github.com/costa92/llm-agent-studio/internal/localcache"
 	"github.com/costa92/llm-agent-studio/internal/events"
 	"github.com/costa92/llm-agent-studio/internal/exports"
 	"github.com/costa92/llm-agent-studio/internal/fetch"
@@ -49,6 +48,7 @@ import (
 	genimage "github.com/costa92/llm-agent-studio/internal/generate/image"
 	"github.com/costa92/llm-agent-studio/internal/health"
 	"github.com/costa92/llm-agent-studio/internal/httpapi"
+	"github.com/costa92/llm-agent-studio/internal/localcache"
 	"github.com/costa92/llm-agent-studio/internal/mail"
 	"github.com/costa92/llm-agent-studio/internal/mailconfig"
 	"github.com/costa92/llm-agent-studio/internal/modelrouter"
@@ -56,6 +56,7 @@ import (
 	"github.com/costa92/llm-agent-studio/internal/obs"
 	"github.com/costa92/llm-agent-studio/internal/orginvite"
 	"github.com/costa92/llm-agent-studio/internal/orgsecret"
+	"github.com/costa92/llm-agent-studio/internal/orgtemplate"
 	"github.com/costa92/llm-agent-studio/internal/planner"
 	"github.com/costa92/llm-agent-studio/internal/project"
 	"github.com/costa92/llm-agent-studio/internal/prompt"
@@ -161,6 +162,7 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 	projectStore := project.New(st.GORM())
 	healthStore := health.New(st.GORM(), projectStore)
 	workflowStore := workflows.New(st.GORM())
+	orgTemplateStore := orgtemplate.New(st.GORM())
 	customNodeTypeStore := customnodetype.NewCached(st.GORM(), cacheHub)
 	todoStore := todos.New(st.GORM())
 	eventStore := events.New(st.GORM())
@@ -444,35 +446,36 @@ func build(ctx context.Context, cfg config.Config) (http.Handler, func(), error)
 		Artifacts:    studiosvc.NewArtifacts(st.GORM()),
 		PerUserLimit: cfg.PerUserLimit,
 
-		Review:         reviewSvc,
-		AssetLibrary:   assetStore,
-		CoverGen:       router,
-		CoverAssets:    assetStore,
-		BlobRouter:     storageRouter,
-		BlobServer:     localfsDefault,
-		Models:         modelStore,
-		StorageConfig:  storageStore,
-		CustomNodeType: customNodeTypeStore,
-		OrgSecret:      orgSecretStore,
-		AlertSettings:  alertStore,
-		Audit:          auditStore,
-		AuditLog:       auditStore,
-		Exports:        exportStore,
-		ExportBook:     exports.NewBookData(st.GORM()),
+		Review:          reviewSvc,
+		AssetLibrary:    assetStore,
+		CoverGen:        router,
+		CoverAssets:     assetStore,
+		BlobRouter:      storageRouter,
+		BlobServer:      localfsDefault,
+		Models:          modelStore,
+		StorageConfig:   storageStore,
+		CustomNodeType:  customNodeTypeStore,
+		OrgTemplate:     orgTemplateStore,
+		OrgSecret:       orgSecretStore,
+		AlertSettings:   alertStore,
+		Audit:           auditStore,
+		AuditLog:        auditStore,
+		Exports:         exportStore,
+		ExportBook:      exports.NewBookData(st.GORM()),
 		Members:         membersSvc,
 		Invites:         invitesSvc,
 		InviteMailer:    mailClient,
 		InvitePublicURL: cfg.PublicURL,
 		Platform:        platformSvc,
-		TaskBoard:      taskBoard,
-		Health:         healthStore,
-		Cost:           costStore,
-		PromptBuilder:  promptBuilder,
-		PromptStore:    promptStore,
-		GenQuota:       cfg.OrgDailyGenQuota,
-		ModelAvailable: modelAvailable(cfg),
-		ModelKeyLookup: modelStore.KeyForConfig,
-		WebFS:          webFS,
+		TaskBoard:       taskBoard,
+		Health:          healthStore,
+		Cost:            costStore,
+		PromptBuilder:   promptBuilder,
+		PromptStore:     promptStore,
+		GenQuota:        cfg.OrgDailyGenQuota,
+		ModelAvailable:  modelAvailable(cfg),
+		ModelKeyLookup:  modelStore.KeyForConfig,
+		WebFS:           webFS,
 	})
 
 	cleanup := func() {
