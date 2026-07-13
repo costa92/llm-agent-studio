@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { render, screen, act } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { ThemeProvider, useTheme } from "./theme"
+import { ThemeProvider } from "./theme"
+import { useTheme } from "./theme-context"
 
 // 把 matchMedia 设成指定 matches 值（true=系统亮）。
 function stubMatchMedia(matches: boolean) {

@@ -612,9 +612,9 @@ function CanvasInner({
   const onDuplicateNode = useCallback(
     (id: string) => {
       takeSnapshot()
-      setRfNodes((nds) => duplicateNode(nds as RFNode[], id, prompts).nodes)
+      setRfNodes((nds) => duplicateNode(nds as RFNode[], id).nodes)
     },
-    [setRfNodes, prompts, takeSnapshot],
+    [setRfNodes, takeSnapshot],
   )
 
   // 工具条「删除节点」：程序化删除不触发 onBeforeDelete，故显式记快照 + 级联清边。

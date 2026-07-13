@@ -179,7 +179,6 @@ export function addNodeAt(
 export function duplicateNode(
   rfNodes: RFNode[],
   id: string,
-  _prompts?: Prompt[],
 ): { nodes: RFNode[]; id: string } {
   const src = rfNodes.find((n) => n.id === id)
   if (!src) return { nodes: rfNodes, id }
