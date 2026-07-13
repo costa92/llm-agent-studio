@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import type { InspectorItem } from "@/lib/projectState"
 import { BinaryItemView } from "./BinaryItemView"
 
@@ -16,11 +16,8 @@ export interface ItemInspectorProps {
 
 export function ItemInspector({ items }: ItemInspectorProps) {
   const [index, setIndex] = useState(0)
-  // items 变更（切换节点）时索引越界 → 归零。
-  useEffect(() => {
-    if (index > items.length - 1) setIndex(0)
-  }, [items.length, index])
-
+  // safeIndex 在渲染期钳位越界（切换节点后 items 变短时无需 effect 回写 state）——
+  // 显示 / 禁用态 / 上下条导航都基于 safeIndex，存储的 index 永不外露越界值。
   const safeIndex = Math.min(index, Math.max(0, items.length - 1))
   const item = items[safeIndex]
   const multi = items.length > 1
@@ -37,7 +34,7 @@ export function ItemInspector({ items }: ItemInspectorProps) {
               type="button"
               aria-label="上一项"
               disabled={safeIndex === 0}
-              onClick={() => setIndex((i) => Math.max(0, i - 1))}
+              onClick={() => setIndex(Math.max(0, safeIndex - 1))}
               className="rounded border border-line bg-bg-base px-1.5 py-0.5 text-[11px] text-text-2 disabled:opacity-40 hover:text-text-1"
             >
               ‹
@@ -46,7 +43,7 @@ export function ItemInspector({ items }: ItemInspectorProps) {
               type="button"
               aria-label="下一项"
               disabled={safeIndex === items.length - 1}
-              onClick={() => setIndex((i) => Math.min(items.length - 1, i + 1))}
+              onClick={() => setIndex(Math.min(items.length - 1, safeIndex + 1))}
               className="rounded border border-line bg-bg-base px-1.5 py-0.5 text-[11px] text-text-2 disabled:opacity-40 hover:text-text-1"
             >
               ›
