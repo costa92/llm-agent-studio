@@ -92,9 +92,7 @@ jobs:
         # package.json 的 build 已含 tsc -b，typecheck 并入此步。
         run: make web-build
 
-      - name: lint (non-blocking)
-        # 全量 lint 有预存红（9 个历史 error：react-refresh/only-export-components、
-        # set-state-in-effect、refs-during-render、no-unused-vars 等，见 PR 说明）。
-        # 清零前不进 blocking 路径，仅供观察增量。
-        continue-on-error: true
+      - name: lint (blocking)
+        # 历史预存红已在 PR#218 清零，lint 转为阻塞门禁：任何 PR 新引入 lint error
+        # 直接 fail，防止 baseline 回退（此前 continue-on-error 期间只出 annotations 不挡合并）。
         run: make web-lint

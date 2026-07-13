@@ -42,5 +42,5 @@ web-test:
 web-build:
 	$(PNPM) build
 
-## ci: CI 全量入口（web-lint 有预存红，见 ci.yml，不进 ci 目标）。
-ci: vet build test-db web-install web-test web-build
+## ci: CI 全量入口（lint baseline 已清零，web-lint 现为阻塞门禁，见 ci.yml）。
+ci: vet build test-db web-install web-test web-build web-lint
