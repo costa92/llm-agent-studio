@@ -367,6 +367,10 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("GET /api/projects/{id}/cost", proj(roleAdmin, projectCostHandler(d.Cost)))
 	mux.Handle("GET /api/projects/{id}/plans/{planId}/cost", proj(roleAdmin, planCostHandler(d.Cost)))
 	mux.Handle("GET /api/orgs/{org}/cost/projects", scoped(roleAdmin, orgScope, orgCostProjectsHandler(d.Cost)))
+	// 「按成员」成本口径。email 解析复用审计的 ActorEmail 解析器（*audit.Store 同时满足
+	// AuditRecorder 与 actorEmailResolver）；d.Audit 未注入或不实现该能力时 resolver 为
+	// nil，email 全部留空、成本口径不受影响。
+	mux.Handle("GET /api/orgs/{org}/cost/by-member", scoped(roleAdmin, orgScope, orgCostMembersHandler(d.Cost, costActorEmailResolver(d.Audit))))
 	mux.Handle("GET /api/orgs/{org}/generations", scoped(roleAdmin, orgScope, orgGenerationsHandler(d.Cost)))
 
 	// SPA catch-all (ranked below every /api/* pattern). Optional: only when a

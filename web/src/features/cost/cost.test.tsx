@@ -6,6 +6,7 @@ import type {
   Aggregate,
   CatalogEntry,
   LedgerEntry,
+  MemberAggregate,
   ModelConfig,
   ProjectAggregate,
 } from "@/lib/types"
@@ -237,6 +238,26 @@ const PROJECTS: ProjectAggregate[] = [
     costMicros: 2_500_000,
   },
 ]
+const MEMBERS: MemberAggregate[] = [
+  {
+    userId: "u1",
+    email: "alice@studio.com",
+    generations: 25,
+    tokens: 80000,
+    imageCount: 15,
+    costMicros: 9_000_000,
+    unpriced: false,
+  },
+  {
+    userId: "",
+    email: "",
+    generations: 17,
+    tokens: 43456,
+    imageCount: 15,
+    costMicros: 3_500_000,
+    unpriced: false,
+  },
+]
 const LEDGER: LedgerEntry[] = [
   {
     id: "g1",
@@ -257,6 +278,7 @@ function costViewProps() {
   return {
     aggregate: AGG,
     projects: PROJECTS,
+    members: MEMBERS,
     generations: LEDGER,
     hasNextPage: false,
     isFetchingNextPage: false,
@@ -345,6 +367,33 @@ describe("CostCenterView", () => {
     // 项目条金额 + 台账金额都按货币展示。
     expect(screen.getByText("¥10.00")).toBeInTheDocument()
     expect(screen.getByText("¥0.40")).toBeInTheDocument()
+  })
+
+  it("renders the per-member rollup, showing email and 未归属 for empty actor", () => {
+    render(<CostCenterView {...costViewProps()} />)
+    expect(screen.getByText("按成员成本")).toBeInTheDocument()
+    // 有 email 的成员按 email 显示；空 actor 归「未归属（历史）」。
+    expect(screen.getByText("alice@studio.com")).toBeInTheDocument()
+    expect(screen.getByText("未归属（历史）")).toBeInTheDocument()
+    expect(screen.getByText("¥9.00")).toBeInTheDocument()
+    expect(screen.getByText("¥3.50")).toBeInTheDocument()
+  })
+
+  it("flags 未定价 on a member whose usage priced to ¥0", () => {
+    const unpricedMember: MemberAggregate = {
+      userId: "u3",
+      email: "bob@studio.com",
+      generations: 4,
+      tokens: 6000,
+      imageCount: 0,
+      costMicros: 0,
+      unpriced: true,
+    }
+    render(
+      <CostCenterView {...costViewProps()} members={[...MEMBERS, unpricedMember]} />,
+    )
+    expect(screen.getByText("bob@studio.com")).toBeInTheDocument()
+    expect(screen.getAllByText("未定价").length).toBeGreaterThanOrEqual(1)
   })
 
   it("calls onRangeChange when a preset is selected", async () => {

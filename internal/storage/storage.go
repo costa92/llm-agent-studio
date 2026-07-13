@@ -548,7 +548,29 @@ func (s *Storage) goSteps() []migrationStep {
 		{version: "m30", run: m30CreateOrgInvites},
 		{version: "m31", run: m31AddWorkflowSettings},
 		{version: "m32", run: m32AddWorkflowVersion},
+		{version: "m33", run: m33AddCostActor},
 	}
+}
+
+// m33AddCostActor 给成本中心补「按成员」口径：plans 记录触发 run 的成员
+// （created_by），generations 记录归属成员（actor_user_id），并给 actor 建
+// (actor_user_id, created_at) 索引供 PerActorByOrg 聚合走。二者均 TEXT NOT NULL
+// DEFAULT ''——存量 plan/generation 回填空串，落「未归属（历史）」桶，零回归。
+// Forward-only、additive、幂等（ADD COLUMN / CREATE INDEX IF NOT EXISTS）。
+func m33AddCostActor(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx,
+		`ALTER TABLE plans ADD COLUMN IF NOT EXISTS created_by TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add plans.created_by: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`ALTER TABLE generations ADD COLUMN IF NOT EXISTS actor_user_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add generations.actor_user_id: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`CREATE INDEX IF NOT EXISTS generations_actor_idx ON generations (actor_user_id, created_at)`); err != nil {
+		return fmt.Errorf("create generations_actor_idx: %w", err)
+	}
+	return nil
 }
 
 // m32AddWorkflowVersion 给 workflows 加 version INT 列（乐观锁版本号）：编辑保存时

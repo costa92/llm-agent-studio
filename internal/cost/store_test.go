@@ -401,3 +401,51 @@ func TestPerSecondPricingAndUpsertFlow(t *testing.T) {
 		t.Fatalf("backfill = %ds / %d micros, want 8s / %d", sec, micros, 8*500000)
 	}
 }
+
+// TestPerActorByOrg 验证成本「按成员」聚合：按 actor_user_id 分桶、贵者在前，空 actor
+// 自成「未归属」桶；跨 org 的行不串桶；时间范围过滤生效。
+func TestPerActorByOrg(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	s := New(db)
+	orgID := "org_actor_" + time.Now().Format("150405.000000000")
+	pid := seedProject(t, db, orgID)
+	// 成员 A：两条（合计 300 micros / 30 tokens / 2 gen）。
+	if err := s.Record(ctx, Generation{ProjectID: pid, Provider: "p", Model: "m", ImageCount: 1, CostMicros: 100, Tokens: 10, ActorUserID: "user-A"}); err != nil {
+		t.Fatalf("record A1: %v", err)
+	}
+	if err := s.Record(ctx, Generation{ProjectID: pid, Provider: "p", Model: "m", ImageCount: 1, CostMicros: 200, Tokens: 20, ActorUserID: "user-A"}); err != nil {
+		t.Fatalf("record A2: %v", err)
+	}
+	// 成员 B：一条（50 micros）。
+	if err := s.Record(ctx, Generation{ProjectID: pid, Provider: "p", Model: "m", ImageCount: 1, CostMicros: 50, ActorUserID: "user-B"}); err != nil {
+		t.Fatalf("record B: %v", err)
+	}
+	// 未归属（空 actor）：一条（70 micros）。
+	if err := s.Record(ctx, Generation{ProjectID: pid, Provider: "p", Model: "m", ImageCount: 1, CostMicros: 70}); err != nil {
+		t.Fatalf("record unattributed: %v", err)
+	}
+	// 另一个 org 的行不得串入本 org 的分桶。
+	otherPid := seedProject(t, db, "org_actor_other_"+time.Now().Format("150405.000000000"))
+	if err := s.Record(ctx, Generation{ProjectID: otherPid, Provider: "p", Model: "m", ImageCount: 1, CostMicros: 999, ActorUserID: "user-A"}); err != nil {
+		t.Fatalf("record other-org: %v", err)
+	}
+
+	rows, err := s.PerActorByOrg(ctx, orgID, time.Time{}, time.Time{})
+	if err != nil {
+		t.Fatalf("PerActorByOrg: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("want 3 buckets (A/B/未归属), got %d: %+v", len(rows), rows)
+	}
+	// 贵者在前：A(300) > 未归属(70) > B(50)。
+	if rows[0].ActorUserID != "user-A" || rows[0].CostMicros != 300 || rows[0].Tokens != 30 || rows[0].Generations != 2 {
+		t.Fatalf("row[0] = %+v, want user-A 300/30/2", rows[0])
+	}
+	if rows[1].ActorUserID != "" || rows[1].CostMicros != 70 {
+		t.Fatalf("row[1] = %+v, want unattributed(空 actor)/70", rows[1])
+	}
+	if rows[2].ActorUserID != "user-B" || rows[2].CostMicros != 50 {
+		t.Fatalf("row[2] = %+v, want user-B/50", rows[2])
+	}
+}

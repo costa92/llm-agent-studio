@@ -552,6 +552,20 @@ export interface ProjectAggregate {
   costMicros: number
 }
 
+// httpapi memberCostDTO。GET /api/orgs/{org}/cost/by-member → {items: MemberAggregate[]}
+//（admin，orgCostMembersHandler，最贵在前）。userId 为权威身份，email 由 ActorEmail 解析
+//（解析不到 / 未归属留空）；userId 空 = 未归属（历史 run，无 actor）；unpriced 表示该成员
+// 的生成里有用量却计费 ¥0（模型未配置定价）。
+export interface MemberAggregate {
+  userId: string
+  email: string
+  costMicros: number
+  tokens: number
+  imageCount: number
+  generations: number
+  unpriced: boolean
+}
+
 // cost/store.go LedgerEntry。GET /api/orgs/{org}/generations → {items, next_cursor}（keyset 分页）。
 export interface LedgerEntry {
   id: string

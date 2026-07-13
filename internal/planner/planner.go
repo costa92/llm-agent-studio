@@ -216,7 +216,10 @@ func HasUnboundCustomNode(nodes []WorkflowNode) bool {
 // project-level custom run (stored as NULL workflow_id).
 // resolved is the handler-built org-scoped registry map (nodeID→ResolvedType);
 // nil/empty means no typed custom nodes in this workflow.
-func (p *Planner) PlanCustom(ctx context.Context, projectID, workflowID string, b Brief, nodes []WorkflowNode, resolved map[string]ResolvedType, runInputs json.RawMessage) (Result, error) {
+// createdBy 是触发本次 run 的成员 userID（成本「按人」口径）：落到 plans.created_by，
+// worker 认领该 plan 的 todo 时读出、写进 generations.actor_user_id，成本中心据此按成员
+// 归集。空串（无登录上下文 / m33 前的历史 run）落「未归属」桶，零回归。
+func (p *Planner) PlanCustom(ctx context.Context, projectID, workflowID string, b Brief, nodes []WorkflowNode, resolved map[string]ResolvedType, runInputs json.RawMessage, createdBy string) (Result, error) {
 	if err := ValidateCustomGraph(nodes); err != nil {
 		return Result{}, fmt.Errorf("planner: validate custom graph: %w", err)
 	}
@@ -263,9 +266,9 @@ func (p *Planner) PlanCustom(ctx context.Context, projectID, workflowID string, 
 		runInputs = []byte("{}") // run_inputs is NOT NULL DEFAULT '{}'
 	}
 	if err := p.db.WithContext(ctx).Exec(
-		`INSERT INTO plans (id, project_id, workflow_id, status, raw_plan_json, valid, fallback_used, run_inputs)
-		 VALUES ($1,$2,NULLIF($3,''),'created',$4,true,false,$5)`,
-		planID, projectID, workflowID, rawJSON, []byte(runInputs)).Error; err != nil {
+		`INSERT INTO plans (id, project_id, workflow_id, status, raw_plan_json, valid, fallback_used, run_inputs, created_by)
+		 VALUES ($1,$2,NULLIF($3,''),'created',$4,true,false,$5,$6)`,
+		planID, projectID, workflowID, rawJSON, []byte(runInputs), createdBy).Error; err != nil {
 		return Result{}, fmt.Errorf("planner: insert plan: %w", err)
 	}
 

@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 
+	authzhttp "github.com/costa92/llm-agent-authz/httpapi"
+
 	"github.com/costa92/llm-agent-studio/internal/customnodetype"
 	"github.com/costa92/llm-agent-studio/internal/nodedesc"
 	"github.com/costa92/llm-agent-studio/internal/planner"
@@ -470,7 +472,10 @@ func runWorkflowHandler(ps ProjectStore, ws WorkflowStore, pl PlannerPort, ev Ev
 		if v, ok := runResolved.BriefOverride["style"]; ok {
 			brief.Style = v
 		}
-		result, err := pl.PlanCustom(r.Context(), id, wfID, brief, nodes, resolved, buildRunInputs(runReq.Inputs, wf.InputsSchema))
+		// 成本「按人」口径：记录触发本次 run 的登录成员 id（同审计 actor 取法）。无登录
+		// 上下文时为空串，落「未归属」桶。
+		actor := authzhttp.UserID(r.Context())
+		result, err := pl.PlanCustom(r.Context(), id, wfID, brief, nodes, resolved, buildRunInputs(runReq.Inputs, wf.InputsSchema), actor)
 		if err != nil {
 			// 建 plan 失败：把项目从 planning 回滚到 failed（非在途终态），否则 TryBeginRun
 			// 会一直拒绝，项目被永久 409 锁死无法再跑。failed 不属于 planning/running，可再运行。

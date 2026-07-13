@@ -16,6 +16,7 @@ import type {
   ItemsEnvelope,
   LedgerEntry,
   ListEnvelope,
+  MemberAggregate,
   ModelConfig,
   ProjectAggregate,
 } from "@/lib/types"
@@ -65,6 +66,23 @@ export function useOrgCostProjects(
     queryFn: () =>
       apiJSON<ItemsEnvelope<ProjectAggregate>>(
         `/api/orgs/${org}/cost/projects${rangeQuery(rangeFor(presetValue))}`,
+      ).then((env) => env.items),
+    enabled: org !== "",
+  })
+}
+
+// 按成员成本汇总：GET /api/orgs/{org}/cost/by-member?from=&to= → {items: MemberAggregate[]}
+//（admin，orgCostMembersHandler，最贵在前；userId 空 = 未归属历史）。queryKey 只挂 preset.value
+// 同 useOrgCostProjects（避免 range 时间戳每次 render 推新导致 refetch loop）。
+export function useOrgCostMembers(
+  org: string,
+  presetValue: string,
+): UseQueryResult<MemberAggregate[]> {
+  return useQuery({
+    queryKey: ["org-cost-members", org, presetValue],
+    queryFn: () =>
+      apiJSON<ItemsEnvelope<MemberAggregate>>(
+        `/api/orgs/${org}/cost/by-member${rangeQuery(rangeFor(presetValue))}`,
       ).then((env) => env.items),
     enabled: org !== "",
   })
