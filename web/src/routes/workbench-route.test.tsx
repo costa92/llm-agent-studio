@@ -41,6 +41,7 @@ describe("workbench under org namespace", () => {
     setAccessToken("tok")
     installFetchRoutes({
       // admin 探针：200 → admin（点亮全部 nav）。
+      "/members/me": () => jsonResponse({ role: "admin" }),
       "/model-configs": () => jsonResponse({ items: [] }),
       // 项目列表（裸 items 信封）。
       "/api/orgs/acme/projects": () => jsonResponse({ items: [] }),
@@ -70,6 +71,7 @@ describe("workbench under org namespace", () => {
       createdBy: "u1",
     }
     installFetchRoutes({
+      "/members/me": () => jsonResponse({ role: "admin" }),
       "/model-configs": () => jsonResponse({ items: [] }),
       "/api/projects/p1/events": () => jsonResponse({ items: [] }),
       "/api/projects/p1/plans": () => jsonResponse({ items: [] }),
