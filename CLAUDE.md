@@ -25,7 +25,7 @@ sibling 案例仓（独立 git 历史 / 独立版本 / 独立 CI）。把 `llm-a
 make vet build test         # 快速路径：无 PG，DB-gated 测试自动 skip
 make test-db                # 全量测试，须先 export LLM_AGENT_STUDIO_PG_URL 指向一个 fresh DB
 make web-install web-test web-build   # 前端
-make ci                     # CI 全量入口（web-lint 不进 ci：有预存红 baseline）
+make ci                     # CI 全量入口（含 web-lint：baseline 已清零，lint 为阻塞门禁）
 ```
 
 ### 跑 DB-gated 测试（关键，最易踩坑）
@@ -101,7 +101,7 @@ script/storyboard/asset/prescreen/`custom:*`；storyboard 扇出成 N 个 asset 
 - **走 PR，别直推 `main`**：分支 → push → `gh pr create` → **owner 手动 `gh pr merge --rebase`**。本仓**无 CI 自动合并 / 无 auto-merge**——rebase-merge 落为单 commit。
 - 提交前先 commit（防会话中断丢工作）；中文 commit message 说清「为什么」。
 - 派实现 agent 后**主线程必须独立复验**：不能只信 agent 报告（会话中断 / LSP diagnostics 常 stale），也不能只信 `<new-diagnostics>`（可能是 mid-edit 快照）——以 `GOWORK=off go build/vet` + fresh-DB 实跑测试为准。
-- 注释 / 错误提示跟随文件既有语言（多为中文）。前端 lint 有预存红 baseline：验证改动用「改动文件零新增 error + vitest + build」，不是全量 lint 绿。
+- 注释 / 错误提示跟随文件既有语言（多为中文）。前端 lint baseline 已清零且为 CI 阻塞门禁：改动须保持 `pnpm lint` 零 error（连同 vitest + build 一起验证）。
 
 ## Generate 适配器现状（沙箱 vs 真实）
 
