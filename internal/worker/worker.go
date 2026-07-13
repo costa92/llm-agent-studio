@@ -195,6 +195,10 @@ type claimed struct {
 	typ       string
 	attempts  int
 	input     []byte
+	// planCreatedBy 是该 todo 所属 plan 的触发成员 userID（成本「按人」口径），claim 时
+	// 从 plans 一次解析出来，供本次处理的所有 generations 记账行携带 actor_user_id。空串
+	// = 未归属（历史 plan / 无登录上下文触发）。
+	planCreatedBy string
 }
 
 func newID() string {
@@ -260,7 +264,8 @@ func (w *Worker) claim(ctx context.Context) (claimed, bool, error) {
 		// transiently overshoot the cap by up to Workers-1. Good enough for
 		// generation throttling; do not treat it as hard isolation. 0 = unlimited.
 		row := tx.Raw(`
-		SELECT id, project_id, type, attempts, input_json FROM todos
+		SELECT id, project_id, type, attempts, input_json,
+		       COALESCE((SELECT created_by FROM plans WHERE plans.id = todos.plan_id), '') FROM todos
 		WHERE ((status='ready' AND next_run_at <= now())
 		   OR (status='running' AND locked_until IS NOT NULL AND locked_until < now()))
 		  -- 软删项目的 todo 不可 claim（docs/specs/project-delete.md：级联取消已覆盖
@@ -273,7 +278,7 @@ func (w *Worker) claim(ctx context.Context) (claimed, bool, error) {
 		ORDER BY next_run_at ASC
 		FOR UPDATE SKIP LOCKED
 		LIMIT 1`, w.cfg.MaxConcurrentGen).Row()
-		if err := row.Scan(&c.todoID, &c.projectID, &c.typ, &c.attempts, &c.input); err != nil {
+		if err := row.Scan(&c.todoID, &c.projectID, &c.typ, &c.attempts, &c.input, &c.planCreatedBy); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return nil // empty commit; found stays false
 			}
@@ -488,6 +493,7 @@ func (w *Worker) runScript(ctx context.Context, c claimed) (string, error) {
 		_ = w.cfg.Cost.RecordPriced(ctx, cost.Generation{
 			ProjectID: c.projectID, TodoID: c.todoID, Kind: "text",
 			Provider: provider, Model: model, Tokens: out.Tokens,
+			ActorUserID: c.planCreatedBy,
 		})
 	}
 	if err := w.emitItems(ctx, c, []Item{jsonItem(contentJSON)}); err != nil {
@@ -643,6 +649,7 @@ func (w *Worker) runStoryboard(ctx context.Context, c claimed) (string, error) {
 		_ = w.cfg.Cost.RecordPriced(ctx, cost.Generation{
 			ProjectID: c.projectID, TodoID: c.todoID, Kind: "text",
 			Provider: provider, Model: model, Tokens: out.Tokens,
+			ActorUserID: c.planCreatedBy,
 		})
 	}
 	// Announce the fanned-out asset todos in the timeline (after commit so a
@@ -837,6 +844,7 @@ func (w *Worker) runAsset(ctx context.Context, c claimed) (string, error) {
 			ProjectID: c.projectID, AssetID: created.id, TodoID: c.todoID, Kind: kind,
 			Provider: out.Provider, Model: out.Model, Prompt: out.Prompt,
 			Tokens: out.Tokens, ImageCount: out.ImageCount, VideoSeconds: in.Duration, LatencyMS: out.LatencyMS,
+			ActorUserID: c.planCreatedBy,
 		})
 	}
 	// Timeline: asset_generated (待审) — spec §9 SSE event.
@@ -1342,10 +1350,10 @@ func (w *Worker) submitTx(ctx context.Context, c claimed, asset assets.Asset, ki
 		// text; any drift fails at RUNTIME with "no unique or exclusion constraint
 		// matching the ON CONFLICT specification".
 		if err := tx.Exec(`
-		INSERT INTO generations (id, project_id, asset_id, todo_id, kind, provider, model, prompt, video_seconds, cost_micros)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		INSERT INTO generations (id, project_id, asset_id, todo_id, kind, provider, model, prompt, video_seconds, cost_micros, actor_user_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		ON CONFLICT (asset_id, todo_id) WHERE asset_id <> '' AND todo_id <> '' DO UPDATE SET id=generations.id`,
-			newID(), c.projectID, asset.ID, c.todoID, kind, sub.Provider, sub.Model, built, estSeconds, cost).Error; err != nil {
+			newID(), c.projectID, asset.ID, c.todoID, kind, sub.Provider, sub.Model, built, estSeconds, cost, c.planCreatedBy).Error; err != nil {
 			return fmt.Errorf("worker: submit ledger upsert: %w", err)
 		}
 		if err := tx.Exec(
@@ -1894,6 +1902,7 @@ func (w *Worker) runCustomLLM(ctx context.Context, c claimed, in llmParams) (str
 		_ = w.cfg.Cost.RecordPriced(ctx, cost.Generation{
 			ProjectID: c.projectID, TodoID: c.todoID, Kind: "text",
 			Provider: info.Provider, Model: info.Model, Tokens: res.Usage.Tokens,
+			ActorUserID: c.planCreatedBy,
 		})
 	}
 	return "custom:" + outID, nil

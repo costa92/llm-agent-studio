@@ -17,7 +17,12 @@ import {
 import { Button } from "@/components/studio/Button"
 import { StatCard } from "@/components/studio/StatCard"
 import { BarRow } from "@/components/studio/BarRow"
-import type { Aggregate, LedgerEntry, ProjectAggregate } from "@/lib/types"
+import type {
+  Aggregate,
+  LedgerEntry,
+  MemberAggregate,
+  ProjectAggregate,
+} from "@/lib/types"
 import {
   RANGE_PRESETS,
   costRatio,
@@ -33,6 +38,7 @@ const BAR_COLORS = ["var(--asset)", "var(--script)", "var(--board)", "var(--revi
 export interface CostCenterViewProps {
   aggregate: Aggregate | undefined
   projects: ProjectAggregate[] | undefined
+  members: MemberAggregate[] | undefined
   generations: LedgerEntry[] | undefined
   // 生成明细「加载更多」（keyset 游标累积，同资产库）。
   hasNextPage: boolean
@@ -53,6 +59,7 @@ export interface CostCenterViewProps {
 export function CostCenterView({
   aggregate,
   projects,
+  members,
   generations,
   hasNextPage,
   isFetchingNextPage,
@@ -80,11 +87,13 @@ export function CostCenterView({
   }
 
   const maxMicros = Math.max(0, ...(projects ?? []).map((p) => p.costMicros))
+  const maxMemberMicros = Math.max(0, ...(members ?? []).map((m) => m.costMicros))
   const hasData =
     aggregate != null && (aggregate.generations > 0 || (projects?.length ?? 0) > 0)
-  // 有用量却计费 ¥0 的项目/台账行 → 页面提示这部分未计入 ¥ 合计。
+  // 有用量却计费 ¥0 的项目/成员/台账行 → 页面提示这部分未计入 ¥ 合计。
   const hasUnpriced =
     (projects ?? []).some((p) => isUnpriced(p)) ||
+    (members ?? []).some((m) => m.unpriced) ||
     (generations ?? []).some((r) => isUnpriced(r))
 
   return (
@@ -152,6 +161,23 @@ export function CostCenterView({
                   label={p.projectName || p.projectId}
                   ratio={costRatio(p.costMicros, maxMicros)}
                   value={isUnpriced(p) ? <UnpricedBadge /> : formatCurrency(p.costMicros)}
+                  color={BAR_COLORS[i % BAR_COLORS.length]}
+                />
+              ))}
+            </section>
+          )}
+
+          {members != null && members.length > 0 && (
+            <section className="rounded-xl border border-line bg-bg-surface p-[18px]">
+              <h2 className="mb-3 text-[11.5px] font-semibold tracking-[0.08em] text-text-3">
+                按成员成本
+              </h2>
+              {members.map((m, i) => (
+                <BarRow
+                  key={m.userId || "__unattributed__"}
+                  label={m.email || m.userId || "未归属（历史）"}
+                  ratio={costRatio(m.costMicros, maxMemberMicros)}
+                  value={m.unpriced ? <UnpricedBadge /> : formatCurrency(m.costMicros)}
                   color={BAR_COLORS[i % BAR_COLORS.length]}
                 />
               ))}

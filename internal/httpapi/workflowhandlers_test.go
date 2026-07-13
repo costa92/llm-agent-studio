@@ -52,6 +52,7 @@ type recordingPlanner struct {
 	gotWorkflowID string
 	gotBrief      planner.Brief
 	gotRunInputs  json.RawMessage
+	gotCreatedBy  string
 }
 
 func (recordingPlanner) Plan(_ context.Context, _ string, _ planner.Brief, _ json.RawMessage) (planner.Result, error) {
@@ -410,10 +411,11 @@ func TestRunWorkflowHandlerRefusesCustomNodes(t *testing.T) {
 	}
 }
 
-func (rp *recordingPlanner) PlanCustom(_ context.Context, _, workflowID string, b planner.Brief, _ []planner.WorkflowNode, _ map[string]planner.ResolvedType, runInputs json.RawMessage) (planner.Result, error) {
+func (rp *recordingPlanner) PlanCustom(_ context.Context, _, workflowID string, b planner.Brief, _ []planner.WorkflowNode, _ map[string]planner.ResolvedType, runInputs json.RawMessage, createdBy string) (planner.Result, error) {
 	rp.gotWorkflowID = workflowID
 	rp.gotBrief = b
 	rp.gotRunInputs = runInputs
+	rp.gotCreatedBy = createdBy
 	return planner.Result{PlanID: "pl", Valid: true, ReadyTodos: []planner.ReadyTodo{{ID: "t1", Type: "script"}}}, nil
 }
 

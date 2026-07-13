@@ -76,7 +76,7 @@ type ProjectStore interface {
 // PlannerPort kicks off planning (satisfied by *planner.Planner). Only custom
 // workflows are planned now — the LLM auto-planner (Plan/PlanWith) was removed.
 type PlannerPort interface {
-	PlanCustom(ctx context.Context, projectID, workflowID string, b planner.Brief, nodes []planner.WorkflowNode, resolved map[string]planner.ResolvedType, runInputs json.RawMessage) (planner.Result, error)
+	PlanCustom(ctx context.Context, projectID, workflowID string, b planner.Brief, nodes []planner.WorkflowNode, resolved map[string]planner.ResolvedType, runInputs json.RawMessage, createdBy string) (planner.Result, error)
 }
 
 // CustomNodeTypeResolver resolves a typed custom node's registry entry, org-scoped

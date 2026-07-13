@@ -32,6 +32,7 @@ type Generation struct {
 	VideoSeconds int // MediaSeconds: 媒体时长(秒), video=帧时长 audio=音频时长 (Q3 复用同列)
 	CostMicros   int64
 	LatencyMS    int
+	ActorUserID  string // 触发该生成的成员 userID（成本「按人」口径）；空串 = 未归属（历史）
 }
 
 // Aggregate is a cost rollup (spec §9 stats cards).
@@ -67,10 +68,10 @@ func (s *Store) Record(ctx context.Context, g Generation) error {
 	}
 	err := s.db.WithContext(ctx).Exec(
 		`INSERT INTO generations
-		 (id, project_id, asset_id, todo_id, kind, provider, model, prompt, tokens, image_count, video_seconds, cost_micros, latency_ms)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		 (id, project_id, asset_id, todo_id, kind, provider, model, prompt, tokens, image_count, video_seconds, cost_micros, latency_ms, actor_user_id)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
 		newID(), g.ProjectID, g.AssetID, g.TodoID, kind, g.Provider, g.Model, g.Prompt,
-		g.Tokens, g.ImageCount, g.VideoSeconds, g.CostMicros, g.LatencyMS).Error
+		g.Tokens, g.ImageCount, g.VideoSeconds, g.CostMicros, g.LatencyMS, g.ActorUserID).Error
 	if err != nil {
 		return fmt.Errorf("cost: record: %w", err)
 	}
@@ -292,6 +293,39 @@ func (s *Store) PerProjectByOrg(ctx context.Context, orgID string, from, to time
 	return out, rows.Err()
 }
 
+// ActorAggregate is a per-member (成员) rollup row (UI 按成员成本条). ActorUserID
+// 为空 = 「未归属（历史）」桶（m33 前的 run / 无登录上下文触发）。email 由 API 层经
+// ActorEmail 解析，store 不落 email（保持 generations 精简）。
+type ActorAggregate struct {
+	ActorUserID string `json:"actorUserId"`
+	Aggregate
+}
+
+// PerActorByOrg rolls the org ledger up per member (actor_user_id), most
+// expensive first. 空 actor_user_id（未归属）自成一桶（GROUP BY 直接聚在一起）。
+func (s *Store) PerActorByOrg(ctx context.Context, orgID string, from, to time.Time) ([]ActorAggregate, error) {
+	from, to = rangeBounds(from, to)
+	rows, err := s.db.WithContext(ctx).Raw(`
+		SELECT g.actor_user_id, count(*), COALESCE(sum(g.tokens),0), COALESCE(sum(g.image_count),0), COALESCE(sum(g.cost_micros),0)
+		FROM generations g JOIN projects p ON g.project_id=p.id
+		WHERE p.org_id=$1 AND g.created_at >= $2 AND g.created_at < $3
+		GROUP BY g.actor_user_id
+		ORDER BY COALESCE(sum(g.cost_micros),0) DESC`, orgID, from, to).Rows()
+	if err != nil {
+		return nil, fmt.Errorf("cost: per actor: %w", err)
+	}
+	defer rows.Close()
+	out := make([]ActorAggregate, 0)
+	for rows.Next() {
+		var aa ActorAggregate
+		if err := rows.Scan(&aa.ActorUserID, &aa.Generations, &aa.Tokens, &aa.ImageCount, &aa.CostMicros); err != nil {
+			return nil, err
+		}
+		out = append(out, aa)
+	}
+	return out, rows.Err()
+}
+
 // LedgerEntry is one generations row for the usage-detail table (UI 用量明细表).
 type LedgerEntry struct {
 	ID          string    `json:"id"`
@@ -403,13 +437,13 @@ func (s *Store) UpsertSubmittedGeneration(ctx context.Context, g Generation) (st
 	var id string
 	err := s.db.WithContext(ctx).Raw(`
 		INSERT INTO generations
-		 (id, project_id, asset_id, todo_id, kind, provider, model, prompt, tokens, image_count, video_seconds, cost_micros, latency_ms)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		 (id, project_id, asset_id, todo_id, kind, provider, model, prompt, tokens, image_count, video_seconds, cost_micros, latency_ms, actor_user_id)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 		ON CONFLICT (asset_id, todo_id) WHERE asset_id <> '' AND todo_id <> ''
 		  DO UPDATE SET id = generations.id
 		RETURNING id`,
 		newID(), g.ProjectID, g.AssetID, g.TodoID, kind, g.Provider, g.Model, g.Prompt,
-		g.Tokens, g.ImageCount, g.VideoSeconds, g.CostMicros, g.LatencyMS).Row().Scan(&id)
+		g.Tokens, g.ImageCount, g.VideoSeconds, g.CostMicros, g.LatencyMS, g.ActorUserID).Row().Scan(&id)
 	if err != nil {
 		return "", fmt.Errorf("cost: upsert submitted generation: %w", err)
 	}

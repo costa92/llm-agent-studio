@@ -24,6 +24,7 @@ import (
 type stubCost struct {
 	agg        cost.Aggregate
 	per        []cost.ProjectAggregate
+	perActor   []cost.ActorAggregate
 	recent     []cost.LedgerEntry
 	recentNext string
 	recentErr  error
@@ -51,6 +52,9 @@ func (s *stubCost) ByProjectBetween(_ context.Context, _ string, from, to time.T
 }
 func (s *stubCost) PerProjectByOrg(_ context.Context, _ string, _, _ time.Time) ([]cost.ProjectAggregate, error) {
 	return s.per, nil
+}
+func (s *stubCost) PerActorByOrg(_ context.Context, _ string, _, _ time.Time) ([]cost.ActorAggregate, error) {
+	return s.perActor, nil
 }
 func (s *stubCost) RecentByOrg(_ context.Context, _ string, _ int, cursor string) ([]cost.LedgerEntry, string, error) {
 	s.gotCursor = cursor
@@ -234,7 +238,7 @@ func (stubPlanner) Plan(_ context.Context, _ string, _ planner.Brief, _ json.Raw
 func (stubPlanner) PlanWith(_ context.Context, _ string, _ llm.ChatModel, _ planner.Brief, _ json.RawMessage) (planner.Result, error) {
 	return planner.Result{PlanID: "pl", Valid: true}, nil
 }
-func (stubPlanner) PlanCustom(_ context.Context, _, _ string, _ planner.Brief, _ []planner.WorkflowNode, _ map[string]planner.ResolvedType, _ json.RawMessage) (planner.Result, error) {
+func (stubPlanner) PlanCustom(_ context.Context, _, _ string, _ planner.Brief, _ []planner.WorkflowNode, _ map[string]planner.ResolvedType, _ json.RawMessage, _ string) (planner.Result, error) {
 	return planner.Result{PlanID: "pl", Valid: true}, nil
 }
 
@@ -283,7 +287,7 @@ func (s recordingProjects) TryBeginRun(_ context.Context, _ string) (bool, error
 // failPlanner 的 PlanCustom 恒失败（500 路径），用于验证状态回滚。
 type failPlanner struct{}
 
-func (failPlanner) PlanCustom(_ context.Context, _, _ string, _ planner.Brief, _ []planner.WorkflowNode, _ map[string]planner.ResolvedType, _ json.RawMessage) (planner.Result, error) {
+func (failPlanner) PlanCustom(_ context.Context, _, _ string, _ planner.Brief, _ []planner.WorkflowNode, _ map[string]planner.ResolvedType, _ json.RawMessage, _ string) (planner.Result, error) {
 	return planner.Result{}, errors.New("boom")
 }
 

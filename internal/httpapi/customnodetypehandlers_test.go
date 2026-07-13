@@ -186,7 +186,7 @@ func (c *capturingPlanner) Plan(_ context.Context, _ string, _ planner.Brief, _ 
 func (c *capturingPlanner) PlanWith(_ context.Context, _ string, _ llm.ChatModel, _ planner.Brief, _ json.RawMessage) (planner.Result, error) {
 	return planner.Result{PlanID: "pl", Valid: true}, nil
 }
-func (c *capturingPlanner) PlanCustom(_ context.Context, _, _ string, _ planner.Brief, _ []planner.WorkflowNode, resolved map[string]planner.ResolvedType, _ json.RawMessage) (planner.Result, error) {
+func (c *capturingPlanner) PlanCustom(_ context.Context, _, _ string, _ planner.Brief, _ []planner.WorkflowNode, resolved map[string]planner.ResolvedType, _ json.RawMessage, _ string) (planner.Result, error) {
 	c.gotResolved = resolved
 	return planner.Result{PlanID: "pl", Valid: true, ReadyTodos: []planner.ReadyTodo{{ID: "t1", Type: "custom:llm"}}}, nil
 }

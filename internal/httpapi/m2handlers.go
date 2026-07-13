@@ -79,6 +79,7 @@ type CostStore interface {
 	ByOrgBetween(ctx context.Context, orgID string, from, to time.Time) (cost.Aggregate, error)
 	ByProjectBetween(ctx context.Context, projectID string, from, to time.Time) (cost.Aggregate, error)
 	PerProjectByOrg(ctx context.Context, orgID string, from, to time.Time) ([]cost.ProjectAggregate, error)
+	PerActorByOrg(ctx context.Context, orgID string, from, to time.Time) ([]cost.ActorAggregate, error)
 	ByPlan(ctx context.Context, projectID, planID string) (cost.PlanCost, error)
 	RecentByOrg(ctx context.Context, orgID string, limit int, cursor string) ([]cost.LedgerEntry, string, error)
 	CountByOrgSince(ctx context.Context, orgID string, since time.Time) (int, error)
@@ -628,6 +629,60 @@ func orgCostProjectsHandler(cs CostStore) http.HandlerFunc {
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
+// memberCostDTO 是「按成员」成本条的一行：userId 为权威身份，email 由 actorEmailResolver
+// 解析（best-effort，解析不到留空）。userId 空 = 未归属（历史）；unpriced 表示该成员的
+// 生成里存在未定价（cost_micros=0 但确有 token/图片/时长的行无法在聚合层精确判定，这里沿用
+// 与按项目一致的口径：成本为 0 但有生成即视为可能未定价，交前端 badge 提示）。
+type memberCostDTO struct {
+	UserID      string `json:"userId"`
+	Email       string `json:"email"`
+	CostMicros  int64  `json:"costMicros"`
+	Tokens      int    `json:"tokens"`
+	ImageCount  int    `json:"imageCount"`
+	Generations int    `json:"generations"`
+	Unpriced    bool   `json:"unpriced"`
+}
+
+// orgCostMembersHandler (GET /api/orgs/{org}/cost/by-member?from=&to=): admin.
+// Per-member rollup (UI 按成员成本条). actor_user_id 经 ActorEmail 解析成 email；空
+// actor（未归属）email 留空，前端显示「未归属（历史）」。email 解析器缺失 (nil) 时全部
+// 留空，成本口径不受影响（actor_user_id 才是权威身份）。
+func orgCostMembersHandler(cs CostStore, er actorEmailResolver) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		from, to, err := parseTimeRange(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		rows, err := cs.PerActorByOrg(r.Context(), r.PathValue("org"), from, to)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		items := make([]memberCostDTO, 0, len(rows))
+		for _, a := range rows {
+			email := ""
+			if er != nil && a.ActorUserID != "" {
+				if e, eerr := er.ActorEmail(r.Context(), a.ActorUserID); eerr != nil {
+					slog.Warn("cost: resolve actor email failed", "actor", a.ActorUserID, "err", eerr)
+				} else {
+					email = e
+				}
+			}
+			items = append(items, memberCostDTO{
+				UserID:      a.ActorUserID,
+				Email:       email,
+				CostMicros:  a.CostMicros,
+				Tokens:      a.Tokens,
+				ImageCount:  a.ImageCount,
+				Generations: a.Generations,
+				Unpriced:    a.CostMicros == 0 && a.Generations > 0,
+			})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	}

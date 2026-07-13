@@ -27,6 +27,16 @@ type actorEmailResolver interface {
 	ActorEmail(ctx context.Context, userID string) (string, error)
 }
 
+// costActorEmailResolver 把审计 recorder（*audit.Store 同时实现 ActorEmail）复用给成本
+// 「按成员」端点做 userID→email 解析。rec 为 nil 或未实现该能力时返回 nil，调用方据此
+// 全部留空 email（成本口径不受影响，actor_user_id 才是权威身份）。
+func costActorEmailResolver(rec AuditRecorder) actorEmailResolver {
+	if er, ok := rec.(actorEmailResolver); ok {
+		return er
+	}
+	return nil
+}
+
 // AuditLister 读取 org 的审计流水 (satisfied by *audit.Store)，供只读审计 UI 分页拉取。
 type AuditLister interface {
 	List(ctx context.Context, orgID string, limit int, cursor string) ([]audit.Record, string, error)
