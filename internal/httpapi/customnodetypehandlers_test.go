@@ -30,6 +30,9 @@ func (s *stubCNTStore) List(_ context.Context, _ string) ([]customnodetype.Custo
 func (s *stubCNTStore) Create(_ context.Context, _ string, in customnodetype.UpsertInput) (customnodetype.CustomNodeType, error) {
 	return customnodetype.CustomNodeType{ID: "new", Label: in.Label, Kind: in.Kind, Color: in.Color, Params: in.Params}, nil
 }
+func (s *stubCNTStore) Upsert(_ context.Context, _ string, in customnodetype.UpsertInput) (customnodetype.CustomNodeType, error) {
+	return customnodetype.CustomNodeType{ID: "new", Slug: in.Slug, Label: in.Label, Kind: in.Kind, Color: in.Color, Params: in.Params}, nil
+}
 func (s *stubCNTStore) Update(_ context.Context, id, _ string, in customnodetype.UpsertInput) (customnodetype.CustomNodeType, error) {
 	if s.updateErr != nil {
 		return customnodetype.CustomNodeType{}, s.updateErr

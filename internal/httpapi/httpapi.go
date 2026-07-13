@@ -204,6 +204,8 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("GET /api/orgs/{org}/projects", scoped(roleViewer, orgScope, listProjectsHandler(d.Projects)))
 	// Task center (任务中心): cross-project run dashboard (org-scoped, viewer+).
 	mux.Handle("GET /api/orgs/{org}/tasks", scoped(roleViewer, orgScope, taskboardHandler(d.TaskBoard)))
+	// 工作流模板目录（纯静态，不依赖任何 store）：viewer+。
+	mux.Handle("GET /api/orgs/{org}/workflow-templates", scoped(roleViewer, orgScope, listWorkflowTemplatesHandler()))
 
 	// Project-scoped routes ({id}).
 	mux.Handle("GET /api/projects/{id}", proj(roleViewer, getProjectHandler(d.Projects)))
@@ -224,6 +226,7 @@ func NewMux(d Deps) *http.ServeMux {
 	if d.Workflows != nil {
 		mux.Handle("GET /api/projects/{id}/workflows", proj(roleViewer, listWorkflowsHandler(d.Workflows)))
 		mux.Handle("POST /api/projects/{id}/workflows", proj(roleEditor, createWorkflowHandler(d.Projects, d.Workflows, d.CustomNodeType)))
+		mux.Handle("POST /api/projects/{id}/workflows/from-template", proj(roleEditor, instantiateTemplateHandler(d.Projects, d.Workflows, d.CustomNodeType)))
 		mux.Handle("PUT /api/projects/{id}/workflows/{wfId}", proj(roleEditor, updateWorkflowHandler(d.Projects, d.Workflows, d.CustomNodeType)))
 		mux.Handle("DELETE /api/projects/{id}/workflows/{wfId}", proj(roleEditor, deleteWorkflowHandler(d.Workflows)))
 		mux.Handle("POST /api/projects/{id}/workflows/{wfId}/run", proj(roleEditor, runWorkflowHandler(d.Projects, d.Workflows, d.Planner, d.Events, d.Cost, d.GenQuota, d.CustomNodeType)))

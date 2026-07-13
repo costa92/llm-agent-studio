@@ -23,6 +23,9 @@ func (s ntListStub) List(_ context.Context, _ string) ([]customnodetype.CustomNo
 func (ntListStub) Create(_ context.Context, _ string, _ customnodetype.UpsertInput) (customnodetype.CustomNodeType, error) {
 	return customnodetype.CustomNodeType{}, nil
 }
+func (ntListStub) Upsert(_ context.Context, _ string, _ customnodetype.UpsertInput) (customnodetype.CustomNodeType, error) {
+	return customnodetype.CustomNodeType{}, nil
+}
 func (ntListStub) Update(_ context.Context, _, _ string, _ customnodetype.UpsertInput) (customnodetype.CustomNodeType, error) {
 	return customnodetype.CustomNodeType{}, nil
 }
