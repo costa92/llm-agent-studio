@@ -60,6 +60,7 @@ import { CanvasActionsProvider } from "./CanvasActionsContext"
 import { HelperLines } from "./HelperLines"
 import { NodePalette, PALETTE_DND_TYPE, PALETTE_DND_TYPEID } from "./NodePalette"
 import { NodeManagerModal } from "./NodeManagerModal"
+import { TemplatePicker } from "./TemplatePicker"
 import { PropertiesPanel } from "./PropertiesPanel"
 import { InputsSchemaPanel } from "./InputsSchemaPanel"
 import { WorkflowSettingsPanel } from "./WorkflowSettingsPanel"
@@ -260,6 +261,8 @@ function CanvasInner({
   const [quickSubmitting, setQuickSubmitting] = useState(false)
   // 节点管理模态（系统节点只读目录 + 用户自定义节点 CRUD），由节点面板「节点管理」入口打开。
   const [nodeManagerOpen, setNodeManagerOpen] = useState(false)
+  // 案例模板选择器（「从模板开始」入口打开），选中模板 → 后端新建工作流 → 跳转打开。
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false)
   const [quickSubmitError, setQuickSubmitError] = useState<string | null>(null)
   const createTypedType = useCreateCustomNodeType(org)
   // http secret-bearing 类型守卫：密钥名（「插入密钥」下拉 + 判定）+ admin 角色（前端镜像，后端权威）。
@@ -1208,6 +1211,7 @@ function CanvasInner({
         {isDesktop ? (
           <NodePalette
             onStandardPipeline={onStandardPipeline}
+            onOpenTemplates={onCreated ? () => setTemplatePickerOpen(true) : undefined}
             onAutoTidy={onAutoTidy}
             customTypes={customTypes}
             onQuickCreate={(kind) => { setQuickSubmitError(null); setQuickCreate(kind) }}
@@ -1220,6 +1224,7 @@ function CanvasInner({
             <SheetContent side="left" className="w-48 max-w-[85vw] gap-0 p-0 [&>aside]:h-full [&>aside]:w-full [&>aside]:border-r-0">
               <NodePalette
                 onStandardPipeline={onStandardPipeline}
+                onOpenTemplates={onCreated ? () => { setTemplatePickerOpen(true); setLeftDrawerOpen(false) } : undefined}
                 onAutoTidy={onAutoTidy}
                 customTypes={customTypes}
                 onQuickCreate={(kind) => { setQuickSubmitError(null); setQuickCreate(kind); setLeftDrawerOpen(false) }}
@@ -1298,7 +1303,7 @@ function CanvasInner({
           {rfNodes.length === 0 && (
             <div className="pointer-events-none absolute inset-0 grid place-items-center">
               <p className="rounded-md border border-line bg-bg-surface/80 px-4 py-2 text-center text-[12.5px] text-text-3">
-                拖拽左侧节点到画布，或点「标准管线」快速开始
+                拖拽左侧节点，或点「标准管线」就地填充，或「从模板开始」选一个案例快速创建工作流
                 <br />
                 <span className="text-[11px] text-text-3">
                   左键拖拽平移，Shift+拖拽框选，右键打开菜单
@@ -1355,6 +1360,16 @@ function CanvasInner({
             onOpenChange={setNodeManagerOpen}
             org={org}
           />
+          {/* 案例模板选择器：条件渲染（每次打开重新挂载，从最新数据重建）。
+              选中模板 → 后端建好工作流 → onCreated 导航到 ?wf=<新id> 打开。 */}
+          {templatePickerOpen && onCreated && (
+            <TemplatePicker
+              org={org}
+              projectId={projectId}
+              onCreated={(wfId) => { setTemplatePickerOpen(false); onCreated(wfId) }}
+              onCancel={() => setTemplatePickerOpen(false)}
+            />
+          )}
         </div>
         {isDesktop ? (
           rightPanelContent
