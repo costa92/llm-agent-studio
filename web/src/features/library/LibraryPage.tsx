@@ -150,6 +150,7 @@ export function LibraryView({
                 assetId={asset.id}
                 alt={asset.prompt}
                 type={asset.type}
+                hasContent={asset.blobKey !== "" || asset.url !== ""}
                 caption={`v${asset.version}`}
                 selected={asset.id === selectedId}
                 onSelect={() => onSelect(asset.id)}
@@ -404,7 +405,24 @@ function AssetDetailBody({ detail }: { detail: AssetDetail }) {
 // 媒体渲染：视频/音频用原生播放器（生成后端驱动，前端只播放），其余（图片）走 AssetThumb。
 //   /content 在 auth middleware 后（需 Bearer），原生 <video>/<audio> 的 src 带不上 token，
 //   故同样走 useResolvedAssetUrl（authed fetch 跟 302 到签名 URL → blob object URL）。
+// 无字节资产（生成 failed/canceled 留下的空行：blobKey 与 url 皆空）：不请求
+//   /content（那必然 404 → 刷 console），直接渲染状态感知瓦片，让「生成失败/已取消」
+//   与真正的「加载失败」在视觉上区分开。
+function noBytesLabel(status: string): string {
+  if (status === "failed") return "生成失败"
+  if (status === "canceled") return "已取消"
+  return "暂无内容"
+}
+
 function AssetMedia({ asset }: { asset: Asset }) {
+  // blobKey 与 url 皆空 = 从无字节，任何 /content 请求必 404，直接给占位。
+  if (asset.blobKey === "" && asset.url === "") {
+    return (
+      <div className="grid aspect-square w-full place-items-center bg-bg-raised text-[11px] text-text-3">
+        {noBytesLabel(asset.status)}
+      </div>
+    )
+  }
   if (asset.type === "video") {
     return <AssetVideoAudio asset={asset} kind="video" />
   }

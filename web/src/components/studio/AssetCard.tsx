@@ -11,6 +11,10 @@ export interface AssetCardProps {
   alt?: string
   // 资产类型；缺省按 image 处理（走 AssetThumb）。非 image 显类型占位。
   type?: string
+  // 是否有可取的字节。缺省 true（既有调用方不变）。传 false（blobKey 与 url 皆空，
+  // 如生成 failed/canceled 的空资产）时，图片不走 AssetThumb——否则 /content 必 404
+  // 并刷 console。此时显中性占位，状态语义由调用方叠加的 Badge 承担。
+  hasContent?: boolean
   // 角标（如 version vtag / shot 编号）。
   caption?: string
   // 详情高亮态（当前打开抽屉的资产）。与批量勾选（checked）互相独立。
@@ -28,6 +32,7 @@ export function AssetCard({
   assetId,
   alt = "",
   type,
+  hasContent = true,
   caption,
   selected,
   onSelect,
@@ -47,7 +52,11 @@ export function AssetCard({
 
   const inner = (
     <>
-      {isImage ? (
+      {isImage && !hasContent ? (
+        <span className="grid aspect-square w-full place-items-center bg-bg-raised text-[10px] text-text-3">
+          暂无内容
+        </span>
+      ) : isImage ? (
         <AssetThumb assetId={assetId} alt={alt} className="aspect-square w-full" />
       ) : isAudio ? (
         <AudioCard assetId={assetId} />
