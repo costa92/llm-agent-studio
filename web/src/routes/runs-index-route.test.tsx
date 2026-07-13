@@ -27,6 +27,7 @@ function mockRoutes() {
   installFetchRoutes({
     // 具体 plans 路由须先于 /api/ 兜底命中。
     "/api/projects/p1/plans": () => jsonResponse({ items: [PLAN] }),
+    "/members/me": () => jsonResponse({ role: "admin" }),
     "/model-configs": () => jsonResponse({ items: [] }),
     "/node-types/builtin": () => jsonResponse({ items: [] }),
     "/node-types": () => jsonResponse({ version: 1, nodeTypes: [] }),

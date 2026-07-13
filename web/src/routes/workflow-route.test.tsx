@@ -55,6 +55,7 @@ describe("workflow canvas route", () => {
       updatedAt: "2026-06-22T00:00:00Z",
     }
     installFetchRoutes({
+      "/members/me": () => jsonResponse({ role: "admin" }),
       "/model-configs": () => jsonResponse({ items: [] }),
       "/api/projects/p1/workflows": () => jsonResponse({ items: [workflow] }),
       // The legacy builtin endpoint (#107) returns an {items} shape — keep it
@@ -100,6 +101,7 @@ describe("workflow canvas route", () => {
       updatedAt: "2026-06-22T00:00:00Z",
     }
     installFetchRoutes({
+      "/members/me": () => jsonResponse({ role: "admin" }),
       "/model-configs": () => jsonResponse({ items: [] }),
       "/api/projects/p1/workflows": () => jsonResponse({ items: [workflow] }),
       "/node-types/builtin": () => jsonResponse({ items: [] }),
