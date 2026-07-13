@@ -16,6 +16,7 @@ import (
 type CustomNodeTypeStore interface {
 	List(ctx context.Context, orgID string) ([]customnodetype.CustomNodeType, error)
 	Create(ctx context.Context, orgID string, in customnodetype.UpsertInput) (customnodetype.CustomNodeType, error)
+	Upsert(ctx context.Context, orgID string, in customnodetype.UpsertInput) (customnodetype.CustomNodeType, error)
 	Update(ctx context.Context, id, orgID string, in customnodetype.UpsertInput) (customnodetype.CustomNodeType, error)
 	Delete(ctx context.Context, id, orgID string) error
 	Get(ctx context.Context, id, orgID string) (customnodetype.CustomNodeType, error)

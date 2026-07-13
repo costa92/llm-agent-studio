@@ -130,6 +130,58 @@ func TestDeleteInUse(t *testing.T) {
 	}
 }
 
+// TestUpsertIdempotent 钉死 Upsert 的幂等 + 不覆盖语义：同 (org,slug) 二次 Upsert
+// 返回同一 id、该 (org,slug) 仅一行、且第二次传入不同 params 时既有 params 不被覆盖。
+func TestUpsertIdempotent(t *testing.T) {
+	db := testGorm(t)
+	org := randID(t)
+	mk := func(userPrompt string) UpsertInput {
+		params, _ := json.Marshal(map[string]any{
+			"systemPrompt": "sys", "userPrompt": userPrompt, "outputFormat": "json",
+		})
+		return UpsertInput{Slug: "tpl-fixture", Label: "夹具类型", Color: "#7c93ff", Kind: "llm", Params: params}
+	}
+
+	first, err := New(db).Upsert(context.Background(), org, mk("{{input:theme}}"))
+	if err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	if first.Slug != "tpl-fixture" {
+		t.Fatalf("upsert must use passed slug, got %q", first.Slug)
+	}
+
+	// 第二次传不同 params：应返回同 id、既有行不被覆盖。
+	second, err := New(db).Upsert(context.Background(), org, mk("{{input:CHANGED}}"))
+	if err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("upsert should return same id: first=%s second=%s", first.ID, second.ID)
+	}
+
+	// (org,slug) 只应有一行。
+	var count int
+	if err := db.Raw(
+		`SELECT count(*) FROM custom_node_types WHERE org_id=$1 AND slug=$2`, org, "tpl-fixture").
+		Row().Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("want exactly 1 row for (org,slug), got %d", count)
+	}
+
+	// 既有 params 未被第二次覆盖：仍是首次的 {{input:theme}}。
+	var up struct {
+		UserPrompt string `json:"userPrompt"`
+	}
+	if err := json.Unmarshal(second.Params, &up); err != nil {
+		t.Fatalf("unmarshal params: %v", err)
+	}
+	if up.UserPrompt != "{{input:theme}}" {
+		t.Fatalf("upsert must NOT overwrite existing params, got userPrompt=%q", up.UserPrompt)
+	}
+}
+
 // TestValidate_HTTP exercises http kind save-time validation directly (no DB):
 // method enum, static url (no {{}}), {{secret:}} only in headers, outputFormat enum.
 func TestValidate_HTTP(t *testing.T) {

@@ -46,9 +46,10 @@ type CustomNodeType struct {
 	Params json.RawMessage `json:"params"`
 }
 
-// UpsertInput 是 Create/Update 入参。Create 用 Label 派生 slug；Update 忽略 Slug/Kind。
+// UpsertInput 是 Create/Update/Upsert 入参。Create 用 Label 派生 slug（忽略 Slug）；
+// Update 忽略 Slug/Kind；Upsert 用传入的 Slug（不 slugify）。
 type UpsertInput struct {
-	Slug   string // Create 内部派生；外部传空
+	Slug   string // Create 内部派生（外部传空）；Upsert 直接采用
 	Label  string
 	Color  string
 	Kind   string
@@ -123,6 +124,36 @@ func (s *Store) Create(ctx context.Context, orgID string, in UpsertInput) (Custo
 	ct, err := scanType(row)
 	if err != nil {
 		return CustomNodeType{}, fmt.Errorf("customnodetype: create: %w", err)
+	}
+	s.invalidate(ctx)
+	return ct, nil
+}
+
+// Upsert 幂等落一条 org 类型：按 (org_id, slug) 唯一键冲突时不覆盖既有行。
+// 与 Create 不同——用 in.Slug（不 slugify），供「工作流模板实例化」一键装配注册表类型。
+// ON CONFLICT DO UPDATE SET slug=custom_node_types.slug 是 no-op 更新：既保证冲突时
+// 也能 RETURNING 既有行（DO NOTHING 会返回空），又绝不覆盖用户对该类型的既有改动
+//（label/color/params 保持既有值）。
+func (s *Store) Upsert(ctx context.Context, orgID string, in UpsertInput) (CustomNodeType, error) {
+	if orgID == "" {
+		return CustomNodeType{}, fmt.Errorf("customnodetype: orgID required")
+	}
+	if strings.TrimSpace(in.Slug) == "" {
+		return CustomNodeType{}, fmt.Errorf("customnodetype: slug required for upsert")
+	}
+	if err := validate(in); err != nil {
+		return CustomNodeType{}, err
+	}
+	const q = `
+		INSERT INTO custom_node_types (id, org_id, slug, label, color, kind, params)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		ON CONFLICT (org_id, slug) DO UPDATE SET slug = custom_node_types.slug
+		RETURNING id, org_id, slug, label, color, kind, params`
+	row := s.db.WithContext(ctx).Raw(q,
+		newID(), orgID, in.Slug, in.Label, in.Color, in.Kind, []byte(in.Params)).Row()
+	ct, err := scanType(row)
+	if err != nil {
+		return CustomNodeType{}, fmt.Errorf("customnodetype: upsert: %w", err)
 	}
 	s.invalidate(ctx)
 	return ct, nil
