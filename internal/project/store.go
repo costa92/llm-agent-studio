@@ -72,6 +72,10 @@ type Project struct {
 	StorageConfigID string `json:"storageConfigId"`
 	// Kind 区分项目类型。绘本/standard 管线已移除；现存值经迁移收敛为 'custom'。
 	Kind string `json:"kind"`
+	// 创建时间 / 最新更新时间（DB 侧 created_at/updated_at；写路径均 updated_at=now()）。
+	// 供列表卡片展示；时区随 DB 返回（timestamptz）。
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // CreateInput is the input to Create. Brief maps to the description column
@@ -182,11 +186,13 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Project, error) {
 		WorkflowNodes:         in.WorkflowNodes,
 		Kind:                  kind,
 	}
-	if res := s.db.WithContext(ctx).Exec(
+	if err := s.db.WithContext(ctx).Raw(
 		`INSERT INTO projects (id, org_id, name, description, content_type, target_platform, style, status, created_by, planner_provider, planner_model, image_provider, image_model, storage_mode, custom_workflow_enabled, workflow_nodes, storage_config_id, kind)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
-		p.ID, p.OrgID, p.Name, p.Description, p.ContentType, p.TargetPlatform, p.Style, p.Status, p.CreatedBy, p.PlannerProvider, p.PlannerModel, p.ImageProvider, p.ImageModel, p.StorageMode, p.CustomWorkflowEnabled, p.WorkflowNodes, p.StorageConfigID, p.Kind); res.Error != nil {
-		return Project{}, fmt.Errorf("project: insert: %w", res.Error)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+		 RETURNING created_at, updated_at`,
+		p.ID, p.OrgID, p.Name, p.Description, p.ContentType, p.TargetPlatform, p.Style, p.Status, p.CreatedBy, p.PlannerProvider, p.PlannerModel, p.ImageProvider, p.ImageModel, p.StorageMode, p.CustomWorkflowEnabled, p.WorkflowNodes, p.StorageConfigID, p.Kind).
+		Row().Scan(&p.CreatedAt, &p.UpdatedAt); err != nil {
+		return Project{}, fmt.Errorf("project: insert: %w", err)
 	}
 	return p, nil
 }
@@ -200,7 +206,7 @@ func (s *Store) Get(ctx context.Context, id string) (Project, error) {
 		        COALESCE(pl.fallback_used, false),
 		        p.planner_provider, p.planner_model, p.image_provider, p.image_model, p.storage_mode,
 		        p.custom_workflow_enabled, p.workflow_nodes, p.cover_asset_id, COALESCE(p.storage_config_id, ''),
-		        COALESCE(p.kind, 'custom')
+		        COALESCE(p.kind, 'custom'), p.created_at, p.updated_at
 		 FROM projects p
 		 LEFT JOIN (
 		     SELECT DISTINCT ON (project_id) project_id, fallback_used
@@ -208,7 +214,7 @@ func (s *Store) Get(ctx context.Context, id string) (Project, error) {
 		     ORDER BY project_id, created_at DESC
 		 ) pl ON p.id = pl.project_id
 		 WHERE p.id=$1 AND p.deleted_at IS NULL`, id).Row().
-		Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy, &p.FallbackUsed, &p.PlannerProvider, &p.PlannerModel, &p.ImageProvider, &p.ImageModel, &p.StorageMode, &p.CustomWorkflowEnabled, &nodesB, &p.CoverAssetID, &p.StorageConfigID, &p.Kind)
+		Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy, &p.FallbackUsed, &p.PlannerProvider, &p.PlannerModel, &p.ImageProvider, &p.ImageModel, &p.StorageMode, &p.CustomWorkflowEnabled, &nodesB, &p.CoverAssetID, &p.StorageConfigID, &p.Kind, &p.CreatedAt, &p.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Project{}, ErrNotFound
 	}
@@ -240,7 +246,7 @@ func (s *Store) ListByOrg(ctx context.Context, orgID string, limit int, cursor s
 		limit = 50
 	}
 	rows, err := s.db.WithContext(ctx).Raw(
-		`SELECT id, org_id, name, description, content_type, target_platform, style, status, created_by, planner_provider, planner_model, image_provider, image_model, storage_mode, custom_workflow_enabled, workflow_nodes, cover_asset_id, COALESCE(storage_config_id, ''), COALESCE(kind, 'custom')
+		`SELECT id, org_id, name, description, content_type, target_platform, style, status, created_by, planner_provider, planner_model, image_provider, image_model, storage_mode, custom_workflow_enabled, workflow_nodes, cover_asset_id, COALESCE(storage_config_id, ''), COALESCE(kind, 'custom'), created_at, updated_at
 		 FROM projects WHERE org_id=$1 AND deleted_at IS NULL AND id>$2 ORDER BY id ASC LIMIT $3`,
 		orgID, cursor, limit).Rows()
 	if err != nil {
@@ -251,7 +257,7 @@ func (s *Store) ListByOrg(ctx context.Context, orgID string, limit int, cursor s
 	for rows.Next() {
 		var p Project
 		var nodesB []byte
-		if err := rows.Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy, &p.PlannerProvider, &p.PlannerModel, &p.ImageProvider, &p.ImageModel, &p.StorageMode, &p.CustomWorkflowEnabled, &nodesB, &p.CoverAssetID, &p.StorageConfigID, &p.Kind); err != nil {
+		if err := rows.Scan(&p.ID, &p.OrgID, &p.Name, &p.Description, &p.ContentType, &p.TargetPlatform, &p.Style, &p.Status, &p.CreatedBy, &p.PlannerProvider, &p.PlannerModel, &p.ImageProvider, &p.ImageModel, &p.StorageMode, &p.CustomWorkflowEnabled, &nodesB, &p.CoverAssetID, &p.StorageConfigID, &p.Kind, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, "", err
 		}
 		p.WorkflowNodes = json.RawMessage(nodesB)
